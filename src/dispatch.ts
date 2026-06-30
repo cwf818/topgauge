@@ -20,18 +20,27 @@
 // the provider's `TYPE` field from the providers config block and
 // routes accordingly. Adding a new TOKEN_PLAN or BALANCE provider
 // is a config-only change.
+//
+// v0.4.x: collapsed the per-TYPE helpers (renderPlanLine +
+// formatBalanceLine) into a single renderDataLine that reads the
+// provider's TYPE only to pick which ctx fields to populate
+// (fiveHour/weekly vs balance). The renderer-side per-module
+// `mode` filter (see render.ts MODULES / INLINE_MODE_FILTERS)
+// handles "plan-only module on a balance ctx" silently.
 
 import type { Remains } from "./api.ts";
 import type { Balance } from "./api.deepseek.ts";
 import {
-  formatBalanceLine,
-  formatLine,
   RED,
   renderProviderLine,
   RESET,
   resolveDisplayMode,
 } from "./render.ts";
-import { failLabelForProvider, getProviderEntry } from "./providers.ts";
+import { configStore } from "./config.ts";
+import {
+  failLabelForProvider,
+  getProviderEntry,
+} from "./providers.ts";
 import type { Provider, TokenSnapshot } from "./types.ts";
 
 export type FetchResult<T> =
@@ -39,41 +48,84 @@ export type FetchResult<T> =
   | { kind: "stale"; data: T; ageMs: number }
   | { kind: "fail" };
 
-// Render the MiniMax-style two-window line from a Remains payload.
-// The `stale` flag drives the broken-chain suffix visibility — fresh
-// ticks render no age suffix regardless of ageMs. When stale=true,
-// the suffix shows the broken emoji + age (e.g. "⛓️‍💥 5m ago").
+// v0.4.x — single adapter that converts a (provider, data) pair to
+// the right ctx fields for renderProviderLine. Replaces the older
+// `renderPlanLine` + `formatBalanceLine` paths in buildProviderLine:
+// those two helpers hardcoded their data shape (TOKEN_PLAN expects
+// fiveHour + weekly; BALANCE expects Balance), and the dispatcher
+// forked on entry.TYPE to pick one. Now both shapes flow through
+// here. The provider's TYPE controls which ctx fields are
+// populated; the renderer's per-module `mode` filter handles
+// "plan-only module on a balance ctx" silently, so we no longer
+// need a TYPE switch on the caller's side. renderProviderLine
+// itself picks the template via templateKeyForProvider +
+// statuslineTemplate.
 //
-// v0.2.21: kept the named helper (rather than inlining) because
-// dispatch.ts:buildProviderLine and the lower-level tests still call
-// it. The body delegates to the renderer's lineTemplate path, which
-// is now driven by templateKeyForProvider rather than a provider-name
-// literal.
+// Returns null only when data is shape-incompatible with the
+// resolved TYPE (returns null as today).
 //
-// v0.4.0+ — `tokens` is the live stdin snapshot, threaded into the
-// renderer so token-lineTemplate modules (m_tokenIn / m_tokenOut /
-// m_ctx / m_cacheRead / m_cacheHitRate / m_tokenInSpeed /
-// m_tokenOutSpeed / m_token5h / m_token7d) can render without
-// re-parsing stdin. m_token5h/m_token7d additionally read
-// state/token-samples/*.jsonl (handled inside render.ts).
-export function renderPlanLine(
-  data: Remains,
-  mode: ReturnType<typeof resolveDisplayMode>,
-  ageMs?: number,
-  stale: boolean = false,
-  tokens?: TokenSnapshot | null,
+// ageMs / stale semantics (unchanged):
+//   fresh.ageMs : 0 for a just-fetched tick; the cache age for a
+//                 within-TTL cache hit. Renderer suppresses the
+//                 suffix on fresh ticks (stale=false gate).
+//   stale.ageMs : how long since the last successful fetch.
+//                 Renderer appends "⛓️‍💥 Xm ago" (or "0s ago" if the
+//                 fetch just failed).
+function renderDataLine(
+  provider: Provider,
+  data: unknown,
+  ageMs: number,
+  stale: boolean,
+  tokens: TokenSnapshot | null,
 ): string | null {
-  if (data.fiveHour && data.weekly) {
-    return formatLine(data.fiveHour, data.weekly, mode, Date.now(), ageMs, stale, tokens);
+  const entry = getProviderEntry(provider);
+  const mode = resolveDisplayMode();
+  // The Phase 1 callers (buildProviderLine's gated path +
+  // renderPlanLine's back-compat shim) always pass a provider
+  // string with a configured entry. We still guard for null here
+  // because Phase 2 will start passing `null` deliberately. Until
+  // then, this is defensive.
+  if (!entry) return null;
+  if (entry.TYPE === "TOKEN_PLAN") {
+    const r = data as Remains;
+    // The old renderPlanLine had a partial-window fallback:
+    // when only fiveHour (or only weekly) was present, it would
+    // synthesize a {pct:0} window for the missing side and still
+    // render. That logic moves here now — renderProviderLine no
+    // longer special-cases null windows (it expects both ctx
+    // fields populated), so we hard-fill them before delegating.
+    // If neither window is present, return null (legacy behavior).
+    const zero = { pct: 0 } as const;
+    const fiveHour = r.fiveHour ?? (r.weekly ? zero : null);
+    const weekly = r.weekly ?? (r.fiveHour ? zero : null);
+    if (!fiveHour || !weekly) return null;
+    return renderProviderLine(provider, {
+      mode,
+      nowMs: Date.now(),
+      fiveHour,
+      weekly,
+      ageMs,
+      stale,
+      version: configStore.get().version,
+      tokens,
+    });
   }
-  // If only one window is present, render what's available rather than nothing.
-  const zero = { pct: 0 } as const;
-  if (data.fiveHour) return formatLine(data.fiveHour, zero, mode, Date.now(), ageMs, stale, tokens);
-  if (data.weekly) return formatLine(zero, data.weekly, mode, Date.now(), ageMs, stale, tokens);
+  if (entry.TYPE === "BALANCE") {
+    return renderProviderLine(provider, {
+      mode,
+      nowMs: Date.now(),
+      balance: data as Balance,
+      ageMs,
+      stale,
+      version: configStore.get().version,
+      tokens,
+    });
+  }
   return null;
 }
 
 // Maps a (provider, FetchResult) pair to the final statusline line.
+//
 // v0.2.21: dispatch is driven by `entry.TYPE` from the providers
 // config, not by provider-name literals. The fail-line prefix is
 // read via `failLabelForProvider(provider)` so a user who overrides
@@ -86,6 +138,23 @@ export function renderPlanLine(
 // unreachable shouldn't see token counts (would be confusing) but
 // CAN opt to include them via a m_token* module that reads the live
 // snapshot; we honor that by still passing tokens on fail.
+//
+// v0.4.x — collapsed: previously dispatched on `entry.TYPE` to
+// renderPlanLine (TOKEN_PLAN) or formatBalanceLine (BALANCE) and
+// the per-TYPE helpers hardcoded their data shape. Now every path
+// funnels through renderDataLine, which reads TYPE only to pick
+// the right ctx fields (`fiveHour`/`weekly` vs `balance`) and
+// delegates the rest to renderProviderLine + the per-module
+// `mode` filter. The fail-with-tokens branch was already a
+// renderProviderLine call (it's been template-routed since v0.4.0);
+// the bare-tokens-fail "Usage: not available!" branch is preserved
+// verbatim for v0.2.20 byte-for-byte compatibility.
+//
+// Display mode lives in configStore — the old TOKENPLAN_DISPLAY env
+// var is gone (see README "Configuration"). For fresh ticks the
+// m_age suffix is suppressed; for stale ticks the renderer appends
+// the broken-chain "X ago" annotation (the m_age module OR the
+// forced-visibility fallback, whichever fires first).
 export function buildProviderLine(
   provider: Provider,
   result: FetchResult<unknown>,
@@ -100,8 +169,8 @@ export function buildProviderLine(
     // branch in formatBalanceLine (RED) so the two unavailable states
     // look the same on screen.
     //
-    // v0.2.21: `failLabelForProvider` returns the modeLabel verbatim
-    // (no trailing space — m_modeLabel module relies on s_0 separators in
+    // `failLabelForProvider` returns the modeLabel verbatim (no
+    // trailing space — m_modeLabel module relies on s_0 separators in
     // the lineTemplate). The fail-line path doesn't go through the
     // template, so we re-attach the space here to preserve the
     // v0.2.20 output ("Usage: not available!" / "Balance: not available!").
@@ -121,49 +190,46 @@ export function buildProviderLine(
         nowMs: Date.now(),
         ageMs: null,
         stale: true,
-        version: importConfigVersion(),
+        version: configStore.get().version,
         tokens,
       });
     }
     return `${failLabelForProvider(provider)} ${RED}not available!${RESET}`;
   }
-  if (entry.TYPE === "TOKEN_PLAN") {
-    // Display mode lives in configStore — the old TOKENPLAN_DISPLAY
-    // env var is gone (see README "Configuration").
-    const mode = resolveDisplayMode();
-    // ageMs is carried on BOTH the fresh and stale variants:
-    //   fresh.ageMs : 0 for a just-fetched tick; the cache age for a
-    //                 within-TTL cache hit. Renderer suppresses the
-    //                 suffix on fresh ticks (stale=false gate).
-    //   stale.ageMs : how long since the last successful fetch.
-    //                 Renderer appends "⛓️‍💥 Xm ago" (or "0s ago" if the
-    //                 fetch just failed).
-    return renderPlanLine(
-      result.data as Remains,
-      mode,
-      result.ageMs,
-      result.kind === "stale",
-      tokens,
-    );
-  }
-  if (entry.TYPE === "BALANCE") {
-    // BALANCE providers have no window concept; same ageMs contract
-    // as the TOKEN_PLAN path. Fresh ticks render no suffix; stale
-    // ticks render the broken-chain "X ago" annotation.
-    return formatBalanceLine(
-      result.data as Balance,
-      result.ageMs,
-      result.kind === "stale",
-      tokens,
-    );
-  }
-  return null;
+  return renderDataLine(
+    provider,
+    result.data,
+    result.ageMs,
+    result.kind === "stale",
+    tokens ?? null,
+  );
 }
 
-// Tiny adapter so dispatch.ts can ask the renderer for the plugin
-// version without circular-importing config.ts. Lives here because
-// dispatch.ts is the only caller on the fail-with-tokens path.
-import { configStore } from "./config.ts";
-function importConfigVersion(): string {
-  return configStore.get().version;
+// v0.4.x — back-compat shim. Tests outside this file may call
+// renderPlanLine directly; no external callers exist since v0.2.21
+// (the only public surface in production is buildProviderLine).
+// Kept as a thin delegation so future test cleanups are decoupled
+// from this refactor. The previous body had a partial-window
+// fallback that hard-filled the missing window with {pct:0}; that
+// behavior moved into renderDataLine above, so this shim is now
+// a one-liner. The legacy `mode` argument is ignored — callers
+// that need a non-default display mode should configure
+// `display: "remaining"` in config.json (the v0.2.x migration path
+// from TOKENPLAN_DISPLAY).
+export function renderPlanLine(
+  data: Remains,
+  _mode: ReturnType<typeof resolveDisplayMode>,
+  ageMs?: number,
+  stale: boolean = false,
+  tokens?: TokenSnapshot | null,
+): string | null {
+  void _mode;
+  if (!data.fiveHour && !data.weekly) return null;
+  return renderDataLine(
+    "minimax",
+    data,
+    ageMs ?? 0,
+    stale,
+    tokens ?? null,
+  );
 }

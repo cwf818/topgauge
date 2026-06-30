@@ -113,7 +113,13 @@ describe("buildProviderLine — fresh (no age suffix; data just arrived)", () =>
     }
   });
 
-  it("null provider: returns null even with fresh data", () => {
+  it("null provider + no tokens: returns null (nothing useful to render)", () => {
+    // v0.4.x — the "no provider" early-return at the top of
+    // buildProviderLine still fires here. A null provider means
+    // getProviderEntry() returns null → we return null before any
+    // module gets a chance to run. The empty-output guard is added
+    // in a later commit (Phase 2 — drops the early-return and lets
+    // provider-agnostic modules render unconditionally).
     pinDefaults();
     const result: FetchResult<Remains> = { kind: "fresh", data: MINI_DATA, ageMs: 0 };
     assert.equal(buildProviderLine(null, result), null);
@@ -195,7 +201,12 @@ describe("buildProviderLine — fail", () => {
     assert.equal(strip(line!), "Balance: not available!");
   });
 
-  it("null provider: returns null on fail (no line at all)", () => {
+  it("null provider + fail + no tokens: returns null (early-return at the top)", () => {
+    // v0.4.x — the "no provider" early-return at the top of
+    // buildProviderLine fires before the fail-branch logic. The
+    // Phase 2 refactor changes this: it removes the early-return
+    // and falls back to "Usage: not available!" via
+    // failLabelForProvider + the empty-output guard.
     pinDefaults();
     const result: FetchResult<Remains> = { kind: "fail" };
     assert.equal(buildProviderLine(null, result), null);

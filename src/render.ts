@@ -617,7 +617,22 @@ type RenderContext = {
   providerModeKey: "plan" | "balance";
 };
 
-type Module = (ctx: RenderContext) => string | null;
+// v0.4.x+ — modules may declare a `mode` filter so they only render
+// for one provider kind. With the unification of renderPlanLine /
+// formatBalanceLine into a single `renderDataLine` (Task #2), the
+// per-provider gate that used to live in dispatch.ts:buildProviderLine
+// now lives here: a bare `m_window5h` in a balance provider's template
+// silently drops (the module is mode:`"plan"`), and `m_balance` in a
+// plan provider's template silently drops too. Modules without a mode
+// tag (m_token*, m_age, m_version, …) are provider-agnostic.
+//
+// The dispatcher applies the filter by inspecting `mod.mode` and
+// comparing against `ctx.providerModeKey`. A module function is still
+// canonical; the `mode` field is read-only metadata on the same
+// record.
+type Module = ((ctx: RenderContext) => string | null) & {
+  mode?: "plan" | "balance";
+};
 
 // v0.4.x — per-tick state lives in `state/<projectHash>/status.json`
 // (managed by src/status-store.ts). Three flavors of `tickStatus`
@@ -1346,24 +1361,49 @@ const MODULES: Record<string, Module> = {
   // is the dedicated modeLabels.balance entry (default "Balance:").
   // Returns the label WITHOUT a trailing space — the surrounding
   // s_0 separator token provides spacing.
-  m_modeLabel: (c) => {
-    if (c.balance) return cfg().modeLabels.balance;
-    return cfg().modeLabels[c.mode];
-  },
-  m_window5h: (c) => (c.fiveHour ? formatOneChunk(c.fiveHour, c.mode) : null),
-  m_window7d: (c) => (c.weekly ? formatOneChunk(c.weekly, c.mode) : null),
+  // The leading prefix. For the plan path, picks the mode-aware
+  // label ("Usage:" / "Remain:"). For the balance path, the label
+  // is the dedicated modeLabels.balance entry (default "Balance:").
+  // v0.4.x+: remains provider-AGNOSTIC — its body already routes on
+  // ctx.providerModeKey, so a single module handles both shapes. The
+  // surrounding m_window5h/m_balance modules carry the per-provider
+  // `mode` filter; m_modeLabel doesn't need to.
+  // Returns the label WITHOUT a trailing space — the surrounding
+  // s_0 separator token provides spacing.
+  m_modeLabel: (c) => (c.providerModeKey === "balance"
+    ? cfg().modeLabels.balance
+    : cfg().modeLabels[c.mode]),
+  m_window5h: Object.assign(
+    ((c: RenderContext) => c.fiveHour ? formatOneChunk(c.fiveHour, c.mode) : null),
+    { mode: "plan" as const },
+  ),
+  m_window7d: Object.assign(
+    ((c: RenderContext) => c.weekly ? formatOneChunk(c.weekly, c.mode) : null),
+    { mode: "plan" as const },
+  ),
   // Reset-suffix portion of a window. Returns null only when the
   // whole window is missing; when resetAt is missing the helper
   // still emits " <label>" (e.g. " 5h") so the m_countdown5h token
   // doubles as the window-label module for legacy/no-reset data.
-  m_countdown5h: (c) =>
-    c.fiveHour ? formatOneResetSuffix("5h", c.fiveHour, c.nowMs) : null,
-  m_countdown7d: (c) =>
-    c.weekly ? formatOneResetSuffix("7d", c.weekly, c.nowMs) : null,
+  m_countdown5h: Object.assign(
+    ((c: RenderContext) => c.fiveHour
+      ? formatOneResetSuffix("5h", c.fiveHour, c.nowMs)
+      : null),
+    { mode: "plan" as const },
+  ),
+  m_countdown7d: Object.assign(
+    ((c: RenderContext) => c.weekly
+      ? formatOneResetSuffix("7d", c.weekly, c.nowMs)
+      : null),
+    { mode: "plan" as const },
+  ),
   // The DeepSeek balance chunk. Returns null when there's nothing
   // to render (unavailable / empty / no min) so the template can
   // opt out of showing it.
-  m_balance: (c) => (c.balance ? formatBalanceEntriesColored(c.balance) || null : null),
+  m_balance: Object.assign(
+    ((c: RenderContext) => c.balance ? formatBalanceEntriesColored(c.balance) || null : null),
+    { mode: "balance" as const },
+  ),
   // Stale-age annotation. When present in the lineTemplate, this is
   // the primary render path — it emits unconditionally (no stale
   // gating). The emoji reflects the fetch state: 🔗 for fresh ticks
@@ -2507,6 +2547,26 @@ function wrapPlain(body: string, color: string | undefined): string {
   return color ? `${color}${body}${RESET}` : body;
 }
 
+// v0.4.x+ — parallel to MODULES' per-module `mode` tag. Each entry
+// here mirrors its INLINE_RENDERERS counterpart's provider scope:
+// the inline form `m_window5h:color:…` is also plan-only; `m_balance:…`
+// is balance-only. The bare-module dispatcher at line ~3220 enforces
+// the same filter via `MODULES[name].mode`; this map keeps the
+// inline path symmetric so a `m_window5h:color:red` in a balance
+// provider's template drops the same way the bare form does.
+//
+// Untagged entries (empty string key omitted entirely) are
+// provider-agnostic; the dispatcher treats the absence of a key
+// as "no mode filter", matching the MODULES-default of
+// mode === undefined.
+const INLINE_MODE_FILTERS: Partial<Record<string, "plan" | "balance">> = {
+  m_window5h: "plan",
+  m_window7d: "plan",
+  m_countdown5h: "plan",
+  m_countdown7d: "plan",
+  m_balance: "balance",
+};
+
 // Per-prefix renderer. Returns the chunk text (or null to drop).
 const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   s_: (params, _ctx) => {
@@ -2529,7 +2589,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // label, else the mode-aware label. The colored wrapper is added
     // here only (not in MODULES) so the bare `m_modeLabel` form keeps
     // its existing byte-for-byte output.
-    const s = ctx.balance
+    const s = ctx.providerModeKey === "balance"
       ? cfg().modeLabels.balance
       : cfg().modeLabels[ctx.mode];
     return wrapPlain(s, params.color as string | undefined);
@@ -3008,6 +3068,33 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
     // ":" so the bare forms (s_0, m_modeLabel, m_window5h, …) keep
     // routing through MODULES as before.
     if (tok.includes(":")) {
+      // v0.4.x+ — provider-mode filter for inline-args tokens. We
+      // extract the prefix (everything before the first ":") and
+      // consult INLINE_MODE_FILTERS. When the prefix carries a tag
+      // and it doesn't match ctx.providerModeKey, we silently drop
+      // the whole token WITHOUT entering the long prefix chain
+      // below. This keeps the per-prefix `mode` tag symmetrical
+      // with MODULES' `mode` field so a `m_window5h:color:red` in a
+      // balance provider's template drops identically to its bare
+      // form.
+      //
+      // Special case: s_<n>:… is a separator, not a module, so we
+      // skip the mode check (separators are provider-agnostic).
+      // m_label:… and m_template:… are also provider-agnostic by
+      // design; their mode is "" absent from INLINE_MODE_FILTERS so
+      // the lookup is a no-op. Missing-key (unknown prefix) is also
+      // a no-op — the long chain below will produce inline=undefined
+      // and the unknown-module warn path will fire there.
+      const colonAt = tok.indexOf(":");
+      const inlinePrefix = colonAt > 0 && tok.startsWith("m_")
+        ? tok.slice(0, colonAt)
+        : "";
+      if (inlinePrefix) {
+        const need = INLINE_MODE_FILTERS[inlinePrefix];
+        if (need && need !== ctx.providerModeKey) {
+          continue;
+        }
+      }
       // The prefix → key/skipLen table. Keep them in sync with the
       // INLINE_SCHEMAS / INLINE_RENDERERS entries above. A typo here
       // means the token silently routes through MODULES (which won't
@@ -3180,6 +3267,20 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
       const mod = MODULES[tok];
       if (!mod) {
         warnUnknownModuleOnce(tok);
+        continue;
+      }
+      // v0.4.x+ — provider-mode filter. Modules tagged with a mode
+      // (`m_window5h: "plan"`, `m_balance: "balance"`, …) silently
+      // drop on a non-matching provider. Untagged modules
+      // (m_token*, m_age, m_version, …) skip the check. The drop
+      // is a no-op — the chunk is skipped AND adjacent s_<n>
+      // separators are skipped too via the same null-fall-through
+      // the MODULES renderer already implements (returning null
+      // from mod(ctx) wouldn't reach here since we call it only
+      // when we're keeping the chunk; if it returns null/empty,
+      // the existing `if (piece == null || piece === "") continue;`
+      // below handles separator skipping identically).
+      if (mod.mode != null && mod.mode !== ctx.providerModeKey) {
         continue;
       }
       piece = mod(ctx);
