@@ -70,7 +70,7 @@ const ctxFor = (
   tokens: TokenSnapshot | null,
   fiveHour: Window | null = null,
   weekly: Window | null = null,
-  providerModeKey: "plan" | "balance" = "plan",
+  providerType: "plan" | "balance" | "unknown" = "plan",
 ) => ({
   mode: "used" as const,
   nowMs: 1_000_000,
@@ -88,10 +88,11 @@ const ctxFor = (
     tokens?.contextWindow?.usedPct != null
       ? { pct: tokens.contextWindow.usedPct }
       : null,
-  // v0.4.0+ — the provider mode key threading for m_template:mode:
-  // filtering. Tests that DON'T care about mode filtering use the
-  // default "plan"; m_template coverage in §5.3 overrides this.
-  providerModeKey,
+  // v0.4.x — the provider TYPE discriminator. Tests that don't care
+  // about type filtering use the default "plan"; m_template coverage
+  // in §5.3 overrides this. Renamed from `providerModeKey` (v0.4.x-
+  // beta) to avoid collision with the display-mode field.
+  providerType,
 });
 
 // v0.4.0+ — the speed/delta/avg cache helpers (peekPrevTick /
@@ -1988,14 +1989,18 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
 // ----- v0.4.0+ m_template module -----
 //
 // Direct coverage of `m_template:<key>[:mode:<plan|balance>]` against
-// `renderTemplate` (no provider dispatch — ctx.providerModeKey is
+// `renderTemplate` (no provider dispatch — ctx.providerType is
 // set explicitly). The end-to-end "minimax renders the chunk" path
 // is in lineTemplate.test.ts; this file exercises the renderer in
 // isolation so a missing-key warn is easier to capture.
+//
+// The inline `:mode:` arg keeps the OLD name for back-compat with
+// existing config.json files; the comparison target inside the
+// renderer is now ctx.providerType (renamed from providerModeKey).
 describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
   beforeEach(() => __resetForTest());
 
-  it("m_template:foo with ctx.providerModeKey='plan' expands the registered fragment", () => {
+  it("m_template:foo with ctx.providerType='plan' expands the registered fragment", () => {
     __resetForTest({
       lineTemplates: { foo: ["m_window5h"] },
     });
@@ -2005,7 +2010,7 @@ describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
     assert.match(out.map(strip).join("\n"), /42%/);
   });
 
-  it("m_template:foo with ctx.providerModeKey='balance' wants mode:plan → drops", () => {
+  it("m_template:foo with ctx.providerType='balance' wants mode:plan → drops", () => {
     __resetForTest({
       lineTemplates: { foo: ["m_window5h"] },
     });
@@ -2013,13 +2018,13 @@ describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
       ["m_template:foo:mode:plan"],
       ctxFor(null, null, null, "balance"),
     );
-    // Dropped because providerModeKey=balance but mode wants plan.
+    // Dropped because providerType=balance but mode wants plan.
     // The dropped chunk leaves an empty array (separators are also
     // skipped when their neighbors drop).
     assert.deepEqual(out, []);
   });
 
-  it("m_template:foo with ctx.providerModeKey='plan' wants mode:plan → renders", () => {
+  it("m_template:foo with ctx.providerType='plan' wants mode:plan → renders", () => {
     __resetForTest({
       lineTemplates: { foo: ["m_window5h"] },
     });

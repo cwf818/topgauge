@@ -104,11 +104,11 @@ export type FetchResult<T> =
 // its own way of plumbing the data into the renderer.
 //
 // Now both shapes flow through here. The provider's TYPE controls
-// which ctx fields are populated; the renderer's per-module `mode`
+// which ctx fields are populated; the renderer's per-module `type`
 // filter (Task #1) handles "plan-only module on a balance ctx"
 // silently, so we no longer need a TYPE switch on the caller's
 // side. renderProviderLine itself picks the template via
-// templateKeyForProvider + statuslineTemplate.
+// providerTypeFor + statuslineTemplate.
 //
 // Returns null only when (1) the provider has no entry (defensive
 // — matchProvider is the upstream gate) or (2) data is shape-
@@ -135,12 +135,13 @@ function renderDataLine(
   // the case where `entry` is null here too: there's no TYPE to
   // dispatch on, so we skip both branches and call
   // renderProviderLine with empty data slots (no fiveHour, no
-  // weekly, no balance). providerModeKey falls through to "plan"
-  // (templateKeyForProvider's defensive default), so plan-only
-  // modules attempt to render but drop on null data, and
-  // balance-only modules always drop. Provider-agnostic modules
-  // (m_token*, m_version, m_session, …) emit normally — that's the
-  // "no provider but still useful" path the user explicitly wants.
+  // weekly, no balance). providerTypeFor returns "unknown" for the
+  // null entry, so plan-only modules attempt to render but drop on
+  // null data, balance-only modules always drop, and any future
+  // type:"unknown"-tagged module would emit. Provider-agnostic
+  // modules (m_token*, m_version, m_session, …) emit normally —
+  // that's the "no provider but still useful" path the user
+  // explicitly wants.
   //
   // Returning the empty string (vs null) signals to buildProviderLine
   // "the renderer ran but produced no output", which it then
@@ -203,7 +204,7 @@ function renderDataLine(
 // funnels through renderDataLine, which reads TYPE only to pick
 // the right ctx fields (`fiveHour`/`weekly` vs `balance`) and
 // delegates the rest to renderProviderLine + the per-module
-// `mode` filter. The fail-with-tokens branch was already a
+// `type` filter. The fail-with-tokens branch was already a
 // renderProviderLine call (it's been template-routed since v0.4.0);
 // the bare-tokens-fail "Usage: not available!" branch is preserved
 // verbatim for v0.2.20 byte-for-byte compatibility.

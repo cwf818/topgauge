@@ -1281,7 +1281,7 @@ describe("lineTemplate — inline-args regression / round-trip", () => {
 // End-to-end coverage for the new `m_template:<key>[:mode:<plan|balance>]`
 // inline-arg token. The dispatcher expands `m_template` into the
 // registered `lineTemplates[key]` fragment, filtered by the
-// `providerModeKey` thread (so the same key can render differently for
+// `providerType` thread (so the same key can render differently for
 // plan vs balance providers).
 describe("m_template — legacy lineTemplate warns once and is ignored (v0.4.0 hard break)", () => {
   beforeEach(() => {
@@ -1379,7 +1379,7 @@ describe("m_template — mode filter drops on mismatch (deepseek vs plan)", () =
   });
   afterEach(() => __resetForTest());
 
-  it("mode:plan chunk drops on a deepseek provider (providerModeKey is 'balance')", () => {
+  it("mode:plan chunk drops on a deepseek provider (providerType is 'balance')", () => {
     const line = renderProviderLine("deepseek", {
       mode: "used",
       nowMs: Date.now(),
@@ -1388,7 +1388,7 @@ describe("m_template — mode filter drops on mismatch (deepseek vs plan)", () =
       stale: false,
       version: "",
     });
-    // The shared chunk is dropped because providerModeKey=balance
+    // The shared chunk is dropped because providerType=balance
     // and the chunk wants mode:plan. No 5h content should leak.
     assert.ok(!strip(line).includes("5h"), `got: ${line}`);
     // The m_balance chunk should still render.

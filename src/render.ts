@@ -15,7 +15,7 @@
 // `renderProviderLine` directly.
 
 import { configStore, warn } from "./config.ts";
-import { templateKeyForProvider } from "./providers.ts";
+import { providerTypeFor } from "./providers.ts";
 import { PLAN_PRESETS, BALANCE_PRESETS } from "./config.ts";
 import type { TokenSnapshot } from "./types.ts";
 import {
@@ -607,31 +607,48 @@ type RenderContext = {
   // Synthesized from tokens.contextWindow.usedPct; only `pct` is
   // read by formatOneChunk. Null when stdin lacks used_percentage.
   contextWindow: Window | null;
-  // v0.4.0+ — the provider's mode key ("plan" or "balance").
-  // Populated by renderProviderLine from templateKeyForProvider so
-  // the m_template:mode:<plan|balance> filter has a comparison
-  // target. Defaults to "plan" when ctx is built directly (e.g.
-  // ctxFor in tests, or a future caller that doesn't thread the
-  // provider through). Tests that build RenderContext manually
-  // should set this explicitly when exercising m_template.
-  providerModeKey: "plan" | "balance";
+  // v0.4.x — the provider's TYPE discriminator. Populated by
+  // renderProviderLine from providerTypeFor. `"plan"` for
+  // TOKEN_PLAN providers, `"balance"` for BALANCE providers, and
+  // `"unknown"` when ANTHROPIC_BASE_URL doesn't match any
+  // configured provider (the entry-tolerant dispatch path).
+  // Used by per-module `type` filters and by m_modeLabel's label
+  // routing. Renamed from the v0.4.x-beta `providerModeKey` to
+  // avoid collision with the display-mode field `mode` (`used` /
+  // `remaining` / `balance`); the type discriminator is a TYPE, not
+  // a mode.
+  providerType: "plan" | "balance" | "unknown";
 };
 
-// v0.4.x+ — modules may declare a `mode` filter so they only render
+// v0.4.x — modules may declare a `type` filter so they only render
 // for one provider kind. With the unification of renderPlanLine /
-// formatBalanceLine into a single `renderDataLine` (Task #2), the
-// per-provider gate that used to live in dispatch.ts:buildProviderLine
-// now lives here: a bare `m_window5h` in a balance provider's template
-// silently drops (the module is mode:`"plan"`), and `m_balance` in a
-// plan provider's template silently drops too. Modules without a mode
-// tag (m_token*, m_age, m_version, …) are provider-agnostic.
+// formatBalanceLine into a single `renderDataLine`, the per-provider
+// gate that used to live in dispatch.ts:buildProviderLine now lives
+// here: a bare `m_window5h` in a balance provider's template
+// silently drops (the module is type:`"plan"`), and `m_balance` in a
+// plan provider's template silently drops too. Modules without a
+// type tag (m_token*, m_age, m_version, …) are provider-agnostic
+// and emit on every ctx.
 //
-// The dispatcher applies the filter by inspecting `mod.mode` and
-// comparing against `ctx.providerModeKey`. A module function is still
-// canonical; the `mode` field is read-only metadata on the same
+// The renderer applies the filter by inspecting `mod.type` and
+// comparing against `ctx.providerType`. A module function is still
+// canonical; the `type` field is read-only metadata on the same
 // record.
+//
+// Renamed from `mode` to `type` because `mode` is reserved for the
+// display-mode field on RenderContext (`used` / `remaining` /
+// `balance`). The provider discriminator is a TYPE, not a mode.
+//
+// v0.4.x — `type` widened to include `"unknown"` (a hypothetical
+// `m_xxx:type:"unknown"` would only emit when ANTHROPIC_BASE_URL
+// doesn't match any configured provider). No module currently
+// uses this — plan-only and balance-only modules drop on unknown
+// because their `type` value doesn't match. Reserved for future
+// modules that want to render only in the unregistered case
+// (e.g. an m_setupHint module that nudges the user toward running
+// `/tokenplan-usage-hud:install`).
 type Module = ((ctx: RenderContext) => string | null) & {
-  mode?: "plan" | "balance";
+  type?: "plan" | "balance" | "unknown";
 };
 
 // v0.4.x — per-tick state lives in `state/<projectHash>/status.json`
@@ -1364,22 +1381,26 @@ const MODULES: Record<string, Module> = {
   // The leading prefix. For the plan path, picks the mode-aware
   // label ("Usage:" / "Remain:"). For the balance path, the label
   // is the dedicated modeLabels.balance entry (default "Balance:").
-  // v0.4.x+: remains provider-AGNOSTIC — its body already routes on
-  // ctx.providerModeKey, so a single module handles both shapes. The
-  // surrounding m_window5h/m_balance modules carry the per-provider
-  // `mode` filter; m_modeLabel doesn't need to.
+  // v0.4.x — body routes on ctx.providerType. providerType === "balance"
+  // gets the dedicated Balance label; providerType === "plan" or
+  // "unknown" both get the display-mode label (`used` / `remaining`).
+  // "unknown" sharing the plan label is intentional — there's no
+  // plan-shaped provider configured, but if the user's display mode
+  // is "used" we still want "Usage:" as the prefix. The surrounding
+  // m_window5h/m_balance modules carry the per-provider `type`
+  // filter; m_modeLabel doesn't need to.
   // Returns the label WITHOUT a trailing space — the surrounding
   // s_0 separator token provides spacing.
-  m_modeLabel: (c) => (c.providerModeKey === "balance"
+  m_modeLabel: (c) => (c.providerType === "balance"
     ? cfg().modeLabels.balance
     : cfg().modeLabels[c.mode]),
   m_window5h: Object.assign(
     ((c: RenderContext) => c.fiveHour ? formatOneChunk(c.fiveHour, c.mode) : null),
-    { mode: "plan" as const },
+    { type: "plan" as const },
   ),
   m_window7d: Object.assign(
     ((c: RenderContext) => c.weekly ? formatOneChunk(c.weekly, c.mode) : null),
-    { mode: "plan" as const },
+    { type: "plan" as const },
   ),
   // Reset-suffix portion of a window. Returns null only when the
   // whole window is missing; when resetAt is missing the helper
@@ -1389,20 +1410,20 @@ const MODULES: Record<string, Module> = {
     ((c: RenderContext) => c.fiveHour
       ? formatOneResetSuffix("5h", c.fiveHour, c.nowMs)
       : null),
-    { mode: "plan" as const },
+    { type: "plan" as const },
   ),
   m_countdown7d: Object.assign(
     ((c: RenderContext) => c.weekly
       ? formatOneResetSuffix("7d", c.weekly, c.nowMs)
       : null),
-    { mode: "plan" as const },
+    { type: "plan" as const },
   ),
   // The DeepSeek balance chunk. Returns null when there's nothing
   // to render (unavailable / empty / no min) so the template can
   // opt out of showing it.
   m_balance: Object.assign(
     ((c: RenderContext) => c.balance ? formatBalanceEntriesColored(c.balance) || null : null),
-    { mode: "balance" as const },
+    { type: "balance" as const },
   ),
   // Stale-age annotation. When present in the lineTemplate, this is
   // the primary render path — it emits unconditionally (no stale
@@ -2539,6 +2560,16 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   },
 };
 
+// NOTE: the `mode:` named arg on `m_template` keeps the OLD name for
+// back-compat with existing config.json files that reference
+// `m_template:plan:mode:plan`. Internally the renderer now uses
+// `ctx.providerType` (a TYPE discriminator, not a mode), but the
+// inline-arg syntax is unchanged. The param value still parses
+// "plan" / "balance" (the renderer-side filter only matches the
+// registered TYPE values, not the new "unknown" — unknown providers
+// never reach this branch because dispatch wires a default
+// lineTemplate that doesn't reference m_template).
+
 // Pure helper: wrap a plain-text body in `<color>…<RESET>`. Returns
 // the body unchanged when `color` is undefined. Safe ONLY for bodies
 // that don't already contain SGR sequences — colored bodies must use
@@ -2547,19 +2578,22 @@ function wrapPlain(body: string, color: string | undefined): string {
   return color ? `${color}${body}${RESET}` : body;
 }
 
-// v0.4.x+ — parallel to MODULES' per-module `mode` tag. Each entry
+// v0.4.x — parallel to MODULES' per-module `type` tag. Each entry
 // here mirrors its INLINE_RENDERERS counterpart's provider scope:
 // the inline form `m_window5h:color:…` is also plan-only; `m_balance:…`
 // is balance-only. The bare-module dispatcher at line ~3220 enforces
-// the same filter via `MODULES[name].mode`; this map keeps the
+// the same filter via `MODULES[name].type`; this map keeps the
 // inline path symmetric so a `m_window5h:color:red` in a balance
 // provider's template drops the same way the bare form does.
 //
-// Untagged entries (empty string key omitted entirely) are
-// provider-agnostic; the dispatcher treats the absence of a key
-// as "no mode filter", matching the MODULES-default of
-// mode === undefined.
-const INLINE_MODE_FILTERS: Partial<Record<string, "plan" | "balance">> = {
+// Untagged entries (key absent from this map) are provider-agnostic;
+// the dispatcher treats the absence of a key as "no type filter",
+// matching the MODULES-default of type === undefined.
+//
+// Renamed from INLINE_MODE_FILTERS to INLINE_TYPE_FILTERS in v0.4.x
+// to avoid collision with the display-mode field (`used` /
+// `remaining` / `balance`).
+const INLINE_TYPE_FILTERS: Partial<Record<string, "plan" | "balance" | "unknown">> = {
   m_window5h: "plan",
   m_window7d: "plan",
   m_countdown5h: "plan",
@@ -2589,7 +2623,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // label, else the mode-aware label. The colored wrapper is added
     // here only (not in MODULES) so the bare `m_modeLabel` form keeps
     // its existing byte-for-byte output.
-    const s = ctx.providerModeKey === "balance"
+    const s = ctx.providerType === "balance"
       ? cfg().modeLabels.balance
       : cfg().modeLabels[ctx.mode];
     return wrapPlain(s, params.color as string | undefined);
@@ -2942,7 +2976,12 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
       return null;
     }
     const want = (params.mode as "plan" | "balance" | undefined) ?? "plan";
-    if (ctx.providerModeKey !== want) return null;
+    // v0.4.x — the inline-arg name `mode` is preserved for back-compat
+    // with existing config.json files (e.g. `m_template:plan:mode:plan`).
+    // The comparison target is now ctx.providerType. "unknown" never
+    // matches an inline `mode:plan|balance` arg, so unknown providers
+    // silently drop m_template references — same behavior as before.
+    if (ctx.providerType !== want) return null;
     const lines = renderTemplate(inner.slice(), ctx);
     return lines.join("\n");
   },
@@ -3068,30 +3107,34 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
     // ":" so the bare forms (s_0, m_modeLabel, m_window5h, …) keep
     // routing through MODULES as before.
     if (tok.includes(":")) {
-      // v0.4.x+ — provider-mode filter for inline-args tokens. We
+      // v0.4.x — provider-type filter for inline-args tokens. We
       // extract the prefix (everything before the first ":") and
-      // consult INLINE_MODE_FILTERS. When the prefix carries a tag
-      // and it doesn't match ctx.providerModeKey, we silently drop
+      // consult INLINE_TYPE_FILTERS. When the prefix carries a tag
+      // and it doesn't match ctx.providerType, we silently drop
       // the whole token WITHOUT entering the long prefix chain
-      // below. This keeps the per-prefix `mode` tag symmetrical
-      // with MODULES' `mode` field so a `m_window5h:color:red` in a
+      // below. This keeps the per-prefix `type` tag symmetrical
+      // with MODULES' `type` field so a `m_window5h:color:red` in a
       // balance provider's template drops identically to its bare
       // form.
       //
       // Special case: s_<n>:… is a separator, not a module, so we
-      // skip the mode check (separators are provider-agnostic).
+      // skip the type check (separators are provider-agnostic).
       // m_label:… and m_template:… are also provider-agnostic by
-      // design; their mode is "" absent from INLINE_MODE_FILTERS so
+      // design; their prefix is absent from INLINE_TYPE_FILTERS so
       // the lookup is a no-op. Missing-key (unknown prefix) is also
       // a no-op — the long chain below will produce inline=undefined
       // and the unknown-module warn path will fire there.
+      //
+      // Renamed from the v0.4.x-beta `INLINE_MODE_FILTERS` /
+      // `ctx.providerModeKey` to avoid collision with the
+      // display-mode field on RenderContext.
       const colonAt = tok.indexOf(":");
       const inlinePrefix = colonAt > 0 && tok.startsWith("m_")
         ? tok.slice(0, colonAt)
         : "";
       if (inlinePrefix) {
-        const need = INLINE_MODE_FILTERS[inlinePrefix];
-        if (need && need !== ctx.providerModeKey) {
+        const need = INLINE_TYPE_FILTERS[inlinePrefix];
+        if (need && need !== ctx.providerType) {
           continue;
         }
       }
@@ -3269,18 +3312,20 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         warnUnknownModuleOnce(tok);
         continue;
       }
-      // v0.4.x+ — provider-mode filter. Modules tagged with a mode
+      // v0.4.x — provider-type filter. Modules tagged with a type
       // (`m_window5h: "plan"`, `m_balance: "balance"`, …) silently
-      // drop on a non-matching provider. Untagged modules
-      // (m_token*, m_age, m_version, …) skip the check. The drop
-      // is a no-op — the chunk is skipped AND adjacent s_<n>
-      // separators are skipped too via the same null-fall-through
-      // the MODULES renderer already implements (returning null
-      // from mod(ctx) wouldn't reach here since we call it only
-      // when we're keeping the chunk; if it returns null/empty,
-      // the existing `if (piece == null || piece === "") continue;`
-      // below handles separator skipping identically).
-      if (mod.mode != null && mod.mode !== ctx.providerModeKey) {
+      // drop on a non-matching provider type. Untagged modules
+      // (m_token*, m_age, m_version, …) skip the check and emit
+      // on every ctx — those are provider-agnostic by design.
+      //
+      // Renamed from `mod.mode` / `ctx.providerModeKey` to
+      // `mod.type` / `ctx.providerType` to avoid collision with
+      // the display-mode field (`used` / `remaining` / `balance`).
+      //
+      // The drop is a no-op — the chunk is skipped AND adjacent
+      // s_<n> separators are skipped too via the same null-fall-
+      // through the MODULES renderer already implements.
+      if (mod.type != null && mod.type !== ctx.providerType) {
         continue;
       }
       piece = mod(ctx);
@@ -3321,7 +3366,7 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
 // lineTemplate.
 export function renderProviderLine(
   provider: import("./types.ts").Provider,
-  ctx: Omit<RenderContext, "fiveHour" | "weekly" | "balance" | "tokens" | "contextWindow" | "providerModeKey"> & {
+  ctx: Omit<RenderContext, "fiveHour" | "weekly" | "balance" | "tokens" | "contextWindow" | "providerType"> & {
     fiveHour?: Window | null;
     weekly?: Window | null;
     balance?: BalanceLike | null;
@@ -3354,9 +3399,11 @@ export function renderProviderLine(
   // looked up against PLAN_PRESETS / BALANCE_PRESETS (whichever
   // contains the name); array form is passed through unchanged and
   // may include `m_template` references that pull from
-  // `cfg().lineTemplates`. The mode key is threaded through to the
-  // full ctx so `m_template:mode:<plan|balance>` can filter chunks.
-  const templateKey = templateKeyForProvider(provider);
+  // `cfg().lineTemplates`. The provider type is threaded through to
+  // the full ctx so per-module `type` filters can compare against it.
+  // v0.4.x — providerTypeFor returns "plan" / "balance" / "unknown"
+  // (replaces the older templateKeyForProvider name).
+  const providerType = providerTypeFor(provider);
   const cfgSnap = cfg();
   const fullCtx: RenderContext = {
     mode: ctx.mode,
@@ -3369,7 +3416,7 @@ export function renderProviderLine(
     version: ctx.version,
     tokens: ctx.tokens ?? null,
     contextWindow,
-    providerModeKey: templateKey,
+    providerType,
   };
   const statuslineRaw = cfgSnap.statuslineTemplate;
   let template: string[];
@@ -3384,7 +3431,7 @@ export function renderProviderLine(
     // render a plan preset on a balance provider (no m_balance) or
     // a balance preset on a plan provider (no 5h/7d).
     let resolved: string[];
-    if (templateKey === "balance") {
+    if (providerType === "balance") {
       resolved = Object.prototype.hasOwnProperty.call(
         BALANCE_PRESETS,
         statuslineRaw,

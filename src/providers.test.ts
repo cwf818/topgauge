@@ -18,6 +18,7 @@ import {
   matchProvider,
   failLabelForProvider,
   templateKeyForProvider,
+  providerTypeFor,
   providerTypeOf,
 } from "./providers.ts";
 
@@ -324,18 +325,32 @@ describe("failLabelForProvider", () => {
   });
 });
 
-describe("templateKeyForProvider", () => {
+describe("providerTypeFor (formerly templateKeyForProvider)", () => {
+  // v0.4.x — widened to include `"unknown"` for unregistered
+  // providers. Previously null entry fell through to `"plan"`,
+  // which masked the "no provider configured" case from the
+  // renderer. Now `providerTypeFor(null)` and
+  // `providerTypeFor("not-registered")` both return `"unknown"`,
+  // letting the renderer's per-module `type` filter handle the
+  // distinction.
   it("returns 'plan' for TOKEN_PLAN providers", () => {
-    assert.equal(templateKeyForProvider("minimax"), "plan");
+    assert.equal(providerTypeFor("minimax"), "plan");
   });
 
   it("returns 'balance' for BALANCE providers", () => {
-    assert.equal(templateKeyForProvider("deepseek"), "balance");
+    assert.equal(providerTypeFor("deepseek"), "balance");
   });
 
-  it("defaults to 'plan' for null / unknown providers", () => {
-    assert.equal(templateKeyForProvider(null), "plan");
-    assert.equal(templateKeyForProvider("nope"), "plan");
+  it("returns 'unknown' for null / unregistered providers (was 'plan' in v0.4.x-beta)", () => {
+    assert.equal(providerTypeFor(null), "unknown");
+    assert.equal(providerTypeFor("nope"), "unknown");
+  });
+
+  // Back-compat: the old function name is kept as a deprecated alias.
+  it("templateKeyForProvider alias still works", () => {
+    assert.equal(templateKeyForProvider("minimax"), "plan");
+    assert.equal(templateKeyForProvider("deepseek"), "balance");
+    assert.equal(templateKeyForProvider(null), "unknown");
   });
 });
 
