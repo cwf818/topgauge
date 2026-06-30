@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { buildProviderLine, type FetchResult } from "./dispatch.ts";
 import type { Remains } from "./api.ts";
 import type { Balance } from "./api.deepseek.ts";
+import type { TokenSnapshot } from "./types.ts";
 import { __resetForTest } from "./config.ts";
 
 const RESET = "\x1b[0m";
@@ -114,12 +115,14 @@ describe("buildProviderLine — fresh (no age suffix; data just arrived)", () =>
   });
 
   it("null provider + no tokens: returns null (nothing useful to render)", () => {
-    // v0.4.x — the "no provider" early-return at the top of
-    // buildProviderLine still fires here. A null provider means
-    // getProviderEntry() returns null → we return null before any
-    // module gets a chance to run. The empty-output guard is added
-    // in a later commit (Phase 2 — drops the early-return and lets
-    // provider-agnostic modules render unconditionally).
+    // v0.4.x — the "no provider + no tokens + no data" path returns
+    // null because the renderer would only produce a label-only
+    // degenerate output (default plan template drops every module).
+    // The empty-output guard catches that and translates it back to
+    // null. The old behavior was to bail at the very top of
+    // buildProviderLine; we now let the renderer run and recognize
+    // the emptiness downstream, which keeps the per-module filter
+    // pipeline consistent.
     pinDefaults();
     const result: FetchResult<Remains> = { kind: "fresh", data: MINI_DATA, ageMs: 0 };
     assert.equal(buildProviderLine(null, result), null);
@@ -201,15 +204,20 @@ describe("buildProviderLine — fail", () => {
     assert.equal(strip(line!), "Balance: not available!");
   });
 
-  it("null provider + fail + no tokens: returns null (early-return at the top)", () => {
-    // v0.4.x — the "no provider" early-return at the top of
-    // buildProviderLine fires before the fail-branch logic. The
-    // Phase 2 refactor changes this: it removes the early-return
-    // and falls back to "Usage: not available!" via
-    // failLabelForProvider + the empty-output guard.
+  it("null provider + fail + no tokens: renders 'Usage: not available!'", () => {
+    // v0.4.x — the "no provider" early-return is gone. With no tokens
+    // AND no provider, the only thing we can render is the colored
+    // "not available!" sentinel using the default usage label —
+    // matches the established fail-line semantics users already see
+    // when ANTHROPIC_BASE_URL points at a supported provider but the
+    // fetch fails. The empty-output guard at the bottom of
+    // buildProviderLine re-routes the would-be-empty render through
+    // failLabelForProvider + the RED sentinel.
     pinDefaults();
     const result: FetchResult<Remains> = { kind: "fail" };
-    assert.equal(buildProviderLine(null, result), null);
+    const line = buildProviderLine(null, result);
+    assert.equal(line, `Usage: ${RED}not available!${RESET}`);
+    assert.equal(strip(line!), "Usage: not available!");
   });
 
   it("fail line does NOT carry a stale suffix (nothing to be stale-of)", () => {
@@ -218,5 +226,165 @@ describe("buildProviderLine — fail", () => {
     const line = buildProviderLine("deepseek", result);
     assert.ok(!line!.includes("ago"));
     assert.ok(!line!.includes(STALE_COLOR));
+  });
+});
+
+describe("buildProviderLine — null provider (no ANTHROPIC_BASE_URL match)", () => {
+  // v0.4.x — when ANTHROPIC_BASE_URL doesn't match any configured
+  // provider entry, the user still gets a statusline so long as
+  // provider-AGNOSTIC modules have something to render. Plan-only
+  // modules (m_window*, m_countdown*) and m_balance silently drop
+  // via the per-module `mode` filter; everything else (m_token*,
+  // m_version, m_session, …) renders normally because their data
+  // sources (stdin snapshot) have nothing to do with provider
+  // state. This is the "single statusline slot, no supported
+  // provider" path the user explicitly opted into.
+  const TOKENS: TokenSnapshot = {
+    sessionId: "sess-test",
+    cwd: "D:\\test",
+    totals: { input: 163479, output: 155 },
+    current: {
+      input: 38,
+      output: 155,
+      cacheCreation: 0,
+      cacheRead: 163441,
+    },
+    cost: { totalDurationMs: 600_000, totalApiDurationMs: 60_000, totalLinesAdded: 3965, totalLinesRemoved: 967 },
+    sessionName: "strip-diagnostics-display",
+    modelDisplayName: "MiniMax-M3",
+    effort: "high",
+    repo: { host: "github.com", owner: "cwf818", name: "tokenplan-usage-hud" },
+    ccversion: "2.1.191",
+    contextWindow: { size: 200000, usedPct: 63, remainingPct: 37 },
+  };
+
+  it("null provider + fresh data + tokens: renders provider-agnostic modules", () => {
+    pinDefaults();
+    // Custom template: only provider-agnostic modules. On a null
+    // provider every one should fire. Plan-only modules would drop
+    // here; we deliberately exclude them so the assertion is
+    // independent of mode filters.
+    //
+    // Uses m_tokenInTotal / m_tokenOutTotal (read from stdin
+    // context_window.total_input_tokens) instead of m_tokenIn /
+    // m_tokenOut — the latter are per-API-call DELTAS that depend
+    // on the prior-tick cache, which is empty on the first render
+    // and would show 0/0. Total modules are unconditional.
+    //
+    // Note: m_version is omitted from this template because the
+    // dispatch path passes cfg().version (empty string by default
+    // after __resetForTest), and m_version returns null on empty.
+    // version propagation is exercised by other tests.
+    __resetForTest({
+      statuslineTemplate: [
+        "m_session", "s_0", "m_model",
+        "s_0", "m_tokenInTotal", "s_0", "m_tokenOutTotal",
+      ],
+    });
+    try {
+      const result: FetchResult<Remains> = {
+        kind: "fresh",
+        data: MINI_DATA,
+        ageMs: 0,
+      };
+      const line = buildProviderLine(null, result, TOKENS);
+      assert.ok(line, "null provider + tokens must produce a line");
+      const text = strip(line!);
+      // Provider-agnostic modules that match the template:
+      assert.ok(text.includes("strip-diagnostics-display"), `got: ${text}`);
+      assert.ok(text.includes("MiniMax-M3"), `got: ${text}`);
+      assert.ok(text.includes("in:163.5k"), `got: ${text}`);
+      assert.ok(text.includes("out:155"), `got: ${text}`);
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("null provider + fresh data + tokens + plan-only modules: those drop", () => {
+    pinDefaults();
+    // Mixed template — provider-agnostic + plan-only. On a null
+    // provider the plan-only ones must drop, the agnostic ones fire.
+    __resetForTest({
+      statuslineTemplate: [
+        "m_session", "s_0", "m_window5h", "s_0", "m_window7d",
+        "s_0", "m_balance", "s_0", "m_tokenInTotal",
+      ],
+    });
+    try {
+      const result: FetchResult<Remains> = {
+        kind: "fresh",
+        data: MINI_DATA,
+        ageMs: 0,
+      };
+      const line = buildProviderLine(null, result, TOKENS);
+      assert.ok(line, "non-empty line expected (m_session + m_tokenInTotal)");
+      const text = strip(line!);
+      assert.ok(text.includes("strip-diagnostics-display"), `got: ${text}`);
+      assert.ok(text.includes("in:163.5k"), `got: ${text}`);
+      // m_window5h / m_window7d / m_balance must NOT have rendered:
+      assert.ok(!text.includes("38%"), `got: ${text}`);
+      assert.ok(!text.includes("39%"), `got: ${text}`);
+      assert.ok(!text.includes("$"), `got: ${text}`);
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("null provider + fail + tokens: renders fail label + token modules (not 'not available!')", () => {
+    pinDefaults();
+    // v0.4.x — fail-with-tokens path renders the template (so the
+    // user's m_token* modules emit) and falls back to the colored
+    // "not available!" sentinel only when the rendered output is
+    // effectively empty. With tokens present, m_tokenInTotal will
+    // fire and the line is non-empty → return the template render,
+    // not the hard-coded sentinel string. m_tokenInTotal (not
+    // m_tokenIn) for the same reason as above — total is
+    // unconditional, delta is cache-dependent.
+    __resetForTest({
+      statuslineTemplate: [
+        "m_modeLabel", "s_0", "m_tokenInTotal",
+      ],
+    });
+    try {
+      const result: FetchResult<Remains> = { kind: "fail" };
+      const line = buildProviderLine(null, result, TOKENS);
+      assert.ok(line);
+      const text = strip(line!);
+      assert.ok(text.startsWith("Usage:"), `got: ${text}`);
+      assert.ok(text.includes("in:163.5k"), `got: ${text}`);
+      assert.ok(
+        !text.includes("not available"),
+        `got: ${text} (should NOT be the not-available! sentinel)`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("null provider + fresh data + no tokens: returns null (empty-output guard)", () => {
+    pinDefaults();
+    // Default template resolves to PLAN_PRESETS["1line"], which is
+    // a sub-template that emits only the "plan" lineTemplate. With
+    // no provider and no tokens, that whole fragment drops → the
+    // empty-output guard kicks in → null.
+    const result: FetchResult<Remains> = {
+      kind: "fresh",
+      data: MINI_DATA,
+      ageMs: 0,
+    };
+    assert.equal(buildProviderLine(null, result), null);
+  });
+
+  it("null provider + fail + no tokens: returns the colored fail line (not null)", () => {
+    // The empty-output guard translates "renderer would produce
+    // nothing useful" into the conventional fail sentinel via
+    // failLabelForProvider. So a null provider + fail + no tokens
+    // surfaces "Usage: not available!" — exactly the same shape as
+    // a configured provider's hard fail, so the user sees a
+    // consistent signal across both paths.
+    pinDefaults();
+    const result: FetchResult<Remains> = { kind: "fail" };
+    const line = buildProviderLine(null, result);
+    assert.equal(line, `Usage: ${RED}not available!${RESET}`);
   });
 });

@@ -20,13 +20,6 @@
 // the provider's `TYPE` field from the providers config block and
 // routes accordingly. Adding a new TOKEN_PLAN or BALANCE provider
 // is a config-only change.
-//
-// v0.4.x: collapsed the per-TYPE helpers (renderPlanLine +
-// formatBalanceLine) into a single renderDataLine that reads the
-// provider's TYPE only to pick which ctx fields to populate
-// (fiveHour/weekly vs balance). The renderer-side per-module
-// `mode` filter (see render.ts MODULES / INLINE_MODE_FILTERS)
-// handles "plan-only module on a balance ctx" silently.
 
 import type { Remains } from "./api.ts";
 import type { Balance } from "./api.deepseek.ts";
@@ -43,6 +36,61 @@ import {
 } from "./providers.ts";
 import type { Provider, TokenSnapshot } from "./types.ts";
 
+// Tiny local alias — used twice in the empty-output guard below.
+const cfg = (): ReturnType<typeof configStore.get> => configStore.get();
+
+// Detect a "label-only" degenerate output: the renderer ran but every
+// module returned null, leaving just `m_modeLabel + s_<n> + s_<n>`
+// in the rendered line. The strip removes ANSI escapes, the configured
+// labels, the configured separator LITERALS (cfg().separators[i]),
+// AND the NAMED-ALIAS literals (" " for s_space, "·" for s_dot, …),
+// because the preset templates compose s_space / s_dot directly
+// rather than going through cfg().separators — empty seps is the
+// default for v0.4.x. What's left should be a real module chunk or
+// it's empty output. We also treat literal whitespace-only output
+// as empty. Used by buildProviderLine's two empty-output guards
+// below — neither the bare "not available!" path nor the upstream
+// wrapper should write a label-only line.
+//
+// Named alias literals — must stay in sync with NAMED_SEPARATORS in
+// render.ts. Hardcoded here rather than imported to keep this module
+// free of cross-file circular-import risk; config and renderer are
+// independently verified to expose the same set.
+const NAMED_SEPARATOR_LITERALS = [" ", "·", "\n", "\t", ":"];
+
+function isEffectivelyEmpty(line: string): boolean {
+  // Strip ANSI SGR sequences (e.g. \x1b[38;5;29m, \x1b[0m).
+  const stripped = line.replace(/\x1b\[[0-9;]*m/g, "");
+  // Strip the configured label(s) — "Usage:" / "Remain:" /
+  // "Balance:" / a user's override. Compare against `cfg()` so a
+  // config-driven label change doesn't break the check.
+  const labels = [
+    cfg().modeLabels.used,
+    cfg().modeLabels.balance,
+    cfg().modeLabels.remaining,
+  ];
+  let working = stripped;
+  for (const label of labels) {
+    // Replace each label occurrence with a space so we don't strip
+    // the trailing punctuation twice on a "Usage: Usage:" malformed
+    // output (paranoid — should never happen).
+    working = working.split(label).join(" ");
+  }
+  // Strip configured separator literals (s_<i> values) AND the
+  // named-alias literals (s_space / s_dot / …). Both can show up
+  // in a rendered line; stripping neither would mean a label +
+  // separator template (e.g. "Usage: · · ") is treated as non-empty.
+  const seps = cfg().separators;
+  const allSeps = [...seps, ...NAMED_SEPARATOR_LITERALS];
+  for (const sep of allSeps) {
+    if (sep === "") continue;
+    working = working.split(sep).join("");
+  }
+  // Any remaining non-whitespace = real module output. Whitespace-
+  // only = label + separators = empty.
+  return working.trim() === "";
+}
+
 export type FetchResult<T> =
   | { kind: "fresh"; data: T; ageMs: number }
   | { kind: "stale"; data: T; ageMs: number }
@@ -50,19 +98,21 @@ export type FetchResult<T> =
 
 // v0.4.x — single adapter that converts a (provider, data) pair to
 // the right ctx fields for renderProviderLine. Replaces the older
-// `renderPlanLine` + `formatBalanceLine` paths in buildProviderLine:
-// those two helpers hardcoded their data shape (TOKEN_PLAN expects
-// fiveHour + weekly; BALANCE expects Balance), and the dispatcher
-// forked on entry.TYPE to pick one. Now both shapes flow through
-// here. The provider's TYPE controls which ctx fields are
-// populated; the renderer's per-module `mode` filter handles
-// "plan-only module on a balance ctx" silently, so we no longer
-// need a TYPE switch on the caller's side. renderProviderLine
-// itself picks the template via templateKeyForProvider +
-// statuslineTemplate.
+// `renderPlanLine` + the inline `entry.TYPE === "BALANCE"` branch
+// in buildProviderLine: those two paths used to fork on TYPE and
+// dispatch to formatLine vs formatBalanceLine, each of which had
+// its own way of plumbing the data into the renderer.
 //
-// Returns null only when data is shape-incompatible with the
-// resolved TYPE (returns null as today).
+// Now both shapes flow through here. The provider's TYPE controls
+// which ctx fields are populated; the renderer's per-module `mode`
+// filter (Task #1) handles "plan-only module on a balance ctx"
+// silently, so we no longer need a TYPE switch on the caller's
+// side. renderProviderLine itself picks the template via
+// templateKeyForProvider + statuslineTemplate.
+//
+// Returns null only when (1) the provider has no entry (defensive
+// — matchProvider is the upstream gate) or (2) data is shape-
+// incompatible with the resolved TYPE (returns null as today).
 //
 // ageMs / stale semantics (unchanged):
 //   fresh.ageMs : 0 for a just-fetched tick; the cache age for a
@@ -80,12 +130,33 @@ function renderDataLine(
 ): string | null {
   const entry = getProviderEntry(provider);
   const mode = resolveDisplayMode();
-  // The Phase 1 callers (buildProviderLine's gated path +
-  // renderPlanLine's back-compat shim) always pass a provider
-  // string with a configured entry. We still guard for null here
-  // because Phase 2 will start passing `null` deliberately. Until
-  // then, this is defensive.
-  if (!entry) return null;
+  // v0.4.x — entry-tolerant. With the "no provider configured"
+  // early-return removed from buildProviderLine, we need to handle
+  // the case where `entry` is null here too: there's no TYPE to
+  // dispatch on, so we skip both branches and call
+  // renderProviderLine with empty data slots (no fiveHour, no
+  // weekly, no balance). providerModeKey falls through to "plan"
+  // (templateKeyForProvider's defensive default), so plan-only
+  // modules attempt to render but drop on null data, and
+  // balance-only modules always drop. Provider-agnostic modules
+  // (m_token*, m_version, m_session, …) emit normally — that's the
+  // "no provider but still useful" path the user explicitly wants.
+  //
+  // Returning the empty string (vs null) signals to buildProviderLine
+  // "the renderer ran but produced no output", which it then
+  // translates back into a null return so the upstream wrapper can
+  // skip writing an empty line. Returning null directly here would
+  // lose that distinction.
+  if (!entry) {
+    return renderProviderLine(provider, {
+      mode,
+      nowMs: Date.now(),
+      ageMs,
+      stale,
+      version: configStore.get().version,
+      tokens,
+    });
+  }
   if (entry.TYPE === "TOKEN_PLAN") {
     const r = data as Remains;
     // The old renderPlanLine had a partial-window fallback:
@@ -126,19 +197,6 @@ function renderDataLine(
 
 // Maps a (provider, FetchResult) pair to the final statusline line.
 //
-// v0.2.21: dispatch is driven by `entry.TYPE` from the providers
-// config, not by provider-name literals. The fail-line prefix is
-// read via `failLabelForProvider(provider)` so a user who overrides
-// `modeLabels.used` / `modeLabels.balance` sees their custom label
-// on the fail branch too.
-//
-// v0.4.0+ — also threads `tokens` (live stdin snapshot) through so
-// token modules get their data. Fail paths render the colored "not
-// available!" string WITHOUT token data — a user whose provider is
-// unreachable shouldn't see token counts (would be confusing) but
-// CAN opt to include them via a m_token* module that reads the live
-// snapshot; we honor that by still passing tokens on fail.
-//
 // v0.4.x — collapsed: previously dispatched on `entry.TYPE` to
 // renderPlanLine (TOKEN_PLAN) or formatBalanceLine (BALANCE) and
 // the per-TYPE helpers hardcoded their data shape. Now every path
@@ -160,8 +218,26 @@ export function buildProviderLine(
   result: FetchResult<unknown>,
   tokens?: TokenSnapshot | null,
 ): string | null {
-  const entry = getProviderEntry(provider);
-  if (!entry) return null;
+  // v0.4.x — the "no provider configured" early-return was removed
+  // here on purpose. Previously the plugin was purely a TOKEN_PLAN or
+  // BALANCE frontend, so a missing provider entry meant there was
+  // nothing meaningful to display; returning null was a clean signal
+  // for the upstream wrapper to fall through.
+  //
+  // Now the plugin also exposes provider-AGNOSTIC modules
+  // (m_tokenIn / m_tokenOut / m_ctx / m_session / m_branch /
+  // m_version / m_model / …) that read from the live stdin snapshot
+  // and have nothing to do with provider state. When a user has only
+  // one statusline slot and isn't on a supported provider
+  // (ANTHROPIC_BASE_URL doesn't match any configured entry), these
+  // provider-agnostic modules should still render — that's the
+  // point of writing a custom statusline. We delegate to
+  // renderProviderLine / renderDataLine and let the per-module
+  // `mode` filter drop the plan-/balance-only modules naturally.
+  //
+  // We still return null when nothing rendered (the upstream wrapper
+  // should not write an empty line); see the empty-output check at
+  // the bottom of this function.
   if (result.kind === "fail") {
     // No cached data + fetch failed. Render a colored "not available!"
     // so the user sees the plugin is alive but the provider is
@@ -185,7 +261,7 @@ export function buildProviderLine(
       // and the user's opt-in token modules would never render.
       // We use the lineTemplate-style render so separators and
       // module skipping rules match the success path exactly.
-      return renderProviderLine(provider, {
+      const line = renderProviderLine(provider, {
         mode: resolveDisplayMode(),
         nowMs: Date.now(),
         ageMs: null,
@@ -193,16 +269,43 @@ export function buildProviderLine(
         version: configStore.get().version,
         tokens,
       });
+      // Empty-output guard: the template ran but every module dropped
+      // (no provider + no module-bearing tokens), leaving just
+      // `m_modeLabel + s_0 + s_0` artifacts. We fall back to the
+      // colored "not available!" string instead — a totally-empty
+      // statusline (or a label-only one) is worse than the
+      // conventional unavailable sentinel, which color-matches the
+      // existing is_available:false / "fetch failed" cases.
+      if (isEffectivelyEmpty(line)) {
+        return `${failLabelForProvider(provider)} ${RED}not available!${RESET}`;
+      }
+      return line;
     }
     return `${failLabelForProvider(provider)} ${RED}not available!${RESET}`;
   }
-  return renderDataLine(
+  const line = renderDataLine(
     provider,
     result.data,
     result.ageMs,
     result.kind === "stale",
     tokens ?? null,
   );
+  // Empty-output guard. Two paths land here:
+  //   (a) renderDataLine returned the literal null (provider has
+  //       an entry but data is unusable — both fiveHour + weekly
+  //       missing on a TOKEN_PLAN provider, OR the provider TYPE
+  //       is something renderDataLine doesn't know how to handle),
+  //   (b) renderDataLine returned a label-only degenerate output
+  //       like "Usage: · · " (no provider data + no opt-in
+  //       modules fired, leaving just m_modeLabel + leftover s_0
+  //       separators).
+  // Both should translate to a null return so the upstream wrapper
+  // can detect "nothing to write" cleanly. isEffectivelyEmpty
+  // catches case (b) — strict `line === ""` would let the typical
+  // label-only degenerate output leak through.
+  if (line == null) return null;
+  if (isEffectivelyEmpty(line)) return null;
+  return line;
 }
 
 // v0.4.x — back-compat shim. Tests outside this file may call
