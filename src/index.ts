@@ -213,8 +213,23 @@ async function main(): Promise<void> {
   const upstream = UPSTREAM;
   const provider = matchProvider(baseUrl);
 
+  // v0.4.x — when no provider entry matches ANTHROPIC_BASE_URL,
+  // dispatch through buildProviderLine anyway so provider-AGNOSTIC
+  // modules (m_token*, m_session, m_version, m_model, …) can still
+  // emit. Previously the plugin was a pure TOKEN_PLAN / BALANCE
+  // frontend, so a missing provider entry meant there was nothing
+  // meaningful to display; returning null early was a clean signal
+  // for the upstream wrapper to fall through. Now the dispatcher is
+  // entry-tolerant (see renderDataLine in dispatch.ts): a null
+  // provider skips both TYPE branches, calls renderProviderLine
+  // with empty ctx data slots, and the per-module `mode` filter
+  // drops plan-only / balance-only modules naturally. The empty-
+  // output guard translates "renderer ran but produced nothing"
+  // back to a null line so the upstream wrapper still falls through
+  // when no agnostic modules fired either.
   if (provider === null) {
-    process.stdout.write(compose(upstream, null));
+    const line = buildProviderLine(null, { kind: "fresh", data: null, ageMs: 0 }, tokens);
+    process.stdout.write(compose(upstream, line));
     return;
   }
 
