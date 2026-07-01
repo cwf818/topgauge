@@ -968,13 +968,16 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
   // ticked in this cwd. Supports :color: and :nulldrop: like other
   // text-style modules. Renders "calls:N"; placeholder is "calls:n/a".
 
-  it("m_apiCalls: drops when no project-wide tickStatus slot exists", () => {
-    // Fresh cwd, no prior write → tickStatus slot is null → drop.
+  it("m_apiCalls: renders 'calls:0' when no project-wide tickStatus slot exists", () => {
+    // Fresh cwd, no prior write → tickStatus slot is null → counter
+    // is uninitialized → render "calls:0" (the natural zero state,
+    // matching the m_tokenIn/m_tokenOut "in:0"/"out:0" pattern).
+    // Opt back into drop-on-null with `:nulldrop:true`.
     const out = renderTemplate(
       ["m_apiCalls"],
       ctxFor(fakeSnapshot({ cwd: "D:\\no-project-state-yet" })),
-    );
-    assert.deepEqual(out, []);
+    ).join("\n");
+    assert.equal(strip(out), "calls:0");
   });
 
   it("m_apiCalls: renders 'calls:N' from project-wide sumApiCount", () => {
@@ -1021,17 +1024,18 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     assert.equal(strip(out), "calls:2");
   });
 
-  it("m_apiCalls: no valid tick has landed yet → bare form drops (no slot exists)", () => {
+  it("m_apiCalls: no valid tick has landed yet → bare form renders 'calls:0' (no slot exists)", () => {
     // The project-wide tickStatus slot is only WRITTEN by setAvg
     // when at least one delta is non-zero (or sumApiCount
     // increments). A "zero deltas" tick passes through setAvg's
     // gate without ever creating the slot — so a fresh project
-    // with no API calls reads as "no data" (drop on the bare
-    // form, placeholder on the inline form). This is distinct
-    // from the per-session slot which IS stamped on every
-    // active tick. Document the contract: m_apiCalls reads
-    // "have I had any valid API calls yet?" — not a counter
-    // that starts at 0.
+    // with no API calls renders the natural zero "calls:0"
+    // (matching the m_tokenIn/m_tokenOut "in:0"/"out:0" pattern).
+    // This is distinct from the per-session slot which IS stamped
+    // on every active tick. Document the contract: m_apiCalls is
+    // a counter that starts at 0, not a "have I had any valid
+    // API calls yet?" sentinel — use `:nulldrop:true` to opt
+    // back into drop-on-null.
     setAvg(
       "sess-zero",
       { sumIn: 0, sumOut: 0, sumApi: 0, sumCache: 0 },
@@ -1052,29 +1056,30 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     const out = renderTemplate(
       ["m_apiCalls"],
       ctxFor(fakeSnapshot({ sessionId: "sess-zero" })),
-    );
-    assert.deepEqual(out, []);
+    ).join("\n");
+    assert.equal(strip(out), "calls:0");
   });
 
-  it("m_apiCalls:nulldrop:false with no slot → 'calls:n/a' (placeholder)", () => {
-    // Inline form forces the placeholder when the data path returns
-    // null. Same shape as m_tokenInTotal:nulldrop:false.
+  it("m_apiCalls:nulldrop:false with no slot → 'calls:0' (no STALE wrap)", () => {
+    // Inline form no longer falls back to the placeholder when the
+    // data path returns null — "calls:0" is the natural zero state.
+    // Same shape as m_tokenInTotal:nulldrop:false (which renders
+    // "in:0"). The placeholderNA("calls:") registration is left in
+    // place but is unreachable for m_apiCalls.
     const out = renderTemplate(
       ["m_apiCalls:nulldrop:false"],
       ctxFor(fakeSnapshot({ cwd: "D:\\no-project-state-yet" })),
     ).join("\n");
-    assert.equal(strip(out), "calls:n/a");
-    assert.ok(out.includes(STALE), `expected STALE wrap on: ${JSON.stringify(out)}`);
+    assert.equal(strip(out), "calls:0");
+    assert.ok(!out.includes(STALE), `expected no STALE wrap on: ${JSON.stringify(out)}`);
   });
 
-  it("m_apiCalls:nulldrop:false with no slot yet → 'calls:n/a' (placeholder fires)", () => {
+  it("m_apiCalls:nulldrop:false with no slot yet → 'calls:0'", () => {
     // A "zero deltas" tick never created the project-wide slot
-    // (setAvg's gate skipped the write). The placeholder fires
-    // for the inline form because the data path returned null —
-    // there's no real "calls:0" value to render. Document the
-    // contract: nulldrop:false forces the placeholder when the
-    // counter hasn't been initialized, which is the "I have not
-    // made any API calls yet" case.
+    // (setAvg's gate skipped the write). The inline form now
+    // renders "calls:0" (the natural zero state) rather than
+    // the placeholder. Document the contract: m_apiCalls is a
+    // counter that starts at 0.
     setAvg(
       "sess-zero",
       { sumIn: 0, sumOut: 0, sumApi: 0, sumCache: 0 },
@@ -1096,16 +1101,22 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
       ["m_apiCalls:nulldrop:false"],
       ctxFor(fakeSnapshot({ sessionId: "sess-zero" })),
     ).join("\n");
-    assert.equal(strip(out), "calls:n/a");
+    assert.equal(strip(out), "calls:0");
   });
 
-  it("m_apiCalls:nulldrop:true with no slot → drop (preserves v0.3.x semantics)", () => {
-    // Explicit nulldrop:true → preserve old drop-on-null behavior.
+  it("m_apiCalls:nulldrop:true is a no-op (function never returns null)", () => {
+    // The inline m_apiCalls renderer never returns null — it always
+    // returns "calls:0" or "calls:N". Therefore `:nulldrop:true` has
+    // no effect (the dispatcher can only short-circuit on a null
+    // return). Same shape as m_tokenIn / m_tokenOut, which share
+    // this property via computeTickDelta. This test pins the
+    // behavior so a future refactor that re-introduces a null
+    // branch will surface the question explicitly.
     const out = renderTemplate(
       ["m_apiCalls:nulldrop:true"],
       ctxFor(fakeSnapshot({ cwd: "D:\\no-project-state-yet" })),
-    );
-    assert.deepEqual(out, []);
+    ).join("\n");
+    assert.equal(strip(out), "calls:0");
   });
 
   it("m_apiCalls:color:brightGreen wraps the chunk in brightGreen", () => {
@@ -1138,36 +1149,39 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     );
   });
 
-  it("m_apiCalls:color:red override applies SGR to placeholder", () => {
-    // Inline :color: on the nulldrop:false form: user color wins,
-    // STALE_COLOR is replaced by red.
+  it("m_apiCalls:color:red override applies SGR to 'calls:0' (no STALE wrap)", () => {
+    // Inline :color: wins over the natural zero (no STALE_COLOR is
+    // applied because "calls:0" is not stale data — it's the
+    // counter's zero state).
     const RED_SGR = "\x1b[38;5;196m";
     const out = renderTemplate(
       ["m_apiCalls:nulldrop:false:color:red"],
       ctxFor(fakeSnapshot({ cwd: "D:\\no-project-state-yet" })),
     ).join("\n");
-    assert.equal(strip(out), "calls:n/a");
+    assert.equal(strip(out), "calls:0");
     assert.ok(out.includes(RED_SGR), `expected RED in: ${JSON.stringify(out)}`);
   });
 
-  it("m_apiCalls: bare form drops on null (MODULES path unchanged)", () => {
+  it("m_apiCalls: bare form renders 'calls:0' on null (MODULES path)", () => {
     // Bare m_apiCalls (no colon) goes through the MODULES dispatcher
-    // and drops on null — same drop semantics as m_tokenInTotal.
+    // and now renders "calls:0" on null — same "render the natural
+    // zero" semantics as m_tokenInTotal.
     const out = renderTemplate(
       ["m_apiCalls"],
       ctxFor(fakeSnapshot({ cwd: "D:\\no-project-state-yet" })),
-    );
-    assert.deepEqual(out, []);
+    ).join("\n");
+    assert.equal(strip(out), "calls:0");
   });
 
-  it("m_apiCalls:inline m_apiCalls: (trailing colon) defaults to placeholder", () => {
+  it("m_apiCalls:inline m_apiCalls: (trailing colon) renders 'calls:0'", () => {
     // Trailing-colon form has empty remainder → nulldrop undefined
-    // → placeholder fires.
+    // → the inline form renders "calls:0" (the natural zero),
+    // matching the bare form.
     const out = renderTemplate(
       ["m_apiCalls:"],
       ctxFor(fakeSnapshot({ cwd: "D:\\no-project-state-yet" })),
     ).join("\n");
-    assert.equal(strip(out), "calls:n/a");
+    assert.equal(strip(out), "calls:0");
   });
 
   it("m_apiCalls: count survives a sessionId change (project-wide scope)", () => {

@@ -1824,17 +1824,19 @@ const MODULES: Record<string, Module> = {
   // input_tokens > 0 — the same AND gate the accumulator uses
   // (see sumApiCount contract above). Survives session changes
   // and the user sees the running count for the project, not
-  // just the current session. Renders "calls:N"; null when the
-  // counter has not been initialized yet (no valid tick landed
-  // for this project — e.g. fresh cache after a `:clean
-  // --purge-runtime`). Uses the project-wide slot
-  // (tickStatus, no sessionId suffix) so the value reflects
-  // ALL sessions that have ticked in this cwd.
+  // just the current session. Renders "calls:N"; renders
+  // "calls:0" when the counter has not been initialized yet
+  // (no valid tick landed for this project — e.g. fresh cache
+  // after a `:clean --purge-runtime`). Uses the project-wide
+  // slot (tickStatus, no sessionId suffix) so the value
+  // reflects ALL sessions that have ticked in this cwd.
+  // (`:nulldrop:` is a no-op here — the function never returns
+  // null, same as m_tokenIn / m_tokenOut via computeTickDelta.)
   m_apiCalls: (c) => {
     const cwd = c.tokens?.cwd;
-    if (!cwd) return null;
+    if (!cwd) return "calls:0";
     const v = statusStore.readTickStatus(cwd, "tickStatus");
-    if (!v) return null;
+    if (!v) return "calls:0";
     return `calls:${v.sumApiCount}`;
   },
   // Context window size (stdin.context_window.context_window_size).
@@ -3013,13 +3015,16 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   },
   // v0.4.x — project-wide count of valid API calls (sumApiCount
   // in tickStatus). Reads the same project-wide slot the
-  // accumulator writes to. Null when the slot has never been
-  // initialized — placeholder fires for the inline form.
+  // accumulator writes to. Renders "calls:N"; renders "calls:0"
+  // (plain, or in the `:color:<c>` SGR) when the slot is
+  // uninitialized. (`:nulldrop:` is a no-op here — the function
+  // never returns null, same as m_tokenIn / m_tokenOut via
+  // computeTickDelta.)
   m_apiCalls: (params, ctx) => {
     const cwd = ctx.tokens?.cwd;
-    if (!cwd) return placeholderWithColor("m_apiCalls", params, ctx);
+    if (!cwd) return wrapPlain("calls:0", params.color as string | undefined);
     const v = statusStore.readTickStatus(cwd, "tickStatus");
-    if (!v) return placeholderWithColor("m_apiCalls", params, ctx);
+    if (!v) return wrapPlain("calls:0", params.color as string | undefined);
     return wrapPlain(`calls:${v.sumApiCount}`, params.color as string | undefined);
   },
   m_contextSize: (params, ctx) => {
