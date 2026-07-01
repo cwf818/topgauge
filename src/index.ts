@@ -33,6 +33,7 @@ import type { Provider, TokenSample } from "./types.ts";
 import { compose } from "./composition.ts";
 import { type FetchResult, buildProviderLine } from "./dispatch.ts";
 import { applyProviderOverrides, configStore, loadConfig } from "./config.ts";
+import { peekPrevTick } from "./render.ts";
 import {
   fetchForProvider,
   getProviderEntry,
@@ -198,27 +199,41 @@ async function main(): Promise<void> {
   diagnostics.append("info", "stdin", stdinRaw, Date.now(), tokens?.cwd ?? null);
 
   // Persist one sample row per tick so m_token5h/m_token7d can read
-  // across-tick history. Only do this when the parsed snapshot has
-  // sessionId + cwd + in/out — otherwise we'd be writing empty rows
-  // that pollute the file. appendSample swallows disk errors.
+  // across-tick history. v6.x — only stamp rows when the DELTA of
+  // totalApiDurationMs vs the previous tick is > 0 (an API call
+  // actually happened between ticks). The previous "absolute > 0"
+  // gate would still write rows on every tick of a long-running
+  // session even when cost data didn't advance — wasteful. On the
+  // first tick (no prev) any positive totalApiDurationMs counts as
+  // a delta — we always want at least one baseline row. Idle ticks
+  // (delta=0) carry no fresh per-API-call info, so a row would just
+  // duplicate the previous total. The path
+  // (`state/<projectHash>/<sessionId>.jsonl`) already encodes cwd +
+  // session, so the row carries only token + cache + the new
+  // model/apiMs tags. appendSample swallows disk errors.
   if (
     tokens &&
     tokens.sessionId &&
     tokens.cwd &&
     tokens.totals.input != null &&
-    tokens.totals.output != null
+    tokens.totals.output != null &&
+    tokens.cost.totalApiDurationMs != null
   ) {
-    const sample: TokenSample = {
-      at: Date.now(),
-      session: tokens.sessionId,
-      cwd: tokens.cwd,
-      in: tokens.totals.input,
-      out: tokens.totals.output,
-      ctx_in: tokens.current.input ?? 0,
-      ctx_creation: tokens.current.cacheCreation ?? 0,
-      ctx_read: tokens.current.cacheRead ?? 0,
-    };
-    appendSample(sample);
+    const prev = peekPrevTick(tokens.sessionId, tokens.cwd);
+    const deltaApiMs = tokens.cost.totalApiDurationMs - (prev?.apiMs ?? 0);
+    if (deltaApiMs > 0) {
+      const sample: TokenSample = {
+        at: Date.now(),
+        in: tokens.totals.input,
+        out: tokens.totals.output,
+        ctx_in: tokens.current.input ?? 0,
+        ctx_creation: tokens.current.cacheCreation ?? 0,
+        ctx_read: tokens.current.cacheRead ?? 0,
+        model: tokens.modelDisplayName ?? undefined,
+        apiMs: tokens.cost.totalApiDurationMs,
+      };
+      appendSample(tokens.cwd, tokens.sessionId, sample);
+    }
   }
 
   const baseUrl = process.env.ANTHROPIC_BASE_URL;

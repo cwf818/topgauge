@@ -320,10 +320,13 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(cached!.in, 38);
   });
 
-  it("m_tokenInSpeed: no API call between ticks (deltaApi=0) → 'in:-- t/s'", () => {
+  it("m_tokenInSpeed: no API call between ticks (deltaApi=0) → 'in:0.0 t/s' (v6.x idle=0)", () => {
+    // v6.x — idle tick now renders the truthful 0.0 t/s rate rather
+    // than "-- t/s". The "no data" sentinel is reserved for the
+    // snapshot-missing case (test elsewhere uses ctxFor(null)).
     setPrevTick("sess-test", { apiMs: 60_000, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
     const out = renderTemplate(["m_tokenInSpeed"], ctxFor(fakeSnapshot())).join("\n");
-    assert.equal(strip(out), "in:-- t/s");
+    assert.equal(strip(out), "in:0.0 t/s");
   });
 
   it("m_tokenInSpeed: sessionId changes → prev cache miss → assumes prev=0", () => {
@@ -592,15 +595,16 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(strip(out), "cache:513.4k");
   });
 
-  it("m_totalToken*: tokens is null → 'in:0 out:0 cache:0' (stable slot)", () => {
-    // No stdin at all → no sessionId → all three render the
-    // stable "0" sentinel (matching m_tokenIn / m_tokenOut
-    // behavior).
+  it("m_totalToken*: tokens is null → 'in:n/a out:n/a cache:n/a' (v6.x placeholders)", () => {
+    // v6.x — null/no-snapshot now renders "n/a" placeholders
+    // rather than "0" sentinels. The "stable slot" rule still
+    // holds (every module renders something), but the value
+    // reflects "missing data", not "zero tracked".
     const out = renderTemplate(
       ["m_totalTokenIn", "s_space", "m_totalTokenOut", "s_space", "m_totalTokenWithCacheIn"],
       ctxFor(null),
     ).join("\n");
-    assert.equal(strip(out), "in:0 out:0 cache:0");
+    assert.equal(strip(out), "in:n/a out:n/a cache:n/a");
   });
 
   it("m_totalTokenIn:color:brightGreen wraps the chunk in brightGreen", () => {
@@ -656,28 +660,29 @@ describe("renderTemplate — m_token* modules", () => {
 
   // ----- generic snapshot tests -----
 
-  it("tokens is null → m_tokenIn / m_tokenOut render '0' (stable slot); m_ctx / m_cacheHitRate still null", () => {
-    // v0.4.0+ always-render rule for the per-API-call modules
-    // (m_tokenIn / m_tokenOut): no snapshot data available →
-    // they render the stable "0" sentinel rather than dropping
-    // ("0" reads as "tracking, but nothing this tick" — better
-    // signal than the more ambiguous "--" for a quantity
-    // field). Modules that require stdin content (m_ctx,
-    // m_cacheHitRate) still return null when stdin is missing;
-    // their slots drop and adjacent separators are skipped.
+  it("tokens is null → m_tokenIn / m_tokenOut render 'n/a'; m_ctx / m_cacheHitRate render 'n/a' (v6.x placeholders)", () => {
+    // v6.x — null/no-snapshot is now distinct from "zero". All
+    // per-API-call modules emit "n/a" placeholders rather than
+    // "0" or drop. The bare-form parity rule means m_tokenIn and
+    // m_ctx both keep their slot when stdin is missing.
     const out = renderTemplate(
       ["m_tokenIn", "s_space", "m_tokenOut", "s_space", "m_ctx", "s_space", "m_cacheHitRate"],
       ctxFor(null),
     ).join("\n");
-    assert.equal(strip(out), "in:0 out:0  ");
+    assert.equal(strip(out), "in:n/a out:n/a ctx:n/a hit:n/a");
   });
 
-  it("partial snapshot: missing cost → m_tokenInSpeed renders 'in:-- t/s'", () => {
+  it("partial snapshot: missing cost.totalApiDurationMs → m_tokenInSpeed renders 'in:0.0 t/s' (v6.x)", () => {
+    // v6.x — when totalApiDurationMs is null the function takes the
+    // idle-without-measurement path (cost missing means we can't
+    // compute a rate this tick). Per the v6.x "0 renders, n/a is
+    // reserved for the no-stdin-at-all case", the truthful zero is
+    // rendered. The tokens=null path (no stdin) is a separate test.
     const out = renderTemplate(
       ["m_tokenInSpeed"],
       ctxFor(fakeSnapshot({ cost: { totalDurationMs: null, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null } })),
     ).join("\n");
-    assert.equal(strip(out), "in:-- t/s");
+    assert.equal(strip(out), "in:0.0 t/s");
   });
 
   it("m_cacheHitRate: 0 cache reads / (0 + 38 in) = 0.0% (session-aggregate formula)", () => {
@@ -783,20 +788,22 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     assert.equal(strip(out), "github.com/cwf818/tokenplan-usage-hud");
   });
 
-  it("m_branch: drops when cwd is not a git repo (default fakeSnapshot cwd='D:\\\\test')", () => {
-    // The default fakeSnapshot cwd is "D:\\test" which doesn't exist,
-    // so readGitInfo returns null and m_branch drops — same drop
-    // policy as m_repo / m_ccVersion.
-    const out = renderTemplate(["m_branch"], ctxFor(fakeSnapshot()));
-    assert.deepEqual(out, []);
+  it("m_branch: emits 'branch:n/a' when cwd is not a git repo (v6.x placeholder)", () => {
+    // v6.x — bare m_branch now renders a "branch:n/a" placeholder
+    // instead of dropping, matching the inline path's behavior.
+    const out = renderTemplate(["m_branch"], ctxFor(fakeSnapshot())).join("\n");
+    assert.equal(strip(out), "branch:n/a");
+    assert.ok(out.includes(STALE), `expected STALE wrap on: ${JSON.stringify(out)}`);
   });
 
-  it("m_branch: drops when cwd is missing entirely", () => {
+  it("m_branch: emits 'branch:n/a' when cwd is missing entirely (v6.x placeholder)", () => {
+    // v6.x — bare form now renders the placeholder, matching the
+    // inline :nulldrop:false path.
     const out = renderTemplate(
       ["m_branch"],
       ctxFor(fakeSnapshot({ cwd: null })),
-    );
-    assert.deepEqual(out, []);
+    ).join("\n");
+    assert.equal(strip(out), "branch:n/a");
   });
 
   it("m_branch: renders the current branch when cwd is a real repo", () => {
@@ -831,17 +838,17 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     assert.equal(strip(out), "branch:n/a");
   });
 
-  it("m_gitStatus: drops when cwd is not a git repo", () => {
-    const out = renderTemplate(["m_gitStatus"], ctxFor(fakeSnapshot()));
-    assert.deepEqual(out, []);
+  it("m_gitStatus: emits 'git:n/a' when cwd is not a git repo (v6.x placeholder)", () => {
+    const out = renderTemplate(["m_gitStatus"], ctxFor(fakeSnapshot())).join("\n");
+    assert.equal(strip(out), "git:n/a");
   });
 
-  it("m_gitStatus: drops when cwd is missing", () => {
+  it("m_gitStatus: emits 'git:n/a' when cwd is missing (v6.x placeholder)", () => {
     const out = renderTemplate(
       ["m_gitStatus"],
       ctxFor(fakeSnapshot({ cwd: null })),
-    );
-    assert.deepEqual(out, []);
+    ).join("\n");
+    assert.equal(strip(out), "git:n/a");
   });
 
   it("m_gitStatus: renders 'clean' on a fresh repo, 'dirty' after a write", () => {
@@ -906,12 +913,13 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     assert.equal(strip(out), "github.com/x");
   });
 
-  it("m_repo: returns null when no component is available", () => {
+  it("m_repo: emits 'n/a' when no component is available (v6.x placeholder)", () => {
+    // v6.x — bare form now emits the placeholder instead of dropping.
     const out = renderTemplate(
       ["m_repo"],
       ctxFor(fakeSnapshot({ repo: { host: null, owner: null, name: null } })),
-    );
-    assert.deepEqual(out, []);
+    ).join("\n");
+    assert.equal(strip(out), "n/a");
   });
 
   it("m_ccVersion: bare '2.1.191'", () => {
@@ -924,12 +932,12 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     assert.equal(strip(out), "10m");
   });
 
-  it("m_sessionApiDuration: returns null when totalApiDurationMs is null", () => {
+  it("m_sessionApiDuration: emits '--' when totalApiDurationMs is null (v6.x placeholder)", () => {
     const out = renderTemplate(
       ["m_sessionApiDuration"],
       ctxFor(fakeSnapshot({ cost: { totalDurationMs: 600_000, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null } })),
-    );
-    assert.deepEqual(out, []);
+    ).join("\n");
+    assert.equal(strip(out), "--");
   });
 
   it("m_linesAdded: '+ 3965'", () => {
@@ -1214,14 +1222,14 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     assert.equal(strip(out), "calls:1");
   });
 
-  it("m_contextSize: '200.0k' (compact format of 200000)", () => {
+  it("m_contextSize: 'size:200.0k' (compact format of 200000)", () => {
     const out = renderTemplate(["m_contextSize"], ctxFor(fakeSnapshot())).join("\n");
-    assert.equal(strip(out), "200.0k");
+    assert.equal(strip(out), "size:200.0k");
   });
 
-  it("m_contextUsed: '63%' (plain percentage)", () => {
+  it("m_contextUsed: 'used:63%' (key-prefixed percentage)", () => {
     const out = renderTemplate(["m_contextUsed"], ctxFor(fakeSnapshot())).join("\n");
-    assert.equal(strip(out), "63%");
+    assert.equal(strip(out), "used:63%");
   });
 
   it("m_windowContext: bar + 5-band-colored percentage (63% lands in orange band)", () => {
@@ -1231,14 +1239,18 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     assert.ok(out.includes(ORANGE), `expected ORANGE in: ${JSON.stringify(out)}`);
   });
 
-  it("m_windowContext: returns null when contextWindow is null", () => {
+  it("m_windowContext: emits gray '░░░░░░░░ 0%' gauge when contextWindow.usedPct is null (v6.x placeholder)", () => {
+    // v6.x — bare m_windowContext now follows the placeholder rule.
+    // The gauge placeholder shape is "░░░░░░░░ 0%" (used mode) or
+    // "▓▓▓▓▓▓▓▓ 100%" (remaining mode). Defaults to "used" → empty
+    // bar + "0%".
     const out = renderTemplate(
       ["m_windowContext"],
       ctxFor(
         fakeSnapshot({ contextWindow: { size: 200000, usedPct: null, remainingPct: null } }),
       ),
-    );
-    assert.deepEqual(out, []);
+    ).join("\n");
+    assert.equal(strip(out), "░░░░░░░░ 0%");
   });
 
   // v0.4.0+ — value=0 is a valid number, not "missing". Per the
@@ -1273,12 +1285,12 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     assert.ok(out.includes(RED_SGR), `expected RED SGR in: ${JSON.stringify(out)}`);
   });
 
-  it("m_contextUsed: usedPct=0 renders '0%' (NOT hidden)", () => {
+  it("m_contextUsed: usedPct=0 renders 'used:0%' (NOT hidden)", () => {
     const out = renderTemplate(
       ["m_contextUsed"],
       ctxFor(fakeSnapshot({ contextWindow: { size: 200000, usedPct: 0, remainingPct: 100 } })),
     ).join("\n");
-    assert.equal(strip(out), "0%");
+    assert.equal(strip(out), "used:0%");
   });
 
   it("inline :color: override applies SGR to plain modules (m_session:color:red)", () => {
@@ -1302,17 +1314,31 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     assert.ok(out.includes(RED_SGR), `expected RED in: ${JSON.stringify(out)}`);
   });
 
-  it("all session-info modules return null when tokens is null", () => {
-    const mods = [
-      "m_session", "m_model", "m_effort", "m_repo", "m_ccVersion",
-      "m_sessionDuration", "m_sessionApiDuration",
-      "m_linesAdded", "m_linesRemoved",
-      "m_tokenInTotal", "m_tokenOutTotal",
-      "m_contextSize", "m_contextUsed", "m_windowContext",
+  it("all session-info modules emit placeholders when tokens is null (v6.x)", () => {
+    // v6.x — bare-form parity: every session-info module renders
+    // its placeholder body wrapped in STALE_COLOR when tokens is
+    // null, instead of dropping. The shape is module-specific
+    // (see PLACEHOLDERS in render.ts). This test verifies the
+    // shapes match the design.
+    const cases: Array<[string, string]> = [
+      ["m_session", "n/a"],
+      ["m_model", "n/a"],
+      ["m_effort", "n/a"],
+      ["m_repo", "n/a"],
+      ["m_ccVersion", "n/a"],
+      ["m_sessionDuration", "--"],
+      ["m_sessionApiDuration", "--"],
+      ["m_linesAdded", "+ --"],
+      ["m_linesRemoved", "- --"],
+      ["m_tokenInTotal", "in:n/a"],
+      ["m_tokenOutTotal", "out:n/a"],
+      ["m_contextSize", "size:n/a"],
+      ["m_contextUsed", "used:n/a%"],
+      ["m_windowContext", "░░░░░░░░ 0%"],
     ];
-    for (const m of mods) {
-      const out = renderTemplate([m], ctxFor(null));
-      assert.deepEqual(out, [], `${m} should return [] when tokens is null`);
+    for (const [m, expected] of cases) {
+      const out = renderTemplate([m], ctxFor(null)).join("\n");
+      assert.equal(strip(out), expected, `${m} should render "${expected}" placeholder, got ${JSON.stringify(out)}`);
     }
   });
 });
@@ -1351,7 +1377,10 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     assert.ok(out.includes(STALE), `expected STALE wrap on: ${JSON.stringify(out)}`);
   });
 
-  it("m_ctx:nulldrop:false with zero len renders 'ctx:n/a' (placeholder)", () => {
+  it("m_ctx:nulldrop:false with zero len renders 'ctx:0' (v6.x zero rule)", () => {
+    // v6.x — zero length is now rendered as "ctx:0" (a real
+    // value, not a placeholder). The placeholder path is reserved
+    // for the snapshot-missing case (test elsewhere).
     const out = renderTemplate(
       ["m_ctx:nulldrop:false"],
       ctxFor(
@@ -1360,13 +1389,16 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
         }),
       ),
     ).join("\n");
-    assert.equal(strip(out), "ctx:n/a");
+    assert.equal(strip(out), "ctx:0");
   });
 
-  it("m_ctx without nulldrop arg (bare form) drops on null", () => {
-    // bare path: tokens is null → module drops → empty line.
-    const out = renderTemplate(["m_ctx"], ctxFor(null));
-    assert.deepEqual(out, []);
+  it("m_ctx bare form emits 'ctx:n/a' on null (v6.x placeholder parity)", () => {
+    // v6.x — bare m_ctx now follows the placeholder rule, matching
+    // the inline path. Adjacent separators are preserved (no
+    // orphan-space drop).
+    const out = renderTemplate(["m_ctx"], ctxFor(null)).join("\n");
+    assert.equal(strip(out), "ctx:n/a");
+    assert.ok(out.includes(STALE), `expected STALE wrap on: ${JSON.stringify(out)}`);
   });
 
   it("m_ctx:nulldrop:true behaves like bare (drops on null)", () => {
@@ -1375,7 +1407,10 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     assert.deepEqual(out, []);
   });
 
-  it("m_cacheRead:nulldrop:false with no cache traffic renders 'cache:n/a'", () => {
+  it("m_cacheRead:nulldrop:false with cacheRead=0 renders 'cache:0 (0.0%)' (v6.x zero rule)", () => {
+    // v6.x — cacheRead=0 is now rendered as "cache:0 (0.0%)" — a
+    // real zero, not the placeholder. The placeholder path is
+    // reserved for cacheRead=null (field not shipped by stdin).
     const out = renderTemplate(
       ["m_cacheRead:nulldrop:false"],
       ctxFor(
@@ -1384,10 +1419,27 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
         }),
       ),
     ).join("\n");
+    assert.equal(strip(out), "cache:0 (0.0%)");
+  });
+
+  it("m_cacheRead:nulldrop:false with cacheRead=null renders 'cache:n/a' (placeholder)", () => {
+    // The placeholder path is reserved for the missing-field case
+    // (cacheRead=null on a present snapshot).
+    const out = renderTemplate(
+      ["m_cacheRead:nulldrop:false"],
+      ctxFor(
+        fakeSnapshot({
+          current: { input: 38, output: 155, cacheCreation: 0, cacheRead: null },
+        }),
+      ),
+    ).join("\n");
     assert.equal(strip(out), "cache:n/a");
   });
 
-  it("m_cacheRead without nulldrop drops when read=0 (existing behavior preserved)", () => {
+  it("m_cacheRead bare form emits 'cache:0 (0.0%)' when read=0 (v6.x zero rule)", () => {
+    // v6.x — bare m_cacheRead renders the real "cache:0 (0.0%)"
+    // chunk when read=0, matching the inline default. Drop is
+    // reserved for cacheRead=null (the missing-field case).
     const out = renderTemplate(
       ["m_cacheRead"],
       ctxFor(
@@ -1395,8 +1447,8 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
           current: { input: 38, output: 155, cacheCreation: 0, cacheRead: 0 },
         }),
       ),
-    );
-    assert.deepEqual(out, []);
+    ).join("\n");
+    assert.equal(strip(out), "cache:0 (0.0%)");
   });
 
   it("m_cacheHitRate:nulldrop:false: 0 cache / (0 cache + 38 in) = 0.0% (session-aggregate formula)", () => {
@@ -1416,24 +1468,24 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     assert.equal(strip(out), "hit:0.0%");
   });
 
-  it("m_contextSize:nulldrop:false renders 'n/a' when size is null", () => {
+  it("m_contextSize:nulldrop:false renders 'size:n/a' when size is null", () => {
     const out = renderTemplate(
       ["m_contextSize:nulldrop:false"],
       ctxFor(
         fakeSnapshot({ contextWindow: { size: null, usedPct: null, remainingPct: null } }),
       ),
     ).join("\n");
-    assert.equal(strip(out), "n/a");
+    assert.equal(strip(out), "size:n/a");
   });
 
-  it("m_contextUsed:nulldrop:false renders 'n/a' when usedPct is null", () => {
+  it("m_contextUsed:nulldrop:false renders 'used:n/a%' when usedPct is null", () => {
     const out = renderTemplate(
       ["m_contextUsed:nulldrop:false"],
       ctxFor(
         fakeSnapshot({ contextWindow: { size: 200000, usedPct: null, remainingPct: null } }),
       ),
     ).join("\n");
-    assert.equal(strip(out), "n/a");
+    assert.equal(strip(out), "used:n/a%");
   });
 
   it("m_tokenInTotal:nulldrop:false renders 'in:n/a' when totals.input is null", () => {
@@ -1541,14 +1593,16 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     assert.ok(out.includes(RED_SGR), `expected RED override in: ${JSON.stringify(out)}`);
   });
 
-  it("m_windowContext without nulldrop still drops on null (bare path unchanged)", () => {
+  it("m_windowContext bare form emits gray '░░░░░░░░ 0%' gauge (v6.x placeholder parity)", () => {
+    // v6.x — bare form now follows the placeholder rule, matching
+    // the inline path. The placeholder shape is a gray bar + "0%".
     const out = renderTemplate(
       ["m_windowContext"],
       ctxFor(
         fakeSnapshot({ contextWindow: { size: 200000, usedPct: null, remainingPct: null } }),
       ),
-    );
-    assert.deepEqual(out, []);
+    ).join("\n");
+    assert.equal(strip(out), "░░░░░░░░ 0%");
   });
 
   it("m_window5h:nulldrop:false renders gray '░░░░░░░░ 0%' when fiveHour is null", () => {
@@ -1612,19 +1666,16 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
 
   // ----- separator-skip semantics preserved -----
 
-  it("m_ctx:nulldrop:false forces the slot; adjacent s_0 separators are preserved", () => {
-    // null module WITHOUT nulldrop would skip s_0 too. With
-    // nulldrop:false the slot renders AND its surrounding
-    // separators stay (matches user choice: "严格遵循原 drop 语义"
-    // means separators drop when the BODY would have been null,
-    // but here the body is a placeholder — so separators stay).
+  it("m_ctx:nulldrop:false forces the slot; adjacent s_0 separators are preserved (v6.x)", () => {
+    // v6.x — tokens=null now triggers "n/a" placeholders for the
+    // per-API-call family too (m_tokenIn / m_tokenOut). The
+    // placeholder keeps the slot occupied, so surrounding s_0
+    // separators stay (matching the inline nulldrop:false contract).
     const out = renderTemplate(
       ["m_tokenIn", "s_space", "m_ctx:nulldrop:false", "s_space", "m_tokenOut"],
       ctxFor(null),
     ).join("\n");
-    // m_tokenIn/m_tokenOut render their "0" sentinel (per-API-
-    // call always-render), m_ctx:nulldrop:false renders "ctx:n/a".
-    assert.equal(strip(out), "in:0 ctx:n/a out:0");
+    assert.equal(strip(out), "in:n/a ctx:n/a out:n/a");
   });
 
   it("m_ctx:nulldrop:false composed with :color: applies color to the placeholder", () => {
@@ -1667,11 +1718,12 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
   // params.nulldrop is NOT the literal "true" (undefined counts as
   // "false" / default).
 
-  it("bare m_ctx still drops on null (MODULES path unchanged)", () => {
-    // The MODULES-path behavior is the v0.3.x drop-on-null
-    // promise. Inline form is where the placeholder kicks in.
-    const out = renderTemplate(["m_ctx"], ctxFor(null));
-    assert.deepEqual(out, []);
+  it("bare m_ctx emits 'ctx:n/a' on null (v6.x placeholder parity)", () => {
+    // v6.x — bare m_ctx now follows the placeholder rule, matching
+    // the inline path's default behavior. There is no longer a
+    // bare-vs-inline asymmetry.
+    const out = renderTemplate(["m_ctx"], ctxFor(null)).join("\n");
+    assert.equal(strip(out), "ctx:n/a");
   });
 
   it("inline m_ctx: (trailing colon, no args) defaults to placeholder — renders 'ctx:n/a'", () => {
@@ -1695,14 +1747,16 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     assert.deepEqual(out, []);
   });
 
-  it("bare m_windowContext still drops on null (MODULES path unchanged)", () => {
+  it("bare m_windowContext emits gray '░░░░░░░░ 0%' gauge (v6.x placeholder parity)", () => {
+    // v6.x — bare form follows the placeholder rule, matching
+    // the inline path's default behavior.
     const out = renderTemplate(
       ["m_windowContext"],
       ctxFor(
         fakeSnapshot({ contextWindow: { size: 200000, usedPct: null, remainingPct: null } }),
       ),
-    );
-    assert.deepEqual(out, []);
+    ).join("\n");
+    assert.equal(strip(out), "░░░░░░░░ 0%");
   });
 
   it("inline m_windowContext: defaults to placeholder gray bar '░░░░░░░░ 0%'", () => {
@@ -1768,22 +1822,15 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     // for now we pin the OBSERVED behavior so a future fix can
     // tighten this without surprise.
     //
-    // What this test asserts: m_tokenIn/m_tokenOut render their
-    // "in:0" / "out:0" sentinels (per-API-call always-render);
-    // m_ctx:nulldrop:true drops; the surrounding s_0 separators
-    // remain in the output (no strip pass).
+    // v6.x — m_tokenIn/m_tokenOut now render "in:n/a" / "out:n/a"
+    // placeholders instead of "in:0" sentinels when tokens is
+    // null. The nulldrop:true opt-out still drops m_ctx, leaving
+    // orphan s_space separators between the placeholders.
     const out = renderTemplate(
       ["m_tokenIn", "s_space", "m_ctx:nulldrop:true", "s_space", "m_tokenOut"],
       ctxFor(null),
     ).join("\n");
-    // Inline form WITHOUT nulldrop arg WOULD render the
-    // placeholder; with nulldrop:true the module is dropped. The
-    // s_0 separators persist (orphan spaces), which is the
-    // pre-existing renderer behavior. The actual value is just
-    // an array of "in:0", " ", null, " ", "out:0" pieces; the
-    // null piece is skipped but its surrounding s_0s aren't
-    // trimmed.
-    assert.match(strip(out), /^in:0\s+out:0$/);
+    assert.match(strip(out), /^in:n\/a\s+out:n\/a$/);
     // m_ctx:nulldrop:true is NOT in the output.
     assert.ok(!out.includes("ctx:"), `expected no ctx: chunk in: ${JSON.stringify(out)}`);
   });
@@ -1925,12 +1972,13 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     assert.ok(out.includes(STALE), `expected STALE (cached) in: ${JSON.stringify(out)}`);
   });
 
-  it("m_tokenInSpeed: idle tick with NO cached tps → '-- t/s' (no data sentinel)", () => {
-    // No active tick yet → cache is empty. Idle tick → render
-    // "-- t/s" (the missing-data sentinel).
+  it("m_tokenInSpeed: idle tick with NO cached tps → 'in:0.0 t/s' (v6.x idle=0)", () => {
+    // v6.x — idle tick now renders the truthful 0.0 t/s rate.
+    // The missing-data sentinel is reserved for the snapshot-missing
+    // case (handled via ctxFor(null) elsewhere).
     setPrevTick("sess-test", { apiMs: 60_000, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
     const out = renderTemplate(["m_tokenInSpeed"], ctxFor(fakeSnapshot())).join("\n");
-    assert.equal(strip(out), "in:-- t/s");
+    assert.equal(strip(out), "in:0.0 t/s");
   });
 
   it("m_tokenInSpeed: idle tick → STALE_COLOR even with :color:red override", () => {

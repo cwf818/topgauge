@@ -31,13 +31,19 @@ export type CompareMethod = "EXACT" | "INCLUDE" | "STARTWITH";
 // from stdin, used to scope the on-disk path (see token-store.ts).
 export type TokenSample = {
   at: number;
-  session: string;
-  cwd: string;
   in: number;
   out: number;
   ctx_in: number;
   ctx_creation: number;
   ctx_read: number;
+  // v6.x — session+cwd are encoded in the path
+  // (`state/<projectHash>/<sessionId>.jsonl`), so the row no longer
+  // carries them. `model` and `apiMs` are stamped when
+  // totalApiDurationMs>0 so per-model splits and delta api-ms are
+  // available to m_token5h/m_token7d consumers. Older rows without
+  // these fields are read with model=undefined, apiMs=undefined.
+  model?: string;
+  apiMs?: number;
 };
 
 // What the renderer needs to know about a single tick. Built once in

@@ -77,8 +77,17 @@ export function sampleFilePath(cwd: string, sessionId: string): string {
 // Creates the directory tree on demand. Errors are swallowed (stderr
 // only) so the statusline never blocks on disk failures — if the sample
 // can't be written, the next tick still renders correctly off stdin.
-export function appendSample(sample: TokenSample): void {
-  const path = sampleFilePath(sample.cwd, sample.session);
+//
+// v6.x — `session` and `cwd` are NOT carried on the row: the path
+// already encodes `<projectHash>/<sessionId>.jsonl`. The optional
+// `model` / `apiMs` are stamped at the call site only when
+// totalApiDurationMs>0 (idle ticks don't add a row).
+export function appendSample(
+  cwd: string,
+  sessionId: string,
+  sample: TokenSample,
+): void {
+  const path = sampleFilePath(cwd, sessionId);
   try {
     mkdirSync(dirname(path), { recursive: true });
     appendFileSync(path, JSON.stringify(sample) + "\n", "utf8");
@@ -133,13 +142,16 @@ export function readSamples(
     }
     out.push({
       at: r.at,
-      session: typeof r.session === "string" ? r.session : sessionId,
-      cwd: typeof r.cwd === "string" ? r.cwd : cwd,
       in: r.in,
       out: r.out,
       ctx_in: typeof r.ctx_in === "number" ? r.ctx_in : 0,
       ctx_creation: typeof r.ctx_creation === "number" ? r.ctx_creation : 0,
       ctx_read: typeof r.ctx_read === "number" ? r.ctx_read : 0,
+      // v6.x — older v0.4.x rows also had `session` / `cwd` here;
+      // they're ignored (the path encodes them). `model` / `apiMs`
+      // are optional; missing → undefined.
+      model: typeof r.model === "string" ? r.model : undefined,
+      apiMs: typeof r.apiMs === "number" ? r.apiMs : undefined,
     });
   }
   return out;

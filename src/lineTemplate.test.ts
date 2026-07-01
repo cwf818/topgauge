@@ -981,7 +981,7 @@ describe("lineTemplate — plain-text modules :color override", () => {
     assert.equal(line, "\x1b[38;5;220mv0.2.17\x1b[0m", `got: ${JSON.stringify(line)}`);
   });
 
-  it("m_version without :color: stays plain text (byte-for-byte identical)", () => {
+  it("m_version without :color: picks up DEFAULT_COLORS gray tint (v6.x)", () => {
     __resetForTest({
       statuslineTemplate:["m_version"],
     });
@@ -990,8 +990,8 @@ describe("lineTemplate — plain-text modules :color override", () => {
       fiveHour: null, weekly: null, balance: null,
       ageMs: null, stale: false, version: "0.2.17",
     });
-    // Bare path: no SGR wrapper.
-    assert.equal(line, "v0.2.17", `got: ${JSON.stringify(line)}`);
+    // v6.x — bare path now tints with DEFAULT_COLORS["m_version"] = gray.
+    assert.equal(line, "\x1b[38;5;245mv0.2.17\x1b[0m", `got: ${JSON.stringify(line)}`);
   });
 
   it("m_version:color:garbage is a hard noop (drops and warns)", () => {

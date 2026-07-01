@@ -1221,35 +1221,49 @@ function computeTickSpeed(
   active: boolean;
   tps: number | null;
 } {
+  // v6.x: snapshot missing → "n/a" placeholder (not "in:-- t/s").
+  // Mirrors computeTickDelta's null/zero split: no stdin at all is
+  // a different state from "stdin present but idle this tick".
+  const t = ctx.tokens;
+  if (!t || !t.sessionId) {
+    return {
+      value: `${direction}:n/a`,
+      writeBack: null,
+      active: false,
+      tps: null,
+    };
+  }
   const r = computeAndCacheTickDelta(ctx);
   if (!r.hasDelta) {
     // Idle tick — fall back to the last active measurement if
-    // we have one, otherwise render the -- t/s sentinel.
-    const sid = ctx.tokens?.sessionId;
-    if (sid) {
-      const cached = peekLastSpeed(sid, direction, ctx.tokens?.cwd);
-      if (cached != null) {
-        return {
-          value: `${STALE_COLOR}${direction}:${formatSpeed(cached)}${RESET}`,
-          writeBack: r.writeBack,
-          active: false,
-          tps: cached,
-        };
-      }
+    // we have one, otherwise render the truthful "0.0 t/s".
+    // v6.x: previously rendered "-- t/s" here, conflating
+    // "no measurement" with "0.0 t/s". Per user direction,
+    // zero rates are rendered, not hidden.
+    const cached = peekLastSpeed(t.sessionId, direction, t.cwd);
+    if (cached != null) {
+      return {
+        value: `${STALE_COLOR}${direction}:${formatSpeed(cached)}${RESET}`,
+        writeBack: r.writeBack,
+        active: false,
+        tps: cached,
+      };
     }
+    // No cached tps and no active tick → truthful 0.0 t/s
+    // (a rate of exactly zero is still data — the API did not
+    // produce any tokens this turn).
     return {
-      value: `${STALE_COLOR}${direction}:-- t/s${RESET}`,
+      value: `${color}${direction}:${formatSpeed(0)}${RESET}`,
       writeBack: r.writeBack,
       active: false,
-      tps: null,
+      tps: 0,
     };
   }
   const deltaTok = direction === "in" ? r.deltaIn : r.deltaOut;
   const tps = (deltaTok / r.deltaApi) * 1000;
   // Write the active measurement to the cache so subsequent
   // idle ticks can display it.
-  const sid = ctx.tokens?.sessionId;
-  if (sid) setLastSpeed(sid, direction, tps, ctx.tokens?.cwd);
+  setLastSpeed(t.sessionId, direction, tps, t.cwd);
   return {
     value: `${color}${direction}:${formatSpeed(tps)}${RESET}`,
     writeBack: r.writeBack,
@@ -1258,16 +1272,21 @@ function computeTickSpeed(
   };
 }
 
-// Per-API-call raw token delta. v0.4.0+ — mirrors the speed
-// module's gate: only render a numeric value when delta_api > 0
-// and the token delta is non-negative. When the gate is not
-// satisfied (no snapshot data, first tick, idle tick, regression)
-// we render "0" — not "--". The user reads "0" as "tracking, but
-// nothing new this tick", which is a better signal than the
-// ambiguous "--" for a quantity-shaped field. (The speed modules
-// handle the same situation differently: there, a zero-delta is
-// replaced with "-- t/s" because a 0.0 t/s rate is semantically
-// empty — the user has already chosen to prefer "--" there.)
+// Per-API-call raw token delta. v6.x — distinguishes three states:
+//
+//   - snapshot data missing (tokens / sessionId / current.input
+//     absent)         → `${direction}:n/a`  (no stdin at all)
+//   - idle tick       → `${direction}:0`    (stdin present, no
+//                                             delta this tick —
+//                                             truthful "0 this turn")
+//   - active tick     → `${direction}:${formatCompactToken(n)}`
+//
+// v0.4.0+ previously collapsed the first two into "in:0", which
+// conflated "no data" with "real zero". The new rule (per user
+// direction): 0 renders as "0" (never hidden); null renders as
+// "n/a". Idle ticks (hasDelta=false) still return "in:0" because
+// the snapshot was read but the per-turn delta genuinely is 0 —
+// that IS a zero value, not missing data.
 //
 // Uses formatCompactToken so single-call token counts read the
 // same as the cumulative modules (e.g. "in:140", "in:12.3k").
@@ -1275,10 +1294,21 @@ function computeTickDelta(
   ctx: RenderContext,
   direction: "in" | "out",
 ): { value: string; writeBack: PrevTickSnapshot | null } {
+  const t = ctx.tokens;
+  // v6.x: snapshot missing → "n/a" placeholder (not "0"). Without
+  // this gate the function returns "in:0" for both missing-snapshot
+  // and idle cases, conflating them.
+  if (!t || !t.sessionId) {
+    return { value: `${direction}:n/a`, writeBack: null };
+  }
   const r = computeAndCacheTickDelta(ctx);
+  if (!r.hasDelta) {
+    // snapshot read but no API call this tick — truthful 0.
+    return { value: `${direction}:0`, writeBack: r.writeBack };
+  }
   const n = direction === "in" ? r.deltaIn : r.deltaOut;
   return {
-    value: r.hasDelta ? `${direction}:${formatCompactToken(n)}` : `${direction}:0`,
+    value: `${direction}:${formatCompactToken(n)}`,
     writeBack: r.writeBack,
   };
 }
@@ -1305,8 +1335,10 @@ function computeTickAvg(
   color: string,
 ): { value: string; writeBack: PrevTickSnapshot | null } {
   const t = ctx.tokens;
+  // v6.x: snapshot missing → "n/a" placeholder (not "--"). Aligns
+  // with computeTickDelta / computeTickSpeed's null-vs-zero split.
   if (!t || !t.sessionId) {
-    return { value: `${color}${direction}:--${RESET}`, writeBack: null };
+    return { value: `${direction}:n/a`, writeBack: null };
   }
   const r = computeAndCacheTickDelta(ctx);
   if (r.hasDelta && !_tickAvgWriteMemo.get(ctx)) {
@@ -1340,8 +1372,11 @@ function computeTickAvg(
     });
   }
   const avg = peekAvg(t.sessionId, t.cwd);
+  // v6.x: sumIn / sumOut / sumApi all zero (idle, no accumulation
+  // yet) → render "0.0 t/s" (truthful zero rate). Previously
+  // returned "--". Mirrors computeTickSpeed's idle-vs-zero split.
   if (!avg || avg.sumApi <= 0) {
-    return { value: `${color}${direction}:--${RESET}`, writeBack: r.writeBack };
+    return { value: `${color}${direction}:${formatSpeed(0)}${RESET}`, writeBack: r.writeBack };
   }
   const denom = direction === "in" ? avg.sumIn / avg.sumApi : avg.sumOut / avg.sumApi;
   const tps = denom * 1000;
@@ -1381,7 +1416,15 @@ function computeTickTotals(
 ): { value: string } {
   const t = ctx.tokens;
   const prefix = kind === "in" ? "in" : kind === "out" ? "out" : "cache";
-  if (!t || !t.sessionId) return { value: `${prefix}:0` };
+  // v6.x: snapshot missing → "n/a" placeholder (not "0"). Aligns
+  // with the rest of the per-API-call family: null is distinct
+  // from "accumulator empty".
+  if (!t || !t.sessionId) return { value: `${prefix}:n/a` };
+  // v6.x: cache field is the one place where a missing field on
+  // an otherwise-present snapshot still gets the legacy "--"
+  // (per user direction "细分 null vs zero"). stdin present but
+  // cache_read_input_tokens absent is a "field-not-shipped" signal,
+  // distinct from "accumulator is zero" or "no stdin at all".
   if (kind === "cache" && t.current.cacheRead == null) {
     return { value: `${prefix}:--` };
   }
@@ -1428,6 +1471,10 @@ function computeTickTotals(
     });
   }
   const avg = peekAvg(t.sessionId, t.cwd);
+  // v6.x: when avg is null (no valid tick has landed yet, or
+  // session changed) → render "0" (truthful zero, the accumulator
+  // is empty by definition). Previously returned "0" too; this
+  // path stays the same so the value-zero rule holds.
   if (!avg) return { value: `${prefix}:0` };
   const n = kind === "in" ? avg.sumIn : kind === "out" ? avg.sumOut : avg.sumCache;
   return { value: `${prefix}:${formatCompactToken(n)}` };
@@ -1452,48 +1499,54 @@ const MODULES: Record<string, Module> = {
   // filter; m_modeLabel doesn't need to.
   // Returns the label WITHOUT a trailing space — the surrounding
   // s_0 separator token provides spacing.
-  m_modeLabel: (c) => (c.providerType === "balance"
-    ? cfg().modeLabels.balance
-    : cfg().modeLabels[c.mode]),
+  m_modeLabel: (c) => wrapPlainDefault("m_modeLabel",
+    c.providerType === "balance"
+      ? cfg().modeLabels.balance
+      : cfg().modeLabels[c.mode],
+    undefined),
   m_window5h: Object.assign(
-    ((c: RenderContext) => c.fiveHour ? formatOneChunk(c.fiveHour, c.mode, cfg().bar.width, c.stale) : null),
+    // v6.x: bare form now follows the placeholder rule — when the
+    // window is missing, render the gray gauge placeholder
+    // ("░░░░░░░░ 0%" used / "▓▓▓▓▓▓▓▓ 100%" remaining) instead of
+    // dropping. Inline `m_window5h:` had this since v0.4.x; the
+    // bare path was the lone hold-out.
+    ((c: RenderContext) => c.fiveHour ? formatOneChunk(c.fiveHour, c.mode, cfg().bar.width, c.stale) : placeholderBare("m_window5h", c)),
     { type: "plan" as const },
   ),
   m_window7d: Object.assign(
-    ((c: RenderContext) => c.weekly ? formatOneChunk(c.weekly, c.mode, cfg().bar.width, c.stale) : null),
+    ((c: RenderContext) => c.weekly ? formatOneChunk(c.weekly, c.mode, cfg().bar.width, c.stale) : placeholderBare("m_window7d", c)),
     { type: "plan" as const },
   ),
-  // Reset-suffix portion of a window. Returns null only when the
-  // whole window is missing; when resetAt is missing the helper
-  // still emits " <label>" (e.g. " 5h") so the m_countdown5h token
+  // Reset-suffix portion of a window. v6.x: when the whole window
+  // is missing, render "5h:--" / "7d:--" placeholder (matches the
+  // inline behavior). When resetAt is missing the helper still
+  // emits " <label>" (e.g. " 5h") so the m_countdown5h token
   // doubles as the window-label module for legacy/no-reset data.
   m_countdown5h: Object.assign(
     ((c: RenderContext) => c.fiveHour
-      ? formatOneResetSuffix("5h", c.fiveHour, c.nowMs)
-      : null),
+      ? wrapPlainDefault("m_countdown5h", formatOneResetSuffix("5h", c.fiveHour, c.nowMs), undefined)
+      : placeholderBare("m_countdown5h", c)),
     { type: "plan" as const },
   ),
   m_countdown7d: Object.assign(
     ((c: RenderContext) => c.weekly
-      ? formatOneResetSuffix("7d", c.weekly, c.nowMs)
-      : null),
+      ? wrapPlainDefault("m_countdown7d", formatOneResetSuffix("7d", c.weekly, c.nowMs), undefined)
+      : placeholderBare("m_countdown7d", c)),
     { type: "plan" as const },
   ),
-  // The DeepSeek balance chunk. Returns null when there's nothing
-  // to render (unavailable / empty / no min) so the template can
-  // opt out of showing it.
+  // The DeepSeek balance chunk. v6.x: when there's nothing to
+  // render (unavailable / empty / no min), emit a "balance:n/a"
+  // placeholder instead of dropping. Aligns with the bare-vs-inline
+  // parity rule.
   m_balance: Object.assign(
-    ((c: RenderContext) => c.balance ? formatBalanceEntriesColored(c.balance) || null : null),
+    ((c: RenderContext) => c.balance ? formatBalanceEntriesColored(c.balance) || placeholderBare("m_balance", c) : placeholderBare("m_balance", c)),
     { type: "balance" as const },
   ),
-  // Stale-age annotation. When present in the lineTemplate, this is
-  // the primary render path — it emits unconditionally (no stale
-  // gating). The emoji reflects the fetch state: 🔗 for fresh ticks
-  // (showing the cache age), ⛓️‍💥 for stale (showing the time since
-  // the last successful fetch). Returns null when ageMs is missing
-// — that's the only signal that "no age info is available".
+  // Stale-age annotation. v6.x: when ageMs is missing, emit
+  // "age:n/a" placeholder (was: drop). The :nulldrop:true inline
+  // override still drops for users wanting v0.3.x semantics.
   m_age: (c) => {
-    if (c.ageMs == null) return null;
+    if (c.ageMs == null) return placeholderBare("m_age", c);
     // v0.6.0+ — dedup against any other m_age that already emitted
     // anywhere in the recursive render tree. The forced-visibility
     // append in renderProviderLine reads the same ref; the FIRST
@@ -1503,10 +1556,10 @@ const MODULES: Record<string, Module> = {
     if (c.ageEmittedRef) c.ageEmittedRef.value = true;
     return formatStaleSuffix(c.ageMs, !c.stale);
   },
-  // Plugin version (e.g. "v0.2.17"). Hidden when version is empty
-  // (the configStore never got setVersion()'d — e.g. tests that
-  // don't care about the version).
-  m_version: (c) => (c.version ? `v${c.version}` : null),
+  // Plugin version (e.g. "v0.2.17"). v6.x: empty version → emit
+  // "v:n/a" placeholder (was: drop). Aligns with the bare-vs-inline
+  // parity rule.
+  m_version: (c) => (c.version ? wrapPlainDefault("m_version", `v${c.version}`, undefined) : placeholderBare("m_version", c)),
   // ----- v0.4.0+ token-usage modules -----
   // Each module is independent and returns null when its source data
   // isn't available, so users compose freely via lineTemplate. The
@@ -1543,7 +1596,7 @@ const MODULES: Record<string, Module> = {
   // into m_tokenIn / m_tokenOut).
   m_tokenTotal: (c) => {
     const t = c.tokens;
-    if (!t) return null;
+    if (!t) return placeholderBare("m_tokenTotal", c);
     const inT = t.totals.input ?? 0;
     const outT = t.totals.output ?? 0;
     const cache =
@@ -1555,7 +1608,7 @@ const MODULES: Record<string, Module> = {
   // 7d" rather than "tot / 5h / 7d").
   m_tokenSession: (c) => {
     const t = c.tokens;
-    if (!t) return null;
+    if (!t) return placeholderBare("m_tokenSession", c);
     const inT = t.totals.input ?? 0;
     const outT = t.totals.output ?? 0;
     const cache =
@@ -1563,13 +1616,19 @@ const MODULES: Record<string, Module> = {
     return `session:${formatCompactToken(inT + outT + cache)}`;
   },
   // Current post-turn context length (current_usage.input + creation + read,
-  // excludes output per ccstatusline convention).
+  // excludes output per ccstatusline convention). v6.x: bare form
+  // now follows the placeholder rule — when there's no stdin OR
+  // when the total is 0, render "ctx:0" (was: drop). The user's
+  // "0 直接显示" rule now applies here. The placeholder path is
+  // reserved for the truly missing-data case (no current at all).
   m_ctx: (c) => {
     const t = c.tokens?.current;
-    if (!t) return null;
+    if (!t) return placeholderBare("m_ctx", c);
     const len =
       (t.input ?? 0) + (t.cacheCreation ?? 0) + (t.cacheRead ?? 0);
-    if (len === 0) return null;
+    // v6.x: zero length now renders as "ctx:0" — the user reads
+    // "0" as "context window truly empty" (distinct from missing
+    // stdin, which would show "ctx:n/a" via placeholderBare).
     return `ctx:${formatCompactToken(len)}`;
   },
   // Cache hit rate — session-aggregate formula:
@@ -1579,9 +1638,11 @@ const MODULES: Record<string, Module> = {
   // + cacheCreation)` ratio (which would compute a per-API-call hit
   // rate and lose all session context). Coloring still uses the
   // cacheHitColors palette (good ≥ 80%, warn ≥ 50%, bad < 50%).
+  // v6.x: missing sid / missing avg / zero denominator → render
+  // "hit:n/a" placeholder (was: drop).
   m_cacheHitRate: (c) => {
     const sid = c.tokens?.sessionId;
-    if (!sid) return null;
+    if (!sid) return placeholderBare("m_cacheHitRate", c);
     // Trigger the accumulator write so peekAvg reflects this tick's
     // delta even when this module is the ONLY per-API-call module
     // in the template (the totals/avg modules would otherwise be the
@@ -1621,21 +1682,34 @@ const MODULES: Record<string, Module> = {
       });
     }
     const avg = peekAvg(sid, c.tokens?.cwd);
-    if (!avg) return null;
+    if (!avg) return placeholderBare("m_cacheHitRate", c);
     const denom = avg.sumCache + avg.sumIn;
-    if (denom === 0) return null;
+    // v6.x: zero denominator now falls back to "hit:0.0%" rather
+    // than dropping. sumCache=0 AND sumIn=0 means we have no
+    // measurements at all, which after the user's "0 直接显示"
+    // direction should still produce a value. (Truthful 0% is
+    // distinct from missing data, which we can't reach here since
+    // we have a sid.)
+    if (denom === 0) return `${cacheHitColor(0)}hit:0.0%${RESET}`;
     const pct = (avg.sumCache / denom) * 100;
     const color = cacheHitColor(pct);
     return `${color}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;
   },
   // Cache read tokens + context share (ccstatusline-style: "163k (99.2%)").
   // Single-color (STALE_COLOR); the percentage is informational, not
-  // a health indicator on its own.
+  // a health indicator on its own. v6.x: zero reads now render as
+  // "cache:0" (with the (0.0%) share); null cacheRead field on a
+  // present snapshot falls back to placeholder "cache:n/a". The
+  // double-zero render preserves the value-zero rule.
   m_cacheRead: (c) => {
     const t = c.tokens?.current;
-    if (!t) return null;
-    const read = t.cacheRead ?? 0;
-    if (read === 0) return null;
+    if (!t) return placeholderBare("m_cacheRead", c);
+    // v6.x: cacheRead=null is now distinct from cacheRead=0.
+    // null (field not shipped by stdin) → "cache:n/a" placeholder;
+    // 0 (real zero cache reads) → "cache:0 (0.0%)" — the user can
+    // see "we tracked, nothing cached" vs "no tracking at all".
+    if (t.cacheRead == null) return placeholderBare("m_cacheRead", c);
+    const read = t.cacheRead;
     const denom =
       (t.input ?? 0) + read + (t.cacheCreation ?? 0);
     const pct = denom > 0 ? (read / denom) * 100 : null;
@@ -1731,134 +1805,107 @@ const MODULES: Record<string, Module> = {
   // plan / balance templates do NOT include any of these — they are
   // strictly opt-in via lineTemplate.
 
-  // Session name (stdin.session_name). Bare string; no prefix.
-  m_session: (c) => c.tokens?.sessionName ?? null,
-  // Model display name (stdin.model.display_name). Bare string.
-  m_model: (c) => c.tokens?.modelDisplayName ?? null,
+  // Session name (stdin.session_name). v6.x: bare form now emits
+  // "n/a" placeholder when missing (was: drop).
+  m_session: (c) => c.tokens?.sessionName ? wrapPlainDefault("m_session", c.tokens.sessionName, undefined) : placeholderBare("m_session", c),
+  // Model display name (stdin.model.display_name). v6.x: bare
+  // form emits "n/a" placeholder when missing.
+  m_model: (c) => c.tokens?.modelDisplayName ? wrapPlainDefault("m_model", c.tokens.modelDisplayName, undefined) : placeholderBare("m_model", c),
   // Effort level (stdin.effort, polymorphic — already coerced to
-  // string by parseTokenSnapshot). Bare string.
-  m_effort: (c) => c.tokens?.effort ?? null,
-  // Repository identity (stdin.workspace.repo). Renders the non-null
-  // host/owner/name components joined by "/" — drop-null policy so
-  // missing fields don't produce a leading or trailing slash. Returns
-  // null when no component is available, or when r.workspace.repo is
-  // missing entirely.
+  // string by parseTokenSnapshot). v6.x: bare form emits "n/a"
+  // placeholder when missing.
+  m_effort: (c) => c.tokens?.effort ? wrapPlainDefault("m_effort", c.tokens.effort, undefined) : placeholderBare("m_effort", c),
+  // Repository identity (stdin.workspace.repo). v6.x: when no
+  // component is available, emit "n/a" placeholder instead of drop.
   m_repo: (c) => {
     const r = c.tokens?.repo;
-    if (!r) return null;
+    if (!r) return placeholderBare("m_repo", c);
     const parts = [r.host, r.owner, r.name].filter(
       (p): p is string => p != null && p.length > 0,
     );
-    return parts.length > 0 ? parts.join("/") : null;
+    return parts.length > 0 ? wrapPlainDefault("m_repo", parts.join("/"), undefined) : placeholderBare("m_repo", c);
   },
-  // Claude Code CLI version (stdin.version). Distinct from the
-  // existing m_version which emits the *plugin* version.
-  //
-  // v0.4.0+ — also registered as `m_ccversion` for backwards
-  // compatibility with pre-rename configs. Both keys resolve to
-  // the same body. The camelCase form is the canonical / documented
-  // one going forward; the lowercase form is the deprecated alias
-  // that will keep working so existing lineTemplate strings don't
-  // need an immediate edit.
-  m_ccVersion: (c) => c.tokens?.ccversion ?? null,
-  // Current git branch. Reads cwd from the session snapshot and runs
-  // a (cached) `git rev-parse --abbrev-ref HEAD` via src/git-info.ts.
-  // Returns null when cwd is missing, the cwd is not a git repo, or
-  // the repo is in detached-HEAD state (git-info returns null for
-  // both — see the long comment in git-info.ts for the detached
-  // case). Bare MODULES drops on null (consistent with m_repo,
-  // m_ccVersion). Inline :nulldrop:false forces a "branch:n/a"
-  // placeholder so the slot stays stable.
-  m_branch: (c) => readGitInfo(c.tokens?.cwd)?.branch ?? null,
-  // Git working-tree cleanliness indicator. Returns "clean" /
-  // "dirty" strings from the dirty bit in readGitInfo() (the rest
-  // of the snapshot — branch name etc. — is intentionally NOT
-  // surfaced here; use m_branch for that). Null when cwd is
-  // missing / not a git repo / detached HEAD, matching m_branch's
-  // drop semantics.
+  // Claude Code CLI version (stdin.version). v6.x: bare form
+  // emits "n/a" placeholder when missing.
+  m_ccVersion: (c) => c.tokens?.ccversion ? wrapPlainDefault("m_ccVersion", c.tokens.ccversion, undefined) : placeholderBare("m_ccVersion", c),
+  // Current git branch. v6.x: cwd missing / not a git repo /
+  // detached HEAD now emit "branch:n/a" placeholder (was: drop).
+  m_branch: (c) => readGitInfo(c.tokens?.cwd)?.branch ? wrapPlainDefault("m_branch", readGitInfo(c.tokens!.cwd)!.branch!, undefined) : placeholderBare("m_branch", c),
+  // Git working-tree cleanliness indicator. v6.x: missing git
+  // info → "git:n/a" placeholder (was: drop).
   m_gitStatus: (c) => {
     const info = readGitInfo(c.tokens?.cwd);
-    if (info == null) return null;
-    return info.dirty ? "dirty" : "clean";
+    if (info == null) return placeholderBare("m_gitStatus", c);
+    return wrapPlainDefault("m_gitStatus", info.dirty ? "dirty" : "clean", undefined);
   },
-  // Deprecated alias — see m_ccVersion above. Same body.
-  m_ccversion: (c) => c.tokens?.ccversion ?? null,
-  // Session elapsed wall-clock (stdin.cost.total_duration_ms). Formatted
-  // with the same dhms formatter used for reset countdowns.
+  // Deprecated alias — see m_ccVersion above.
+  m_ccversion: (c) => c.tokens?.ccversion ? wrapPlainDefault("m_ccversion", c.tokens.ccversion, undefined) : placeholderBare("m_ccversion", c),
+  // Session elapsed wall-clock (stdin.cost.total_duration_ms).
+  // v6.x: missing field → "--" placeholder (was: drop). 0 ms is
+  // a real value and renders as "0s".
   m_sessionDuration: (c) => {
     const ms = c.tokens?.cost.totalDurationMs;
-    return ms != null ? formatRemainingMs(ms) : null;
+    return ms != null ? wrapPlainDefault("m_sessionDuration", formatRemainingMs(ms), undefined) : placeholderBare("m_sessionDuration", c);
   },
-  // Session API-call time (stdin.cost.total_api_duration_ms). Same
-  // dhms format.
+  // Session API-call time (stdin.cost.total_api_duration_ms). v6.x:
+  // missing field → "--" placeholder.
   m_sessionApiDuration: (c) => {
     const ms = c.tokens?.cost.totalApiDurationMs;
-    return ms != null ? formatRemainingMs(ms) : null;
+    return ms != null ? wrapPlainDefault("m_sessionApiDuration", formatRemainingMs(ms), undefined) : placeholderBare("m_sessionApiDuration", c);
   },
   // Session-cumulative lines added (stdin.cost.total_lines_added).
-  // Literal "+ 3965" format — leading space included.
+  // v6.x: missing field → "+ --" placeholder (was: drop). Zero is
+  // a real value and renders as "+ 0".
   m_linesAdded: (c) => {
     const n = c.tokens?.cost.totalLinesAdded;
-    return n != null ? `+ ${n}` : null;
+    return n != null ? wrapPlainDefault("m_linesAdded", `+ ${n}`, undefined) : placeholderBare("m_linesAdded", c);
   },
-  // Session-cumulative lines removed (stdin.cost.total_lines_removed).
-  // Literal "- 967" format — leading space included.
+  // Session-cumulative lines removed. v6.x: missing → "- --".
   m_linesRemoved: (c) => {
     const n = c.tokens?.cost.totalLinesRemoved;
-    return n != null ? `- ${n}` : null;
+    return n != null ? wrapPlainDefault("m_linesRemoved", `- ${n}`, undefined) : placeholderBare("m_linesRemoved", c);
   },
   // Session-cumulative input tokens (stdin.context_window.total_input_tokens).
-  // v0.4.0: new module — replaces the pre-v0.4.0 m_tokenIn behavior.
+  // v6.x: totals.input=null → "in:n/a" placeholder (was: drop).
   m_tokenInTotal: (c) =>
     c.tokens?.totals.input != null
       ? `in:${formatCompactToken(c.tokens.totals.input)}`
-      : null,
-  // Session-cumulative output tokens. v0.4.0: new module.
+      : placeholderBare("m_tokenInTotal", c),
+  // Session-cumulative output tokens. v6.x: totals.output=null →
+  // "out:n/a" placeholder.
   m_tokenOutTotal: (c) =>
     c.tokens?.totals.output != null
       ? `out:${formatCompactToken(c.tokens.totals.output)}`
-      : null,
-  // Project-wide count of valid API calls since first tick
-  // (sumApiCount in the per-project tickStatus slot, written by
-  // setAvg). Bumped only on ticks where deltaApiMs > 0 AND
-  // input_tokens > 0 — the same AND gate the accumulator uses
-  // (see sumApiCount contract above). Survives session changes
-  // and the user sees the running count for the project, not
-  // just the current session. Renders "calls:N"; renders
-  // "calls:0" when the counter has not been initialized yet
-  // (no valid tick landed for this project — e.g. fresh cache
-  // after a `:clean --purge-runtime`). Uses the project-wide
-  // slot (tickStatus, no sessionId suffix) so the value
-  // reflects ALL sessions that have ticked in this cwd.
-  // (`:nulldrop:` is a no-op here — the function never returns
-  // null, same as m_tokenIn / m_tokenOut via computeTickDelta.)
+      : placeholderBare("m_tokenOutTotal", c),
+  // Project-wide count of valid API calls since first tick.
+  // v6.x: missing cwd → "calls:n/a" placeholder (was: "calls:0").
+  // Calls=0 still renders as "calls:0" — the v0.4.x always-render
+  // design stays intact.
   m_apiCalls: (c) => {
     const cwd = c.tokens?.cwd;
-    if (!cwd) return "calls:0";
+    if (!cwd) return placeholderBare("m_apiCalls", c);
     const v = statusStore.readTickStatus(cwd, "tickStatus");
-    if (!v) return "calls:0";
-    return `calls:${v.sumApiCount}`;
+    if (!v) return wrapPlainDefault("m_apiCalls", "calls:0", undefined);
+    return wrapPlainDefault("m_apiCalls", `calls:${v.sumApiCount}`, undefined);
   },
-  // Context window size (stdin.context_window.context_window_size).
-  // Compact format (e.g. 200000 → "200.0k").
+  // Context window size. v6.x: size=null → "size:n/a" placeholder.
   m_contextSize: (c) => {
     const sz = c.tokens?.contextWindow?.size;
-    return sz != null ? formatCompactToken(sz) : null;
+    return sz != null ? wrapPlainDefault("m_contextSize", `size:${formatCompactToken(sz)}`, undefined) : placeholderBare("m_contextSize", c);
   },
-  // Context window used percentage (stdin.context_window.used_percentage).
-  // Plain "63%" format. No color — the m_windowContext module is the
-  // bar+color variant.
+  // Context window used percentage. v6.x: usedPct=null → "n/a%"
+  // placeholder. Zero renders as "0%".
   m_contextUsed: (c) => {
     const pct = c.tokens?.contextWindow?.usedPct;
-    return pct != null ? `${pct}%` : null;
+    return pct != null ? wrapPlainDefault("m_contextUsed", `used:${pct}%`, undefined) : placeholderBare("m_contextUsed", c);
   },
-  // Context window bar + 5-band-colored percentage, parallel to
-  // m_window5h / m_window7d. Reads from ctx.contextWindow (a
-  // synthetic Window populated from stdin.context_window.used_percentage).
-  // v0.6.0+: stale-aware — percent tail switches to STALE_COLOR
-  // when the fetch is stale, matching m_window5h/7d.
+  // Context window bar + 5-band-colored percentage. v6.x: bare
+  // form now follows the placeholder rule — when the synthetic
+  // Window is missing, render the gray gauge placeholder. Zero
+  // pct still renders as a 0-value bar (the user's "0 直接显示"
+  // rule preserves the natural 0-value render path).
   m_windowContext: (c) =>
-    c.contextWindow ? formatOneChunk(c.contextWindow, c.mode, cfg().bar.width, c.stale) : null,
+    c.contextWindow ? formatOneChunk(c.contextWindow, c.mode, cfg().bar.width, c.stale) : placeholderBare("m_windowContext", c),
 };
 
 // Cap unknown-module warnings to once per process so a template typo
@@ -1960,6 +2007,11 @@ export function cacheHitColor(pct: number): string {
 // total_input_tokens / total_output_tokens are session-cumulative on
 // stdin — delta = (cumulative at end of window) - (cumulative at start
 // of window) = tokens used during the window.
+//
+// v6.x: total===0 (real zero in the window) now returns "label:0"
+// instead of null. The user reads "0" as "tracked, nothing in the
+// window" — distinct from the missing-data case (no samples) which
+// goes through placeholderBare at the call site.
 function windowedTokenLabel(
   c: RenderContext,
   windowMs: number,
@@ -1981,7 +2033,8 @@ function windowedTokenLabel(
   // to sliding `now - windowMs` when no plan data is loaded keeps the
   // module useful for non-tokenplan providers.
   const total = deltaIn + deltaOut;
-  if (total === 0) return null;
+  // v6.x: zero total now renders as "label:0" (truthful zero) rather
+  // than null. Aligns with the "0 直接显示" rule.
   return `${label}:${formatCompactToken(total)}`;
 }
 
@@ -2026,6 +2079,55 @@ export function __resetUnknownModuleWarnForTest(): void {
 // (no colon) still routes through MODULES as before — so existing
 // templates using bare `m_modeLabel` / `s_0` keep working byte-for-byte.
 
+// v6.x — additional named SGR constants for the per-module default
+// colors below. These are 256-color SGR strings (not theme-driven),
+// chosen to be visually distinguishable from each other AND from
+// the 5-band palette so DEFAULT_COLORS entries read as "this module's
+// natural tint" rather than blending with the threshold colors.
+const NAMED_PALETTE: Record<string, string> = {
+  cyan: "\x1b[38;5;51m",         // bright cyan
+  blue: "\x1b[38;5;33m",         // mid blue
+  magenta: "\x1b[38;5;201m",     // hot pink/magenta
+  purple: "\x1b[38;5;141m",      // violet
+  teal: "\x1b[38;5;80m",         // dim teal
+  brown: "\x1b[38;5;130m",       // earth brown
+  gray: "\x1b[38;5;245m",        // mid gray (different from stale's dark gray)
+  lavender: "\x1b[38;5;183m",    // soft lavender
+};
+
+// v6.x — DEFAULT_COLORS maps each non-numeric m_* module to its
+// hardcoded default tint. Numeric modules (5-band / speed-scale /
+// gauge / cache-hit) keep their existing color logic and are NOT in
+// this map. The dispatcher / INLINE_RENDERERS use this as a fallback
+// when `params.color` is empty — so users always see SOME color on
+// bare-form modules, and `:color:<c>` overrides as before.
+const DEFAULT_COLORS: Record<string, string> = {
+  // String-class identifiers / metadata
+  m_session: NAMED_PALETTE.purple,
+  m_model: NAMED_PALETTE.cyan,
+  m_effort: NAMED_PALETTE.magenta,
+  m_repo: NAMED_PALETTE.blue,
+  m_branch: NAMED_PALETTE.teal,
+  m_gitStatus: NAMED_PALETTE.brown,
+  m_ccVersion: NAMED_PALETTE.gray,
+  m_ccversion: NAMED_PALETTE.gray, // deprecated alias — same color
+  m_age: NAMED_PALETTE.stale,      // (already STALE_COLOR-shaped)
+  m_version: NAMED_PALETTE.gray,
+  m_balance: NAMED_PALETTE.lavender,
+  m_modeLabel: NAMED_PALETTE.stale,
+  m_label: NAMED_PALETTE.cyan,
+  // Duration / count class (numeric but NOT 5-band / scale)
+  m_sessionDuration: NAMED_PALETTE.brown,
+  m_sessionApiDuration: NAMED_PALETTE.brown,
+  m_linesAdded: "\x1b[1;38;5;22m",   // bold + dark green (muted git-style added)
+  m_linesRemoved: "\x1b[1;38;5;88m", // bold + dim red (muted git-style removed)
+  m_apiCalls: NAMED_PALETTE.cyan,
+  m_countdown5h: NAMED_PALETTE.teal,
+  m_countdown7d: NAMED_PALETTE.teal,
+  m_contextSize: NAMED_PALETTE.gray,
+  m_contextUsed: NAMED_PALETTE.gray,
+};
+
 // Snapshot of `cfg().colors` + the `brightBlack` input shortcut. Read
 // once at module load so render hot paths don't touch configStore per
 // call. Mirrors the pattern at lines 56-63.
@@ -2039,6 +2141,18 @@ const LABEL_COLOR_SHORTCUTS: Record<string, string> = (() => {
     red: c.red,
     stale: c.stale,
     brightBlack: "\x1b[90m",
+    // v6.x — additional named shortcuts exposed via `:color:<name>`
+    // (e.g. `:color:cyan` on a string module). Identical to the
+    // entries in NAMED_PALETTE; duplicated here so resolveColor can
+    // look them up without scanning NAMED_PALETTE separately.
+    cyan: NAMED_PALETTE.cyan,
+    blue: NAMED_PALETTE.blue,
+    magenta: NAMED_PALETTE.magenta,
+    purple: NAMED_PALETTE.purple,
+    teal: NAMED_PALETTE.teal,
+    brown: NAMED_PALETTE.brown,
+    gray: NAMED_PALETTE.gray,
+    lavender: NAMED_PALETTE.lavender,
   };
 })();
 
@@ -2346,15 +2460,14 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   m_ctx: placeholderNA("ctx:"),
   m_cacheRead: placeholderNA("cache:"),
   m_cacheHitRate: placeholderNA("hit:"),
-  m_contextSize: placeholderNA(""),
-  m_contextUsed: placeholderNA(""),
+  m_contextSize: placeholderNA("size:"),
+  // m_contextUsed's natural shape is "${pct}%" — the placeholder
+  // preserves the unit suffix so users see "used:n/a%" rather than
+  // bare "n/a" when usedPct is null.
+  m_contextUsed: placeholderDashesUnit("used:n/a%"),
   // number+unit — placeholder shape is the module's normal body
   // with "--" swapped in for the numeric value (e.g. "5h:--",
   // "+ --", "-- t/s"). Empty body = bare dash.
-  m_tokenInSpeed: placeholderDashesUnit("in:-- t/s"),
-  m_tokenOutSpeed: placeholderDashesUnit("out:-- t/s"),
-  m_tokenInAvg: placeholderDashesUnit("in:--"),
-  m_tokenOutAvg: placeholderDashesUnit("out:--"),
   m_sessionDuration: placeholderDashesUnit("--"),
   m_sessionApiDuration: placeholderDashesUnit("--"),
   m_linesAdded: placeholderDashesUnit("+ --"),
@@ -2374,6 +2487,28 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   m_gitStatus: placeholderNA("git:"),
   m_ccVersion: placeholderNA(""),
   m_ccversion: placeholderNA(""),
+  // v6.x: per-API-call token modules. Previously these had no
+  // placeholder registration — bare forms dropped on null and the
+  // inline path produced "in:-- t/s" / "in:--" sentinels. New
+  // rule (per user direction): null → "n/a"; idle tick (delta=0)
+  // → "in:0" / "out:0" / "in:0.0 t/s"; 0 is always rendered, never
+  // hidden. The bare MODULES paths now route through these
+  // placeholders instead of returning null so layout stays stable.
+  m_tokenIn: placeholderNA("in:"),
+  m_tokenOut: placeholderNA("out:"),
+  m_tokenInSpeed: placeholderNA("in:"),
+  m_tokenOutSpeed: placeholderNA("out:"),
+  m_tokenInAvg: placeholderNA("in:"),
+  m_tokenOutAvg: placeholderNA("out:"),
+  // v6.x: previously drop-by-design modules (no age info / no
+  // version / no reset data / no balance). Now also follow the
+  // placeholder rule — they occupy their slot so adjacent
+  // separators don't shift. :nulldrop:true remains the opt-out.
+  m_age: placeholderNA("age:"),
+  m_version: placeholderNA("v:"),
+  m_countdown5h: placeholderDashesUnit("5h:--"),
+  m_countdown7d: placeholderDashesUnit("7d:--"),
+  m_balance: placeholderNA("balance:"),
 };
 
 // Render a placeholder body unless the user has explicitly opted
@@ -2420,6 +2555,27 @@ function placeholderWithColor(
   if (body == null) return null;
   const color = (params.color as string | undefined) ?? STALE_COLOR;
   return `${color}${body}${RESET}`;
+}
+
+// v6.x — bare-path variant of placeholderWithColor. Used by MODULES
+// (the bare form, no inline-args) so a module's null case renders
+// its PLACEHOLDERS body wrapped in STALE_COLOR, matching the inline
+// default. Returns null when the module has no registered shape
+// (preserves the legacy drop-by-design behavior — but as of v6.x,
+// every module in MODULES has either a placeholder or a different
+// always-render strategy, so this null return is only a defensive
+// fallback). Color override is not supported on the bare path
+// (mod.color is a no-op for bare tokens; the inline path remains
+// the only way to customize placeholder color).
+//
+// `ctx` is required because placeholderGauge reads ctx.mode to
+// pick between the used ("░...░ 0%") and remaining ("▓...▓ 100%")
+// gauge placeholder shapes. Pure-NA and dashes-unit bodies ignore
+// ctx, so passing the real render context is safe and uniform.
+function placeholderBare(modKey: string, ctx: RenderContext): string | null {
+  const body = PLACEHOLDERS[modKey];
+  if (!body) return null;
+  return `${STALE_COLOR}${body({}, ctx)}${RESET}`;
 }
 
 // Extended-color schema used by `m_quote`. Accepts the standard
@@ -2652,6 +2808,21 @@ function wrapPlain(body: string, color: string | undefined): string {
   return color ? `${color}${body}${RESET}` : body;
 }
 
+// v6.x — wrap a plain-text body with either the user's `:color:<c>`
+// override or the module's hardcoded DEFAULT_COLORS entry. Used by
+// every non-numeric m_* INLINE_RENDERER so bare-form parity holds:
+// bare `m_session` (no params) tints to purple, and inline
+// `m_session:color:green` overrides to green — exactly as the user
+// would expect.
+function wrapPlainDefault(
+  modKey: string,
+  body: string,
+  paramsColor: string | undefined,
+): string {
+  const color = paramsColor ?? DEFAULT_COLORS[modKey];
+  return color ? `${color}${body}${RESET}` : body;
+}
+
 // v0.4.x — parallel to MODULES' per-module `type` tag. Each entry
 // here mirrors its INLINE_RENDERERS counterpart's provider scope:
 // the inline form `m_window5h:color:…` is also plan-only; `m_balance:…`
@@ -2694,13 +2865,13 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   },
   m_modeLabel: (params, ctx) => {
     // Mirrors the MODULES["m_modeLabel"] body: balance path → balance
-    // label, else the mode-aware label. The colored wrapper is added
-    // here only (not in MODULES) so the bare `m_modeLabel` form keeps
-    // its existing byte-for-byte output.
+    // label, else the mode-aware label. v6.x: inline form now ALSO
+    // tints with DEFAULT_COLORS["m_modeLabel"] (=stale gray) so bare
+    // vs inline parity holds for the prefix label too.
     const s = ctx.providerType === "balance"
       ? cfg().modeLabels.balance
       : cfg().modeLabels[ctx.mode];
-    return wrapPlain(s, params.color as string | undefined);
+    return wrapPlainDefault("m_modeLabel", s, params.color as string | undefined);
   },
   m_window5h: (params, ctx) => {
     if (!ctx.fiveHour) return placeholderWithColor("m_window5h", params, ctx);
@@ -2722,42 +2893,46 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     return formatOneChunk(ctx.weekly, mode, cfg().bar.width, ctx.stale);
   },
   m_countdown5h: (params, ctx) => {
-    if (!ctx.fiveHour) return null;
+    // v6.x: missing window → "5h:--" placeholder (was: drop).
+    // Bare MODULES already does this; inline now matches.
+    if (!ctx.fiveHour) return placeholderWithColor("m_countdown5h", params, ctx);
     const body = formatOneResetSuffix("5h", ctx.fiveHour, ctx.nowMs);
     if (body === "") return null;
-    return wrapPlain(body, params.color as string | undefined);
+    return wrapPlainDefault("m_countdown5h", body, params.color as string | undefined);
   },
   m_countdown7d: (params, ctx) => {
-    if (!ctx.weekly) return null;
+    // v6.x: missing window → "7d:--" placeholder.
+    if (!ctx.weekly) return placeholderWithColor("m_countdown7d", params, ctx);
     const body = formatOneResetSuffix("7d", ctx.weekly, ctx.nowMs);
     if (body === "") return null;
-    return wrapPlain(body, params.color as string | undefined);
+    return wrapPlainDefault("m_countdown7d", body, params.color as string | undefined);
   },
   m_balance: (params, ctx) => {
-    // m_balance has no nulldrop placeholder — its no-data shape is
-    // a multi-currency join ("CN¥10.50 · USDC5") that doesn't have
-    // a natural placeholder. If the data is absent or the
-    // formatted body is empty, drop the chunk. The MODULES path
-    // has the same drop-on-null behavior, so inline parity is
-    // preserved.
-    if (!ctx.balance) return null;
-    const color = params.color as string | undefined;
+    // v6.x: missing balance → "balance:n/a" placeholder (was:
+    // drop). Multi-currency join still prefers the real chunk
+    // when available; the placeholder only fires on the truly
+    // empty case. Default tint comes from DEFAULT_COLORS — see
+    // wrapPlainDefault below.
+    if (!ctx.balance) return placeholderWithColor("m_balance", params, ctx);
+    const color = (params.color as string | undefined) ?? DEFAULT_COLORS["m_balance"];
     const text = formatBalanceEntriesColored(ctx.balance, color);
-    return text || null;
+    return text || placeholderWithColor("m_balance", params, ctx);
   },
   m_age: (params, ctx) => {
-    if (ctx.ageMs == null) return null;
+    // v6.x: missing ageMs → "age:n/a" placeholder (was: drop).
+    if (ctx.ageMs == null) return placeholderWithColor("m_age", params, ctx);
     // v0.6.0+ — same cross-recursion dedup as the bare-MODULES path.
     // Whichever m_age instance fires first (bare or inline, top-level
     // or inside an m_template: fragment) claims the slot.
     if (ctx.ageEmittedRef?.value) return null;
     if (ctx.ageEmittedRef) ctx.ageEmittedRef.value = true;
-    const color = params.color as string | undefined;
+    const color = (params.color as string | undefined) ?? DEFAULT_COLORS["m_age"];
     return formatStaleSuffix(ctx.ageMs, !ctx.stale, color);
   },
   m_version: (params, ctx) => {
-    if (!ctx.version) return null;
-    return wrapPlain(`v${ctx.version}`, params.color as string | undefined);
+    // v6.x: missing version → "v:n/a" placeholder (was: drop).
+    if (!ctx.version) return placeholderWithColor("m_version", params, ctx);
+    return wrapPlainDefault("m_version", `v${ctx.version}`, params.color as string | undefined);
   },
   m_tokenIn: (params, ctx) => {
     const r = computeTickDelta(ctx, "in");
@@ -2783,7 +2958,9 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const t = ctx.tokens?.current;
     if (!t) return placeholderWithColor("m_ctx", params, ctx);
     const len = (t.input ?? 0) + (t.cacheCreation ?? 0) + (t.cacheRead ?? 0);
-    if (len === 0) return placeholderWithColor("m_ctx", params, ctx);
+    // v6.x: zero length now renders as "ctx:0" (was: "ctx:n/a"
+    // placeholder). Aligns with the bare-path change — 0 is a
+    // real value, not missing data.
     return wrapPlain(
       `ctx:${formatCompactToken(len)}`,
       params.color as string | undefined,
@@ -2832,7 +3009,9 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const avg = peekAvg(sid, ctx.tokens?.cwd);
     if (!avg) return placeholderWithColor("m_cacheHitRate", params, ctx);
     const denom = avg.sumCache + avg.sumIn;
-    if (denom === 0) return placeholderWithColor("m_cacheHitRate", params, ctx);
+    // v6.x: zero denominator now renders "hit:0.0%" (was:
+    // placeholder drop). Aligns with bare-path change.
+    if (denom === 0) return `${cacheHitColor(0)}hit:0.0%${RESET}`;
     const pct = (avg.sumCache / denom) * 100;
     const color = (params.color as string | undefined) ?? cacheHitColor(pct);
     return `${color}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;
@@ -2840,8 +3019,12 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   m_cacheRead: (params, ctx) => {
     const t = ctx.tokens?.current;
     if (!t) return placeholderWithColor("m_cacheRead", params, ctx);
-    const read = t.cacheRead ?? 0;
-    if (read === 0) return placeholderWithColor("m_cacheRead", params, ctx);
+    // v6.x: distinguish cacheRead=null (field not shipped by
+    // stdin) from cacheRead=0 (real zero cache reads).
+    //   null → placeholder "cache:n/a"
+    //   0    → "cache:0 (0.0%)" (real zero, not hidden)
+    if (t.cacheRead == null) return placeholderWithColor("m_cacheRead", params, ctx);
+    const read = t.cacheRead;
     const denom = (t.input ?? 0) + read + (t.cacheCreation ?? 0);
     const pct = denom > 0 ? (read / denom) * 100 : null;
     const label = formatCompactToken(read);
@@ -2935,17 +3118,17 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   m_session: (params, ctx) => {
     const s = ctx.tokens?.sessionName;
     if (s == null) return placeholderWithColor("m_session", params, ctx);
-    return wrapPlain(s, params.color as string | undefined);
+    return wrapPlainDefault("m_session", s, params.color as string | undefined);
   },
   m_model: (params, ctx) => {
     const s = ctx.tokens?.modelDisplayName;
     if (s == null) return placeholderWithColor("m_model", params, ctx);
-    return wrapPlain(s, params.color as string | undefined);
+    return wrapPlainDefault("m_model", s, params.color as string | undefined);
   },
   m_effort: (params, ctx) => {
     const s = ctx.tokens?.effort;
     if (s == null) return placeholderWithColor("m_effort", params, ctx);
-    return wrapPlain(s, params.color as string | undefined);
+    return wrapPlainDefault("m_effort", s, params.color as string | undefined);
   },
   m_repo: (params, ctx) => {
     const r = ctx.tokens?.repo;
@@ -2954,48 +3137,48 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
       (p): p is string => p != null && p.length > 0,
     );
     if (parts.length === 0) return placeholderWithColor("m_repo", params, ctx);
-    return wrapPlain(parts.join("/"), params.color as string | undefined);
+    return wrapPlainDefault("m_repo", parts.join("/"), params.color as string | undefined);
   },
   m_branch: (params, ctx) => {
     const branch = readGitInfo(ctx.tokens?.cwd)?.branch;
     if (branch == null) return placeholderWithColor("m_branch", params, ctx);
-    return wrapPlain(branch, params.color as string | undefined);
+    return wrapPlainDefault("m_branch", branch, params.color as string | undefined);
   },
   m_gitStatus: (params, ctx) => {
     const info = readGitInfo(ctx.tokens?.cwd);
     if (info == null) return placeholderWithColor("m_gitStatus", params, ctx);
-    return wrapPlain(info.dirty ? "dirty" : "clean", params.color as string | undefined);
+    return wrapPlainDefault("m_gitStatus", info.dirty ? "dirty" : "clean", params.color as string | undefined);
   },
   m_ccVersion: (params, ctx) => {
     const v = ctx.tokens?.ccversion;
     if (v == null) return placeholderWithColor("m_ccVersion", params, ctx);
-    return wrapPlain(v, params.color as string | undefined);
+    return wrapPlainDefault("m_ccVersion", v, params.color as string | undefined);
   },
   // Deprecated alias — same body as m_ccVersion.
   m_ccversion: (params, ctx) => {
     const v = ctx.tokens?.ccversion;
     if (v == null) return placeholderWithColor("m_ccversion", params, ctx);
-    return wrapPlain(v, params.color as string | undefined);
+    return wrapPlainDefault("m_ccversion", v, params.color as string | undefined);
   },
   m_sessionDuration: (params, ctx) => {
     const ms = ctx.tokens?.cost.totalDurationMs;
     if (ms == null) return placeholderWithColor("m_sessionDuration", params, ctx);
-    return wrapPlain(formatRemainingMs(ms), params.color as string | undefined);
+    return wrapPlainDefault("m_sessionDuration", formatRemainingMs(ms), params.color as string | undefined);
   },
   m_sessionApiDuration: (params, ctx) => {
     const ms = ctx.tokens?.cost.totalApiDurationMs;
     if (ms == null) return placeholderWithColor("m_sessionApiDuration", params, ctx);
-    return wrapPlain(formatRemainingMs(ms), params.color as string | undefined);
+    return wrapPlainDefault("m_sessionApiDuration", formatRemainingMs(ms), params.color as string | undefined);
   },
   m_linesAdded: (params, ctx) => {
     const n = ctx.tokens?.cost.totalLinesAdded;
     if (n == null) return placeholderWithColor("m_linesAdded", params, ctx);
-    return wrapPlain(`+ ${n}`, params.color as string | undefined);
+    return wrapPlainDefault("m_linesAdded", `+ ${n}`, params.color as string | undefined);
   },
   m_linesRemoved: (params, ctx) => {
     const n = ctx.tokens?.cost.totalLinesRemoved;
     if (n == null) return placeholderWithColor("m_linesRemoved", params, ctx);
-    return wrapPlain(`- ${n}`, params.color as string | undefined);
+    return wrapPlainDefault("m_linesRemoved", `- ${n}`, params.color as string | undefined);
   },
   m_tokenInTotal: (params, ctx) => {
     const t = ctx.tokens;
@@ -3022,20 +3205,20 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   // computeTickDelta.)
   m_apiCalls: (params, ctx) => {
     const cwd = ctx.tokens?.cwd;
-    if (!cwd) return wrapPlain("calls:0", params.color as string | undefined);
+    if (!cwd) return wrapPlainDefault("m_apiCalls", "calls:0", params.color as string | undefined);
     const v = statusStore.readTickStatus(cwd, "tickStatus");
-    if (!v) return wrapPlain("calls:0", params.color as string | undefined);
-    return wrapPlain(`calls:${v.sumApiCount}`, params.color as string | undefined);
+    if (!v) return wrapPlainDefault("m_apiCalls", "calls:0", params.color as string | undefined);
+    return wrapPlainDefault("m_apiCalls", `calls:${v.sumApiCount}`, params.color as string | undefined);
   },
   m_contextSize: (params, ctx) => {
     const sz = ctx.tokens?.contextWindow?.size;
     if (sz == null) return placeholderWithColor("m_contextSize", params, ctx);
-    return wrapPlain(formatCompactToken(sz), params.color as string | undefined);
+    return wrapPlainDefault("m_contextSize", `size:${formatCompactToken(sz)}`, params.color as string | undefined);
   },
   m_contextUsed: (params, ctx) => {
     const pct = ctx.tokens?.contextWindow?.usedPct;
     if (pct == null) return placeholderWithColor("m_contextUsed", params, ctx);
-    return wrapPlain(`${pct}%`, params.color as string | undefined);
+    return wrapPlainDefault("m_contextUsed", `used:${pct}%`, params.color as string | undefined);
   },
   m_windowContext: (params, ctx) => {
     if (!ctx.contextWindow) return placeholderWithColor("m_windowContext", params, ctx);
@@ -3077,19 +3260,24 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
 
 // Extract the `m_tokenTotal` body as a pure helper so the inline
 // renderer can call it without duplicating the computation.
+// v6.x: when there's no snapshot at all, return the placeholder
+// shape directly (without SGR wrap — the inline renderer applies
+// STALE_COLOR + RESET when it gets a non-null string back, so
+// returning the plain placeholder body here is the right division
+// of labor). Mirrors the bare MODULES path's placeholderBare call.
 function inlineTokenTotalLabel(ctx: RenderContext): string | null {
   const t = ctx.tokens;
-  if (!t) return null;
+  if (!t) return "tot:n/a";
   const inT = t.totals.input ?? 0;
   const outT = t.totals.output ?? 0;
   const cache = (t.current.cacheCreation ?? 0) + (t.current.cacheRead ?? 0);
   return `tot:${formatCompactToken(inT + outT + cache)}`;
 }
 
-// Same for `m_tokenSession`.
+// Same for `m_tokenSession`. v6.x: missing tokens → "session:n/a".
 function inlineTokenSessionLabel(ctx: RenderContext): string | null {
   const t = ctx.tokens;
-  if (!t) return null;
+  if (!t) return "session:n/a";
   const inT = t.totals.input ?? 0;
   const outT = t.totals.output ?? 0;
   const cache = (t.current.cacheCreation ?? 0) + (t.current.cacheRead ?? 0);

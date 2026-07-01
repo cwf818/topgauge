@@ -719,8 +719,8 @@ captured by `/statusline`):
 | `m_linesRemoved`         | Session-cumulative lines removed — e.g. `- 967`. Reads stdin `cost.total_lines_removed`. |
 | `m_tokenInTotal`         | Session-cumulative input tokens — e.g. `in:163k`. **v0.4.0**: new module, replaces the pre-v0.4.0 `m_tokenIn` semantic. Reads stdin `context_window.total_input_tokens`. |
 | `m_tokenOutTotal`        | Session-cumulative output tokens — e.g. `out:155`. **v0.4.0**: new module, replaces the pre-v0.4.0 `m_tokenOut` semantic. |
-| `m_contextSize`          | Context window size (compact) — e.g. `200.0k`. Reads stdin `context_window.context_window_size`. |
-| `m_contextUsed`          | Context used percentage — e.g. `63%`. Reads stdin `context_window.used_percentage`. |
+| `m_contextSize`          | Context window size (compact) — e.g. `size:200.0k`. Reads stdin `context_window.context_window_size`. |
+| `m_contextUsed`          | Context used percentage — e.g. `used:63%`. Reads stdin `context_window.used_percentage`. |
 | `m_windowContext`        | Context bar + 5-band-colored percentage, parallel to `m_window5h` / `m_window7d` — e.g. `▓▓▓▓▓░░░ 63%`. Synthesized from `used_percentage`. |
 | `m_template:<key>` (v0.4.0+) | Expand a `lineTemplates[<key>]` fragment into the current render. See [`m_template`](#mtemplatekeymodenulldrop-v040) below. |
 

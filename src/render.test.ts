@@ -224,10 +224,13 @@ describe("formatLine — mode='used' (default)", () => {
     // Bar: 6 plain ░ + 2 colored ▓
     assert.ok(line.includes(`░░░░░░${ORANGE}▓▓${RESET} ${ORANGE}25%${RESET}`),
       `got: ${line}`);
-    // No resetAt → bare " 5h" with no parens and no slash.
-    assert.ok(line.includes(" 5h "), `got: ${line}`);
-    assert.ok(!line.includes("/ 5h"), `got: ${line}`);
-    assert.ok(!line.includes("("), `got: ${line}`);
+    // No resetAt → bare "5h" with no parens and no slash. v6.x:
+    // m_countdown5h is wrapped in DEFAULT_COLORS (teal); strip SGR
+    // before checking substring.
+    const cleanR = strip(line);
+    assert.ok(cleanR.includes(" 5h "), `got: ${cleanR}`);
+    assert.ok(!cleanR.includes("/ 5h"), `got: ${cleanR}`);
+    assert.ok(!cleanR.includes("("), `got: ${cleanR}`);
   });
 });
 
@@ -250,10 +253,13 @@ describe("formatLine — mode='used'", () => {
     // Bar: 6 colored ▓ (LEFT) + 2 plain ░ (RIGHT)
     assert.ok(line.includes(`${ORANGE}▓▓▓▓▓▓${RESET}░░ ${ORANGE}75%${RESET}`),
       `got: ${line}`);
-    // No resetAt → bare " 5h" with no parens and no slash.
-    assert.ok(line.includes(" 5h "), `got: ${line}`);
-    assert.ok(!line.includes("/ 5h"), `got: ${line}`);
-    assert.ok(!line.includes("("), `got: ${line}`);
+    // No resetAt → bare "5h" with no parens and no slash. v6.x:
+    // m_countdown5h is wrapped in DEFAULT_COLORS (teal); strip SGR
+    // before checking substring.
+    const cleanU = strip(line);
+    assert.ok(cleanU.includes(" 5h "), `got: ${cleanU}`);
+    assert.ok(!cleanU.includes("/ 5h"), `got: ${cleanU}`);
+    assert.ok(!cleanU.includes("("), `got: ${cleanU}`);
   });
 
   it("full layout matches spec: 'Usage: <bar> <pct>% (<reset><arrow> <windowLabel>) · ...'", () => {
@@ -266,22 +272,26 @@ describe("formatLine — mode='used'", () => {
     );
     // 5h: used=62 → 5 colored ▓ (LEFT) + 3 plain ░ (RIGHT), ORANGE.
     // New template: "(38m🕛 5h)" — countdown + arrow + space + label, no slash.
+    // v6.x: m_countdown5h wraps the suffix in DEFAULT_COLORS (teal);
+    // assert on the SGR-stripped form so the literal substring check
+    // matches the rendered text after color removal.
+    const clean = strip(line);
     assert.ok(
-      line.includes(`${ORANGE}▓▓▓▓▓${RESET}░░░ ${ORANGE}62%${RESET} (38m🕛 5h)`),
-      `got: ${line}`
+      clean.includes(`▓▓▓▓▓░░░ 62% (38m🕛 5h)`),
+      `got: ${clean}`
     );
     // 7d (was wk): used=42 → 3 colored ▓ (LEFT) + 5 plain ░ (RIGHT), YELLOW.
     assert.ok(
-      line.includes(`${YELLOW}▓▓▓${RESET}░░░░░ ${YELLOW}42%${RESET} (4d16h🕛 7d)`),
-      `got: ${line}`
+      clean.includes(`▓▓▓░░░░░ 42% (4d16h🕛 7d)`),
+      `got: ${clean}`
     );
     // Mode label once at the front, ' · ' between windows.
-    assert.ok(line.startsWith("Usage: "), `got: ${line}`);
-    assert.ok(line.includes(" · "));
+    assert.ok(clean.startsWith("Usage: "), `got: ${clean}`);
+    assert.ok(clean.includes(" · "));
     // No double parens: "(38m🕛 5h)" not "(38m🕛) 5h".
-    assert.ok(!line.includes("🕛)"), `got: ${line}`);
+    assert.ok(!clean.includes("🕛)"), `got: ${clean}`);
     // No slash inside the reset annotation.
-    assert.ok(!line.includes("🕛 /"), `got: ${line}`);
+    assert.ok(!clean.includes("🕛 /"), `got: ${clean}`);
   });
 });
 
@@ -300,10 +310,13 @@ describe("formatLine — reset suffix integration", () => {
 
   it("no resetAt → bare ' 5h' / ' 7d' with no parens and no arrow", () => {
     const line = formatLine({ pct: 30 }, { pct: 40 });
-    assert.ok(!line.includes("🕛"));
-    assert.ok(!line.includes("("));
-    assert.ok(line.includes(" 5h"));
-    assert.ok(line.includes(" 7d"));
+    // v6.x: m_countdown5h/7d wrap in DEFAULT_COLORS (teal); strip SGR
+    // before checking substring.
+    const clean = strip(line);
+    assert.ok(!clean.includes("🕛"));
+    assert.ok(!clean.includes("("));
+    assert.ok(clean.includes(" 5h"));
+    assert.ok(clean.includes(" 7d"));
   });
 
   it("sub-minute remaining → '<1m' (still wrapped in parens, arrow preserved)", () => {
