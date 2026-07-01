@@ -1374,12 +1374,43 @@ function validateProviderEntry(v: unknown): ProviderEntry | null {
     !Array.isArray(e.config)
       ? (e.config as Record<string, unknown>)
       : undefined;
+  // v0.5.0+ — forward the user-supplied `parameters` block (the
+  // data-driven slot→path mapping). When absent we omit the key
+  // entirely so consumers can fall back to DEFAULT_MINIMAX_PARAMETERS
+  // (or empty {} for unknown providers). Validate the shape: must
+  // be a plain object of string→string. Any non-string value
+  // (number, boolean, null, nested object) is a user error — drop
+  // the whole block, fall through to default. We do NOT drop the
+  // entry itself; a partial parameters block that fails validation
+  // is recoverable (default fallback covers minimax), but a missing
+  // TYPE/BASE_URL is not.
+  let validatedParameters: Record<string, string> | undefined;
+  if ("parameters" in e && e.parameters !== undefined) {
+    const p = e.parameters;
+    if (p && typeof p === "object" && !Array.isArray(p)) {
+      const allString = Object.values(p as Record<string, unknown>).every(
+        (v) => typeof v === "string",
+      );
+      if (allString) {
+        validatedParameters = p as Record<string, string>;
+      } else {
+        warn(
+          "provider.parameters must be a string→string map; dropping the block",
+        );
+      }
+    } else {
+      warn(
+        "provider.parameters must be an object; dropping the block",
+      );
+    }
+  }
   return {
     TYPE: t as ProviderType,
     BASE_URL_COMPARED_TO: base,
     COMPARE_METHOD: cm as CompareMethod,
     ENDPOINT: ep,
     ...(validatedConfig ? { config: validatedConfig } : {}),
+    ...(validatedParameters ? { parameters: validatedParameters } : {}),
   };
 }
 
