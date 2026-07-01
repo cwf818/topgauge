@@ -253,6 +253,81 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
       __resetForTest();
     }
   });
+
+  it("does NOT double-append when m_age lives inside a m_template fragment", () => {
+    // v0.6.0+ — when m_age is in lineTemplates.<fragment> but the
+    // outermost statuslineTemplate only references it via
+    // `m_template:<fragment>:mode:<plan|balance>`, the OLD
+    // templateHasAgeModule top-level string scan missed it and the
+    // forced-visibility fallback appended a SECOND ⛓️‍💥, producing
+    // the user's "two broken-chain indicators" bug. The new dedup
+    // is render-recursion-aware (ageEmittedRef on the RenderContext)
+    // so the first m_age instance claims the slot, every subsequent
+    // instance (including the fallback) skips.
+    __resetForTest({
+      statuslineTemplate:["m_template:plan_alt:mode:plan"],
+      lineTemplates:{
+        plan_alt: ["m_age"],
+        balance: [],
+      } as any,
+      timeFormat: { minUnit: "s", maxUnitCount: 4 },
+    });
+    try {
+      const line = renderProviderLine("minimax", {
+        mode: "used",
+        nowMs: Date.now(),
+        fiveHour: { pct: 38, resetAt: null },
+        weekly: { pct: 60, resetAt: null },
+        ageMs: 5 * 60_000,
+        stale: true,
+        version: "",
+      });
+      const stripped = strip(line);
+      // Match the emoji + " ago" with anything between — formatRemainingMs
+      // may emit "5m0s ago", "5m ago", etc. depending on timeFormat.minUnit.
+      const occurrences = (stripped.match(/⛓️‍💥\s+\S+\s+ago/g) ?? []).length;
+      assert.equal(
+        occurrences, 1,
+        `expected exactly 1 ⛓️‍💥 (was double-emitting before v0.6.0+): ${stripped}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("does NOT double-append when m_age appears in BOTH outer and fragment templates", () => {
+    // Stress test — even when the user puts m_age in both the
+    // outer statuslineTemplate and a lineTemplates fragment, only
+    // ONE ⛓️‍💥 should fire. The ageEmittedRef is shared across the
+    // whole render tree.
+    __resetForTest({
+      statuslineTemplate:["m_template:outer:mode:plan", "m_age"],
+      lineTemplates:{
+        outer: ["s_0", "m_window5h", "s_0", "m_age"],
+        balance: [],
+      } as any,
+      timeFormat: { minUnit: "s", maxUnitCount: 4 },
+    });
+    try {
+      const line = renderProviderLine("minimax", {
+        mode: "used",
+        nowMs: Date.now(),
+        fiveHour: { pct: 38, resetAt: null },
+        weekly: { pct: 60, resetAt: null },
+        ageMs: 5 * 60_000,
+        stale: true,
+        version: "",
+      });
+      const stripped = strip(line);
+      const occurrences = (stripped.match(/⛓️‍💥\s+\S+\s+ago/g) ?? []).length;
+      assert.equal(
+        occurrences, 1,
+        `expected exactly 1 ⛓️‍💥 across outer + fragment: ${stripped}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
 });
 
 describe("lineTemplate — m_version module", () => {
@@ -1011,7 +1086,10 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
     assert.ok(line.includes("\x1b[38;5;196m⛓️‍💥 5m ago"), `got: ${JSON.stringify(line)}`);
   });
 
-  it("bare m_age keeps STALE_COLOR", () => {
+  it("bare m_age with stale=true wraps in BROKEN_COLOR (red), not STALE_COLOR", () => {
+    // v0.6.0+: split the gray stale color into two — broken-chain
+    // (⛓️‍💥) gets BROKEN_COLOR (\x1b[31m, dark red), fresh 🔗 keeps
+    // STALE_COLOR (\x1b[90m, gray).
     __resetForTest({
       statuslineTemplate:["m_age"],
     });
@@ -1022,7 +1100,8 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
       stale: true,
       version: "",
     });
-    assert.ok(line.includes("\x1b[90m⛓️‍💥 5m ago"), `got: ${JSON.stringify(line)}`);
+    assert.ok(line.includes("\x1b[31m⛓️‍💥 5m ago"), `got: ${JSON.stringify(line)}`);
+    assert.ok(!line.includes("\x1b[90m⛓️‍💥"), `STALE_COLOR leaked into broken: ${JSON.stringify(line)}`);
   });
 
   it("m_cacheRead:color:yellow replaces STALE_COLOR with yellow", () => {

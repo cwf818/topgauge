@@ -72,6 +72,14 @@ export const RED = configStore.get().colors.red;
 // Used for the stale-on-error annotation (" · 5m ago"). ANSI bright black
 // (\x1b[90m) reads as "dim gray" on both light and dark terminals.
 export const STALE_COLOR = configStore.get().colors.stale;
+// v0.6.0+ — distinct color for the BROKEN-chain "⛓️‍💥 X ago" annotation
+// emitted when the fetch failed AND we're rendering the last cached
+// value (formatStaleSuffix with healthy=false). Splits the gray stale
+// color into a two-axis vocabulary: gray for "informational / fresh
+// but stale-data" (🔗), dark red for "degraded / fetch failed" (⛓️‍💥).
+// Default `\x1b[31m` (basic dark red) — high contrast on light/dark
+// terminals, no 256-color palette dependence.
+export const BROKEN_COLOR = configStore.get().colors.broken;
 
 // 5-band thresholds applied to the **displayed** value (so remaining/used
 // modes share the same numeric thresholds — only the meaning flips).
@@ -200,12 +208,49 @@ function formatOneChunk(
   w: Window,
   mode: DisplayMode,
   width = cfg().bar.width,
+  // v0.6.0+: when stale=true, the WHOLE colored span (bar chunks
+  // AND percent tail) wraps in STALE_COLOR instead of the band-based
+  // color — the gray sweep is meant to read as "this number is
+  // lying; the fetch failed". splitBar() itself is left untouched
+  // (tests assert on its .color field at render.test.ts:30-93), so
+  // we post-process its output here: rebuild the colored bar chunks
+  // directly with STALE_COLOR wrapping. The plain (uncolored) side
+  // of the bar stays plain — we only override the side that would
+  // have been band-colored. Inline :color: overrides still win
+  // (see formatOneChunkColored and the INLINE_RENDERERS no-:color:
+  // branch path below).
+  stale: boolean = false,
 ): string {
   const usedPct = Math.max(0, Math.min(100, Math.round(w.pct)));
   const remainingPct = 100 - usedPct;
   const displayedPct = mode === "remaining" ? remainingPct : usedPct;
   const bar = splitBar(usedPct, mode, width);
-  return `${bar.leftChunk}${bar.rightChunk} ${bar.color}${displayedPct}%${RESET}`;
+  if (!stale) {
+    return `${bar.leftChunk}${bar.rightChunk} ${bar.color}${displayedPct}%${RESET}`;
+  }
+  // stale=true → rewrite the colored chunks AND the percent tail in
+  // STALE_COLOR. The plain side of the bar (whichever half is not
+  // the "metric of concern" for the active mode) stays plain so the
+  // user can still read the "what's used vs what's left" shape from
+  // the bar's filled/empty glyph pattern.
+  const filled = cfg().bar.filled;
+  const empty = cfg().bar.empty;
+  const coloredSize = Math.round((displayedPct / 100) * width);
+  const plainSize = Math.max(0, width - coloredSize);
+  let leftChunk: string;
+  let rightChunk: string;
+  if (mode === "used") {
+    const left = filled.repeat(coloredSize);
+    const right = empty.repeat(plainSize);
+    leftChunk = coloredSize > 0 ? `${STALE_COLOR}${left}${RESET}` : "";
+    rightChunk = right;
+  } else {
+    const left = empty.repeat(plainSize);
+    const right = filled.repeat(coloredSize);
+    leftChunk = left;
+    rightChunk = coloredSize > 0 ? `${STALE_COLOR}${right}${RESET}` : "";
+  }
+  return `${leftChunk}${rightChunk} ${STALE_COLOR}${displayedPct}%${RESET}`;
 }
 
 // v0.3.3+ variant: same layout, but the colored side of the bar AND
@@ -432,9 +477,14 @@ export function formatStaleSuffix(
   if (!Number.isFinite(ageMs)) return "";
   const emoji = healthy ? cfg().stale.ageEmoji.healthy : cfg().stale.ageEmoji.broken;
   const label = `${formatRemainingMs(ageMs)} ago`;
-  // v0.3.3+: `override` replaces the default STALE_COLOR (\x1b[90m)
-  // when supplied (used by the inline-args m_age path).
-  const color = override ?? STALE_COLOR;
+  // v0.3.3+: `override` replaces the default color when supplied
+  // (used by the inline-args m_age:color:… path; override always
+  // wins regardless of broken/fresh).
+  // v0.6.0+: split the default into two — STALE_COLOR (gray) for the
+  // informational 🔗 annotation on fresh ticks, BROKEN_COLOR (red)
+  // for the ⛓️‍💥 annotation when the fetch failed and the cache is
+  // serving stale data.
+  const color = override ?? (healthy ? STALE_COLOR : BROKEN_COLOR);
   return `${color}${emoji} ${label}${RESET}`;
 }
 
@@ -618,6 +668,17 @@ type RenderContext = {
   // `remaining` / `balance`); the type discriminator is a TYPE, not
   // a mode.
   providerType: "plan" | "balance" | "unknown";
+  // v0.6.0+ — mutable cross-recursion dedup ref for the m_age module.
+  // Initialized to `{ value: false }` by renderProviderLine and
+  // propagated by reference through any nested `m_template:`
+  // expansions (m_template passes ctx as-is; only the inner template
+  // array is sliced). The first m_age instance to emit sets .value
+  // = true; subsequent m_age instances (and the forced-visibility
+  // append in renderProviderLine) see .value=true and skip. Replaces
+  // the older templateHasAgeModule string-match which only scanned
+  // the top-level token list and missed m_age nested inside
+  // lineTemplates.* fragments.
+  ageEmittedRef?: { value: boolean };
 };
 
 // v0.4.x — modules may declare a `type` filter so they only render
@@ -1395,11 +1456,11 @@ const MODULES: Record<string, Module> = {
     ? cfg().modeLabels.balance
     : cfg().modeLabels[c.mode]),
   m_window5h: Object.assign(
-    ((c: RenderContext) => c.fiveHour ? formatOneChunk(c.fiveHour, c.mode) : null),
+    ((c: RenderContext) => c.fiveHour ? formatOneChunk(c.fiveHour, c.mode, cfg().bar.width, c.stale) : null),
     { type: "plan" as const },
   ),
   m_window7d: Object.assign(
-    ((c: RenderContext) => c.weekly ? formatOneChunk(c.weekly, c.mode) : null),
+    ((c: RenderContext) => c.weekly ? formatOneChunk(c.weekly, c.mode, cfg().bar.width, c.stale) : null),
     { type: "plan" as const },
   ),
   // Reset-suffix portion of a window. Returns null only when the
@@ -1431,8 +1492,17 @@ const MODULES: Record<string, Module> = {
   // (showing the cache age), ⛓️‍💥 for stale (showing the time since
   // the last successful fetch). Returns null when ageMs is missing
 // — that's the only signal that "no age info is available".
-  m_age: (c) =>
-    c.ageMs != null ? formatStaleSuffix(c.ageMs, !c.stale) : null,
+  m_age: (c) => {
+    if (c.ageMs == null) return null;
+    // v0.6.0+ — dedup against any other m_age that already emitted
+    // anywhere in the recursive render tree. The forced-visibility
+    // append in renderProviderLine reads the same ref; the FIRST
+    // m_age to fire (whichever instance it is) claims the slot,
+    // all subsequent instances return null.
+    if (c.ageEmittedRef?.value) return null;
+    if (c.ageEmittedRef) c.ageEmittedRef.value = true;
+    return formatStaleSuffix(c.ageMs, !c.stale);
+  },
   // Plugin version (e.g. "v0.2.17"). Hidden when version is empty
   // (the configStore never got setVersion()'d — e.g. tests that
   // don't care about the version).
@@ -1783,8 +1853,10 @@ const MODULES: Record<string, Module> = {
   // Context window bar + 5-band-colored percentage, parallel to
   // m_window5h / m_window7d. Reads from ctx.contextWindow (a
   // synthetic Window populated from stdin.context_window.used_percentage).
+  // v0.6.0+: stale-aware — percent tail switches to STALE_COLOR
+  // when the fetch is stale, matching m_window5h/7d.
   m_windowContext: (c) =>
-    c.contextWindow ? formatOneChunk(c.contextWindow, c.mode) : null,
+    c.contextWindow ? formatOneChunk(c.contextWindow, c.mode, cfg().bar.width, c.stale) : null,
 };
 
 // Cap unknown-module warnings to once per process so a template typo
@@ -2633,15 +2705,19 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const mode = (params.display as DisplayMode | undefined) ?? ctx.mode;
     const color = params.color as string | undefined;
     if (color) return formatOneChunkColored(ctx.fiveHour, mode, color);
-    // No override → reproduce the bare-module output exactly.
-    return formatOneChunk(ctx.fiveHour, mode);
+    // No override → reproduce the bare-module output. v0.6.0+: pass
+    // ctx.stale so the percent tail wraps in STALE_COLOR instead of
+    // the band-based color on stale ticks. :color: override above
+    // always wins (documented v0.3.3 semantics — the user's color
+    // wins even when stale so explicit coloring stays sticky).
+    return formatOneChunk(ctx.fiveHour, mode, cfg().bar.width, ctx.stale);
   },
   m_window7d: (params, ctx) => {
     if (!ctx.weekly) return placeholderWithColor("m_window7d", params, ctx);
     const mode = (params.display as DisplayMode | undefined) ?? ctx.mode;
     const color = params.color as string | undefined;
     if (color) return formatOneChunkColored(ctx.weekly, mode, color);
-    return formatOneChunk(ctx.weekly, mode);
+    return formatOneChunk(ctx.weekly, mode, cfg().bar.width, ctx.stale);
   },
   m_countdown5h: (params, ctx) => {
     if (!ctx.fiveHour) return null;
@@ -2669,6 +2745,11 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   },
   m_age: (params, ctx) => {
     if (ctx.ageMs == null) return null;
+    // v0.6.0+ — same cross-recursion dedup as the bare-MODULES path.
+    // Whichever m_age instance fires first (bare or inline, top-level
+    // or inside an m_template: fragment) claims the slot.
+    if (ctx.ageEmittedRef?.value) return null;
+    if (ctx.ageEmittedRef) ctx.ageEmittedRef.value = true;
     const color = params.color as string | undefined;
     return formatStaleSuffix(ctx.ageMs, !ctx.stale, color);
   },
@@ -2956,7 +3037,9 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const mode = (params.display as DisplayMode | undefined) ?? ctx.mode;
     const color = params.color as string | undefined;
     if (color) return formatOneChunkColored(ctx.contextWindow, mode, color);
-    return formatOneChunk(ctx.contextWindow, mode);
+    // v0.6.0+: stale-aware — see m_window5h/7d path. :color: above
+    // always wins, so explicit user color stays sticky even on stale.
+    return formatOneChunk(ctx.contextWindow, mode, cfg().bar.width, ctx.stale);
   },
   // v0.4.0+ — expand a registered lineTemplates fragment. The
   // loader strips any `m_template:` tokens from lineTemplates
@@ -3417,6 +3500,12 @@ export function renderProviderLine(
     tokens: ctx.tokens ?? null,
     contextWindow,
     providerType,
+    // v0.6.0+ — single-owner dedup ref. Propagated by reference
+    // through any nested m_template: expansions; each m_age instance
+    // (bare + inline-args) checks + sets this slot so the WHOLE render
+    // emits ⛓️‍💥/🔗 at most once even when the user's template contains
+    // m_age in multiple places.
+    ageEmittedRef: { value: false },
   };
   const statuslineRaw = cfgSnap.statuslineTemplate;
   let template: string[];
@@ -3458,20 +3547,21 @@ export function renderProviderLine(
   // failure is always visible, no matter what the user put in their
   // template.
   //
-  // Dedup is template-level: check whether "m_age" appears in the
-  // template tokens directly, rather than scanning the rendered
-  // output for " ago" (which would misfire if a separator string
-  // happens to contain " ago" or anything overlapping with
-  // formatStaleSuffix's output tail).
-  //
-  // v0.3.3+ also accepts the inline-args form "m_age:color:…" — the
-  // renderer would still emit the chunk, so we must treat that as
-  // "m_age is present" too. Match by prefix instead of by exact
-  // string equality.
-  const templateHasAgeModule = template.some(
-    (tok) => tok === "m_age" || tok.startsWith("m_age:"),
-  );
-  if (ctx.ageMs != null && ctx.stale && !templateHasAgeModule) {
+  // Dedup v0.6.0+ — moved from a top-level string scan
+  // (`templateHasAgeModule`, which only saw the outermost tokens and
+  // missed m_age nested inside lineTemplates.* fragments) to a
+  // render-recursion-aware check: `fullCtx.ageEmittedRef.value`
+  // flips to true the moment ANY m_age instance (bare or inline,
+  // top-level or nested via m_template:) fires. The first m_age
+  // emits; this fallback sees the ref and skips, eliminating the
+  // "⛓️‍💥 ⛓️‍💥" double-append the old logic produced.
+  if (
+    ctx.ageMs != null &&
+    ctx.stale &&
+    fullCtx.ageEmittedRef !== undefined &&
+    !fullCtx.ageEmittedRef.value
+  ) {
+    fullCtx.ageEmittedRef.value = true;
     const suffix = formatStaleSuffix(ctx.ageMs, false);
     // The suffix carries its own SGR close, so it slots onto the
     // last line regardless of how many lines the template emitted.

@@ -9,6 +9,8 @@ import { __resetForTest } from "./config.ts";
 const RESET = "\x1b[0m";
 const RED = "\x1b[38;5;196m";
 const STALE_COLOR = "\x1b[90m";
+// v0.6.0+ — broken-chain color (matches colors.broken default).
+const BROKEN_COLOR = "\x1b[31m";
 
 const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
@@ -142,7 +144,7 @@ describe("buildProviderLine — stale (fetch failed, cache reused; broken emoji)
     const line = buildProviderLine("minimax", result);
     assert.ok(line);
     assert.ok(strip(line!).endsWith("⛓️‍💥 5m ago"));
-    assert.ok(line!.endsWith(`${STALE_COLOR}⛓️‍💥 5m ago${RESET}`));
+    assert.ok(line!.endsWith(`${BROKEN_COLOR}⛓️‍💥 5m ago${RESET}`));
   });
 
   it("DeepSeek: appends dim '⛓️‍💥 1h30m ago' suffix (maxUnitCount=2 keeps minutes)", () => {

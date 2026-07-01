@@ -278,6 +278,12 @@ const DEFAULT_COLORS = {
   orange: "\x1b[38;5;208m",
   red: "\x1b[38;5;196m",
   stale: "\x1b[90m",
+  // v0.6.0+ — broken-chain color (used by formatStaleSuffix when
+  // the m_age "⛓️‍💥 X ago" annotation fires, i.e. the fetch failed
+  // and we're rendering the last successful cached value). Distinct
+  // from `colors.stale` (gray, used for the fresh 🔗 annotation) so
+  // the user can read the two states at a glance.
+  broken: "\x1b[31m",
 };
 
 // v0.4.0+ — 3-band palette for the m_cacheHitRate module. Higher is
@@ -806,6 +812,7 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
         "orange",
         "red",
         "stale",
+        "broken",
       ] as const) {
         if (key in cm) {
           const norm = normalizeColor(cm[key]);

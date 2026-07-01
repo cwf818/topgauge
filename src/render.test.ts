@@ -8,6 +8,7 @@ import {
   formatResetSuffix,
   formatStaleSuffix,
   pctBar,
+  renderProviderLine,
   resolveDisplayMode,
   splitBar,
 } from "./render.ts";
@@ -20,6 +21,9 @@ const YELLOW = "\x1b[38;5;220m";
 const ORANGE = "\x1b[38;5;208m";
 const RED = "\x1b[38;5;196m";
 const STALE_COLOR = "\x1b[90m";
+// Mirror the new colors.broken default from src/config.ts so the
+// tests pin the shipped values.
+const BROKEN_TEST_COLOR = "\x1b[31m";
 
 // Strip ANSI escape codes so we can inspect content cleanly.
 const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
@@ -708,6 +712,150 @@ describe("formatBalanceLine — unavailable", () => {
   });
 });
 
+describe("m_window5h/7d — stale coloring (v0.6.0+)", () => {
+  it("wraps the colored bar chunks AND percent tail in STALE_COLOR when ctx.stale=true, regardless of band", () => {
+    // v0.6.0+ (post-bar-blocks extension): on stale, the WHOLE colored
+    // span — filled bar chunks (▓) AND the "N%" annotation — switches
+    // to STALE_COLOR. The plain side of the bar (░) stays plain so the
+    // filled/empty pattern still reads. Without this, a stale 60% bar
+    // would paint the ▓ blocks in the band-color of 60% (orange),
+    // making the line read as authoritative even though the number is
+    // from a stale cache.
+    __resetForTest({
+      statuslineTemplate:["m_window5h"],
+      timeFormat: { minUnit: "s", maxUnitCount: 4 },
+    });
+    try {
+      const fresh = renderProviderLine("minimax", {
+        mode: "used", nowMs: Date.now(),
+        fiveHour: { pct: 60, resetAt: null },
+        weekly: null, balance: null,
+        ageMs: 0, stale: false, version: "",
+      });
+      const stale = renderProviderLine("minimax", {
+        mode: "used", nowMs: Date.now(),
+        fiveHour: { pct: 60, resetAt: null },
+        weekly: null, balance: null,
+        ageMs: 5 * 60_000, stale: true, version: "",
+      });
+      // Fresh: band-color wrap on the percent.
+      assert.ok(
+        /\x1b\[38;5;\d+m60%/.test(fresh),
+        `fresh line should wrap '60%' in a band-color SGR: ${fresh}`,
+      );
+      assert.ok(!fresh.includes(`${STALE_COLOR}60%`), `fresh leaked STALE_COLOR: ${fresh}`);
+      // Stale: STALE_COLOR wraps the percent.
+      assert.ok(
+        stale.includes(`${STALE_COLOR}60%`),
+        `stale line should wrap '60%' in STALE_COLOR: ${stale}`,
+      );
+      // Stale: the colored bar chunks themselves wrap in STALE_COLOR.
+      // We assert against the SGR wrapping a `▓` (filled) block —
+      // specifically STALE_COLOR, not the band-color 256-color SGR.
+      // Use string-level checks (not RegExp) because STALE_COLOR and
+      // RESET both contain `[`/`]`, which is a footgun in regex
+      // character classes — string search is the simpler path here.
+      assert.ok(
+        stale.includes(`${STALE_COLOR}▓`),
+        `stale bar chunks should be wrapped in STALE_COLOR: ${stale}`,
+      );
+      // Stale: the bar's plain side (░) is still present and uncolored.
+      assert.ok(stale.includes("░"), `stale lost its empty bar chars: ${stale}`);
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("inline :color: override still wins over stale coloring", () => {
+    // Documented v0.3.3+ behavior — explicit :color: always wins.
+    // v0.6.0+: stale does NOT silently override the user's color.
+    __resetForTest({
+      statuslineTemplate:["m_window5h:color:" + ORANGE],
+      timeFormat: { minUnit: "s", maxUnitCount: 4 },
+    });
+    try {
+      const stale = renderProviderLine("minimax", {
+        mode: "used", nowMs: Date.now(),
+        fiveHour: { pct: 60, resetAt: null },
+        weekly: null, balance: null,
+        ageMs: 5 * 60_000, stale: true, version: "",
+      });
+      assert.ok(
+        stale.includes(`${ORANGE}60%`),
+        `:color: override should wrap '60%' even on stale: ${stale}`,
+      );
+      assert.ok(!stale.includes(`${STALE_COLOR}60%`), `:color: override was silently overridden by STALE_COLOR: ${stale}`);
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("stale bar chunks wrap in STALE_COLOR in 'remaining' mode (right-side cells colored)", () => {
+    // Symmetric to the used-mode test above. In remaining mode the
+    // colored half of the bar is the RIGHT side (the "what's left"
+    // metric), so the STALE_COLOR wrap should land on the trailing
+    // ▓ run — and the leading ░ run should stay plain. v0.6.0+
+    // post-bar-blocks extension.
+    __resetForTest({
+      statuslineTemplate:["m_window5h"],
+      timeFormat: { minUnit: "s", maxUnitCount: 4 },
+    });
+    try {
+      const stale = renderProviderLine("minimax", {
+        mode: "remaining", nowMs: Date.now(),
+        fiveHour: { pct: 60, resetAt: null },
+        weekly: null, balance: null,
+        ageMs: 5 * 60_000, stale: true, version: "",
+      });
+      // Stale: STALE_COLOR wraps the percent tail.
+      assert.ok(
+        stale.includes(`${STALE_COLOR}40%`),
+        `stale remaining-mode line should wrap '40%' (100-60) in STALE_COLOR: ${stale}`,
+      );
+      // Stale: a STALE_COLOR-wrapped ▓ run is present somewhere on
+      // the right (after the leading ░ run, since remaining mode
+      // colors the right side). The bar still has the filled/empty
+      // pattern, just both halves retoned down.
+      assert.ok(
+        stale.includes(`░${STALE_COLOR}▓`),
+        `stale remaining-mode bar should be '░░...▓▓...' with ▓ wrapped in STALE_COLOR: ${stale}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("m_windowContext (synthetic context-window bar) also goes gray on stale", () => {
+    // The m_windowContext module goes through the same formatOneChunk
+    // path, so the bar-blocks-stale-grayscale extension covers it
+    // automatically — but we pin the behavior here so a future
+    // refactor of the context-window path doesn't quietly break
+    // the contract. v0.6.0+.
+    __resetForTest({
+      statuslineTemplate:["m_windowContext"],
+      timeFormat: { minUnit: "s", maxUnitCount: 4 },
+    });
+    try {
+      const stale = renderProviderLine("minimax", {
+        mode: "used", nowMs: Date.now(),
+        fiveHour: null, weekly: null, balance: null,
+        contextWindow: { pct: 75, resetAt: null },
+        ageMs: 5 * 60_000, stale: true, version: "",
+      });
+      assert.ok(
+        stale.includes(`${STALE_COLOR}75%`),
+        `stale m_windowContext should wrap '75%' in STALE_COLOR: ${stale}`,
+      );
+      assert.ok(
+        stale.includes(`${STALE_COLOR}▓`),
+        `stale m_windowContext bar chunks should be STALE_COLOR: ${stale}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+});
+
 describe("formatStaleSuffix", () => {
   it("returns empty only for non-finite ageMs; ageMs = 0 renders the X-ago label", () => {
     // v0.4.0: formatStaleSuffix no longer short-circuits on ageMs <= 0.
@@ -765,9 +913,20 @@ describe("formatStaleSuffix", () => {
     assert.equal(strip(formatStaleSuffix(3 * 24 * 60 * 60_000)), "⛓️‍💥 3d0h ago");
   });
 
-  it("is wrapped in STALE_COLOR and ends with RESET", () => {
-    const suffix = formatStaleSuffix(5 * 60_000);
-    assert.equal(suffix, `${STALE_COLOR}⛓️‍💥 5m ago${RESET}`);
+  it("uses BROKEN_COLOR when healthy=false; STALE_COLOR when healthy=true", () => {
+    // v0.6.0+ — split the gray stale color into two: gray (STALE_COLOR)
+    // for the informational 🔗 annotation on fresh ticks, dark red
+    // (BROKEN_COLOR) for the ⛓️‍💥 annotation when the fetch failed.
+    assert.equal(
+      formatStaleSuffix(5 * 60_000, false),
+      `${BROKEN_TEST_COLOR}⛓️‍💥 5m ago${RESET}`,
+      "broken chain must wrap in BROKEN_COLOR",
+    );
+    assert.equal(
+      formatStaleSuffix(5 * 60_000, true),
+      `${STALE_COLOR}🔗 5m ago${RESET}`,
+      "healthy (fresh) must wrap in STALE_COLOR",
+    );
   });
 });
 
@@ -783,7 +942,7 @@ describe("formatLine — stale suffix integration", () => {
     );
     // Stale suffix should be at the END of the line. v0.2.11: broken
     // emoji IS the indicator, no leading " · " separator.
-    assert.ok(line.endsWith(`${STALE_COLOR}⛓️‍💥 5m ago${RESET}`), `unexpected tail: ${JSON.stringify(line)}`);
+    assert.ok(line.endsWith(`${BROKEN_TEST_COLOR}⛓️‍💥 5m ago${RESET}`), `unexpected tail: ${JSON.stringify(line)}`);
     assert.ok(strip(line).endsWith("⛓️‍💥 5m ago"), `stripped: ${strip(line)}`);
   });
 
@@ -845,7 +1004,7 @@ describe("formatBalanceLine — stale suffix integration", () => {
       5 * 60_000,
       true,  // stale → broken emoji
     );
-    assert.ok(line.endsWith(`${STALE_COLOR}⛓️‍💥 5m ago${RESET}`));
+    assert.ok(line.endsWith(`${BROKEN_TEST_COLOR}⛓️‍💥 5m ago${RESET}`));
     assert.ok(strip(line).endsWith("⛓️‍💥 5m ago"));
   });
 
