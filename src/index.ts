@@ -95,6 +95,15 @@ async function readStdin(): Promise<string> {
 // The data generic is `unknown` because the dispatcher narrows
 // based on entry.TYPE. We do a runtime check below to pick the right
 // `getWithAge<T>` overload.
+// `token` is the env-sourced value read once by main() from
+// process.env.ANTHROPIC_AUTH_TOKEN (may be empty). Each fetcher
+// prefers the entry's BEARER_KEY over this; an empty `token` plus an
+// empty BEARER_KEY causes the fetcher to return null and the
+// dispatcher to fall back to the stale cache / fail line. The
+// previous v0.5.x behavior of short-circuiting the whole tick on
+// empty env token was dropped in v0.6.0 to support per-provider
+// credential overrides (see the ProviderEntry.BEARER_KEY docstring
+// in src/types.ts for the "always wins" rule).
 async function fetchProviderData(
   provider: Provider,
   token: string,
@@ -246,13 +255,14 @@ async function main(): Promise<void> {
     applyProviderOverrides(entry.config);
   }
 
-  const token = process.env.ANTHROPIC_AUTH_TOKEN;
-  if (!token) {
-    process.stdout.write(compose(upstream, null));
-    return;
-  }
-
-  const result = await fetchProviderData(provider, token);
+  // v0.6.0+ — pre-read the env token once but DON'T short-circuit
+  // on empty. The fetcher decides whether to make the call (it sees
+  // entry.BEARER_KEY). An empty env token with a non-empty
+  // entry.BEARER_KEY is a valid config-driven setup (e.g. CI without
+  // env vars); the previous v0.5.x behavior of writing nothing on
+  // empty env would silently break that flow.
+  const envToken = process.env.ANTHROPIC_AUTH_TOKEN;
+  const result = await fetchProviderData(provider, envToken ?? "");
   const line = buildProviderLine(provider, result, tokens);
 
   process.stdout.write(compose(upstream, line));

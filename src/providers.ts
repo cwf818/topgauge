@@ -100,7 +100,7 @@ export async function fetchForProvider(
     return fetchRemains(token, entry.ENDPOINT, signal, entry);
   }
   if (entry.TYPE === "BALANCE") {
-    return fetchBalance(token, entry.ENDPOINT, signal);
+    return fetchBalance(token, entry.ENDPOINT, signal, entry);
   }
   // Exhaustiveness check: a new ProviderType value without a fetcher
   // branch will fail to compile here.

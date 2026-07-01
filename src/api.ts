@@ -309,15 +309,33 @@ export async function fetchRemains(
   signal?: AbortSignal,
   provider: ProviderEntry | null = null,
 ): Promise<Remains | null> {
-  if (!token) return null;
+  // v0.6.0+ — entry.BEARER_KEY wins over the env-sourced `token` arg.
+  // The `token` arg is still passed in (the dispatcher pre-reads
+  // process.env.ANTHROPIC_AUTH_TOKEN) so the call signature is
+  // stable; the entry just shadows it when present. Empty on both
+  // axes → return null without touching the network.
+  const authToken = provider?.BEARER_KEY ?? token;
+  if (!authToken) return null;
+  const method = provider?.METHOD ?? "GET";
+  // Send a body only when METHOD is not GET AND the user supplied
+  // one. A GET with a body is rejected by the spec; some servers
+  // tolerate it but the WHATWG fetch impl drops it silently, so we
+  // never put one on the wire for GET regardless of config. DELETE
+  // with a body is allowed by the spec but unusual; we forward it
+  // faithfully because the user's config is the source of truth.
+  const bodyJson =
+    method !== "GET" && provider?.BODY !== undefined
+      ? JSON.stringify(provider.BODY)
+      : undefined;
   const res = await fetch(endpoint, {
-    method: "GET",
+    method,
     headers: {
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${authToken}`,
       "Content-Type": "application/json",
       Accept: "application/json",
     },
     signal,
+    ...(bodyJson !== undefined ? { body: bodyJson } : {}),
   });
   if (!res.ok) {
     throw new Error(`token_plan/remains HTTP ${res.status}`);

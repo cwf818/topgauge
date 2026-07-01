@@ -444,6 +444,9 @@ The `providers` block is a `Record<string, ProviderEntry>`. Each entry declares:
   - `"INCLUDE"` — `baseUrl.includes(pattern)`. Fuzzy host match; useful when `ANTHROPIC_BASE_URL` adds a path you don't care about.
   - `"STARTWITH"` — `baseUrl.startsWith(pattern)` with a suffix-attack guard: the character right after the prefix must be `undefined`, `/`, `?`, or `#`. This rejects `https://api.deepseek.com.evil.example` even though it `startsWith("https://api.deepseek.com")`. The `deepseek` matcher in earlier versions used this scheme; the v0.2.21 default is `EXACT` (a stricter choice), so users who relied on the old prefix behavior should set `COMPARE_METHOD: "STARTWITH"`.
 - **`ENDPOINT`** — the provider's API URL. Must start with `http://` or `https://`.
+- **`BEARER_KEY`** *(optional, v0.6.0+)* — Bearer token sent in the `Authorization` header. **Always wins** over `process.env.ANTHROPIC_AUTH_TOKEN` when present — there is no env fallback. Useful for sandboxed / CI deployments that don't carry the env var, or for giving a single proxy provider a different credential from the rest of the session. Bad values (non-string, empty string) drop just the field; the entry still loads and the fetcher falls back to the env token.
+- **`METHOD`** *(optional, v0.6.0+)* — HTTP method, one of `"GET" | "POST" | "PUT" | "PATCH" | "DELETE"`. Defaults to `"GET"`. **Strict** validation: bad values (typo, wrong casing, `"OPTIONS"`, …) drop the whole entry at config-load. Use this to switch a provider's verb without rebuilding the plugin.
+- **`BODY`** *(optional, v0.6.0+)* — static JSON object sent as the request body. Only meaningful when `METHOD` is not `"GET"` (POST/PUT/PATCH carry a payload; DELETE tolerates a body but most servers ignore it). Serialized with `JSON.stringify` at fetch time. Must be a plain object — arrays / strings / numbers are rejected. **No template placeholders**: BODY is intentionally a static shape so the provider config stays declarative. Bad shape drops just the field; the entry still loads.
 
 A user can override any subset of fields on a known provider; missing fields inherit from the default. To add a new provider, append a new key:
 
@@ -461,6 +464,35 @@ A user can override any subset of fields on a known provider; missing fields inh
 ```
 
 The cache key for a provider's response is its name (so two TOKEN_PLAN providers get separate cache slots). The matcher's iteration order = insertion order of the `providers` object — the first matching entry wins on a tie.
+
+#### HTTP request overrides (worked example)
+
+The three new optional fields compose: `BEARER_KEY` alone shadows the env-supplied token without changing the request shape; `METHOD` alone changes the verb but sends no payload; all three together POST a static JSON body authenticated with a per-provider key. Example:
+
+```jsonc
+{
+  "providers": {
+    "my-proxy": {
+      "TYPE": "TOKEN_PLAN",
+      "BASE_URL_COMPARED_TO": "https://internal-proxy.example.com",
+      "COMPARE_METHOD": "EXACT",
+      "ENDPOINT": "https://internal-proxy.example.com/usage",
+      "BEARER_KEY": "sk-internal-only",
+      "METHOD": "POST",
+      "BODY": { "team": "alpha" },
+      "parameters": {
+        "remainingPercentInterval": "data.0.pct"
+      }
+    }
+  }
+}
+```
+
+Notes on behavior:
+
+- `BEARER_KEY` always wins. If `ANTHROPIC_AUTH_TOKEN` is set to `"env-token"` in the env and the entry has `"BEARER_KEY": "sk-internal-only"`, the wire shows `Authorization: Bearer sk-internal-only`. This is the only credential rotation point — there's no precedence list.
+- A GET with `BODY` set sends no body on the wire (the WHATWG fetch impl drops it). To actually send a body, `METHOD` must be POST/PUT/PATCH (or DELETE, where most servers ignore it).
+- Validation runs at config-load. A bad `METHOD` drops the entry (strict); a bad `BEARER_KEY` / `BODY` drops just the field (lenient) and the entry survives.
 
 ### Data fields the plugin reads (planned: field-mapping via `parameters`)
 

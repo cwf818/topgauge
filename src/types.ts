@@ -134,4 +134,27 @@ export type ProviderEntry = {
   // Missing slots resolve to null at fetch time; the renderer treats
   // null as "no data" (drop / placeholder per module contract).
   parameters?: Record<string, string>;
+  // v0.6.0+ — per-provider HTTP request overrides. All three are
+  // optional; absence means "use the v0.5.x default": GET, env-var
+  // bearer, no body. Each field is validated independently at
+  // config-load time (see validateProviderEntry in src/config.ts).
+  //
+  // BEARER_KEY always wins over process.env.ANTHROPIC_AUTH_TOKEN
+  // when present — there is no env fallback. This is the contract
+  // that makes per-provider credential rotation possible without
+  // touching the env. The token is sent in the standard
+  // `Authorization: Bearer <key>` header.
+  BEARER_KEY?: string;
+  // HTTP method. Closed enum; bad values (typo, wrong casing, "OPTIONS",
+  // …) drop the whole entry at config-load. Defaults to "GET" when
+  // absent — the same default the v0.5.x fetchers used unconditionally.
+  METHOD?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  // Static JSON body sent with the request. Only meaningful when
+  // METHOD is not GET (POST/PUT/PATCH carry a payload; DELETE
+  // tolerates a body but most servers ignore it). Serialized with
+  // JSON.stringify at fetch time. Must be a plain object — arrays,
+  // strings, numbers are rejected at config-load. No template
+  // placeholders; this is intentionally a static shape so the
+  // provider config remains declarative (no template engine).
+  BODY?: Record<string, unknown>;
 };

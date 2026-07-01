@@ -1087,3 +1087,95 @@ describe("validateProviderEntry — config block (v0.4.0+)", () => {
     });
   });
 });
+
+// ----- v0.6.0+ HTTP overrides on ProviderEntry -----
+//
+// Each new field is validated independently at config-load time:
+//   BEARER_KEY / BODY  → LENIENT (drop the field, keep the entry)
+//   METHOD             → STRICT (drop the whole entry on bad value)
+//
+// These tests exercise mergeConfig → validateProviderEntry through
+// the public loadConfig path so we cover the same warn-on-stderr
+// behavior as existing tests.
+describe("validateProviderEntry — v0.6.0 HTTP overrides", () => {
+  const base = {
+    TYPE: "TOKEN_PLAN",
+    BASE_URL_COMPARED_TO: "https://api.example.com",
+    COMPARE_METHOD: "EXACT",
+    ENDPOINT: "https://api.example.com/v1/usage",
+  };
+
+  it("accepts a full BEARER_KEY/METHOD/BODY block", async () => {
+    writeFileSync(
+      join(tmpDir, "config.json"),
+      JSON.stringify({
+        providers: {
+          custom: {
+            ...base,
+            BEARER_KEY: "secret-key",
+            METHOD: "POST",
+            BODY: { team: "alpha", n: 1 },
+          },
+        },
+      }),
+    );
+    const cfg = await loadConfig();
+    assert.ok(cfg.providers.custom);
+    assert.equal(cfg.providers.custom.BEARER_KEY, "secret-key");
+    assert.equal(cfg.providers.custom.METHOD, "POST");
+    assert.deepEqual(cfg.providers.custom.BODY, { team: "alpha", n: 1 });
+    assert.equal(capturedStderr, "");
+  });
+
+  it("drops the whole entry on a bad METHOD value", async () => {
+    writeFileSync(
+      join(tmpDir, "config.json"),
+      JSON.stringify({
+        providers: {
+          bad: { ...base, METHOD: "FETCH" },
+        },
+      }),
+    );
+    const cfg = await loadConfig();
+    assert.equal(cfg.providers.bad, undefined, "entry must be dropped");
+    assert.match(capturedStderr, /METHOD must be one of/);
+  });
+
+  it("drops just BODY when BODY is an array (lenient)", async () => {
+    writeFileSync(
+      join(tmpDir, "config.json"),
+      JSON.stringify({
+        providers: {
+          partial: { ...base, BODY: [1, 2, 3] },
+        },
+      }),
+    );
+    const cfg = await loadConfig();
+    assert.ok(cfg.providers.partial, "entry must survive a bad BODY");
+    assert.equal(
+      cfg.providers.partial.BODY,
+      undefined,
+      "BODY field must be dropped",
+    );
+    assert.match(capturedStderr, /BODY must be a plain object/);
+  });
+
+  it("drops just BEARER_KEY when it's an empty string (lenient)", async () => {
+    writeFileSync(
+      join(tmpDir, "config.json"),
+      JSON.stringify({
+        providers: {
+          partial2: { ...base, BEARER_KEY: "" },
+        },
+      }),
+    );
+    const cfg = await loadConfig();
+    assert.ok(cfg.providers.partial2, "entry must survive a bad BEARER_KEY");
+    assert.equal(
+      cfg.providers.partial2.BEARER_KEY,
+      undefined,
+      "BEARER_KEY field must be dropped",
+    );
+    assert.match(capturedStderr, /BEARER_KEY must be a non-empty string/);
+  });
+});

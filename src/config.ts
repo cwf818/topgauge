@@ -481,6 +481,12 @@ const VALID_COMPARE_METHODS: ReadonlySet<CompareMethod> = new Set([
   "STARTWITH",
 ]);
 
+// v0.6.0+ — closed enum for the per-provider HTTP method override.
+// Keep in sync with ProviderEntry.METHOD in src/types.ts.
+const VALID_HTTP_METHODS: ReadonlySet<
+  "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
+> = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
+
 const DEFAULT_CONFIG: {
   cacheTtlMs: number;
   fetchTimeoutMs: number;
@@ -1344,6 +1350,62 @@ function validateProviderEntry(v: unknown): ProviderEntry | null {
     warn("provider ENDPOINT must be an http(s) URL; dropping");
     return null;
   }
+  // v0.6.0+ — optional per-provider HTTP method. STRICT: any value
+  // outside the closed enum drops the whole entry, matching the
+  // TYPE/COMPARE_METHOD pattern. The user almost certainly has a
+  // typo or copied a verb from a different API ("get" lowercase,
+  // "PATCH " with stray whitespace, "OPTIONS", …). Silently
+  // coercing or accepting would mask the bug.
+  let validatedMethod:
+    | "GET"
+    | "POST"
+    | "PUT"
+    | "PATCH"
+    | "DELETE"
+    | undefined;
+  if ("METHOD" in e && e.METHOD !== undefined) {
+    const m = e.METHOD;
+    if (typeof m !== "string" || !VALID_HTTP_METHODS.has(m as never)) {
+      warn(
+        `provider METHOD must be one of ${[...VALID_HTTP_METHODS].join(", ")} (got ${JSON.stringify(m)}); dropping the entry`,
+      );
+      return null;
+    }
+    validatedMethod = m as
+      | "GET"
+      | "POST"
+      | "PUT"
+      | "PATCH"
+      | "DELETE";
+  }
+  // v0.6.0+ — optional per-provider Bearer token. LENIENT: a bad
+  // value drops just the field; the entry still loads. Rationale:
+  // BEARER_KEY without an entry-level fallback is recoverable
+  // because the fetcher falls back to process.env.ANTHROPIC_AUTH_TOKEN
+  // when BEARER_KEY is absent. The user might be testing the field
+  // incrementally and a partial block shouldn't cost the whole entry.
+  let validatedBearer: string | undefined;
+  if ("BEARER_KEY" in e && e.BEARER_KEY !== undefined) {
+    const b = e.BEARER_KEY;
+    if (typeof b === "string" && b.length > 0) {
+      validatedBearer = b;
+    } else {
+      warn("provider BEARER_KEY must be a non-empty string; dropping the field");
+    }
+  }
+  // v0.6.0+ — optional static JSON request body. LENIENT: same
+  // rationale as BEARER_KEY. A bad body shape drops the field; the
+  // entry survives. Note: an empty `{}` is a valid object and will
+  // be forwarded (some servers accept it).
+  let validatedBody: Record<string, unknown> | undefined;
+  if ("BODY" in e && e.BODY !== undefined) {
+    const body = e.BODY;
+    if (body && typeof body === "object" && !Array.isArray(body)) {
+      validatedBody = body as Record<string, unknown>;
+    } else {
+      warn("provider BODY must be a plain object; dropping the field");
+    }
+  }
   // v0.4.0+ — optional provider-specific Config overrides. Validated
   // here only for shape (must be a plain object, no nested `providers`
   // key to avoid recursion). The fields inside `config` are merged
@@ -1411,6 +1473,9 @@ function validateProviderEntry(v: unknown): ProviderEntry | null {
     ENDPOINT: ep,
     ...(validatedConfig ? { config: validatedConfig } : {}),
     ...(validatedParameters ? { parameters: validatedParameters } : {}),
+    ...(validatedBearer ? { BEARER_KEY: validatedBearer } : {}),
+    ...(validatedMethod ? { METHOD: validatedMethod } : {}),
+    ...(validatedBody ? { BODY: validatedBody } : {}),
   };
 }
 

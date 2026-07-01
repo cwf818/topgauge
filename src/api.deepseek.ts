@@ -22,6 +22,7 @@
 // deprecated shim is kept below for one minor version.
 
 import { configStore } from "./config.ts";
+import type { ProviderEntry } from "./types.ts";
 
 export type BalanceEntry = {
   currency: string;
@@ -91,16 +92,31 @@ export function parseBalance(raw: unknown): Balance | null {
 export async function fetchBalance(
   token: string,
   endpoint: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  // v0.6.0+ — entry parameter mirrors fetchRemains so the BALANCE
+  // dispatcher can pass per-provider BEARER_KEY / METHOD / BODY
+  // overrides. Default null preserves the v0.5.x call sites that
+  // don't yet pass an entry.
+  provider: ProviderEntry | null = null,
 ): Promise<Balance | null> {
-  if (!token) return null;
+  // v0.6.0+ — entry.BEARER_KEY wins over the env-sourced `token`
+  // arg, matching the fetchRemains contract. See api.ts for the
+  // full rationale on the empty-token early return.
+  const authToken = provider?.BEARER_KEY ?? token;
+  if (!authToken) return null;
+  const method = provider?.METHOD ?? "GET";
+  const bodyJson =
+    method !== "GET" && provider?.BODY !== undefined
+      ? JSON.stringify(provider.BODY)
+      : undefined;
   const res = await fetch(endpoint, {
-    method: "GET",
+    method,
     headers: {
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${authToken}`,
       Accept: "application/json",
     },
     signal,
+    ...(bodyJson !== undefined ? { body: bodyJson } : {}),
   });
   if (!res.ok) {
     throw new Error(`deepseek /user/balance HTTP ${res.status}`);

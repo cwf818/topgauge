@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.6.0
+
+### Added
+
+- Three optional per-provider HTTP request overrides on `ProviderEntry`:
+  - `BEARER_KEY` — Bearer token sent in the `Authorization` header.
+    Always wins over `process.env.ANTHROPIC_AUTH_TOKEN` when present;
+    no env fallback.
+  - `METHOD` — closed enum (`"GET" | "POST" | "PUT" | "PATCH" |
+    "DELETE"`). Defaults to `"GET"`. Bad values drop the whole entry
+    (strict).
+  - `BODY` — static JSON object sent as the request body. Only
+    meaningful when `METHOD` is not GET. Plain object required;
+    arrays / strings / numbers drop just the field (lenient). No
+    template placeholders.
+- `fetchBalance` accepts the same `provider` 4th argument as
+  `fetchRemains` so BALANCE providers can declare the same overrides
+  symmetrically. The dispatcher in `src/providers.ts` now passes the
+  entry to both fetchers.
+- `src/index.ts` no longer short-circuits the whole tick when
+  `ANTHROPIC_AUTH_TOKEN` is empty — the fetcher decides whether to
+  make the call (it sees `entry.BEARER_KEY`). This makes per-provider
+  credential rotation work in CI / sandboxed environments that don't
+  carry the env var.
+
+See `README.md § HTTP request overrides` for the worked example and
+the strict-vs-lenient validation rules.
+
 ## v0.4.0
 
 ### Added

@@ -1,9 +1,10 @@
-import { describe, it } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { isDeepSeekBaseUrl, parseBalance } from "./api.deepseek.ts";
+import { isDeepSeekBaseUrl, parseBalance, fetchBalance } from "./api.deepseek.ts";
+import type { ProviderEntry } from "./types.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = (name: string): unknown =>
@@ -125,5 +126,119 @@ describe("parseBalance — unavailable / missing fields", () => {
     assert.equal(parseBalance({ is_available: 1, balance_infos: [] })!.isAvailable, true);
     assert.equal(parseBalance({ is_available: "true", balance_infos: [] })!.isAvailable, true);
     assert.equal(parseBalance({ is_available: "false", balance_infos: [] })!.isAvailable, false);
+  });
+});
+
+// ----- v0.6.0+ HTTP override plumbing for fetchBalance -----
+//
+// fetchBalance is now symmetric with fetchRemains — it accepts an
+// optional 4th `provider` arg and reads entry.BEARER_KEY /
+// entry.METHOD / entry.BODY. These tests exercise the same five
+// cases as the fetchRemains block, against a parser that expects
+// the deepseek-shaped payload.
+type RecordedCall = { url: string; init: RequestInit };
+function installMockFetch(recorder: RecordedCall[]) {
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (
+    url: string | URL | Request,
+    init?: RequestInit,
+  ) => {
+    recorder.push({ url: String(url), init: init ?? {} });
+    return new Response(
+      JSON.stringify({
+        is_available: true,
+        balance_infos: [{ currency: "CNY", total_balance: "5.00" }],
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    ) as unknown as Response;
+  }) as typeof fetch;
+  return () => {
+    globalThis.fetch = original;
+  };
+}
+
+const deepseekEntry: ProviderEntry = {
+  TYPE: "BALANCE",
+  BASE_URL_COMPARED_TO: "https://api.deepseek.com/anthropic",
+  COMPARE_METHOD: "EXACT",
+  ENDPOINT: "https://api.deepseek.com/user/balance",
+};
+
+describe("fetchBalance — per-provider HTTP overrides (v0.6.0+)", () => {
+  const rec: RecordedCall[] = [];
+  let restore: () => void;
+  beforeEach(() => {
+    rec.length = 0;
+    restore = installMockFetch(rec);
+  });
+  afterEach(() => restore());
+
+  it("uses entry.BEARER_KEY over the env-supplied token", async () => {
+    const entry: ProviderEntry = {
+      ...deepseekEntry,
+      BEARER_KEY: "secret-from-config",
+    };
+    const b = await fetchBalance(
+      "env-token",
+      entry.ENDPOINT,
+      undefined,
+      entry,
+    );
+    assert.ok(b);
+    const sent = rec[0].init.headers as Record<string, string>;
+    assert.equal(sent.Authorization, "Bearer secret-from-config");
+  });
+
+  it("falls back to env token when BEARER_KEY is absent", async () => {
+    await fetchBalance(
+      "env-token",
+      deepseekEntry.ENDPOINT,
+      undefined,
+      deepseekEntry,
+    );
+    const sent = rec[0].init.headers as Record<string, string>;
+    assert.equal(sent.Authorization, "Bearer env-token");
+  });
+
+  it("POSTs entry.BODY as JSON when METHOD=POST and BODY is set", async () => {
+    const entry: ProviderEntry = {
+      ...deepseekEntry,
+      METHOD: "POST",
+      BODY: { account: "main" },
+    };
+    await fetchBalance("t", entry.ENDPOINT, undefined, entry);
+    assert.equal(rec[0].init.method, "POST");
+    assert.equal(rec[0].init.body, JSON.stringify({ account: "main" }));
+  });
+
+  it("GET with BODY present still sends no body (spec-friendly)", async () => {
+    const entry: ProviderEntry = {
+      ...deepseekEntry,
+      BODY: { x: 1 },
+    };
+    await fetchBalance("t", entry.ENDPOINT, undefined, entry);
+    assert.equal(rec[0].init.method, "GET");
+    assert.equal(rec[0].init.body, undefined);
+  });
+
+  it("returns null when env token is empty AND entry.BEARER_KEY is absent", async () => {
+    const b = await fetchBalance(
+      "",
+      deepseekEntry.ENDPOINT,
+      undefined,
+      deepseekEntry,
+    );
+    assert.equal(b, null);
+    assert.equal(rec.length, 0, "must not hit the network");
+  });
+
+  it("forwards the 4th arg default — calling without provider still works", async () => {
+    // Back-compat for any external test that hasn't migrated to the
+    // new signature. Same as before v0.6.0.
+    const b = await fetchBalance("env-only", deepseekEntry.ENDPOINT);
+    assert.ok(b);
+    assert.equal(rec.length, 1);
+    const sent = rec[0].init.headers as Record<string, string>;
+    assert.equal(sent.Authorization, "Bearer env-only");
   });
 });

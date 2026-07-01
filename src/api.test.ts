@@ -1,9 +1,9 @@
-import { describe, it } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { parseRemains } from "./api.ts";
+import { parseRemains, fetchRemains } from "./api.ts";
 import type { ProviderEntry } from "./types.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -185,5 +185,127 @@ describe("parseRemains — error paths", () => {
     assert.equal(parseRemains("string", minimaxProvider), null);
     assert.equal(parseRemains(42, minimaxProvider), null);
     assert.equal(parseRemains([], minimaxProvider), null);
+  });
+});
+
+// ----- v0.6.0+ HTTP override plumbing -----
+//
+// Mock the global fetch so we can inspect the RequestInit the fetcher
+// actually constructs without touching the network. Each test gets a
+// fresh recorder via beforeEach; afterEach restores the original
+// fetch so the test runner's own I/O is unaffected.
+type RecordedCall = { url: string; init: RequestInit };
+function installMockFetch(recorder: RecordedCall[]) {
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (
+    url: string | URL | Request,
+    init?: RequestInit,
+  ) => {
+    recorder.push({ url: String(url), init: init ?? {} });
+    return new Response(
+      JSON.stringify({
+        base_resp: { status_code: 0, status_msg: "ok" },
+        model_remains: [
+          {
+            current_interval_remaining_percent: 50,
+            current_weekly_remaining_percent: 50,
+            end_time: Date.now() + 3_600_000,
+            weekly_end_time: Date.now() + 7 * 24 * 3_600_000,
+          },
+        ],
+      }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      },
+    ) as unknown as Response;
+  }) as typeof fetch;
+  return () => {
+    globalThis.fetch = original;
+  };
+}
+
+describe("fetchRemains — per-provider HTTP overrides (v0.6.0+)", () => {
+  const rec: RecordedCall[] = [];
+  let restore: () => void;
+  beforeEach(() => {
+    rec.length = 0;
+    restore = installMockFetch(rec);
+  });
+  afterEach(() => restore());
+
+  it("uses entry.BEARER_KEY over the env-supplied token", async () => {
+    const entry: ProviderEntry = {
+      ...minimaxProvider,
+      BEARER_KEY: "secret-from-config",
+    };
+    const r = await fetchRemains(
+      "env-token",
+      entry.ENDPOINT,
+      undefined,
+      entry,
+    );
+    assert.ok(r);
+    const sent = rec[0].init.headers as Record<string, string>;
+    assert.equal(sent.Authorization, "Bearer secret-from-config");
+  });
+
+  it("falls back to env token when BEARER_KEY is absent", async () => {
+    await fetchRemains(
+      "env-token",
+      minimaxProvider.ENDPOINT,
+      undefined,
+      minimaxProvider,
+    );
+    const sent = rec[0].init.headers as Record<string, string>;
+    assert.equal(sent.Authorization, "Bearer env-token");
+  });
+
+  it("POSTs entry.BODY as JSON when METHOD=POST and BODY is set", async () => {
+    const entry: ProviderEntry = {
+      ...minimaxProvider,
+      METHOD: "POST",
+      BODY: { foo: "bar", n: 42 },
+    };
+    await fetchRemains("t", entry.ENDPOINT, undefined, entry);
+    assert.equal(rec[0].init.method, "POST");
+    assert.equal(rec[0].init.body, JSON.stringify({ foo: "bar", n: 42 }));
+  });
+
+  it("GET with BODY present still sends no body (spec-friendly)", async () => {
+    const entry: ProviderEntry = {
+      ...minimaxProvider,
+      BODY: { foo: "bar" },
+    };
+    await fetchRemains("t", entry.ENDPOINT, undefined, entry);
+    assert.equal(rec[0].init.method, "GET");
+    assert.equal(rec[0].init.body, undefined);
+  });
+
+  it("returns null when env token is empty AND entry.BEARER_KEY is absent", async () => {
+    const r = await fetchRemains(
+      "",
+      minimaxProvider.ENDPOINT,
+      undefined,
+      minimaxProvider,
+    );
+    assert.equal(r, null);
+    assert.equal(
+      rec.length,
+      0,
+      "must not hit the network when no token source is available",
+    );
+  });
+
+  it("uses entry.BEARER_KEY even when env token is empty", async () => {
+    const entry: ProviderEntry = {
+      ...minimaxProvider,
+      BEARER_KEY: "config-only",
+    };
+    const r = await fetchRemains("", entry.ENDPOINT, undefined, entry);
+    assert.ok(r);
+    assert.equal(rec.length, 1);
+    const sent = rec[0].init.headers as Record<string, string>;
+    assert.equal(sent.Authorization, "Bearer config-only");
   });
 });
