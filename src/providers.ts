@@ -97,7 +97,7 @@ export async function fetchForProvider(
   const entry = getProviderEntry(provider);
   if (!entry) throw new Error(`unknown provider: ${String(provider)}`);
   if (entry.TYPE === "TOKEN_PLAN") {
-    return fetchRemains(token, entry.ENDPOINT, signal);
+    return fetchRemains(token, entry.ENDPOINT, signal, entry);
   }
   if (entry.TYPE === "BALANCE") {
     return fetchBalance(token, entry.ENDPOINT, signal);

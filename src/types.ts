@@ -107,6 +107,16 @@ export type TokenSnapshot = {
 // other top-level keys can be safely overridden on a per-provider
 // basis (e.g. "minimax needs fetchTimeoutMs=3000 because the API is
 // slow; deepseek uses the default 5000").
+//
+// v0.5.0+ — added optional `parameters` block: a per-provider mapping
+// from well-known renderer slots (e.g. `remainingPercentInterval`,
+// `endAtWeekly`) onto path expressions evaluated against the API
+// response. Replaces the v0.4.x hardcoded `parseRemains` parser.
+// Path expressions follow the grammar in src/path-expr.ts (a
+// `a.b[0].c` / `a.0.b.0.c` style with permissive type coercion).
+// Slot name → type mapping is type-driven (ProviderType discriminator);
+// the loader validates at config-load time and warns on bad entries
+// rather than throwing.
 export type ProviderEntry = {
   TYPE: ProviderType;
   BASE_URL_COMPARED_TO: string;
@@ -118,4 +128,10 @@ export type ProviderEntry = {
   // forwarded to the existing per-field validators (same warn
   // behavior as the top-level config).
   config?: Record<string, unknown>;
+  // v0.5.0+ — well-known-slot → path-expression mapping. Keys are
+  // slot names (camelCase, type-driven list). Values are dot/bracket
+  // path expressions evaluated against the parsed API response.
+  // Missing slots resolve to null at fetch time; the renderer treats
+  // null as "no data" (drop / placeholder per module contract).
+  parameters?: Record<string, string>;
 };

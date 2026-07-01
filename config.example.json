@@ -54,7 +54,15 @@
       "TYPE": "TOKEN_PLAN",
       "BASE_URL_COMPARED_TO": "https://api.minimaxi.com/anthropic",
       "COMPARE_METHOD": "EXACT",
-      "ENDPOINT": "https://www.minimaxi.com/v1/token_plan/remains"
+      "ENDPOINT": "https://www.minimaxi.com/v1/token_plan/remains",
+      "parameters": {
+        "remainingPercentInterval": "model_remains.0.current_interval_remaining_percent",
+        "remainingPercentWeekly":   "model_remains.0.current_weekly_remaining_percent",
+        "startAtInterval":          "model_remains.0.start_time",
+        "endAtInterval":            "model_remains.0.end_time",
+        "startAtWeekly":            "model_remains.0.weekly_start_time",
+        "endAtWeekly":              "model_remains.0.weekly_end_time"
+      }
     },
     "deepseek": {
       "TYPE": "BALANCE",

@@ -462,6 +462,173 @@ A user can override any subset of fields on a known provider; missing fields inh
 
 The cache key for a provider's response is its name (so two TOKEN_PLAN providers get separate cache slots). The matcher's iteration order = insertion order of the `providers` object — the first matching entry wins on a tie.
 
+### Data fields the plugin reads (planned: field-mapping via `parameters`)
+
+The plugin uses a **data-driven provider model**: each `ProviderEntry` declares a `parameters` block that maps the well-known slots the renderer needs onto path expressions evaluated against the API's JSON response. Adding a new provider is a pure config change — no TS code, no rebuild, no fork.
+
+Anything not mapped resolves to `null`, and the renderer treats `null` as "no data for this window" (drops the chunk and skips its adjacent separators, same as today). A misconfigured path never throws — the parser logs a one-time stderr warning and the slot resolves to `null` (graceful degradation).
+
+#### Well-known slots per `ProviderType`
+
+**`TOKEN_PLAN` providers** (e.g. MiniMax). The renderer reads **two parallel windows** — the 5-hour and the 7-day. For each window, the same set of slots applies:
+
+| Slot                       | Required | Type                | Used by                                       | Notes                                                                                                                  |
+| -------------------------- | -------- | ------------------- | --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `usedPercentInterval`      | one of   | number 0..100       | `m_window5h` bar, `m_countdown5h` fill-state arrow | The **used** percentage of the 5h window.                                                                              |
+| `remainingPercentInterval` | one of   | number 0..100       | (derived → `usedPercentInterval`)             | The **remaining** percentage of the 5h window. Provide this OR `usedPercentInterval`, not both. The plugin derives the missing one via `100 - x`. |
+| `usedPercentWeekly`        | one of   | number 0..100       | `m_window7d`                                  | The **used** percentage of the 7d window.                                                                              |
+| `remainingPercentWeekly`   | one of   | number 0..100       | (derived → `usedPercentWeekly`)               | The **remaining** percentage of the 7d window. Same derive rule.                                                       |
+| `startAtInterval`          | optional | number (epoch ms)   | `pickResetArrow` — 5h window fill-state glyph | When the current 5h window started. Pairs with `endAtInterval` to compute `resetDurationMs` (the 5h-length signal the arrow picker uses). Missing → arrow falls back to `resetArrows[0]`. |
+| `endAtInterval`            | optional | number (epoch ms)   | `formatResetSuffix` — 5h countdown text        | When the 5h window resets. ISO-8601 strings (e.g. `"2026-07-07T11:32:40.140865Z"`) are accepted; the parser coerces to epoch ms. |
+| `startAtWeekly`            | optional | number (epoch ms)   | `pickResetArrow` (7d arrow)                   | Same contract as 5h, for the 7d window.                                                                                |
+| `endAtWeekly`              | optional | number (epoch ms)   | `formatResetSuffix` (7d suffix)               | Same contract as 5h, for the 7d window.                                                                                |
+| `isAvailable`              | optional | boolean             | the fail line ("not available!")              | When `false`, the renderer replaces the line with `<modeLabel> <RED>not available!<RESET>`. Defaults to `true` if absent. |
+
+**`BALANCE` providers** (e.g. DeepSeek). Renders an absolute monetary amount, possibly in multiple currencies. All entries in the array are rendered, joined by ` · `, with the **lowest** entry driving the color band. The `BALANCE` slot map is on the next-minor roadmap (DeepSeek still uses its v0.4.x hardcoded `parseBalance`); the slot names below are the planned contract.
+
+| Slot              | Required | Type                | Used by                          | Notes                                                                                                                  |
+| ----------------- | -------- | ------------------- | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `isAvailable`     | optional | boolean             | the fail line                    | `false` → render "not available!" instead of the chunks.                                                              |
+| `balances`        | required | array of objects    | `m_balance`                      | The list of currency entries. Each entry is parsed via the `balanceEntry` slot map below.                              |
+| `balanceEntry.currency` | required per entry | string | `formatBalanceChunk` prefix     | The currency code (e.g. `"CNY"`, `"USD"`). Looked up against `currency.prefixes`; falls back to the raw code or `currency.fallback`. |
+| `balanceEntry.totalBalance` | required per entry | number | `formatBalanceChunk` value      | The numeric balance for that currency. Numeric strings (`"110.00"`) are accepted and coerced.                          |
+
+#### Default MiniMax mapping
+
+The shipped `minimax` provider uses this default `parameters` block (you only need to override it if your account exposes differently-named fields, which today is not the case for any user — this is purely a future-proofing hook):
+
+```jsonc
+{
+  "providers": {
+    "minimax": {
+      "TYPE": "TOKEN_PLAN",
+      "BASE_URL_COMPARED_TO": "https://api.minimaxi.com/anthropic",
+      "COMPARE_METHOD": "EXACT",
+      "ENDPOINT": "https://www.minimaxi.com/v1/token_plan/remains",
+      "parameters": {
+        "remainingPercentInterval": "model_remains.0.current_interval_remaining_percent",
+        "remainingPercentWeekly":   "model_remains.0.current_weekly_remaining_percent",
+        "startAtInterval":          "model_remains.0.start_time",
+        "endAtInterval":            "model_remains.0.end_time",
+        "startAtWeekly":            "model_remains.0.weekly_start_time",
+        "endAtWeekly":              "model_remains.0.weekly_end_time"
+      }
+    }
+  }
+}
+```
+
+Note the **derivation** at work: only `remainingPercentInterval` / `remainingPercentWeekly` are mapped; the plugin derives `usedPercentInterval` / `usedPercentWeekly` via `100 - x`. If your account exposes a `used_percent` field directly, map `usedPercentInterval` instead and skip the derivation.
+
+The parser also picks the **most-active** model from the `model_remains[]` array (lowest `remainingPercentInterval`, or highest `usedPercentInterval` when that's what the user mapped). `model_name` and the per-model `*_total_count` / `*_usage_count` fields from earlier drafts are intentionally NOT in the slot map — they were never used by the renderer.
+
+#### Path-expression grammar
+
+The path is a dotted/bracketed string evaluated against the parsed JSON response. The grammar:
+
+```
+path     := segment (('.' segment) | ('[' index ']'))*
+segment  := [A-Za-z_][A-Za-z0-9_]*      // object key, OR a pure-digit token
+index    := [0-9]+                       // array index
+```
+
+A pure-digit segment is parsed as an array index, so `usages.0.limits.0.detail.used` and `usages[0].limits[0].detail.used` are equivalent. Mixed alphanumerics (e.g. `m3`, `a1b`) are rejected as invalid keys.
+
+**Type coercion rules** (the parser is permissive on input, strict on output):
+
+- **Numbers** — accept JS numbers, numeric strings (`"42"`, `"3.14"`); reject non-numeric strings, `null`, booleans, objects. Trailing-unit strings (`"42%"`) are rejected.
+- **Epoch ms** — same as numbers, but ISO-8601 strings (`"2026-07-07T11:32:40.140865Z"`) are coerced via `Date.parse`.
+- **Booleans** — accept `true`/`false`, the numbers `0`/`1`, and the strings `"true"`/`"false"` (case-insensitive). Other inputs reject.
+- **Arrays** — the slot is array-typed; the parser returns the whole array and iterates per-entry.
+- **Missing / null** — the slot resolves to `null`; the renderer treats this as "no data" (drop / `n/a` placeholder per module contract).
+- **Type mismatch** — the slot rejects; the parser logs a one-time stderr warning and the slot resolves to `null`. The plugin never throws on a bad path; a malformed config degrades to missing data, not a crash.
+
+#### Path-resolution edge cases
+
+- **First-wins on duplicate keys** — if an object has both `used` and `usedAt` as keys, the path `used` matches `used`, not a prefix-match on `usedAt`. The parser does exact-match on object keys.
+- **Array out-of-bounds** — `usages[5].detail.used` on a 2-element array resolves to `null` (silent; the slot is just empty). No stderr warning — the user can't tell at config time how many entries the API will return.
+- **Heterogeneous arrays** — if `usages[0]` is an object but `usages[1]` is a string, the parser walks the path against whichever type is at each step and rejects on mismatch.
+- **Stringly-typed numbers** — `total_balance: "110.00"` is accepted and parsed as `110.00` (Number-coerced). Same for `"42"`, `"-3.14"`. Non-numeric strings reject.
+
+#### Worked example — generic 5h/7d API
+
+Given the example payload in the design spec:
+
+```json
+{
+  "usages": [
+    {
+      "scope": "FEATURE_CODING",
+      "detail": { "limit": "100", "used": "42", "remaining": "58",
+                  "resetTime": "2026-07-07T11:32:40.140865Z" },
+      "limits": [
+        { "window": { "duration": 300, "timeUnit": "TIME_UNIT_MINUTE" },
+          "detail": { "limit": "100", "used": "100",
+                      "resetTime": "2026-06-30T21:32:40.140865Z" } }
+      ]
+    }
+  ],
+  "totalQuota": { "limit": "100", "used": "8", "remaining": "92" }
+}
+```
+
+A `TOKEN_PLAN` provider mapping for it (note the 5h window comes from the nested `usages[0].limits[0].detail.used`, and the 7d window from the top-level `usages[0].detail.used`):
+
+```jsonc
+{
+  "providers": {
+    "myProvider": {
+      "TYPE": "TOKEN_PLAN",
+      "BASE_URL_COMPARED_TO": "https://api.example.com/anthropic",
+      "COMPARE_METHOD": "EXACT",
+      "ENDPOINT": "https://api.example.com/v1/usage",
+      "parameters": {
+        // 5h window — used% comes from the inner limits[0] array
+        "usedPercentInterval": "usages[0].limits[0].detail.used",
+        "endAtInterval":       "usages[0].limits[0].detail.resetTime",
+        // 7d window — used% comes from the outer detail object
+        "usedPercentWeekly":   "usages[0].detail.used",
+        "endAtWeekly":         "usages[0].detail.resetTime"
+      }
+    }
+  }
+}
+```
+
+The same mapping using the **bracket-less** form (digits after a dot are still parsed as array indices, per the grammar above):
+
+```jsonc
+"usedPercentInterval": "usages.0.limits.0.detail.used",
+"endAtInterval":       "usages.0.limits.0.detail.resetTime",
+"usedPercentWeekly":   "usages.0.detail.used",
+"endAtWeekly":         "usages.0.detail.resetTime"
+```
+
+#### Worked example — `BALANCE` provider with multiple currencies
+
+For DeepSeek's `/user/balance` shape, the planned `BALANCE` mapping is:
+
+```jsonc
+{
+  "providers": {
+    "deepseek": {
+      "TYPE": "BALANCE",
+      "BASE_URL_COMPARED_TO": "https://api.deepseek.com/anthropic",
+      "COMPARE_METHOD": "EXACT",
+      "ENDPOINT": "https://api.deepseek.com/user/balance",
+      "parameters": {
+        "isAvailable": "is_available",
+        "balances":    "balance_infos",
+        "balanceEntry.currency":     "currency",
+        "balanceEntry.totalBalance": "total_balance"
+      }
+    }
+  }
+}
+```
+
+The `balances` slot is array-typed; the parser iterates `balance_infos[]` and applies `balanceEntry.*` paths to each element. (DeepSeek's v0.4.x parser still uses the hardcoded `parseBalance`; the slot-based form above is the contract for the v0.5.0 wiring.)
+
 ### Module tokens
 
 The line layout is declared as `statuslineTemplate` (v0.4.0+). It accepts a **preset name** (e.g. `"1line"`, `"standard"`, `"abundant"`) OR a raw token array. The default is `"1line"` — the same shape v0.3.x rendered with its default `lineTemplate.plan`.

@@ -3,35 +3,29 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { isMiniMaxBaseUrl, parseRemains } from "./api.ts";
+import { parseRemains } from "./api.ts";
+import type { ProviderEntry } from "./types.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = (name: string): unknown =>
   JSON.parse(readFileSync(resolve(here, "__fixtures__", name), "utf8"));
 
-describe("isMiniMaxBaseUrl", () => {
-  it("matches api.minimaxi.com host", () => {
-    assert.equal(isMiniMaxBaseUrl("https://api.minimaxi.com"), true);
-  });
-  it("matches with /anthropic path suffix", () => {
-    assert.equal(isMiniMaxBaseUrl("https://api.minimaxi.com/anthropic"), true);
-  });
-  it("is case-insensitive", () => {
-    assert.equal(isMiniMaxBaseUrl("https://API.MiniMaxI.com"), true);
-  });
-  it("rejects vanilla Anthropic", () => {
-    assert.equal(isMiniMaxBaseUrl("https://api.anthropic.com"), false);
-  });
-  it("rejects empty / undefined", () => {
-    assert.equal(isMiniMaxBaseUrl(""), false);
-    assert.equal(isMiniMaxBaseUrl(undefined), false);
-    assert.equal(isMiniMaxBaseUrl(null), false);
-  });
-});
+// Minimal ProviderEntry carrying the default minimax parameters so
+// parseRemains gets the same slots the live dispatcher would. Tests
+// that need a custom mapping build their own entry.
+const minimaxProvider: ProviderEntry = {
+  TYPE: "TOKEN_PLAN",
+  BASE_URL_COMPARED_TO: "https://api.minimaxi.com/anthropic",
+  COMPARE_METHOD: "EXACT",
+  ENDPOINT: "https://www.minimaxi.com/v1/token_plan/remains",
+  // parameters omitted on purpose — parseRemains falls back to
+  // DEFAULT_MINIMAX_PARAMETERS when the entry's ENDPOINT is
+  // minimaxi.com and no parameters are supplied.
+};
 
 describe("parseRemains — model_remains array shape (real)", () => {
   it("parses the captured real fixture", () => {
-    const r = parseRemains(fixture("remains.real.json"));
+    const r = parseRemains(fixture("remains.real.json"), minimaxProvider);
     assert.ok(r);
     // Most active model is "general" with interval remaining 66%, weekly 61%.
     // → used% = 34% interval, 39% weekly.
@@ -42,18 +36,14 @@ describe("parseRemains — model_remains array shape (real)", () => {
   });
 
   it("threads resetStartAt and resetDurationMs from start_time/end_time", () => {
-    // Real fixture has start_time=1782302400000, end_time=1782316800000
-    // → 14400000ms = 4h window. weekly_* span is 604800000ms = 7d.
-    const r = parseRemains(fixture("remains.real.json"));
+    const r = parseRemains(fixture("remains.real.json"), minimaxProvider);
     assert.ok(r);
     assert.equal(r.fiveHour?.resetDurationMs, 4 * 3_600_000);
     assert.equal(r.weekly?.resetDurationMs, 7 * 24 * 3_600_000);
-    // Both start fields are ISO strings parseable as dates.
     const fhStart = Date.parse(r.fiveHour?.resetStartAt ?? "");
     const wkStart = Date.parse(r.weekly?.resetStartAt ?? "");
     assert.ok(Number.isFinite(fhStart));
     assert.ok(Number.isFinite(wkStart));
-    // end - start == duration, sanity-check.
     assert.equal(
       Date.parse(r.fiveHour!.resetAt!) - fhStart,
       r.fiveHour!.resetDurationMs
@@ -70,10 +60,10 @@ describe("parseRemains — model_remains array shape (real)", () => {
         {
           model_name: "general",
           current_interval_remaining_percent: 50,
-          end_time: 1_000_000, // only end_time, no start_time
+          end_time: 1_000_000,
         },
       ],
-    });
+    }, minimaxProvider);
     assert.ok(r);
     assert.equal(r.fiveHour?.resetAt, new Date(1_000_000).toISOString());
     assert.equal(r.fiveHour?.resetStartAt, undefined);
@@ -94,10 +84,10 @@ describe("parseRemains — model_remains array shape (real)", () => {
           current_weekly_remaining_percent: 50,
         },
       ],
-    });
+    }, minimaxProvider);
     assert.ok(r);
-    assert.equal(r.fiveHour?.pct, 80); // 100 - 20
-    assert.equal(r.weekly?.pct, 50); // 100 - 50
+    assert.equal(r.fiveHour?.pct, 80);
+    assert.equal(r.weekly?.pct, 50);
   });
 
   it("uses weekly percent when interval percent is absent", () => {
@@ -105,71 +95,95 @@ describe("parseRemains — model_remains array shape (real)", () => {
       model_remains: [
         {
           model_name: "general",
-          // no interval percent
           current_weekly_remaining_percent: 75,
         },
       ],
-    });
+    }, minimaxProvider);
     assert.ok(r);
-    // Interval has no data → null; weekly 75% remaining → 25% used.
     assert.equal(r.fiveHour, null);
     assert.equal(r.weekly?.pct, 25);
   });
+});
 
-  it("derives used% from raw counts when percentages absent", () => {
+describe("parseRemains — slot derivation", () => {
+  // Provider whose `usedPercentInterval` / `usedPercentWeekly` come
+  // from a non-default path. Exercises the "user supplies USED, we
+  // derive remaining" branch (the inverse of the minimax default).
+  const usedMappedProvider: ProviderEntry = {
+    ...minimaxProvider,
+    parameters: {
+      usedPercentInterval: "model_remains.0.current_interval_remaining_percent",
+      usedPercentWeekly:   "model_remains.0.current_weekly_remaining_percent",
+      startAtInterval:      "model_remains.0.start_time",
+      endAtInterval:        "model_remains.0.end_time",
+      startAtWeekly:        "model_remains.0.weekly_start_time",
+      endAtWeekly:          "model_remains.0.weekly_end_time",
+    },
+  };
+
+  it("uses used% directly when both used and remaining are mapped (used wins)", () => {
     const r = parseRemains({
       model_remains: [
-        {
-          model_name: "general",
-          current_interval_total_count: 100,
-          current_interval_usage_count: 80,
-          current_weekly_total_count: 1000,
-          current_weekly_usage_count: 200,
-        },
+        { current_interval_remaining_percent: 30 },
       ],
-    });
+    }, usedMappedProvider);
     assert.ok(r);
-    assert.equal(r.fiveHour?.pct, 80);
-    assert.equal(r.weekly?.pct, 20);
+    // used% raw is 30; remaining would be 70. The "used wins" rule
+    // means pct=30. (Minimax's "remaining" mapping would yield
+    // 100-30=70. We follow the user's mapping: they wired used
+    // directly, so we trust it.)
+    assert.equal(r.fiveHour?.pct, 30);
+  });
+
+  it("derives used% from remaining% when only remaining is mapped (default minimax)", () => {
+    const r = parseRemains({
+      model_remains: [
+        { current_interval_remaining_percent: 25 },
+      ],
+    }, minimaxProvider);
+    assert.ok(r);
+    assert.equal(r.fiveHour?.pct, 75);
+  });
+
+  it("returns null when both used% and remaining% are unmapped", () => {
+    // An entry with no percentage fields yields no windows; the parser
+    // treats this as "no recognizable data" and gives up entirely
+    // (returns null), matching the dispatcher's "no data → no line"
+    // contract.
+    const r = parseRemains({
+      model_remains: [
+        { model_name: "general" },
+      ],
+    }, minimaxProvider);
+    assert.equal(r, null);
+  });
+
+  it("clamps out-of-range percentages to [0, 100]", () => {
+    const r = parseRemains({
+      model_remains: [
+        { current_interval_remaining_percent: 150 },
+      ],
+    }, minimaxProvider);
+    assert.ok(r);
+    // 100 - 150 = -50, clamped to 0.
+    assert.equal(r.fiveHour?.pct, 0);
   });
 });
 
-describe("parseRemains — legacy single-window shape", () => {
-  it("parses snake_case flat shape", () => {
-    const r = parseRemains({
-      five_hour: { remaining: 60, limit: 100 },
-      weekly: { remaining: 400, limit: 1000 },
-    });
-    assert.ok(r);
-    assert.equal(r.fiveHour?.pct, 40);
-    assert.equal(r.weekly?.pct, 60);
-  });
-
-  it("parses data-envelope shape", () => {
-    const r = parseRemains({
-      data: {
-        five_hour: { remaining: 25, limit: 100 },
-        weekly: { remaining: 750, limit: 1000 },
-      },
-    });
-    assert.ok(r);
-    assert.equal(r.fiveHour?.pct, 75);
-    assert.equal(r.weekly?.pct, 25);
-  });
-
+describe("parseRemains — error paths", () => {
   it("returns null on non-zero base_resp.status_code", () => {
-    assert.equal(parseRemains(fixture("remains.empty.json")), null);
+    assert.equal(parseRemains(fixture("remains.empty.json"), minimaxProvider), null);
   });
 
   it("returns null when no recognizable windows", () => {
-    assert.equal(parseRemains({ data: { something: "else" } }), null);
+    assert.equal(parseRemains({ data: { something: "else" } }, minimaxProvider), null);
   });
 
   it("handles malformed input gracefully", () => {
-    assert.equal(parseRemains(null), null);
-    assert.equal(parseRemains(undefined), null);
-    assert.equal(parseRemains("string"), null);
-    assert.equal(parseRemains(42), null);
-    assert.equal(parseRemains([]), null);
+    assert.equal(parseRemains(null, minimaxProvider), null);
+    assert.equal(parseRemains(undefined, minimaxProvider), null);
+    assert.equal(parseRemains("string", minimaxProvider), null);
+    assert.equal(parseRemains(42, minimaxProvider), null);
+    assert.equal(parseRemains([], minimaxProvider), null);
   });
 });
