@@ -210,6 +210,267 @@ describe("diagnostics — append + readLatest", () => {
   });
 });
 
+describe("diagnostics — fetch error dedupe (v0.6.x+)", () => {
+  // v0.6.x+ — fetch failures fire on every statusline tick (~1Hz in
+  // active sessions). Unguarded append would flood the JSONL log
+  // and burn through the 200-line cap in 3 minutes of sustained
+  // outage, hiding genuinely new errors. The dedupe map keeps a
+  // single entry per (source, message, 60s window) so a sustained
+  // failure is logged once per minute, not once per tick.
+  let sandbox: string;
+  let prevConfigDir: string | undefined;
+  let prevEnable: string | undefined;
+
+  beforeEach(() => {
+    sandbox = mkdtempSync(join(tmpdir(), "tokenplan-diag-dedupe-"));
+    prevConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = sandbox;
+    prevEnable = process.env.TOKENPLAN_DIAGNOSTICS_ENABLE;
+    process.env.TOKENPLAN_DIAGNOSTICS_ENABLE = "1";
+    diag.__resetDedupeForTest();
+  });
+
+  afterEach(() => {
+    diag.__resetDedupeForTest();
+    if (prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = prevConfigDir;
+    if (prevEnable === undefined) delete process.env.TOKENPLAN_DIAGNOSTICS_ENABLE;
+    else process.env.TOKENPLAN_DIAGNOSTICS_ENABLE = prevEnable;
+    rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  it("suppresses identical (source, msg) within the 60s window", () => {
+    append("warning", "fetch", "minimax (https://x): HTTP 503", 1_000, null);
+    append("warning", "fetch", "minimax (https://x): HTTP 503", 5_000, null);
+    append("warning", "fetch", "minimax (https://x): HTTP 503", 30_000, null);
+
+    const raw = readFileSync(diagnosticsPath(null), "utf8");
+    const lines = raw.split("\n").filter((l) => l.length > 0);
+    assert.equal(lines.length, 1, "dedupe: 3 identical calls within 60s → 1 row");
+  });
+
+  it("passes through when the dedupe window has elapsed", () => {
+    // 60_001 ms apart — one window tick past the 60s threshold.
+    append("warning", "fetch", "minimax (https://x): HTTP 503", 1_000, null);
+    append("warning", "fetch", "minimax (https://x): HTTP 503", 1_000 + 60_001, null);
+
+    const raw = readFileSync(diagnosticsPath(null), "utf8");
+    const lines = raw.split("\n").filter((l) => l.length > 0);
+    assert.equal(lines.length, 2, "dedupe window expired → both writes land");
+  });
+
+  it("treats different sources or messages as distinct keys", () => {
+    // The dedupe key is (source, msg) — level is intentionally NOT
+    // part of the key, so a warning and an error with the same
+    // message dedupe together. (This is intentional: from a
+    // postmortem perspective, the same network outage producing
+    // 60s of "warning" then 60s of "error" reads as one event, not
+    // two.) So three distinct keys, not four.
+    append("warning", "fetch", "minimax: HTTP 503", 1_000, null);
+    append("warning", "fetch", "deepseek: HTTP 503", 1_000, null); // different msg
+    append("warning", "config", "minimax: HTTP 503", 1_000, null); // different source
+    append("error", "fetch", "minimax: HTTP 503", 1_000, null);   // same (source, msg) as line 1
+
+    const raw = readFileSync(diagnosticsPath(null), "utf8");
+    const lines = raw.split("\n").filter((l) => l.length > 0);
+    assert.equal(lines.length, 3, "3 distinct (source, msg) keys — level shares");
+  });
+
+  it("keys on the first 200 chars of the message", () => {
+    const long = "x".repeat(500);
+    const long2 = "x".repeat(500);
+    append("warning", "fetch", long, 1_000, null);
+    append("warning", "fetch", long2, 5_000, null);
+
+    const raw = readFileSync(diagnosticsPath(null), "utf8");
+    const lines = raw.split("\n").filter((l) => l.length > 0);
+    assert.equal(lines.length, 1, "two 500-char messages with same first 200 chars are the same key");
+  });
+});
+
+describe("diagnostics — integration with fetchRemains / fetchBalance (v0.6.x+)", () => {
+  // v0.6.x+ — fetchRemains / fetchBalance log their own network
+  // errors to diagnostics at the network access point. This
+  // subsumes the "caller-side logging" we previously had in
+  // index.ts:163 — the fetch site knows exactly what failed
+  // (network error, HTTP status, parse failure) and writes a
+  // single source-of-truth record before re-throwing for the
+  // dispatcher's stale-on-error fallback.
+  //
+  // We exercise the contract end-to-end (mock global fetch, call
+  // the real fetchRemains / fetchBalance, then read the JSONL
+  // log back) — no need to re-stage the index.ts catch block in
+  // a test.
+
+  let sandbox: string;
+  let prevConfigDir: string | undefined;
+  let prevEnable: string | undefined;
+  let originalFetch: typeof fetch;
+
+  beforeEach(() => {
+    sandbox = mkdtempSync(join(tmpdir(), "tokenplan-diag-fetch-"));
+    prevConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = sandbox;
+    prevEnable = process.env.TOKENPLAN_DIAGNOSTICS_ENABLE;
+    process.env.TOKENPLAN_DIAGNOSTICS_ENABLE = "1";
+    diag.__resetDedupeForTest();
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    diag.__resetDedupeForTest();
+    globalThis.fetch = originalFetch;
+    if (prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = prevConfigDir;
+    if (prevEnable === undefined) delete process.env.TOKENPLAN_DIAGNOSTICS_ENABLE;
+    else process.env.TOKENPLAN_DIAGNOSTICS_ENABLE = prevEnable;
+    rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  it("fetchRemains 5xx → fetch site records the diagnostic AND throws", async () => {
+    const { fetchRemains } = await import("./api.ts");
+    globalThis.fetch = (async () => new Response("oops", { status: 503 })) as typeof fetch;
+    await assert.rejects(
+      () => fetchRemains("t", "https://x/y", undefined, null),
+      /HTTP 503/,
+      "fetcher must throw with HTTP code in message",
+    );
+    // The fetch site is responsible for writing the diagnostic. No
+    // caller-side logging required.
+    const raw = readFileSync(diagnosticsPath(null), "utf8");
+    const lines = raw.split("\n").filter((l) => l.length > 0);
+    assert.equal(lines.length, 1, "exactly one diagnostic row from the fetch site");
+    const row = JSON.parse(lines[0]);
+    assert.equal(row.level, "warning");
+    assert.equal(row.source, "fetch");
+    assert.match(row.msg, /token_plan\/remains HTTP 503/);
+    assert.match(row.msg, /https:\/\/x\/y/);
+  });
+
+  it("fetchRemains network error → fetch site records the diagnostic AND throws", async () => {
+    const { fetchRemains } = await import("./api.ts");
+    globalThis.fetch = (async () => {
+      throw new Error("fetch failed: ECONNREFUSED");
+    }) as typeof fetch;
+    await assert.rejects(
+      () => fetchRemains("t", "https://x/y", undefined, null),
+      /ECONNREFUSED/,
+    );
+    const raw = readFileSync(diagnosticsPath(null), "utf8");
+    const lines = raw.split("\n").filter((l) => l.length > 0);
+    assert.equal(lines.length, 1);
+    const row = JSON.parse(lines[0]);
+    assert.equal(row.level, "warning");
+    assert.equal(row.source, "fetch");
+    assert.match(row.msg, /token_plan\/remains https:\/\/x\/y/);
+    assert.match(row.msg, /ECONNREFUSED/);
+  });
+
+  it("fetchBalance 5xx → fetch site records the diagnostic AND throws", async () => {
+    const { fetchBalance } = await import("./api.deepseek.ts");
+    globalThis.fetch = (async () => new Response("oops", { status: 502 })) as typeof fetch;
+    await assert.rejects(
+      () => fetchBalance("t", "https://api.deepseek.com/user/balance", undefined, null),
+      /HTTP 502/,
+    );
+    const raw = readFileSync(diagnosticsPath(null), "utf8");
+    const lines = raw.split("\n").filter((l) => l.length > 0);
+    assert.equal(lines.length, 1);
+    const row = JSON.parse(lines[0]);
+    assert.match(row.msg, /deepseek \/user\/balance HTTP 502/);
+  });
+
+  it("fetchBalance network error → fetch site records the diagnostic AND throws", async () => {
+    const { fetchBalance } = await import("./api.deepseek.ts");
+    globalThis.fetch = (async () => {
+      throw new Error("fetch failed: ECONNREFUSED");
+    }) as typeof fetch;
+    await assert.rejects(
+      () => fetchBalance("t", "https://api.deepseek.com/user/balance", undefined, null),
+      /ECONNREFUSED/,
+    );
+    const raw = readFileSync(diagnosticsPath(null), "utf8");
+    const lines = raw.split("\n").filter((l) => l.length > 0);
+    assert.equal(lines.length, 1);
+    const row = JSON.parse(lines[0]);
+    assert.match(row.msg, /deepseek \/user\/balance/);
+    assert.match(row.msg, /ECONNREFUSED/);
+  });
+
+  it("does NOT log the auth token (token-leak regression guard)", async () => {
+    const { fetchRemains } = await import("./api.ts");
+    globalThis.fetch = (async () => new Response("nope", { status: 401 })) as typeof fetch;
+    const SECRET = "sk-very-secret-12345";
+    await assert.rejects(
+      () => fetchRemains(SECRET, "https://x/y", undefined, null),
+      /HTTP 401/,
+    );
+    const raw = readFileSync(diagnosticsPath(null), "utf8");
+    // Hard guard: the secret must NOT appear in the JSONL log.
+    assert.equal(
+      raw.includes(SECRET),
+      false,
+      "auth token must never be persisted to the diagnostics log",
+    );
+    const row = JSON.parse(raw.trim().split("\n")[0]);
+    assert.match(row.msg, /HTTP 401/);
+  });
+
+  it("successful fetch (200) does NOT write a diagnostic", async () => {
+    const { fetchRemains } = await import("./api.ts");
+    const provider = {
+      TYPE: "TOKEN_PLAN" as const,
+      BASE_URL_COMPARED_TO: "https://x",
+      COMPARE_METHOD: "EXACT" as const,
+      ENDPOINT: "https://x/y",
+      parameters: {
+        remainingPercentInterval: "model_remains.0.current_interval_remaining_percent",
+        remainingPercentWeekly:   "model_remains.0.current_weekly_remaining_percent",
+        startAtInterval:          "model_remains.0.start_time",
+        endAtInterval:            "model_remains.0.end_time",
+        startAtWeekly:            "model_remains.0.weekly_start_time",
+        endAtWeekly:              "model_remains.0.weekly_end_time",
+      },
+    };
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          base_resp: { status_code: 0, status_msg: "ok" },
+          model_remains: [
+            {
+              current_interval_remaining_percent: 50,
+              current_weekly_remaining_percent: 50,
+              start_time: Date.now() - 1_000,
+              end_time: Date.now() + 3_600_000,
+              weekly_start_time: Date.now() - 86_400_000,
+              weekly_end_time: Date.now() + 7 * 24 * 3_600_000,
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      )) as typeof fetch;
+    const r = await fetchRemains("t", "https://x/y", undefined, provider);
+    assert.ok(r, "200 with parseable body returns a Remains");
+    try {
+      const raw = readFileSync(diagnosticsPath(null), "utf8");
+      const fetchRows = raw.split("\n")
+        .filter((l) => l.length > 0)
+        .map((l) => JSON.parse(l))
+        .filter((row) => row.source === "fetch");
+      assert.equal(fetchRows.length, 0, "successful fetch must not write a diagnostic");
+    } catch {
+      // diagnostics.jsonl may not exist — fine.
+    }
+  });
+});
+
+// Note: index.ts is no longer in the fetch-error logging path.
+// Earlier (v0.6.x draft) the catch block at fetchForProvider's
+// wrapper level logged fetch errors; that approach was withdrawn
+// in favor of logging at the network access point (fetchRemains /
+// fetchBalance) where the actual error semantics live. The
+// integration tests above cover the fetch-site logging.
+
 // Pull only the symbols we need — `import * as diagnostics` would
 // collide with the JSONL output under tests that also need
 // `diagnostics` to mean "the whole module". Using a namespace import

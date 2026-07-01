@@ -23,6 +23,7 @@
 
 import { configStore } from "./config.ts";
 import type { ProviderEntry } from "./types.ts";
+import * as diagnostics from "./diagnostics.ts";
 
 export type BalanceEntry = {
   currency: string;
@@ -109,17 +110,33 @@ export async function fetchBalance(
     method !== "GET" && provider?.BODY !== undefined
       ? JSON.stringify(provider.BODY)
       : undefined;
-  const res = await fetch(endpoint, {
-    method,
-    headers: {
-      Authorization: `Bearer ${authToken}`,
-      Accept: "application/json",
-    },
-    signal,
-    ...(bodyJson !== undefined ? { body: bodyJson } : {}),
-  });
+  let res: Response;
+  try {
+    res = await fetch(endpoint, {
+      method,
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+        Accept: "application/json",
+      },
+      signal,
+      ...(bodyJson !== undefined ? { body: bodyJson } : {}),
+    });
+  } catch (e) {
+    // v0.6.x+ — log the network error to diagnostics at the
+    // network access point. Mirrors fetchRemains' logging. The
+    // WHATWG fetch impl never echoes the auth token in its error
+    // message, so logging `(e as Error).message` is safe.
+    diagnostics.append(
+      "warning", "fetch",
+      `deepseek /user/balance ${endpoint}: ${(e as Error).message ?? String(e)}`,
+      Date.now(),
+    );
+    throw e;
+  }
   if (!res.ok) {
-    throw new Error(`deepseek /user/balance HTTP ${res.status}`);
+    const msg = `deepseek /user/balance HTTP ${res.status}`;
+    diagnostics.append("warning", "fetch", `${msg} (${endpoint})`, Date.now());
+    throw new Error(msg);
   }
   const text = await res.text();
   let parsed: unknown;

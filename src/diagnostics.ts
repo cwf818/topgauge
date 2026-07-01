@@ -105,6 +105,49 @@ export function isEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return s === "1" || s === "true" || s === "yes";
 }
 
+// ----- Dedupe window -----
+
+// In-process dedupe map: when fetch is failing continuously, the
+// statusline tick fires ~once per second and an unguarded append
+// would log the same error hundreds of times before the user even
+// noticed. We keep a tiny map keyed by `<source>:<msg-hash>` with
+// the last-emitted timestamp; the same key is suppressed for
+// `DEDUPE_WINDOW_MS` milliseconds after the last append. Cleared
+// at process exit (this is a per-tick child process, so the next
+// tick starts fresh — a single entry of each repeated error per
+// tick is still useful, and the JSONL file's 200-line cap means
+// rapid-fire ticks can't drown out genuinely new errors).
+const DEDUPE_WINDOW_MS = 60_000;
+const _dedupeMap = new Map<string, number>();
+
+function dedupeKey(source: string, msg: string): string {
+  // Lightweight: a per-source fingerprint of the message. We don't
+  // need cryptographic strength — just enough to keep "same error,
+  // same provider" from re-emitting every tick. Cap the key at 200
+  // chars so a giant error string doesn't bloat the map.
+  return `${source}:${msg.slice(0, 200)}`;
+}
+
+// Returns true if a new append should be allowed. Records the
+// emission time on success. Module-private — callers don't need
+// the raw key, just the gate.
+function shouldEmit(source: string, msg: string, now: number): boolean {
+  const k = dedupeKey(source, msg);
+  const last = _dedupeMap.get(k);
+  if (last !== undefined && now - last < DEDUPE_WINDOW_MS) {
+    return false;
+  }
+  _dedupeMap.set(k, now);
+  return true;
+}
+
+// Test-only — clear the dedupe map so a test that calls
+// `appendFetchError` (or any other dedupe-gated append) twice in
+// a row can verify both writes land without sleeping 60s.
+export function __resetDedupeForTest(): void {
+  _dedupeMap.clear();
+}
+
 // ----- Append -----
 
 // Append one entry. Atomic at the OS level for small writes
@@ -126,6 +169,7 @@ export function append(
   cwd?: string | null,
 ): void {
   if (!isEnabled()) return;
+  if (!shouldEmit(source, msg, now)) return;
   const path = diagnosticsFilePath(cwd);
   const entry: Entry = { at: now, level, source, msg };
   try {

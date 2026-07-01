@@ -162,6 +162,9 @@ async function fetchProviderData(
     return { kind: "fail" };
   } catch {
     // Network / HTTP error. Stale-on-error: keep showing the last good value.
+    // The fetch site (fetchRemains / fetchBalance) is responsible for
+    // logging the underlying error to diagnostics; we just translate
+    // the throw to a FetchResult here. See api.ts / api.deepseek.ts.
     const stale =
       entry.TYPE === "TOKEN_PLAN" ? peekCache<Remains>() : peekCache<Balance>();
     if (stale) return { kind: "stale", data: stale.value, ageMs: stale.ageMs };

@@ -35,6 +35,7 @@
 import type { Window } from "./render.ts";
 import type { ProviderEntry } from "./types.ts";
 import { resolveSlot } from "./path-expr.ts";
+import * as diagnostics from "./diagnostics.ts";
 
 export type Remains = {
   fiveHour: Window | null;
@@ -327,18 +328,40 @@ export async function fetchRemains(
     method !== "GET" && provider?.BODY !== undefined
       ? JSON.stringify(provider.BODY)
       : undefined;
-  const res = await fetch(endpoint, {
-    method,
-    headers: {
-      Authorization: `Bearer ${authToken}`,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    signal,
-    ...(bodyJson !== undefined ? { body: bodyJson } : {}),
-  });
+  let res: Response;
+  try {
+    res = await fetch(endpoint, {
+      method,
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      signal,
+      ...(bodyJson !== undefined ? { body: bodyJson } : {}),
+    });
+  } catch (e) {
+    // v0.6.x+ — log the network error to diagnostics. The error
+    // message is what the WHATWG fetch impl produces ("fetch
+    // failed", "ECONNREFUSED", "aborted", etc.) and never includes
+    // the auth token — the token lives in the request header and
+    // is not echoed in failures. We log here (at the network
+    // access point) rather than in the dispatcher so the record
+    // reflects what the fetcher actually saw, not how the caller
+    // chose to label the result (stale / fail / null). Level
+    // "warning" matches the existing config-parse warnings; the
+    // statusline continues to run normally via stale-on-error.
+    diagnostics.append(
+      "warning", "fetch",
+      `token_plan/remains ${endpoint}: ${(e as Error).message ?? String(e)}`,
+      Date.now(),
+    );
+    throw e;
+  }
   if (!res.ok) {
-    throw new Error(`token_plan/remains HTTP ${res.status}`);
+    const msg = `token_plan/remains HTTP ${res.status}`;
+    diagnostics.append("warning", "fetch", `${msg} (${endpoint})`, Date.now());
+    throw new Error(msg);
   }
   const text = await res.text();
   let parsed: unknown;
