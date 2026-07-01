@@ -226,6 +226,27 @@ export function parseRemains(
     }
   }
 
+  // v0.6.x+ — fallback for non-minimax TOKEN_PLAN providers whose
+  // response shape does NOT have a top-level `model_remains` array
+  // (e.g. kimi's `{ usages: [...], totalQuota: {...} }`). The
+  // `parameters` paths are interpreted as literal key chains from the
+  // response root, no array-picking / re-indexing needed. The
+  // existing readWindowSlots + slotsToWindow helpers do the right
+  // thing when fed the unchanged params map, so no parser surgery
+  // beyond skipping the reindex step.
+  //
+  // Skipping this branch when there's no provider.parameters
+  // (minimax default) keeps the legacy behavior: an unknown response
+  // shape with no user-supplied mapping still returns null, matching
+  // the pre-existing "we don't know how to read this" contract.
+  if (provider?.parameters) {
+    const interval = slotsToWindow(readWindowSlots(root, params, "Interval"));
+    const weekly = slotsToWindow(readWindowSlots(root, params, "Weekly"));
+    if (interval || weekly) {
+      return { fiveHour: interval, weekly };
+    }
+  }
+
   // No recognizable model_remains array and no parameters map → give up.
   return null;
 }
