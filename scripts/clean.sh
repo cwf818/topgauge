@@ -146,7 +146,8 @@ if [ "$PURGE_RUNTIME" = 1 ]; then
   if [ "$PROJECT_LEVEL" = 1 ]; then
     echo "clean.sh: --purge-runtime ignored under --project (state is user-level)" >&2
   else
-    STATE_DIR="${PLUGINS_DIR}/tokenplan-usage-hud/state"
+    STATE_DIR="${PLUGINS_DIR}/topgauge-cc/state"
+    LEGACY_STATE_DIR="${PLUGINS_DIR}/tokenplan-usage-hud/state"
 
     # Legacy top-level + old token-samples tree (v0.4.0–v0.4.<n-1>).
     # Kept here so upgrading users get a one-shot cleanup; new installs
@@ -155,6 +156,14 @@ if [ "$PURGE_RUNTIME" = 1 ]; then
       "${STATE_DIR}/diagnostics.jsonl"
       "${STATE_DIR}/cache.json"
       "${STATE_DIR}/token-samples"
+      # v0.7.0 — also purge the OLD state dir left by users
+      # upgrading from the pre-rename `tokenplan-usage-hud` install.
+      # Same per-project layout lives underneath, so we wipe the
+      # whole subtree rather than enumerating files.
+      "${LEGACY_STATE_DIR}"
+      "${LEGACY_STATE_DIR}/diagnostics.jsonl"
+      "${LEGACY_STATE_DIR}/cache.json"
+      "${LEGACY_STATE_DIR}/token-samples"
     )
     for f in "${LEGACY_TARGETS[@]}"; do
       if [ -e "$f" ]; then
@@ -191,6 +200,31 @@ if [ "$PURGE_RUNTIME" = 1 ]; then
         done
         # If the project dir is now empty, drop it too — keeps state/
         # tidy for users who want to see the layout at a glance.
+        if [ "$DRY_RUN" = 0 ] && [ -z "$(ls -A "$proj_dir" 2>/dev/null)" ]; then
+          rmdir "$proj_dir" 2>/dev/null || true
+        fi
+      done
+      shopt -u nullglob
+    fi
+    # v0.7.0 — same per-project walk for the LEGACY state dir, so
+    # an upgrading user's `tokenplan-usage-hud/state/<projectHash>/`
+    # tree gets wiped too. We only run it if the legacy dir exists;
+    # fresh installs never have it.
+    if [ -d "$LEGACY_STATE_DIR" ]; then
+      shopt -s nullglob
+      for proj_dir in "${LEGACY_STATE_DIR}"/*/; do
+        [ -d "$proj_dir" ] || continue
+        for f in \
+          "${proj_dir}cache.json" \
+          "${proj_dir}diagnostics.jsonl" \
+          "${proj_dir}"*.jsonl; do
+          if [ -e "$f" ]; then
+            echo "  rm $f"
+            if [ "$DRY_RUN" = 0 ]; then
+              rm -f "$f"
+            fi
+          fi
+        done
         if [ "$DRY_RUN" = 0 ] && [ -z "$(ls -A "$proj_dir" 2>/dev/null)" ]; then
           rmdir "$proj_dir" 2>/dev/null || true
         fi

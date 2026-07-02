@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# dev-uninstall.sh — DEV-ONLY: wipe all on-disk state for tokenplan-usage-hud
-# so /plugin install can re-fetch a clean copy from the marketplace.
+# dev-uninstall.sh — DEV-ONLY: wipe all on-disk state for topgauge-cc
+# (ToPGauge-CC) so /plugin install can re-fetch a clean copy from the
+# marketplace.
 #
-# Functionally identical to /tokenplan-usage-hud:uninstall (which runs
+# Functionally identical to /topgauge-cc:uninstall (which runs
 # scripts/uninstall.sh). This script exists so the developer can run the
 # same cleanup from `npm run dev:uninstall` even when the slash command
 # can't be invoked (e.g. plugin not yet loaded, or being iterated on).
@@ -11,11 +12,11 @@
 #   - Restores settings.json.statusLine (from the stable
 #     state/upstream-cmd.txt — sibling of config.json — or the most
 #     recent pre-managed .bak.<ts>).
-#   - Removes `tokenplan-usage-hud@tokenplan-usage-hud` from
+#   - Removes `topgauge-cc@topgauge-cc` from
 #     settings.json.enabledPlugins.
-#   - Wipes cache/tokenplan-usage-hud/, the marketplace dir, the legacy
-#     `cwf818-tokenplan-usage-hud` alias, AND the stable
-#     plugins/tokenplan-usage-hud/state/ dir.
+#   - Wipes cache/topgauge-cc/, the marketplace dir, the legacy
+#     `cwf818-topgauge-cc` alias, AND the stable
+#     plugins/topgauge-cc/state/ dir.
 #   - Strips the plugin's row from installed_plugins.json and
 #     known_marketplaces.json (with timestamped .bak.<TS> backups).
 #   - Backs up settings.json before any destructive change.
@@ -28,10 +29,10 @@
 #   npm run dev:uninstall:dry          # same as scripts/dev-uninstall.sh --dry-run
 #
 # After this script, the user can re-run:
-#   /plugin marketplace add cwf818/tokenplan-usage-hud
-#   /plugin install tokenplan-usage-hud@tokenplan-usage-hud
+#   /plugin marketplace add cwf818/topgauge-cc
+#   /plugin install topgauge-cc@topgauge-cc
 #   /reload-plugins
-#   /tokenplan-usage-hud:install
+#   /topgauge-cc:install
 #
 # Portable: Linux, macOS, Git Bash on Windows.
 

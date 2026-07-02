@@ -3,17 +3,22 @@
 # branch in scripts/install.sh.
 #
 # The branch under test:
-#   - When statusLine._tokenplan_managed === true and the STABLE state
-#     dir (${CLAUDE_ROOT}/plugins/tokenplan-usage-hud/state/) is
-#     missing the upstream-cmd.txt, install.sh walks PLUGIN_BASE,
-#     finds the SECOND-newest version dir (the one immediately before
-#     PLUGIN_DIR in version order), and copies its state/ files
-#     (upstream-cmd.sh + upstream-cmd.txt) into the STABLE state dir.
-#     This is the v0.2.18 → v0.2.19 migration: per-version cache state
-#     moves to a permanent location that survives cache wipes.
+#   - When statusLine._topgauge_managed === true and the STABLE state
+#     dir (${CLAUDE_ROOT}/plugins/topgauge-cc/state/) is missing the
+#     upstream-cmd.txt, install.sh walks PLUGIN_BASE, finds the
+#     SECOND-newest version dir (the one immediately before PLUGIN_DIR
+#     in version order), and copies its state/ files (upstream-cmd.sh
+#     + upstream-cmd.txt) into the STABLE state dir. This is the
+#     v0.2.18 → v0.2.19 migration: per-version cache state moves to a
+#     permanent location that survives cache wipes.
 #   - The copy is "no clobber" — files already in the stable state dir
 #     (because a previous :install set them, or because they were
 #     already migrated) are not overwritten.
+#   - v0.7.0 — when statusLine is unmanaged AND the LEGACY state dir
+#     (${CLAUDE_ROOT}/plugins/tokenplan-usage-hud/state/) exists with
+#     upstream-cmd.txt and the NEW state dir does not, install.sh
+#     copies the legacy contents forward so a user upgrading from the
+#     old plugin name doesn't lose their preserved upstream command.
 #
 # These tests don't try to drive the real install.sh against the real
 # user settings.json; they build a minimal PLUGIN_BASE (two version
@@ -75,14 +80,14 @@ assert_file_missing() {
 
 # Build a fresh fixture:
 #   $ROOT/                          (synthetic CLAUDE_ROOT)
-#     settings.json                 (with _tokenplan_managed: true)
-#     plugins/cache/tokenplan-usage-hud/
-#       tokenplan-usage-hud/
+#     settings.json                 (with _topgauge_managed: true)
+#     plugins/cache/topgauge-cc/
+#       topgauge-cc/
 #         0.2.7/state/upstream-cmd.{sh,txt}    (previous version, LEGACY location)
 #         0.2.8/scripts/wrapper.sh             (current version)
 #         0.2.8/dist/index.js                  (so dist-missing build is skipped)
 #         0.2.8/scripts/install.sh + lib/      (the script under test)
-#     plugins/tokenplan-usage-hud/state/        (STABLE state dir, may be empty/pre-populated)
+#     plugins/topgauge-cc/state/               (STABLE state dir, may be empty/pre-populated)
 #
 #   $STATUSLINE_CMD    statusLine.command value (with cache path baked in)
 #   $PREV_STATE_DIR    previous version's legacy state dir
@@ -94,13 +99,13 @@ build_fixture() {
   local with_stable_state="$2" # "yes" or "no" — populate stable state/
 
   local root
-  root="$(mktemp -d -t tokenplan-install-test-XXXXXX)"
-  local base="${root}/plugins/cache/tokenplan-usage-hud/tokenplan-usage-hud"
+  root="$(mktemp -d -t topgauge-cc-install-test-XXXXXX)"
+  local base="${root}/plugins/cache/topgauge-cc/topgauge-cc"
   local curr="${base}/0.2.8"
   local prev="${base}/0.2.7"
   mkdir -p "${curr}/scripts/lib" "${curr}/dist" "${prev}/state" \
            "${root}/plugins/cache" \
-           "${root}/plugins/tokenplan-usage-hud"
+           "${root}/plugins/topgauge-cc"
 
   # Previous version: state/ with the upstream-cmd that a v0.2.18 foreign
   # install would have written. Both sh and txt are present (the install.sh
@@ -128,25 +133,25 @@ EOF
   # case). When with_stable_state=yes, write a DIFFERENT upstream-cmd so
   # we can assert install.sh did not clobber it.
   if [ "$with_stable_state" = "yes" ]; then
-    mkdir -p "${root}/plugins/tokenplan-usage-hud/state"
-    cat > "${root}/plugins/tokenplan-usage-hud/state/upstream-cmd.txt" <<'EOF'
+    mkdir -p "${root}/plugins/topgauge-cc/state"
+    cat > "${root}/plugins/topgauge-cc/state/upstream-cmd.txt" <<'EOF'
 echo "stable state — do not clobber"
 EOF
-    cat > "${root}/plugins/tokenplan-usage-hud/state/upstream-cmd.sh" <<'EOF'
+    cat > "${root}/plugins/topgauge-cc/state/upstream-cmd.sh" <<'EOF'
 #!/usr/bin/env bash
 echo "stable state — do not clobber"
 EOF
-    chmod +x "${root}/plugins/tokenplan-usage-hud/state/upstream-cmd.sh"
+    chmod +x "${root}/plugins/topgauge-cc/state/upstream-cmd.sh"
   fi
 
-  # settings.json with _tokenplan_managed: true (so install.sh hits the
+  # settings.json with _topgauge_managed: true (so install.sh hits the
   # no-op branch under test). The statusLine.command is hand-crafted to
   # pass edit-settings.mjs's isOurWrapperCommand fingerprint:
-  #   - path contains plugins[/\]cache[/\]tokenplan-usage-hud[/\]tokenplan-usage-hud[/\]
+  #   - path contains plugins[/\]cache[/\]topgauge-cc[/\]topgauge-cc[/\]
   #   - ends with `wrapper.sh"'` (single-quote after closing double-quote)
   # The minimal shape that satisfies both: a `bash -c '…exec bash "<path>/scripts/wrapper.sh"'`
   # whose <path> contains the cache marker. We use the real install path.
-  # Note: we do NOT pin TOKENPLAN_UPSTREAM_CMD here — the no-op branch
+  # Note: we do NOT pin TOPGAUGE_CC_UPSTREAM_CMD here — the no-op branch
   # doesn't rewrite statusLine, so the command shape only matters for
   # the fingerprint check.
   cat > "${root}/settings.json" <<EOF
@@ -154,7 +159,7 @@ EOF
   "statusLine": {
     "type": "command",
     "command": "bash -c 'plugin_dir=${curr}; exec bash \"\${plugin_dir}scripts/wrapper.sh\"'",
-    "_tokenplan_managed": true
+    "_topgauge_managed": true
   }
 }
 EOF
@@ -162,7 +167,7 @@ EOF
   FIXTURE_ROOT="$root"
   CURR_PLUGIN_DIR="$curr"
   PREV_STATE_DIR="${prev}/state"
-  STABLE_STATE_DIR="${root}/plugins/tokenplan-usage-hud/state"
+  STABLE_STATE_DIR="${root}/plugins/topgauge-cc/state"
   CURR_VERSION="0.2.8"
   # CLAUDE_CONFIG_DIR is the parent of `plugins/`, not `plugins/` itself.
   # install.sh does CLAUDE_ROOT = ${CLAUDE_CONFIG_DIR:-$HOME}/plugins/...
@@ -235,10 +240,10 @@ rm -rf "$FIXTURE_ROOT"
 
 echo "-- no previous version (only one cache dir): no-op without copying --"
 # Rebuild with only 0.2.8 (no 0.2.7).
-root="$(mktemp -d -t tokenplan-install-test-XXXXXX)"
-base="${root}/plugins/cache/tokenplan-usage-hud/tokenplan-usage-hud"
+root="$(mktemp -d -t topgauge-cc-install-test-XXXXXX)"
+base="${root}/plugins/cache/topgauge-cc/topgauge-cc"
 curr="${base}/0.2.8"
-mkdir -p "${curr}/scripts/lib" "${curr}/dist" "${root}/plugins/tokenplan-usage-hud"
+mkdir -p "${curr}/scripts/lib" "${curr}/dist" "${root}/plugins/topgauge-cc"
 ln -s "${SCRIPT_DIR}/wrapper.sh" "${curr}/scripts/wrapper.sh"
 ln -s "${SCRIPT_DIR}/install.sh" "${curr}/scripts/install.sh"
 ln -s "${SCRIPT_DIR}/lib/edit-settings.mjs" "${curr}/scripts/lib/edit-settings.mjs"
@@ -246,12 +251,12 @@ printf '# stub\n' > "${curr}/dist/index.js"
 # settings.json: matches the isOurWrapperCommand fingerprint so install.sh
 # takes the no-op (managed) branch — which is what we want to test.
 cat > "${root}/settings.json" <<EOF
-{ "statusLine": { "type": "command", "command": "bash -c 'plugin_dir=${curr}; exec bash \"\${plugin_dir}scripts/wrapper.sh\"'", "_tokenplan_managed": true } }
+{ "statusLine": { "type": "command", "command": "bash -c 'plugin_dir=${curr}; exec bash \"\${plugin_dir}scripts/wrapper.sh\"'", "_topgauge_managed": true } }
 EOF
 # Stable state dir does NOT exist; legacy per-version state dir does NOT exist.
 out=$(HOME="$root" CLAUDE_CONFIG_DIR="$root" bash "$INSTALL_SH" 2>&1) || true
 assert_file_missing "stable upstream-cmd.txt was NOT created from nowhere" \
-  "${root}/plugins/tokenplan-usage-hud/state/upstream-cmd.txt"
+  "${root}/plugins/topgauge-cc/state/upstream-cmd.txt"
 if echo "$out" | grep -qF "migrated legacy state/"; then
   echo "  FAIL should not have printed migration log (no previous version)"
   FAIL=$((FAIL + 1))
@@ -261,6 +266,62 @@ else
 fi
 # Should still print the standard no-op message.
 assert_match_str "standard no-op message printed" "already managed" "$out"
+rm -rf "$root"
+
+echo "-- legacy one-shot state migration (v0.7.0: tokenplan-usage-hud -> topgauge-cc) --"
+# Simulate a user upgrading from the old plugin name: the legacy state
+# dir exists with upstream-cmd files, the new state dir is missing.
+# install.sh should copy the legacy contents into the new location and
+# emit the migration log line.
+root="$(mktemp -d -t topgauge-cc-legacy-migrate-XXXXXX)"
+base="${root}/plugins/cache/topgauge-cc/topgauge-cc"
+curr="${base}/0.2.8"
+mkdir -p "${curr}/scripts/lib" "${curr}/dist" \
+         "${root}/plugins/tokenplan-usage-hud/state" \
+         "${root}/plugins/topgauge-cc"
+ln -s "${SCRIPT_DIR}/wrapper.sh" "${curr}/scripts/wrapper.sh"
+ln -s "${SCRIPT_DIR}/install.sh" "${curr}/scripts/install.sh"
+ln -s "${SCRIPT_DIR}/lib/edit-settings.mjs" "${curr}/scripts/lib/edit-settings.mjs"
+printf '# stub\n' > "${curr}/dist/index.js"
+# settings.json: unmanaged (no _topgauge_managed), so install.sh takes
+# the fresh / replace branch — and the legacy migration runs before
+# anything else.
+cat > "${root}/settings.json" <<'EOF'
+{ "statusLine": { "type": "command", "command": "echo pre-existing user statusline" } }
+EOF
+# Pre-populate legacy state dir.
+cat > "${root}/plugins/tokenplan-usage-hud/state/upstream-cmd.txt" <<'EOF'
+echo "preserved from old plugin"
+EOF
+cat > "${root}/plugins/tokenplan-usage-hud/state/upstream-cmd.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "preserved from old plugin"
+EOF
+chmod +x "${root}/plugins/tokenplan-usage-hud/state/upstream-cmd.sh"
+out=$(HOME="$root" CLAUDE_CONFIG_DIR="$root" bash "$INSTALL_SH" 2>&1) || true
+# New state dir should now exist with the legacy files copied in.
+assert_file_exists "legacy upstream-cmd.txt copied to new state" \
+  "${root}/plugins/topgauge-cc/state/upstream-cmd.txt"
+assert_file_exists "legacy upstream-cmd.sh copied to new state" \
+  "${root}/plugins/topgauge-cc/state/upstream-cmd.sh"
+assert_eq "legacy upstream-cmd.txt content preserved" \
+  "echo \"preserved from old plugin\"" \
+  "$(cat "${root}/plugins/topgauge-cc/state/upstream-cmd.txt")"
+if [ -x "${root}/plugins/topgauge-cc/state/upstream-cmd.sh" ]; then
+  echo "  ok  legacy upstream-cmd.sh kept executable"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL legacy upstream-cmd.sh not executable"
+  FAIL=$((FAIL + 1))
+fi
+if echo "$out" | grep -qF "migrated existing tokenplan-usage-hud state to topgauge-cc"; then
+  echo "  ok  migration log line emitted"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL migration log line missing"
+  echo "       output: $out"
+  FAIL=$((FAIL + 1))
+fi
 rm -rf "$root"
 
 # --- Summary -----------------------------------------------------------------

@@ -59,8 +59,22 @@ for arg in "$@"; do
 done
 
 CLAUDE_ROOT="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-TOKEN_SAMPLES_DIR="${CLAUDE_ROOT}/plugins/tokenplan-usage-hud/state/token-samples"
-STATE_DIR="${CLAUDE_ROOT}/plugins/tokenplan-usage-hud/state"
+# v0.7.0 — `state/` lives under the new plugin name. We also accept
+# the LEGACY path so users who installed the previous name and never
+# upgraded can still run this script. Pick whichever exists.
+NEW_STATE_DIR="${CLAUDE_ROOT}/plugins/topgauge-cc/state"
+LEGACY_STATE_DIR="${CLAUDE_ROOT}/plugins/tokenplan-usage-hud/state"
+if [ -d "$NEW_STATE_DIR" ]; then
+  STATE_DIR="$NEW_STATE_DIR"
+elif [ -d "$LEGACY_STATE_DIR" ]; then
+  STATE_DIR="$LEGACY_STATE_DIR"
+else
+  echo "migrate-state.sh: no state dir at $NEW_STATE_DIR or $LEGACY_STATE_DIR"
+  echo "  (nothing to migrate; you are already on the v0.4.x+ layout, or"
+  echo "   this is a fresh install)"
+  exit 0
+fi
+TOKEN_SAMPLES_DIR="${STATE_DIR}/token-samples"
 
 if [ ! -d "$TOKEN_SAMPLES_DIR" ]; then
   echo "migrate-state.sh: no token-samples/ directory at $TOKEN_SAMPLES_DIR"

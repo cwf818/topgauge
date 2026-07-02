@@ -5,10 +5,10 @@
 //
 // Per-Project Layout (v0.4.x+): when a `cwd` is provided to `append` /
 // `readLatest` / `diagnosticsPath`, the log lives at
-// `${CLAUDE_CONFIG_DIR}/plugins/tokenplan-usage-hud/state/<projectHash>/diagnostics.jsonl`.
+// `${CLAUDE_CONFIG_DIR}/plugins/topgauge-cc/state/<projectHash>/diagnostics.jsonl`.
 // When `cwd` is omitted (or null/empty), the log falls back to the
 // legacy top-level
-// `${CLAUDE_CONFIG_DIR}/plugins/tokenplan-usage-hud/state/diagnostics.jsonl`.
+// `${CLAUDE_CONFIG_DIR}/plugins/topgauge-cc/state/diagnostics.jsonl`.
 // The fallback is used for plugin-level errors that have no project
 // affiliation (e.g. config-parse warnings from `src/config.ts`).
 //
@@ -36,7 +36,7 @@
 // cost of double-write logic. Not worth it.
 //
 // Opt-in gate: writing the log file is OFF by default. Set
-// `TOKENPLAN_DIAGNOSTICS_ENABLE=1` (or `true` / `yes`, case-insensitive)
+// `TOPGAUGE_CC_DIAGNOSTICS_ENABLE=1` (or `true` / `yes`, case-insensitive)
 // to enable. Rationale: the file lives in the user's plugins dir and
 // may contain sensitive fragments (paths, error text from upstream
 // libraries), so we don't write unless the user explicitly asks.
@@ -53,7 +53,7 @@ import { projectHash } from "./token-store.ts";
 function stateRoot(): string {
   const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
   const claudeRoot = process.env.CLAUDE_CONFIG_DIR ?? join(home, ".claude");
-  return join(claudeRoot, "plugins", "tokenplan-usage-hud", "state");
+  return join(claudeRoot, "plugins", "topgauge-cc", "state");
 }
 
 // Resolve the diagnostics.jsonl path for a given project cwd. When
@@ -94,12 +94,12 @@ const DEFAULT_MAX_ENTRIES = 200;
 
 // ----- Gate -----
 
-// True iff TOKENPLAN_DIAGNOSTICS_ENABLE is set to a truthy value
+// True iff TOPGAUGE_CC_DIAGNOSTICS_ENABLE is set to a truthy value
 // (1 / true / yes, case-insensitive). Anything else — including the
 // variable being unset — is treated as OFF. The user's log file
 // should not silently fill up; the gate is opt-in.
 export function isEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const v = env.TOKENPLAN_DIAGNOSTICS_ENABLE;
+  const v = env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE;
   if (typeof v !== "string") return false;
   const s = v.trim().toLowerCase();
   return s === "1" || s === "true" || s === "yes";
@@ -179,7 +179,7 @@ export function append(
     // fails we just leave the file alone — the next append will retry.
     trimToMax(path, DEFAULT_MAX_ENTRIES);
   } catch {
-    process.stderr.write("tokenplan-usage-hud: diagnostics append failed\n");
+    process.stderr.write("topgauge-cc: diagnostics append failed\n");
   }
 }
 

@@ -57,7 +57,7 @@ const fakeSnapshot = (overrides: Partial<TokenSnapshot> = {}): TokenSnapshot => 
   sessionName: "strip-diagnostics-display",
   modelDisplayName: "MiniMax-M3",
   effort: "high",
-  repo: { host: "github.com", owner: "cwf818", name: "tokenplan-usage-hud" },
+  repo: { host: "github.com", owner: "cwf818", name: "topgauge-cc" },
   ccversion: "2.1.191",
   contextWindow: { size: 200000, usedPct: 63, remainingPct: 37 },
   ...overrides,
@@ -97,14 +97,14 @@ const ctxFor = (
 
 // v0.4.0+ — the speed/delta/avg cache helpers (peekPrevTick /
 // setPrevTick / peekAvg / setAvg) write to
-// ~/.claude/plugins/tokenplan-usage-hud/state/cache.json. Tests MUST
+// ~/.claude/plugins/topgauge-cc/state/cache.json. Tests MUST
 // point that path at a tmp file so they don't leak to the user's
 // real cache between runs. Per-test tmp dir + clean teardown keeps
 // each test fully isolated.
 let _tmpDir: string;
 beforeEach(() => {
   __resetForTest();
-  _tmpDir = mkdtempSync(join(tmpdir(), "tokenplan-render-tokens-"));
+  _tmpDir = mkdtempSync(join(tmpdir(), "topgauge-cc-render-tokens-"));
   setCachePathResolver(() => join(_tmpDir, "cache.json"));
   // v0.4.x — per-tick state lives in status.json under the
   // project dir; tests must point that resolver at a tmp file
@@ -783,9 +783,9 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     assert.equal(strip(out), "high");
   });
 
-  it("m_repo: 'github.com/cwf818/tokenplan-usage-hud'", () => {
+  it("m_repo: 'github.com/cwf818/topgauge-cc'", () => {
     const out = renderTemplate(["m_repo"], ctxFor(fakeSnapshot())).join("\n");
-    assert.equal(strip(out), "github.com/cwf818/tokenplan-usage-hud");
+    assert.equal(strip(out), "github.com/cwf818/topgauge-cc");
   });
 
   it("m_branch: emits 'branch:n/a' when cwd is not a git repo (v6.x placeholder)", () => {
@@ -860,7 +860,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     } catch {
       return; // skip
     }
-    repoDir = mkdtempSync(join(tmpdir(), "tokenplan-render-git-"));
+    repoDir = mkdtempSync(join(tmpdir(), "topgauge-cc-render-git-"));
     execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repoDir });
     execFileSync("git", ["config", "user.email", "t@t"], { cwd: repoDir });
     execFileSync("git", ["config", "user.name", "t"], { cwd: repoDir });

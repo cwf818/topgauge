@@ -1,7 +1,7 @@
 // v0.4.0+ — token-sample state file.
 //
 // Each statusline tick appends one JSON line to
-// `<claude-root>/plugins/tokenplan-usage-hud/state/<projectHash>/<sessionId>.jsonl`
+// `<claude-root>/plugins/topgauge-cc/state/<projectHash>/<sessionId>.jsonl`
 // (one per project, NOT in a `token-samples/` subdir — see Per-Project Layout below).
 // m_token5h / m_token7d read this file (filtered to the window) on every
 // render. m_tokenIn / m_tokenOut / m_ctx / m_cacheRead / m_cacheHitRate /
@@ -46,7 +46,7 @@ import type { TokenSample } from "./types.ts";
 function stateRoot(): string {
   const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
   const claudeRoot = process.env.CLAUDE_CONFIG_DIR ?? join(home, ".claude");
-  return join(claudeRoot, "plugins", "tokenplan-usage-hud", "state");
+  return join(claudeRoot, "plugins", "topgauge-cc", "state");
 }
 
 // Project hash for the cwd — keeps one project's sessions isolated from
@@ -92,7 +92,7 @@ export function appendSample(
     mkdirSync(dirname(path), { recursive: true });
     appendFileSync(path, JSON.stringify(sample) + "\n", "utf8");
   } catch {
-    process.stderr.write("tokenplan-usage-hud: token-sample append failed\n");
+    process.stderr.write("topgauge-cc: token-sample append failed\n");
   }
 }
 

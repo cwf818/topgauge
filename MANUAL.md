@@ -1,4 +1,4 @@
-# Token-Plan Usage HUD — Display Modules Manual
+# ToPGauge-CC — Display Modules Manual
 
 This file documents every token you can write inside `statuslineTemplate` and
 inside entries of `lineTemplates.<key>` (consumed via `m_template:<key>...`).
@@ -122,7 +122,7 @@ the `unknown` TYPE fallback).
 | `m_windowContext`        | Bar + colored % of context window usage (input tokens vs context_window_size).            | `tokens.contextWindow`                                       | agnostic           | `color`, `display`, `nulldrop`            | `display:used` shows how full the context is. |
 | `m_balance`              | Multi-currency balance line: `Balance: CNY 110.00 · USD 5.00`.                            | `balance.entries[]`                                          | balance            | `color`, `nulldrop`                        | Color band driven by the LOWEST `totalBalance`. |
 | `m_age`                  | Stale-age suffix: `🔗 5m ago` (fresh) or `⛓️‍💥 5m ago` (stale).                                | `ageMs`, `stale`                                             | agnostic           | `color`, `nulldrop`                        | Always emits once per render (ref-deduped across `m_template:` recursion). |
-| `m_version`              | `v0.6.1` plugin version.                                                                   | `version` (from `.claude-plugin/plugin.json`)                | agnostic           | `color`, `nulldrop`                        | Emits nothing when version string is empty. |
+| `m_version`              | `v0.7.0` plugin version.                                                                   | `version` (from `.claude-plugin/plugin.json`)                | agnostic           | `color`, `nulldrop`                        | Emits nothing when version string is empty. |
 | `m_label:<text>`         | Literal `<text>`.                                                                          | inline                                                      | agnostic           | (implicit text), `color`, `nulldrop`       | Single colon (`:`) inside the text is a separator — use it carefully. |
 | `m_template:<key>[:mode:plan\|balance]` | Inserts the array under `lineTemplates.<key>` in place. Recursively expanded. | inline key                                                  | filtered by mode   | `mode`, `nulldrop`                         | Sub-template may itself contain `m_template:` (recursive). `mode:plan` skips for balance providers and vice versa. |
 | `m_tokenIn`              | This-tick input tokens, e.g. `in:154`.                                                     | `tokens.current.inputTokens`                                 | agnostic           | `color`, `nulldrop`                        | Drops when no input tokens on this turn. |
@@ -145,7 +145,7 @@ the `unknown` TYPE fallback).
 | `m_session`              | User-defined session name (e.g. `fix-bar-color-regressions`).                              | `tokens.sessionName`                                         | agnostic           | `color`, `nulldrop`                        | Drops when sessionName is empty.         |
 | `m_model`                | Display name of the active model, e.g. `kimi-k2.6`.                                         | `tokens.modelDisplayName`                                    | agnostic           | `color`, `nulldrop`                        |                                         |
 | `m_effort`               | Effort level: `low`, `medium`, `high`, `max`.                                              | `tokens.effort`                                              | agnostic           | `color`, `nulldrop`                        |                                         |
-| `m_repo`                 | `host/owner/name`, e.g. `github.com/cwf818/tokenplan-usage-hud`.                          | `tokens.workspace.repo`                                      | agnostic           | `color`, `nulldrop`                        | Drops when no repo.                      |
+| `m_repo`                 | `host/owner/name`, e.g. `github.com/cwf818/topgauge-cc`.                                   | `tokens.workspace.repo`                                      | agnostic           | `color`, `nulldrop`                        | Drops when no repo.                      |
 | `m_branch`               | Current git branch.                                                                        | `git info from cwd`                                          | agnostic           | `color`, `nulldrop`                        | Drops when not a git repo.               |
 | `m_gitStatus`            | Git dirty/clean indicator.                                                                 | `git status`                                                 | agnostic           | `color`, `nulldrop`                        |                                         |
 | `m_ccVersion`            | Claude Code version, e.g. `cc:2.1.191`.                                                    | `tokens.ccversion`                                            | agnostic           | `color`, `nulldrop`                        | Alias: `m_ccversion` (lowercase v).      |
@@ -224,7 +224,7 @@ Tokens that produce a `\n` (`s_newline`, or any multi-line body) split
 the rendered output into "above the break" and "below the break" chunks:
 
 - Everything ABOVE the first newline is **prepended** to the upstream
-  output (whatever `TOKENPLAN_UPSTREAM` contains).
+  output (whatever `TOPGAUGE_CC_UPSTREAM` contains).
 - Everything BELOW is **appended** after the upstream.
 
 This is how `["m_template:plan:mode:plan", "\n", "m_template:balance:mode:balance"]`

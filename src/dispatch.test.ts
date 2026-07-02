@@ -255,7 +255,7 @@ describe("buildProviderLine — null provider (no ANTHROPIC_BASE_URL match)", ()
     sessionName: "strip-diagnostics-display",
     modelDisplayName: "MiniMax-M3",
     effort: "high",
-    repo: { host: "github.com", owner: "cwf818", name: "tokenplan-usage-hud" },
+    repo: { host: "github.com", owner: "cwf818", name: "topgauge-cc" },
     ccversion: "2.1.191",
     contextWindow: { size: 200000, usedPct: 63, remainingPct: 37 },
   };

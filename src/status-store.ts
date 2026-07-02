@@ -91,7 +91,7 @@ type Store = Record<string, Entry>;
 function stateRoot(): string {
   const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
   const claudeRoot = process.env.CLAUDE_CONFIG_DIR ?? join(home, ".claude");
-  return join(claudeRoot, "plugins", "tokenplan-usage-hud", "state");
+  return join(claudeRoot, "plugins", "topgauge-cc", "state");
 }
 
 // Public: per-project status file path. Exported so tests can point
@@ -146,7 +146,7 @@ function loadFromDisk(cwd: string): Store {
     parsed = JSON.parse(raw);
   } catch {
     process.stderr.write(
-      "tokenplan-usage-hud: status file is malformed; ignoring\n",
+      "topgauge-cc: status file is malformed; ignoring\n",
     );
     const empty: Store = {};
     _stores.set(cwd, empty);
@@ -200,7 +200,7 @@ function flushToDisk(cwd: string, store: Store): void {
     mkdirSync(dirname(path), { recursive: true });
   } catch {
     process.stderr.write(
-      "tokenplan-usage-hud: status mkdir failed; in-memory only\n",
+      "topgauge-cc: status mkdir failed; in-memory only\n",
     );
     return;
   }
@@ -208,7 +208,7 @@ function flushToDisk(cwd: string, store: Store): void {
     writeFileSync(path, JSON.stringify(store));
   } catch {
     process.stderr.write(
-      "tokenplan-usage-hud: status write failed; in-memory only\n",
+      "topgauge-cc: status write failed; in-memory only\n",
     );
   }
 }

@@ -1,7 +1,7 @@
 // Tiny persistent TTL cache for the statusline.
 //
 // Single-process Map for the hot path; shadowed to disk under
-// ~/.claude/plugins/tokenplan-usage-hud/state/cache.json so the
+// ~/.claude/plugins/topgauge-cc/state/cache.json so the
 // cache survives across per-tick child-process invocations.
 //
 // The plugin runs as a fresh node process on every Claude Code
@@ -65,7 +65,7 @@ function defaultCachePath(): string {
   return join(
     claudeRoot,
     "plugins",
-    "tokenplan-usage-hud",
+    "topgauge-cc",
     "state",
     "cache.json",
   );
@@ -116,7 +116,7 @@ function loadFromDisk(): void {
     // do not crash the statusline. The next set() will overwrite the
     // file with valid JSON.
     process.stderr.write(
-      "tokenplan-usage-hud: cache file is malformed; ignoring\n",
+      "topgauge-cc: cache file is malformed; ignoring\n",
     );
     return;
   }
@@ -144,7 +144,7 @@ function flushToDisk(): void {
     // authoritative for this process. Surface a one-line warning so
     // the user can investigate permissions / disk-full.
     process.stderr.write(
-      "tokenplan-usage-hud: cache mkdir failed; in-memory only\n",
+      "topgauge-cc: cache mkdir failed; in-memory only\n",
     );
     return;
   }
@@ -156,7 +156,7 @@ function flushToDisk(): void {
     writeFileSync(path, JSON.stringify(obj));
   } catch {
     process.stderr.write(
-      "tokenplan-usage-hud: cache write failed; in-memory only\n",
+      "topgauge-cc: cache write failed; in-memory only\n",
     );
   }
 }

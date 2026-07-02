@@ -36,7 +36,7 @@ describe("parseTokenSnapshot — happy path", () => {
     assert.deepEqual(snap!.repo, {
       host: "github.com",
       owner: "cwf818",
-      name: "tokenplan-usage-hud",
+      name: "topgauge-cc",
     });
     assert.equal(snap!.ccversion, "2.1.191");
     // v0.4.0+ — context window

@@ -21,28 +21,28 @@ describe("diagnostics — isEnabled", () => {
   });
 
   it("returns false when env var is empty string", () => {
-    assert.equal(isEnabledWith({ TOKENPLAN_DIAGNOSTICS_ENABLE: "" }), false);
+    assert.equal(isEnabledWith({ TOPGAUGE_CC_DIAGNOSTICS_ENABLE: "" }), false);
   });
 
   it("accepts '1' (truthy)", () => {
-    assert.equal(isEnabledWith({ TOKENPLAN_DIAGNOSTICS_ENABLE: "1" }), true);
+    assert.equal(isEnabledWith({ TOPGAUGE_CC_DIAGNOSTICS_ENABLE: "1" }), true);
   });
 
   it("accepts 'true' (truthy, mixed case)", () => {
-    assert.equal(isEnabledWith({ TOKENPLAN_DIAGNOSTICS_ENABLE: "TRUE" }), true);
-    assert.equal(isEnabledWith({ TOKENPLAN_DIAGNOSTICS_ENABLE: "True" }), true);
+    assert.equal(isEnabledWith({ TOPGAUGE_CC_DIAGNOSTICS_ENABLE: "TRUE" }), true);
+    assert.equal(isEnabledWith({ TOPGAUGE_CC_DIAGNOSTICS_ENABLE: "True" }), true);
   });
 
   it("accepts 'yes' (truthy, with surrounding whitespace)", () => {
-    assert.equal(isEnabledWith({ TOKENPLAN_DIAGNOSTICS_ENABLE: " yes " }), true);
+    assert.equal(isEnabledWith({ TOPGAUGE_CC_DIAGNOSTICS_ENABLE: " yes " }), true);
   });
 
   it("rejects other values (0, no, false, arbitrary)", () => {
-    assert.equal(isEnabledWith({ TOKENPLAN_DIAGNOSTICS_ENABLE: "0" }), false);
-    assert.equal(isEnabledWith({ TOKENPLAN_DIAGNOSTICS_ENABLE: "no" }), false);
-    assert.equal(isEnabledWith({ TOKENPLAN_DIAGNOSTICS_ENABLE: "false" }), false);
-    assert.equal(isEnabledWith({ TOKENPLAN_DIAGNOSTICS_ENABLE: "off" }), false);
-    assert.equal(isEnabledWith({ TOKENPLAN_DIAGNOSTICS_ENABLE: "enabled" }), false);
+    assert.equal(isEnabledWith({ TOPGAUGE_CC_DIAGNOSTICS_ENABLE: "0" }), false);
+    assert.equal(isEnabledWith({ TOPGAUGE_CC_DIAGNOSTICS_ENABLE: "no" }), false);
+    assert.equal(isEnabledWith({ TOPGAUGE_CC_DIAGNOSTICS_ENABLE: "false" }), false);
+    assert.equal(isEnabledWith({ TOPGAUGE_CC_DIAGNOSTICS_ENABLE: "off" }), false);
+    assert.equal(isEnabledWith({ TOPGAUGE_CC_DIAGNOSTICS_ENABLE: "enabled" }), false);
   });
 });
 
@@ -51,7 +51,7 @@ describe("diagnostics — append + readLatest", () => {
   let prevConfigDir: string | undefined;
 
   beforeEach(() => {
-    sandbox = mkdtempSync(join(tmpdir(), "tokenplan-diag-"));
+    sandbox = mkdtempSync(join(tmpdir(), "topgauge-cc-diag-"));
     prevConfigDir = process.env.CLAUDE_CONFIG_DIR;
     process.env.CLAUDE_CONFIG_DIR = sandbox;
   });
@@ -63,11 +63,11 @@ describe("diagnostics — append + readLatest", () => {
   });
 
   function enable() {
-    process.env.TOKENPLAN_DIAGNOSTICS_ENABLE = "1";
+    process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE = "1";
   }
 
   function disable() {
-    delete process.env.TOKENPLAN_DIAGNOSTICS_ENABLE;
+    delete process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE;
   }
 
   it("does NOT write to disk when gate is off (default)", () => {
@@ -225,8 +225,8 @@ describe("diagnostics — fetch error dedupe (v0.6.x+)", () => {
     sandbox = mkdtempSync(join(tmpdir(), "tokenplan-diag-dedupe-"));
     prevConfigDir = process.env.CLAUDE_CONFIG_DIR;
     process.env.CLAUDE_CONFIG_DIR = sandbox;
-    prevEnable = process.env.TOKENPLAN_DIAGNOSTICS_ENABLE;
-    process.env.TOKENPLAN_DIAGNOSTICS_ENABLE = "1";
+    prevEnable = process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE;
+    process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE = "1";
     diag.__resetDedupeForTest();
   });
 
@@ -234,8 +234,8 @@ describe("diagnostics — fetch error dedupe (v0.6.x+)", () => {
     diag.__resetDedupeForTest();
     if (prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
     else process.env.CLAUDE_CONFIG_DIR = prevConfigDir;
-    if (prevEnable === undefined) delete process.env.TOKENPLAN_DIAGNOSTICS_ENABLE;
-    else process.env.TOKENPLAN_DIAGNOSTICS_ENABLE = prevEnable;
+    if (prevEnable === undefined) delete process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE;
+    else process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE = prevEnable;
     rmSync(sandbox, { recursive: true, force: true });
   });
 
@@ -311,8 +311,8 @@ describe("diagnostics — integration with fetchRemains / fetchBalance (v0.6.x+)
     sandbox = mkdtempSync(join(tmpdir(), "tokenplan-diag-fetch-"));
     prevConfigDir = process.env.CLAUDE_CONFIG_DIR;
     process.env.CLAUDE_CONFIG_DIR = sandbox;
-    prevEnable = process.env.TOKENPLAN_DIAGNOSTICS_ENABLE;
-    process.env.TOKENPLAN_DIAGNOSTICS_ENABLE = "1";
+    prevEnable = process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE;
+    process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE = "1";
     diag.__resetDedupeForTest();
     originalFetch = globalThis.fetch;
   });
@@ -322,8 +322,8 @@ describe("diagnostics — integration with fetchRemains / fetchBalance (v0.6.x+)
     globalThis.fetch = originalFetch;
     if (prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
     else process.env.CLAUDE_CONFIG_DIR = prevConfigDir;
-    if (prevEnable === undefined) delete process.env.TOKENPLAN_DIAGNOSTICS_ENABLE;
-    else process.env.TOKENPLAN_DIAGNOSTICS_ENABLE = prevEnable;
+    if (prevEnable === undefined) delete process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE;
+    else process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE = prevEnable;
     rmSync(sandbox, { recursive: true, force: true });
   });
 

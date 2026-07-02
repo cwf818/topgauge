@@ -79,8 +79,8 @@ assert_file_exists() {
 # Also creates a few decoy entries that must NOT be touched.
 build_fixture() {
   local root
-  root="$(mktemp -d -t tokenplan-cleancache-test-XXXXXX)"
-  local base="${root}/plugins/cache/tokenplan-usage-hud/tokenplan-usage-hud"
+  root="$(mktemp -d -t topgauge-cc-cleancache-test-XXXXXX)"
+  local base="${root}/plugins/cache/topgauge-cc/topgauge-cc"
   mkdir -p "$base"
   for v in "$@"; do
     mkdir -p "${base}/${v}"

@@ -1,5 +1,81 @@
 # Changelog
 
+## v0.7.0
+
+### Renamed
+
+- Plugin renamed from `tokenplan-usage-hud` to `topgauge-cc` (formal
+  product name **ToPGauge-CC**). Every user-visible identifier is updated:
+  - Package id (`package.json.name`), plugin name
+    (`.claude-plugin/plugin.json.name`), marketplace id
+    (`.claude-plugin/marketplace.json.name`).
+  - Slash command prefix: `/tokenplan-usage-hud:<verb>` →
+    `/topgauge-cc:<verb>`.
+  - Env-var namespace: `TOKENPLAN_*` → `TOPGAUGE_CC_*`
+    (`TOKENPLAN_UPSTREAM` → `TOPGAUGE_CC_UPSTREAM`,
+    `TOKENPLAN_UPSTREAM_CMD` → `TOPGAUGE_CC_UPSTREAM_CMD`,
+    `TOKENPLAN_DIAGNOSTICS_ENABLE` → `TOPGAUGE_CC_DIAGNOSTICS_ENABLE`).
+  - `settings.json.statusLine._tokenplan_managed` marker →
+    `_topgauge_managed`.
+  - Internal state-dir path: `~/.claude/plugins/tokenplan-usage-hud/state/`
+    → `~/.claude/plugins/topgauge-cc/state/`.
+  - Stderr banner: `tokenplan-usage-hud:` → `topgauge-cc:`.
+  - Plugin cache glob: `plugins/cache/tokenplan-usage-hud/tokenplan-usage-hud/*/`
+    → `plugins/cache/topgauge-cc/topgauge-cc/*/`.
+  - GitHub URLs: `github.com/cwf818/tokenplan-usage-hud` →
+    `github.com/cwf818/topgauge-cc`. README badges, install/upgrade
+    recipes, and `gh repo create` instructions all updated.
+
+### Preserved (intentional)
+
+- Provider-string constants — `minimax`, `MiniMax`, `MiniMax-M3`,
+  `minimaxi.com`, `TOKEN_PLAN`, `BALANCE`, `DeepSeek`, `deepseek`,
+  `/v1/token_plan/remains`, `/user/balance` — are NOT renamed. They
+  reference external API surfaces and are stable contract.
+- Repo directory `D:\WorkSpace\tokenplan-usage-hud` is NOT renamed on
+  disk in this release; only the plugin's user-visible identifiers
+  change.
+
+### Migration paths
+
+- `scripts/install.sh` performs a **one-shot state-dir migration**: if
+  `~/.claude/plugins/tokenplan-usage-hud/state/` exists and
+  `~/.claude/plugins/topgauge-cc/state/` does NOT, the legacy tree is
+  copied forward (preserving `upstream-cmd.sh`, `upstream-cmd.txt`,
+  `cache.json`, `diagnostics.jsonl`, and any `<projectHash>/` token-sample
+  sub-dirs). Idempotent: a re-run is a no-op. The legacy tree is left
+  in place for inspection.
+- `scripts/uninstall.sh` and `scripts/dev-uninstall.sh` perform a
+  **one-release legacy dual-strip**: they recognize BOTH
+  `tokenplan-usage-hud` and `topgauge-cc` (cache dirs, marketplace
+  dirs, state dirs, `enabledPlugins` keys, `_tokenplan_managed` AND
+  `_topgauge_managed` markers in `settings.json`). Existing pre-rename
+  installs uninstall cleanly.
+- `scripts/clean.sh --purge-runtime` and `scripts/clean-cache.sh` also
+  walk both the new and the legacy cache/state roots so users get a
+  fully purged system after one invocation.
+- `scripts/test-install.sh` has a new regression test
+  `--legacy one-shot state migration (v0.7.0: tokenplan-usage-hud -> topgauge-cc)`
+  asserting the install script copies the legacy state dir forward
+  when upgrading.
+
+### Internals
+
+- `scripts/uninstall.sh` was refactored to drive every dir / key
+  lookup from a single `PLUGIN_NAMES=("topgauge-cc"
+  "tokenplan-usage-hud")` array so the legacy dual-strip lives in one
+  place rather than being sprayed across the script.
+- `scripts/install.sh` and `scripts/lib/edit-settings.mjs` updated to
+  write the new marker / cache glob / env-var wiring. The marker in
+  `settings.json` becomes `_topgauge_managed`.
+- All shell-script test fixtures (`scripts/test-install.sh`,
+  `scripts/test-edit-settings.sh`, `scripts/test-clean-cache.sh`) and
+  Node-side tests (`src/diagnostics.test.ts`,
+  `src/render-tokens.test.ts`, `src/dispatch.test.ts`,
+  `src/index-parse.test.ts`) were updated for the new names. The repo
+  field in the captured `src/__fixtures__/stdin.real.json` fixture
+  pins `name: topgauge-cc` to match the renamed plugin.
+
 ## v0.6.0
 
 ### Added

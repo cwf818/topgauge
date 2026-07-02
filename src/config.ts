@@ -1,14 +1,14 @@
-// User-tunable configuration for tokenplan-usage-hud.
+// User-tunable configuration for topgauge-cc (ToPGauge-CC).
 //
 // Loaded once at startup from
-//   ~/.claude/plugins/tokenplan-usage-hud/config.json
-// (Windows: %USERPROFILE%\.claude\plugins\tokenplan-usage-hud\config.json).
+//   ~/.claude/plugins/topgauge-cc/config.json
+// (Windows: %USERPROFILE%\.claude\plugins\topgauge-cc\config.json).
 //
 // Missing file → DEFAULT_CONFIG silently. Malformed JSON or a single
 // bad field → one stderr line + DEFAULT_CONFIG. Never crashes.
 //
 // Precedence: config.json > hardcoded defaults. The earlier
-// TOKENPLAN_DISPLAY env var is gone — anyone who used it must migrate
+// TOPGAUGE_CC_DISPLAY env var is gone — anyone who used it must migrate
 // to config.json's `display` field (see README "Configuration").
 
 import { existsSync, readFileSync } from "node:fs";
@@ -580,7 +580,7 @@ function defaultConfigPath(): string {
     homedir(),
     ".claude",
     "plugins",
-    "tokenplan-usage-hud",
+    "topgauge-cc",
     "config.json",
   );
 }
@@ -663,7 +663,7 @@ export function applyProviderOverrides(raw: Record<string, unknown>): void {
 // duplicating the stderr + diagnostics JSONL wiring. Config-side
 // callers (this file) keep using the bare name.
 export function warn(msg: string): void {
-  process.stderr.write(`tokenplan-usage-hud: config ${msg}\n`);
+  process.stderr.write(`topgauge-cc: config ${msg}\n`);
   // v0.4.0+ — also append to the diagnostics JSONL log so the
   // m_warning module can surface the latest signal and the user can
   // postmortem the plugin's recent history. Stderr stays the

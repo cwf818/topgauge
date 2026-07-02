@@ -1,8 +1,8 @@
 {
-  "name": "tokenplan-usage-hud",
-  "version": "0.6.1",
+  "name": "topgauge-cc",
+  "version": "0.7.0",
   "private": true,
-  "description": "Claude Code statusline plugin that renders MiniMax token-plan usage (5h + weekly) or DeepSeek account balance, picked by ANTHROPIC_BASE_URL. Composes with another statusline via the TOKENPLAN_UPSTREAM_CMD env var.",
+  "description": "Claude Code statusline plugin (ToPGauge-CC) that renders MiniMax token-plan usage (5h + weekly) or DeepSeek account balance, picked by ANTHROPIC_BASE_URL. Composes with another statusline via the TOPGAUGE_CC_UPSTREAM_CMD env var.",
   "type": "module",
   "license": "MIT",
   "scripts": {

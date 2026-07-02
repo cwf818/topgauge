@@ -488,7 +488,7 @@ export function formatStaleSuffix(
   return `${color}${emoji} ${label}${RESET}`;
 }
 
-// Read the configured display mode. The earlier TOKENPLAN_DISPLAY env
+// Read the configured display mode. The earlier TOPGAUGE_CC_DISPLAY env
 // var is gone (per the v0.2.0 config-file migration); anyone using it
 // must move to config.json's `display` field.
 export function resolveDisplayMode(): DisplayMode {
@@ -707,7 +707,7 @@ type RenderContext = {
 // because their `type` value doesn't match. Reserved for future
 // modules that want to render only in the unregistered case
 // (e.g. an m_setupHint module that nudges the user toward running
-// `/tokenplan-usage-hud:install`).
+// `/topgauge-cc:install`).
 type Module = ((ctx: RenderContext) => string | null) & {
   type?: "plan" | "balance" | "unknown";
 };
@@ -2041,7 +2041,7 @@ function windowedTokenLabel(
 function warnUnknownModuleOnce(name: string): void {
   if (_unknownModuleWarned) return;
   _unknownModuleWarned = true;
-  process.stderr.write(`tokenplan-usage-hud: unknown lineTemplate module '${name}'; ignoring\n`);
+  process.stderr.write(`topgauge-cc: unknown lineTemplate module '${name}'; ignoring\n`);
 }
 
 // Reset the once-per-process warn flag. Exported so tests can clear

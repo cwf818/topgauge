@@ -10,7 +10,7 @@
 //       Prints one of: "managed" | "foreign:<command>" | "none"
 //   write-managed <target> <wrapper> <upstream-cmd-file>
 //       Rewrites statusLine to our managed wrapper. If upstream-cmd-file is
-//       empty, leaves TOKENPLAN_UPSTREAM_CMD unset.
+//       empty, leaves TOPGAUGE_CC_UPSTREAM_CMD unset.
 //   restore-from-file <target> <upstream-cmd-file>
 //       Replaces our managed statusLine with the contents of upstream-cmd-file
 //       (the originally-preserved command).
@@ -82,16 +82,16 @@ function buildLatestCacheCommand(_upstreamCmdFileUnused) {
   //
   // Pattern, broken across lines for readability (NOT what's written):
   //   bash -c '
-  //     plugin_dir=$(ls -d …/tokenplan-usage-hud/*/ | awk -F/ '\''{…}'\'' | sort … | tail -1 | cut -f2-)
+  //     plugin_dir=$(ls -d …/topgauge-cc/*/ | awk -F/ '\''{…}'\'' | sort … | tail -1 | cut -f2-)
   //     [ -d "$plugin_dir" ] || { echo … >&2; exit 1; }
-  //     export TOKENPLAN_UPSTREAM_CMD="<root>/plugins/tokenplan-usage-hud/state/upstream-cmd.sh"
+  //     export TOPGAUGE_CC_UPSTREAM_CMD="<root>/plugins/topgauge-cc/state/upstream-cmd.sh"
   //     exec bash "${plugin_dir}scripts/wrapper.sh"
   //   '
   //
-  // TOKENPLAN_UPSTREAM_CMD points at a STABLE location
-  // (<root>/plugins/tokenplan-usage-hud/state/upstream-cmd.sh) — NOT
+  // TOPGAUGE_CC_UPSTREAM_CMD points at a STABLE location
+  // (<root>/plugins/topgauge-cc/state/upstream-cmd.sh) — NOT
   // inside the version-specific cache dir. Two reasons:
-  //   1. config.json lives at <root>/plugins/tokenplan-usage-hud/, so
+  //   1. config.json lives at <root>/plugins/topgauge-cc/, so
   //      the state dir is the obvious sibling and survives cache wipes
   //      (so an uninstall on a future version can still find the
   //      pre-managed command to restore).
@@ -108,9 +108,9 @@ function buildLatestCacheCommand(_upstreamCmdFileUnused) {
   void _upstreamCmdFileUnused;
   return [
     "bash -c '",
-    "plugin_dir=$(ls -d \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}\"/plugins/cache/tokenplan-usage-hud/tokenplan-usage-hud/*/ 2>/dev/null | awk -F/ '\"'\"'{ print $(NF-1) \"\\t\" $(0) }'\"'\"' | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n | tail -1 | cut -f2-); ",
-    "[ -d \"$plugin_dir\" ] || { echo \"tokenplan-usage-hud: no installed version found under cache\" >&2; exit 1; }; ",
-    "export TOKENPLAN_UPSTREAM_CMD=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/tokenplan-usage-hud/state/upstream-cmd.sh\"; ",
+    "plugin_dir=$(ls -d \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}\"/plugins/cache/topgauge-cc/topgauge-cc/*/ 2>/dev/null | awk -F/ '\"'\"'{ print $(NF-1) \"\\t\" $(0) }'\"'\"' | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n | tail -1 | cut -f2-); ",
+    "[ -d \"$plugin_dir\" ] || { echo \"topgauge-cc: no installed version found under cache\" >&2; exit 1; }; ",
+    "export TOPGAUGE_CC_UPSTREAM_CMD=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/topgauge-cc/state/upstream-cmd.sh\"; ",
     "exec bash \"${plugin_dir}scripts/wrapper.sh\"",
     "'",
   ].join("");
@@ -126,7 +126,7 @@ function buildLatestCacheCommand(_upstreamCmdFileUnused) {
 //      closing single-quote install.sh emits, preceded by the double-quote
 //      that wraps the wrapper path inside the bash -c arg.
 //
-// Why this matters: _tokenplan_managed === true is a marker WE write, but
+// Why this matters: _topgauge_managed === true is a marker WE write, but
 // a foreign command can be in place when (a) another plugin overwrites
 // statusLine after ours, (b) the user hand-edits settings.json, or
 // (c) Claude Code re-derives statusLine. The marker survives all of
@@ -134,13 +134,13 @@ function buildLatestCacheCommand(_upstreamCmdFileUnused) {
 // foreign command with our cached wrapper — losing the user's intent.
 function isOurWrapperCommand(command) {
   if (typeof command !== "string" || command.length === 0) return false;
-  // Path matches "plugins[/\]cache[/\]tokenplan-usage-hud[/\]tokenplan-usage-hud[/\]".
+  // Path matches "plugins[/\]cache[/\]topgauge-cc[/\]topgauge-cc[/\]".
   // Using a runtime regex (not a string .includes) sidesteps the JS string
   // escape rules: in the regex source `\\` matches a single literal `\`.
   // Accepts either separator since the paths in settings.json come from
   // a Cygwin / native boundary (backslashes on Windows, forward slashes
   // on Linux/macOS).
-  const pathRe = /plugins[\/\\]cache[\/\\]tokenplan-usage-hud[\/\\]tokenplan-usage-hud[\/\\]/;
+  const pathRe = /plugins[\/\\]cache[\/\\]topgauge-cc[\/\\]topgauge-cc[\/\\]/;
   // Suffix: install.sh writes `bash -c '...exec bash "<path>"'`, so the
   // last three characters of the command are literally `sh"'`. The
   // trailing `'` distinguishes our wrapper from a different command
@@ -152,7 +152,7 @@ switch (op) {
   case "status": {
     const data = readJson(target);
     const sl = data.statusLine;
-    if (sl && sl._tokenplan_managed === true && isOurWrapperCommand(sl.command)) {
+    if (sl && sl._topgauge_managed === true && isOurWrapperCommand(sl.command)) {
       // Both the marker AND the wrapper command are ours → safe to treat as
       // managed (uninstall can restore from upstream-cmd.txt; re-install is
       // a no-op).
@@ -187,7 +187,7 @@ switch (op) {
     const next = { ...prev };
     next.type = "command";
     next.command = buildLatestCacheCommand(upstreamCmdFile || "");
-    next._tokenplan_managed = true;
+    next._topgauge_managed = true;
     data.statusLine = next;
     writeJson(target, data);
     break;
@@ -211,16 +211,16 @@ switch (op) {
       const next = { ...data.statusLine };
       next.type = "command";
       next.command = original;
-      delete next._tokenplan_managed;
+      delete next._topgauge_managed;
       data.statusLine = next;
     } else if (!data.statusLine) {
       data.statusLine = { type: "command", command: original };
     } else {
-      // Foreign command under a stale _tokenplan_managed marker — leave
+      // Foreign command under a stale _topgauge_managed marker — leave
       // it alone. The marker is no longer meaningful; the user owns the
       // current command.
       process.stderr.write(
-        "edit-settings.mjs: restore-from-file skipped — current statusLine.command is not the tokenplan wrapper\n"
+        "edit-settings.mjs: restore-from-file skipped — current statusLine.command is not the topgauge-cc wrapper\n"
       );
     }
     writeJson(target, data);
