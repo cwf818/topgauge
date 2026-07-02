@@ -80,7 +80,7 @@ Claude Code's `statusLine.command` spawns a child process that reads a session J
    - `m_tokenSession` — `totals.input + totals.output`
    - `m_tokenInSpeed` / `m_tokenOutSpeed` — session-avg tps (last-active-tick cache, color:scale)
    - `m_contextSize` — totals.input (actual used)
-   - `m_contextWidowsSize` — context_window.size (capacity; typo preserved)
+   - `m_contextWindowsSize` — context_window.size (capacity; typo preserved)
    - `m_contextUsedPercent` / `m_contextRemainingPercent` — contextWindow.usedPct / .remainingPct
    - `m_cacheHitRate` — per-turn `m_tokenCachedIn / m_tokenTotalIn`
 
