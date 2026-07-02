@@ -2333,3 +2333,460 @@ describe("renderTemplate — named separator aliases (v0.4.x)", () => {
     assert.deepEqual(out.map(strip), ["  "]);
   });
 });
+
+// ----- v0.8.0+ acc modules (per-session / per-project / per-model) -----
+//
+// Six new modules expose the three-layer accumulator that setAvg
+// writes each tick:
+//   m_accTokenIn       — session-cumulative current.input
+//   m_accTokenOut      — session-cumulative current.output
+//   m_accTokenCachedIn — session-cumulative current.cacheRead
+//   m_accTokenTotalIn  — accIn + accCached (the "total tokens
+//                        the model has seen this session, counting
+//                        cache_read as already-paid-for" view)
+//   m_accApiMs         — session-cumulative cost.totalApiDurationMs
+//   m_accCacheHitRate  — accCached / (accCached + accIn) * 100%
+//
+// All six accept an optional `:scope:<session|project|model>` arg.
+// Default scope:
+//   - the 5 plain modules fall back to "project" when no
+//     sessionId is on the snapshot (so a fresh project renders
+//     placeholders instead of empty), otherwise "session".
+//   - m_accCacheHitRate defaults to "session" — a per-session
+//     ratio is the natural "what % of MY model reads are cache
+//     hits" answer; project/model are opt-in.
+//
+// Slot locations (setAvg writes 3 slots per tick):
+//   session: tickStatus:<sid>     (read via peekAvg)
+//   project: tickStatus            (read via statusStore.readTickStatus)
+//   model:   tickStatus:<model>    (read via statusStore.readTickStatus)
+//
+// Placeholders: "acc:n/a" (5 plain modules), "acc:n/a%" (hit rate).
+// Inline default is the placeholder (nulldrop:false behavior); bare
+// form also renders the placeholder when data is missing — matching
+// the v6.x bare-vs-inline parity rule.
+describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)", () => {
+  it("m_accTokenIn: bare form with no session slot → 'acc:n/a' placeholder", () => {
+    // No setAvg called → peekAvg returns null → placeholder fires.
+    const out = renderTemplate(
+      ["m_accTokenIn"],
+      ctxFor(fakeSnapshot({ sessionId: "sess-fresh-1" })),
+    ).join("\n");
+    assert.equal(strip(out), "acc:n/a");
+    assert.ok(out.includes(STALE), `expected STALE wrap on: ${JSON.stringify(out)}`);
+  });
+
+  it("m_accTokenIn: session scope reads accIn from per-session slot", () => {
+    // Set the session slot directly via setAvg (full deltas so
+    // the gate passes).
+    setAvg(
+      "sess-acc-in",
+      { accIn: 42000, accOut: 0, accApi: 0, accCached: 0, accApiCount: 1 },
+      "D:\\test",
+      {
+        modelDisplayName: "MiniMax-M3",
+        deltaApiCount: 1,
+        currentIn: 42000,
+        currentOut: 0,
+        currentCacheRead: 0,
+        currentApiMs: 1000,
+        deltaIn: 42000,
+        deltaOut: 0,
+        deltaCache: 0,
+        deltaApiMs: 1000,
+      },
+    );
+    const out = renderTemplate(
+      ["m_accTokenIn"],
+      ctxFor(fakeSnapshot({ sessionId: "sess-acc-in" })),
+    ).join("\n");
+    // formatCompactToken(42000) = "42.0k" → "acc:42.0k"
+    assert.equal(strip(out), "acc:42.0k");
+  });
+
+  it("m_accTokenOut: session scope reads accOut from per-session slot", () => {
+    setAvg(
+      "sess-acc-out",
+      { accIn: 0, accOut: 1234, accApi: 0, accCached: 0, accApiCount: 1 },
+      "D:\\test",
+      {
+        modelDisplayName: "MiniMax-M3",
+        deltaApiCount: 1,
+        currentIn: 0,
+        currentOut: 1234,
+        currentCacheRead: 0,
+        currentApiMs: 1000,
+        deltaIn: 0,
+        deltaOut: 1234,
+        deltaCache: 0,
+        deltaApiMs: 1000,
+      },
+    );
+    const out = renderTemplate(
+      ["m_accTokenOut"],
+      ctxFor(fakeSnapshot({ sessionId: "sess-acc-out" })),
+    ).join("\n");
+    // formatCompactToken(1234) = "1.2k"
+    assert.equal(strip(out), "acc:1.2k");
+  });
+
+  it("m_accTokenCachedIn: session scope reads accCached from per-session slot", () => {
+    setAvg(
+      "sess-acc-cached",
+      { accIn: 0, accOut: 0, accApi: 0, accCached: 163441, accApiCount: 1 },
+      "D:\\test",
+      {
+        modelDisplayName: "MiniMax-M3",
+        deltaApiCount: 1,
+        currentIn: 0,
+        currentOut: 0,
+        currentCacheRead: 163441,
+        currentApiMs: 1000,
+        deltaIn: 0,
+        deltaOut: 0,
+        deltaCache: 163441,
+        deltaApiMs: 1000,
+      },
+    );
+    const out = renderTemplate(
+      ["m_accTokenCachedIn"],
+      ctxFor(fakeSnapshot({ sessionId: "sess-acc-cached" })),
+    ).join("\n");
+    // formatCompactToken(163441) = "163.4k"
+    assert.equal(strip(out), "acc:163.4k");
+  });
+
+  it("m_accTokenTotalIn: derived field accIn + accCached → 'acc:163.5k' (0+163441+38 total)", () => {
+    // Real shape: with both accIn=38 and accCached=163441, total is 163479.
+    setAvg(
+      "sess-acc-total",
+      { accIn: 38, accOut: 0, accApi: 0, accCached: 163441, accApiCount: 1 },
+      "D:\\test",
+      {
+        modelDisplayName: "MiniMax-M3",
+        deltaApiCount: 1,
+        currentIn: 38,
+        currentOut: 0,
+        currentCacheRead: 163441,
+        currentApiMs: 1000,
+        deltaIn: 38,
+        deltaOut: 0,
+        deltaCache: 163441,
+        deltaApiMs: 1000,
+      },
+    );
+    const out = renderTemplate(
+      ["m_accTokenTotalIn"],
+      ctxFor(fakeSnapshot({ sessionId: "sess-acc-total" })),
+    ).join("\n");
+    // 38 + 163441 = 163479 → "163.5k"
+    assert.equal(strip(out), "acc:163.5k");
+  });
+
+  it("m_accApiMs: session scope reads accApi from per-session slot", () => {
+    setAvg(
+      "sess-acc-api",
+      { accIn: 0, accOut: 0, accApi: 60_000, accCached: 0, accApiCount: 1 },
+      "D:\\test",
+      {
+        modelDisplayName: "MiniMax-M3",
+        deltaApiCount: 1,
+        currentIn: 0,
+        currentOut: 0,
+        currentCacheRead: 0,
+        currentApiMs: 60_000,
+        deltaIn: 0,
+        deltaOut: 0,
+        deltaCache: 0,
+        deltaApiMs: 60_000,
+      },
+    );
+    const out = renderTemplate(
+      ["m_accApiMs"],
+      ctxFor(fakeSnapshot({ sessionId: "sess-acc-api" })),
+    ).join("\n");
+    // formatCompactToken(60_000) = "60.0k" — the unit (ms) is
+    // implicit by the module name; no "ms" suffix is rendered.
+    assert.equal(strip(out), "acc:60.0k");
+  });
+
+  it("m_accCacheHitRate: session scope formula accCached / (accCached + accIn) = 99.978%", () => {
+    // 163441 / (163441 + 38) * 100 = 99.97799… → toFixed(1) → "100.0%".
+    setAvg(
+      "sess-acc-hit",
+      { accIn: 38, accOut: 0, accApi: 0, accCached: 163441, accApiCount: 1 },
+      "D:\\test",
+      {
+        modelDisplayName: "MiniMax-M3",
+        deltaApiCount: 1,
+        currentIn: 38,
+        currentOut: 0,
+        currentCacheRead: 163441,
+        currentApiMs: 1000,
+        deltaIn: 38,
+        deltaOut: 0,
+        deltaCache: 163441,
+        deltaApiMs: 1000,
+      },
+    );
+    const out = renderTemplate(
+      ["m_accCacheHitRate"],
+      ctxFor(fakeSnapshot({ sessionId: "sess-acc-hit" })),
+    ).join("\n");
+    assert.equal(strip(out), "acc:100.0%");
+  });
+
+  it("m_accCacheHitRate: zero denominator → 'acc:0.0%' (no placeholder drop)", () => {
+    // All-zero slot → no input and no cache → 0/0. Per the v6.x
+    // zero-value rule, render "acc:0.0%" rather than "acc:n/a%".
+    setAvg(
+      "sess-acc-zero",
+      { accIn: 0, accOut: 0, accApi: 0, accCached: 0, accApiCount: 0 },
+      "D:\\test",
+      {
+        modelDisplayName: null,
+        deltaApiCount: 0,
+        currentIn: 0,
+        currentOut: 0,
+        currentCacheRead: 0,
+        currentApiMs: 0,
+        deltaIn: 0,
+        deltaOut: 0,
+        deltaCache: 0,
+        deltaApiMs: 0,
+      },
+    );
+    const out = renderTemplate(
+      ["m_accCacheHitRate"],
+      ctxFor(fakeSnapshot({ sessionId: "sess-acc-zero" })),
+    ).join("\n");
+    assert.equal(strip(out), "acc:0.0%");
+  });
+
+  it("m_accCacheHitRate: missing slot → 'acc:n/a%' placeholder", () => {
+    // No setAvg called for this sessionId → peekAvg returns null
+    // → placeholder path fires.
+    const out = renderTemplate(
+      ["m_accCacheHitRate"],
+      ctxFor(fakeSnapshot({ sessionId: "sess-hit-fresh" })),
+    ).join("\n");
+    assert.equal(strip(out), "acc:n/a%");
+    assert.ok(out.includes(STALE), `expected STALE wrap on: ${JSON.stringify(out)}`);
+  });
+
+  it("m_accTokenIn:scope:project reads the project-wide slot (cross-session)", () => {
+    // Seed the project-wide slot directly via setAvg (setAvg bumps
+    // all 3 layers — the project slot is keyed by cwd only).
+    setAvg(
+      "sess-X",
+      { accIn: 100, accOut: 0, accApi: 0, accCached: 0, accApiCount: 1 },
+      "D:\\project-scope-test",
+      {
+        modelDisplayName: "MiniMax-M3",
+        deltaApiCount: 1,
+        currentIn: 100,
+        currentOut: 0,
+        currentCacheRead: 0,
+        currentApiMs: 1000,
+        deltaIn: 100,
+        deltaOut: 0,
+        deltaCache: 0,
+        deltaApiMs: 1000,
+      },
+    );
+    setAvg(
+      "sess-Y",
+      { accIn: 250, accOut: 0, accApi: 0, accCached: 0, accApiCount: 1 },
+      "D:\\project-scope-test",
+      {
+        modelDisplayName: "MiniMax-M3",
+        deltaApiCount: 1,
+        currentIn: 150,
+        currentOut: 0,
+        currentCacheRead: 0,
+        currentApiMs: 1000,
+        deltaIn: 150,
+        deltaOut: 0,
+        deltaCache: 0,
+        deltaApiMs: 1000,
+      },
+    );
+    // Render with a THIRD sessionId — the per-session slot for
+    // sess-Z is null, but the project slot has both prior deltas
+    // accumulated (100 + 150 = 250).
+    const out = renderTemplate(
+      ["m_accTokenIn:scope:project"],
+      ctxFor(fakeSnapshot({ sessionId: "sess-Z", cwd: "D:\\project-scope-test" })),
+    ).join("\n");
+    assert.equal(strip(out), "acc:250");
+  });
+
+  it("m_accTokenIn:scope:model reads the per-model slot (cross-session, single model)", () => {
+    // Two sessions under the same model + cwd. The model slot
+    // accumulates both deltas (100 + 150 = 250), independent of
+    // sessionId.
+    setAvg(
+      "sess-M1",
+      { accIn: 100, accOut: 0, accApi: 0, accCached: 0, accApiCount: 1 },
+      "D:\\model-scope-test",
+      {
+        modelDisplayName: "MiniMax-M3",
+        deltaApiCount: 1,
+        currentIn: 100,
+        currentOut: 0,
+        currentCacheRead: 0,
+        currentApiMs: 1000,
+        deltaIn: 100,
+        deltaOut: 0,
+        deltaCache: 0,
+        deltaApiMs: 1000,
+      },
+    );
+    setAvg(
+      "sess-M2",
+      { accIn: 250, accOut: 0, accApi: 0, accCached: 0, accApiCount: 1 },
+      "D:\\model-scope-test",
+      {
+        modelDisplayName: "MiniMax-M3",
+        deltaApiCount: 1,
+        currentIn: 150,
+        currentOut: 0,
+        currentCacheRead: 0,
+        currentApiMs: 1000,
+        deltaIn: 150,
+        deltaOut: 0,
+        deltaCache: 0,
+        deltaApiMs: 1000,
+      },
+    );
+    // Render with model="MiniMax-M3" — model slot is keyed by
+    // model+cwd. Should read 250.
+    const out = renderTemplate(
+      ["m_accTokenIn:scope:model"],
+      ctxFor(
+        fakeSnapshot({
+          sessionId: "sess-M3",
+          cwd: "D:\\model-scope-test",
+          modelDisplayName: "MiniMax-M3",
+        }),
+      ),
+    ).join("\n");
+    assert.equal(strip(out), "acc:250");
+  });
+
+  it("m_accTokenIn:scope:model with no modelDisplayName on snapshot → 'acc:n/a'", () => {
+    // peekAcc's model branch returns null when ctx.tokens has no
+    // modelDisplayName (cannot resolve the model slot key).
+    const out = renderTemplate(
+      ["m_accTokenIn:scope:model"],
+      ctxFor(fakeSnapshot({ sessionId: "sess-no-model", modelDisplayName: null })),
+    ).join("\n");
+    assert.equal(strip(out), "acc:n/a");
+  });
+
+  it("m_accTokenIn:scope:session (explicit) on a fresh snapshot → 'acc:n/a' placeholder", () => {
+    // No setAvg called → per-session slot missing → placeholder.
+    const out = renderTemplate(
+      ["m_accTokenIn:scope:session"],
+      ctxFor(fakeSnapshot({ sessionId: "sess-scope-fresh" })),
+    ).join("\n");
+    assert.equal(strip(out), "acc:n/a");
+  });
+
+  it("m_accTokenIn:scope:invalid (not session/project/model) is a parse-fail — drops", () => {
+    // The SCOPE_PARAM resolver only accepts the three literal
+    // values; "invalid" is rejected → parseInlineArgs returns
+    // null → badarg → dispatcher warn + drop.
+    __resetUnknownModuleWarnForTest();
+    const out = renderTemplate(
+      ["m_accTokenIn:scope:invalid"],
+      ctxFor(fakeSnapshot({ sessionId: "sess-bad-scope" })),
+    );
+    assert.deepEqual(out, []);
+  });
+
+  it("m_accTokenIn:nulldrop:false (default for inline) renders placeholder on missing slot", () => {
+    // Inline default is placeholder — same shape as bare form.
+    const out = renderTemplate(
+      ["m_accTokenIn:nulldrop:false"],
+      ctxFor(fakeSnapshot({ sessionId: "sess-no-data" })),
+    ).join("\n");
+    assert.equal(strip(out), "acc:n/a");
+  });
+
+  it("m_accTokenIn:nulldrop:true is a no-op (function never returns null)", () => {
+    // The m_accTokenIn renderer never returns null — it always
+    // returns either "acc:N" or "acc:n/a" placeholder (via
+    // wrapPlainDefault → STALE_COLOR wrap). Therefore
+    // `:nulldrop:true` has no effect (the dispatcher can only
+    // short-circuit on a null return). Same shape as m_apiCalls
+    // and m_tokenInTotal which share this property.
+    const out = renderTemplate(
+      ["m_accTokenIn:nulldrop:true"],
+      ctxFor(fakeSnapshot({ sessionId: "sess-no-data" })),
+    ).join("\n");
+    assert.equal(strip(out), "acc:n/a");
+  });
+
+  it("m_accTokenIn:color:brightGreen wraps the chunk in brightGreen", () => {
+    setAvg(
+      "sess-acc-colored",
+      { accIn: 12345, accOut: 0, accApi: 0, accCached: 0, accApiCount: 1 },
+      "D:\\test",
+      {
+        modelDisplayName: "MiniMax-M3",
+        deltaApiCount: 1,
+        currentIn: 12345,
+        currentOut: 0,
+        currentCacheRead: 0,
+        currentApiMs: 1000,
+        deltaIn: 12345,
+        deltaOut: 0,
+        deltaCache: 0,
+        deltaApiMs: 1000,
+      },
+    );
+    const out = renderTemplate(
+      ["m_accTokenIn:color:brightGreen"],
+      ctxFor(fakeSnapshot({ sessionId: "sess-acc-colored" })),
+    ).join("\n");
+    // formatCompactToken(12345) = "12.3k" → "acc:12.3k"
+    assert.equal(strip(out), "acc:12.3k");
+    assert.ok(out.includes(GREEN), `expected GREEN wrap on: ${JSON.stringify(out)}`);
+  });
+
+  it("m_accTokenIn: composed with multiple acc modules and separators", () => {
+    // Seed the session slot with a mix of fields.
+    setAvg(
+      "sess-multi",
+      { accIn: 500, accOut: 250, accApi: 5000, accCached: 10000, accApiCount: 3 },
+      "D:\\test",
+      {
+        modelDisplayName: "MiniMax-M3",
+        deltaApiCount: 3,
+        currentIn: 500,
+        currentOut: 250,
+        currentCacheRead: 10000,
+        currentApiMs: 5000,
+        deltaIn: 500,
+        deltaOut: 250,
+        deltaCache: 10000,
+        deltaApiMs: 5000,
+      },
+    );
+    const out = renderTemplate(
+      [
+        "m_accTokenIn",
+        "s_space",
+        "m_accTokenOut",
+        "s_space",
+        "s_dot",
+        "s_space",
+        "m_accCacheHitRate",
+      ],
+      ctxFor(fakeSnapshot({ sessionId: "sess-multi" })),
+    ).join("\n");
+    // in=500→"500", out=250→"250", hitRate=10000/(10000+500)=95.2%
+    assert.equal(strip(out), "acc:500 acc:250 · acc:95.2%");
+  });
+});

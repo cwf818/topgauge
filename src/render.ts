@@ -933,6 +933,53 @@ export function peekAvg(
   };
 }
 
+// v0.8.0+ — read the three-layer accumulator at a chosen scope.
+// Used by the m_acc* module family (m_accTokenIn, m_accTokenOut,
+// m_accTokenCachedIn, m_accTokenTotalIn, m_accApiMs,
+// m_accCacheHitRate). The "session" scope is the per-session
+// absolute cumulative (the same as peekAvg above); "project" is
+// the project-wide DELTA-accumulated slot; "model" is the per-model
+// delta-accumulated slot (resolved via the live TokenSnapshot's
+// modelDisplayName — the same key the per-tick write uses).
+//
+// Returns null when the slot has never been written (no prior
+// accumulator write), so the module can render a placeholder
+// rather than fabricating a "0".
+function peekAcc(
+  scope: "session" | "project" | "model",
+  ctx: RenderContext,
+): AvgSnapshot | null {
+  const t = ctx.tokens;
+  const cwd = t?.cwd ?? undefined;
+  if (scope === "session") {
+    if (!t?.sessionId) return null;
+    return peekAvg(t.sessionId, cwd);
+  }
+  if (scope === "project") {
+    const v = statusStore.readTickStatus(cwd, "tickStatus");
+    if (!v) return null;
+    return {
+      accIn: v.accIn,
+      accOut: v.accOut,
+      accApi: v.accApiMs,
+      accCached: v.accCached,
+      accApiCount: v.accApiCount,
+    };
+  }
+  // scope === "model"
+  const model = t?.modelDisplayName;
+  if (!model) return null;
+  const v = statusStore.readTickStatus(cwd, `tickStatus:${model}`);
+  if (!v) return null;
+  return {
+    accIn: v.accIn,
+    accOut: v.accOut,
+    accApi: v.accApiMs,
+    accCached: v.accCached,
+    accApiCount: v.accApiCount,
+  };
+}
+
 // Canonical write path for the running accumulator. Reads the
 // current tickStatus:<sid> entry (or starts from zero), adds the
 // per-tick deltas, and writes the unified shape back — including
@@ -1530,6 +1577,75 @@ function computeTickTotals(
   return { value: `${prefix}:${formatCompactToken(n)}` };
 }
 
+// v0.8.0+ — body factory for the m_acc* family. Renders the
+// chosen accumulator field at the chosen scope. Output shape:
+//
+//   scope=session (default) → "acc:N"
+//   scope=project           → "acc(total):N"
+//   scope=model             → "acc(<modelDisplayName>):N"
+//
+// Reads the three-layer accumulator via peekAcc. Placeholder when
+// the chosen slot has never been written (no prior tick, no model
+// for the model scope, no sessionId for the session scope). Zero
+// accumulator renders as "acc:0" (value-zero rule, never dropped).
+function accBody(
+  ctx: RenderContext,
+  field: "in" | "out" | "cached" | "total" | "apiMs",
+  scope?: "session" | "project" | "model",
+): string {
+  const useScope = scope ?? (ctx.tokens?.sessionId ? "session" : "project");
+  const v = peekAcc(useScope, ctx);
+  if (!v) return placeholderAcc(field, useScope, ctx);
+  let n: number;
+  switch (field) {
+    case "in": n = v.accIn; break;
+    case "out": n = v.accOut; break;
+    case "cached": n = v.accCached; break;
+    case "apiMs": n = v.accApi; break;
+    case "total": n = v.accIn + v.accCached; break;
+  }
+  return `acc:${formatCompactToken(n)}`;
+}
+
+// m_accCacheHitRate — session-aggregate formula
+// (accCached / (accCached + accIn) * 100). Colored via the
+// cacheHitColor palette (good ≥ 80%, warn ≥ 50%, bad < 50%).
+// Zero denominator (no input and no cache reads) renders
+// "acc:0.0%"; missing-acc placeholder when the slot has never
+// been written.
+function accHitRateBody(
+  ctx: RenderContext,
+  scope?: "session" | "project" | "model",
+): string {
+  const useScope = scope ?? "session";
+  const v = peekAcc(useScope, ctx);
+  if (!v) return placeholderAcc("hitRate", useScope, ctx);
+  const denom = v.accCached + v.accIn;
+  if (denom === 0) return `${cacheHitColor(0)}acc:0.0%${RESET}`;
+  const pct = (v.accCached / denom) * 100;
+  const color = cacheHitColor(pct);
+  return `${color}acc:${pct.toFixed(cachePctPrecision())}%${RESET}`;
+}
+
+// m_acc* placeholder shape: "acc:n/a" for plain fields, "acc:n/a%"
+// for the hit-rate module. Used when the chosen scope has no
+// accumulator written yet. The `scope` arg is currently unused (we
+// render the same placeholder regardless of scope) — included so
+// the call site is self-documenting and a future tweak that
+// distinguishes scopes (e.g. "acc(total):n/a") has a hook.
+function placeholderAcc(
+  field: "in" | "out" | "cached" | "total" | "apiMs" | "hitRate",
+  _scope: "session" | "project" | "model",
+  _ctx: RenderContext,
+): string {
+  // Reuse the bare-path STALE_COLOR wrap style. Hit-rate gets
+  // its own "acc:n/a%" suffix shape to mirror the rendered
+  // "acc:N.N%" output (the % glyph is part of the placeholder
+  // identity, not just a unit).
+  const body = field === "hitRate" ? "acc:n/a%" : "acc:n/a";
+  return `${STALE_COLOR}${body}${RESET}`;
+}
+
 const MODULES: Record<string, Module> = {
   // The leading prefix. For the plan path, picks the mode-aware
   // label ("Usage:" / "Remain:"). For the balance path, the label
@@ -1824,6 +1940,40 @@ const MODULES: Record<string, Module> = {
   // cache_read_input_tokens. Renders "cache:--" when stdin lacks
   // the field (user-resolved honest "data unavailable" signal).
   m_totalTokenWithCacheIn: (c) => computeTickTotals(c, "cache").value,
+  // v0.8.0+ — six per-session/per-model/per-project accumulators
+  // (m_accTokenIn / m_accTokenOut / m_accTokenCachedIn /
+  // m_accTokenTotalIn / m_accApiMs / m_accCacheHitRate). They all
+  // read the three-layer accumulator (session / project / model) via
+  // peekAcc and render in the same shape:
+  //
+  //   m_accTokenIn                 → "acc:163.5k"        (session default)
+  //   m_accTokenIn:scope:project   → "acc(total):42.3k"
+  //   m_accTokenIn:scope:model     → "acc(MiniMax-M3):12.4k"
+  //
+  // The acc value is a real measured number, not a delta — 0 is
+  // rendered as "acc:0" (the value-zero rule). The placeholder path
+  // is reserved for the truly-missing-data case (no session, no
+  // model for the model scope, no prior accumulator write).
+  //
+  // These six modules re-use the same accumulator that m_totalToken*
+  // / m_tokenInAvg / m_tokenOutAvg maintain — no new tick-side
+  // writes. The first valid tick of a session primes the slot;
+  // until then, the placeholder fires.
+  // v0.8.0+ — the bare m_acc* forms render at the default scope
+  // (session if a sessionId exists in the live snapshot, else
+  // project). The inline form `m_acc*:scope:<session|project|model>`
+  // overrides; the inline path is wired in INLINE_RENDERERS below
+  // and uses the same accBody / accHitRateBody helpers.
+  m_accTokenIn: (c) => accBody(c, "in"),
+  m_accTokenOut: (c) => accBody(c, "out"),
+  m_accTokenCachedIn: (c) => accBody(c, "cached"),
+  m_accTokenTotalIn: (c) => accBody(c, "total"),
+  m_accApiMs: (c) => accBody(c, "apiMs"),
+  // m_accCacheHitRate — session-aggregate formula
+  // (accCached / (accCached + accIn) * 100), the v0.4.x semantic
+  // that m_cacheHitRate (per-turn) replaced. Coloring uses the
+  // cacheHitColor palette.
+  m_accCacheHitRate: (c) => accHitRateBody(c),
   // v0.3.6+ — bare `m_quote` (no inline args). Picks a quote from
   // the hourly window and renders it plain (no SGR wrapper). Opt-in
   // — the default plan / balance templates do NOT include it.
@@ -2178,6 +2328,17 @@ const DEFAULT_COLORS: Record<string, string> = {
   m_contextWidowsSize: NAMED_PALETTE.gray,
   m_contextUsedPercent: NAMED_PALETTE.gray,
   m_contextRemainingPercent: NAMED_PALETTE.gray,
+  // v0.8.0+ — m_acc* family. Plain numeric accumulators get
+  // STALE_COLOR (gray) so they read as "data" rather than
+  // "status"; m_accCacheHitRate is governed by the band-based
+  // cacheHitColor helper, so the DEFAULT_COLORS entry is moot
+  // for the value but keeps the dispatcher / inline path happy.
+  m_accTokenIn: NAMED_PALETTE.stale,
+  m_accTokenOut: NAMED_PALETTE.stale,
+  m_accTokenCachedIn: NAMED_PALETTE.stale,
+  m_accTokenTotalIn: NAMED_PALETTE.stale,
+  m_accApiMs: NAMED_PALETTE.stale,
+  m_accCacheHitRate: NAMED_PALETTE.stale,
 };
 
 // Snapshot of `cfg().colors` + the `brightBlack` input shortcut. Read
@@ -2411,6 +2572,20 @@ const NULDROP_PARAM = {
   },
 } as const;
 
+// v0.8.0+ — three-layer accumulator scope selector (used by
+// m_acc*). Accepts "session" (default), "project", or "model".
+// Anything else is a parse-fail and the inline token is dropped
+// (same as :color:<garbage>). The model scope is a no-op when the
+// live TokenSnapshot has no modelDisplayName (the placeholder
+// path fires); project scope reads the project-wide slot, which
+// is null until at least one tick has accumulated into it.
+const SCOPE_PARAM = {
+  named: {
+    scope: (raw: string): ResolvedValue | null =>
+      raw === "session" || raw === "project" || raw === "model" ? raw : null,
+  },
+} as const;
+
 // v0.4.0+ — per-module display-mode override (scoped to the bar
 // computation for the window modules). Accepts "used" or
 // "remaining" verbatim; anything else is a parse-fail and the
@@ -2510,6 +2685,20 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   m_totalTokenIn: placeholderNA("in:"),
   m_totalTokenOut: placeholderNA("out:"),
   m_totalTokenWithCacheIn: placeholderNA("cache:"),
+  // m_acc* — placeholder shape is "acc:n/a" (or "acc:n/a%" for
+  // m_accCacheHitRate). The :scope: inline arg is ignored at the
+  // placeholder level (placeholderNA returns the same body
+  // regardless of scope — see placeholderAcc comment for the
+  // future-extension hook).
+  m_accTokenIn: placeholderNA("acc:"),
+  m_accTokenOut: placeholderNA("acc:"),
+  m_accTokenCachedIn: placeholderNA("acc:"),
+  m_accTokenTotalIn: placeholderNA("acc:"),
+  m_accApiMs: placeholderNA("acc:"),
+  // m_accCacheHitRate — the "hit:N%" shape needs a "%" suffix on
+  // the placeholder too, matching m_cacheHitRate's
+  // placeholderDashesUnit convention.
+  m_accCacheHitRate: placeholderDashesUnit("acc:n/a%"),
   m_tokenCachedIn: placeholderNA("cache:"),
   m_cacheHitRate: placeholderNA("hit:"),
   m_contextSize: placeholderNA("size:"),
@@ -2788,6 +2977,15 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_totalTokenIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_totalTokenOut: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_totalTokenWithCacheIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  // v0.8.0+ — m_acc* family accepts :scope:<session|project|model>
+  // (default session for the bare form) and the standard :color:
+  // override + :nulldrop: opt-out.
+  m_accTokenIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
+  m_accTokenOut: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
+  m_accTokenCachedIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
+  m_accTokenTotalIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
+  m_accApiMs: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
+  m_accCacheHitRate: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
   // v0.3.6+ — quote module. Accepts `:freq:<numeric-time>` and
   // `:color:<sgr|shortcut|rainbow|rand-rainbow|hue>`. The freq
   // grammar is the single-unit time format `<digits><unit>` (bare
@@ -3130,6 +3328,44 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   m_totalTokenWithCacheIn: (params, ctx) => {
     const body = computeTickTotals(ctx, "cache").value;
     return wrapPlain(body, params.color as string | undefined);
+  },
+  // v0.8.0+ — 6 acc modules (m_accTokenIn / Out / CachedIn / TotalIn /
+  // ApiMs / CacheHitRate). Three-layer granularity via :scope:
+  //   session (default for non-hit-rate) — per-session accumulator
+  //   project — crosses session boundaries within the same cwd
+  //   model — crosses session boundaries within the same model
+  // All read from the v0.8.0 AccSnapshot slot populated by setAvg
+  // (which writes 3 slots per tick: session/project/model). The
+  // scope→slot mapping is hidden inside peekAcc; renderers just
+  // pass the resolved scope through.
+  m_accTokenIn: (params, ctx) => {
+    const scope = (params.scope as "session" | "project" | "model" | undefined) ?? (ctx.tokens?.sessionId ? "session" : "project");
+    return wrapPlainDefault("m_accTokenIn", accBody(ctx, "in", scope), params.color as string | undefined);
+  },
+  m_accTokenOut: (params, ctx) => {
+    const scope = (params.scope as "session" | "project" | "model" | undefined) ?? (ctx.tokens?.sessionId ? "session" : "project");
+    return wrapPlainDefault("m_accTokenOut", accBody(ctx, "out", scope), params.color as string | undefined);
+  },
+  m_accTokenCachedIn: (params, ctx) => {
+    const scope = (params.scope as "session" | "project" | "model" | undefined) ?? (ctx.tokens?.sessionId ? "session" : "project");
+    return wrapPlainDefault("m_accTokenCachedIn", accBody(ctx, "cached", scope), params.color as string | undefined);
+  },
+  m_accTokenTotalIn: (params, ctx) => {
+    const scope = (params.scope as "session" | "project" | "model" | undefined) ?? (ctx.tokens?.sessionId ? "session" : "project");
+    return wrapPlainDefault("m_accTokenTotalIn", accBody(ctx, "total", scope), params.color as string | undefined);
+  },
+  m_accApiMs: (params, ctx) => {
+    const scope = (params.scope as "session" | "project" | "model" | undefined) ?? (ctx.tokens?.sessionId ? "session" : "project");
+    return wrapPlainDefault("m_accApiMs", accBody(ctx, "apiMs", scope), params.color as string | undefined);
+  },
+  // Hit rate is special: always session-scoped by default (the
+  // "natural" granularity for a ratio is per-session, not per-
+  // project or per-model — those would mix conversations).
+  // Pass :scope:project or :scope:model to opt into the wider
+  // cross-session aggregate.
+  m_accCacheHitRate: (params, ctx) => {
+    const scope = (params.scope as "session" | "project" | "model" | undefined) ?? "session";
+    return accHitRateBody(ctx, scope);
   },
   m_quote: (params, ctx) => {
     // Default freq = 1h (per-hour window). The schema resolver
@@ -3532,6 +3768,26 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         inline = expandInlineToken(tok, "m_tokenInAvg", 14, ctx);
       } else if (tok.startsWith("m_tokenOutAvg:")) {
         inline = expandInlineToken(tok, "m_tokenOutAvg", 15, ctx);
+      } else if (tok.startsWith("m_accTokenCachedIn:")) {
+        // Longer prefix listed first defensively (18 chars) — siblings
+        // m_accTokenIn (12), m_accTokenOut (13), m_accTokenTotalIn
+        // (16) share the "m_accToken" stem but differ at index 13/14/15.
+        inline = expandInlineToken(tok, "m_accTokenCachedIn", 19, ctx);
+      } else if (tok.startsWith("m_accTokenTotalIn:")) {
+        // m_accTokenTotalIn → skip prefix+colon (17 chars). Listed
+        // before m_accTokenIn / m_accTokenOut to avoid prefix-shadow.
+        inline = expandInlineToken(tok, "m_accTokenTotalIn", 17, ctx);
+      } else if (tok.startsWith("m_accTokenOut:")) {
+        // m_accTokenOut → skip 14 chars.
+        inline = expandInlineToken(tok, "m_accTokenOut", 14, ctx);
+      } else if (tok.startsWith("m_accTokenIn:")) {
+        // m_accTokenIn → skip 13 chars.
+        inline = expandInlineToken(tok, "m_accTokenIn", 13, ctx);
+      } else if (tok.startsWith("m_accApiMs:")) {
+        inline = expandInlineToken(tok, "m_accApiMs", 10, ctx);
+      } else if (tok.startsWith("m_accCacheHitRate:")) {
+        // m_accCacheHitRate → skip prefix+colon (17 chars).
+        inline = expandInlineToken(tok, "m_accCacheHitRate", 17, ctx);
       } else if (tok.startsWith("m_totalTokenWithCacheIn:")) {
         // Longer prefix listed first defensively — no actual
         // shadowing because the only other m_totalToken* prefixes
