@@ -17,7 +17,7 @@
 import { configStore, warn } from "./config.ts";
 import { providerTypeFor } from "./providers.ts";
 import { PLAN_PRESETS, BALANCE_PRESETS } from "./config.ts";
-import type { TokenSnapshot } from "./types.ts";
+import type { TokenSample, TokenSnapshot } from "./types.ts";
 import {
   buildRainbow,
   buildHue,
@@ -26,9 +26,10 @@ import {
   quoteIndex,
   type QuoteFreq,
 } from "./quotes.ts";
-import { readSamples } from "./token-store.ts";
+import { readAllSamples } from "./token-store.ts";
 import { readGitInfo } from "./git-info.ts";
 import * as statusStore from "./status-store.ts";
+import * as cache from "./cache.ts";
 
 export type Window = {
   // Percentage USED in [0, 100]. May be fractional; we'll round.
@@ -1424,60 +1425,6 @@ function computeTickDelta(
 // the avg accumulate write. This means computeTickAvg is
 // self-sufficient — putting m_tokenInAvg alone in a template
 // with no speed / raw-delta modules still works.
-function computeTickAvg(
-  ctx: RenderContext,
-  direction: "in" | "out",
-  color: string,
-): { value: string; writeBack: PrevTickSnapshot | null } {
-  const t = ctx.tokens;
-  // v6.x: snapshot missing → "n/a" placeholder (not "--"). Aligns
-  // with computeTickDelta / computeTickSpeed's null-vs-zero split.
-  if (!t || !t.sessionId) {
-    return { value: `${direction}:n/a`, writeBack: null };
-  }
-  const r = computeAndCacheTickDelta(ctx);
-  if (r.hasDelta && !_tickAvgWriteMemo.get(ctx)) {
-    _tickAvgWriteMemo.set(ctx, true);
-    const prev = peekAvg(t.sessionId, t.cwd);
-    const next: AvgSnapshot = {
-      accIn: (prev?.accIn ?? 0) + r.deltaIn,
-      accOut: (prev?.accOut ?? 0) + r.deltaOut,
-      accApi: (prev?.accApi ?? 0) + r.deltaApi,
-      // v0.4.0+: m_totalTokenWithCacheIn reads sumCache. The avg
-      // module pair is the canonical accumulator — keeping the
-      // sumCache update here means either module family alone in
-      // a template still maintains the cache.
-      accCached: (prev?.accCached ?? 0) + r.deltaCacheRead,
-      accApiCount: (prev?.accApiCount ?? 0) + (r.deltaApi > 0 ? 1 : 0),
-    };
-    // v0.4.x — sumApiCount contract: increment by 1 on a tick
-    // where deltaApiMs > 0 AND input_tokens > 0.
-    const deltaApiCount =
-      r.deltaApi > 0 && t.current.input != null && t.current.input > 0 ? 1 : 0;
-    setAvg(t.sessionId, next, t.cwd, {
-      modelDisplayName: t.modelDisplayName ?? null,
-      deltaApiCount,
-      currentIn: t.current.input ?? undefined,
-      currentOut: t.current.output ?? undefined,
-      currentCacheRead: t.current.cacheRead ?? undefined,
-      currentApiMs: t.cost.totalApiDurationMs ?? undefined,
-      deltaIn: r.deltaIn,
-      deltaOut: r.deltaOut,
-      deltaCache: r.deltaCacheRead,
-      deltaApiMs: r.deltaApi,
-    });
-  }
-  const avg = peekAvg(t.sessionId, t.cwd);
-  // v6.x: sumIn / sumOut / sumApi all zero (idle, no accumulation
-  // yet) → render "0.0 t/s" (truthful zero rate). Previously
-  // returned "--". Mirrors computeTickSpeed's idle-vs-zero split.
-  if (!avg || avg.accApi <= 0) {
-    return { value: `${color}${direction}:${formatSpeed(0)}${RESET}`, writeBack: r.writeBack };
-  }
-  const denom = direction === "in" ? avg.accIn / avg.accApi : avg.accOut / avg.accApi;
-  const tps = denom * 1000;
-  return { value: `${color}${direction}:${formatSpeed(tps)}${RESET}`, writeBack: r.writeBack };
-}
 
 // Per-session running totals: m_totalTokenIn / m_totalTokenOut /
 // m_totalTokenWithCacheIn. Reads the same tickAvg:<sessionId>
@@ -1867,16 +1814,6 @@ const MODULES: Record<string, Module> = {
       ? `${STALE_COLOR}cache:${label}${RESET}`
       : `${STALE_COLOR}cache:${label} (${pct.toFixed(cachePctPrecision())}%)${RESET}`;
   },
-  // Tokens used in the last 5h. Reads token-samples.jsonl filtered to
-  // (now - 5h). Sums in+out per sample; uses delta vs FIRST sample in
-  // the window to avoid double-counting cumulative growth across
-  // samples (samples within the window each carry the SESSION-cumulative
-  // value, not a delta).
-  m_token5h: (c) =>
-    windowedTokenLabel(c, 5 * 60 * 60 * 1000, "5h"),
-  // Tokens used in the last 7d.
-  m_token7d: (c) =>
-    windowedTokenLabel(c, 7 * 24 * 60 * 60 * 1000, "7d"),
   // v0.4.0+ — per-API-call input speed. Reads the previous-tick
   // snapshot from cache (keyed by sessionId) and computes
   // delta(current.input) / delta(cost.totalApiDurationMs) * 1000.
@@ -1909,22 +1846,6 @@ const MODULES: Record<string, Module> = {
       ? speedScaleColor("out", probe.tps ?? 0)
       : STALE_COLOR;
     const r = computeTickSpeed(c, "out", color);
-    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack, c.tokens.cwd);
-    return r.value;
-  },
-  // v0.4.0+ — per-session running-average input speed
-  // (sum(deltaIn) / sum(deltaApi) * 1000). Always renders — a
-  // valid-API-call contribution each tick; shows "--" when no
-  // valid tick has accumulated yet. See computeTickAvg for the
-  // accumulator semantics.
-  m_tokenInAvg: (c) => {
-    const r = computeTickAvg(c, "in", STALE_COLOR);
-    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack, c.tokens.cwd);
-    return r.value;
-  },
-  // v0.4.0+ — per-session running-average output speed.
-  m_tokenOutAvg: (c) => {
-    const r = computeTickAvg(c, "out", STALE_COLOR);
     if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack, c.tokens.cwd);
     return r.value;
   },
@@ -1974,6 +1895,68 @@ const MODULES: Record<string, Module> = {
   // that m_cacheHitRate (per-turn) replaced. Coloring uses the
   // cacheHitColor palette.
   m_accCacheHitRate: (c) => accHitRateBody(c),
+  // v0.8.0+ — sum/avg advanced statistics. 5 plain sums (in/out/
+  // cached/total/apiMs) + 3 ratios (cacheHitRate + tokenInSpeed +
+  // tokenOutSpeed). All default to ":model:active" + ":window:5h"
+  // + ":align:true" — the inline form `m_sumTokenIn:window:7d` etc
+  // overrides. See parseWindowScope + fetchSumAggregate for the
+  // resolution path; results are cached in state/cache.json under
+  // the "sum:v1:<model>:<sinceMs>:<align>" key with TTL=300s.
+  m_sumTokenIn: (c) => {
+    const filter = parseWindowScope(c, {});
+    if (!filter) return null;
+    const agg = fetchSumAggregate(filter);
+    return agg.rows === 0 ? null : `in:${formatCompactToken(agg.sumIn)}`;
+  },
+  m_sumTokenOut: (c) => {
+    const filter = parseWindowScope(c, {});
+    if (!filter) return null;
+    const agg = fetchSumAggregate(filter);
+    return agg.rows === 0 ? null : `out:${formatCompactToken(agg.sumOut)}`;
+  },
+  m_sumTokenCachedIn: (c) => {
+    const filter = parseWindowScope(c, {});
+    if (!filter) return null;
+    const agg = fetchSumAggregate(filter);
+    return agg.rows === 0 ? null : `cache:${formatCompactToken(agg.sumCached)}`;
+  },
+  m_sumTokenTotalIn: (c) => {
+    const filter = parseWindowScope(c, {});
+    if (!filter) return null;
+    const agg = fetchSumAggregate(filter);
+    return agg.rows === 0 ? null : `in:${formatCompactToken(agg.sumTotalIn)}`;
+  },
+  m_sumApiMs: (c) => {
+    const filter = parseWindowScope(c, {});
+    if (!filter) return null;
+    const agg = fetchSumAggregate(filter);
+    return agg.rows === 0 ? null : `api:${formatCompactToken(agg.sumApiMs)}`;
+  },
+  m_avgCacheHitRate: (c) => {
+    const filter = parseWindowScope(c, {});
+    if (!filter) return null;
+    const agg = fetchSumAggregate(filter);
+    const denom = agg.sumIn + agg.sumCached;
+    if (agg.rows === 0 || denom === 0) return null;
+    const pct = (agg.sumCached / denom) * 100;
+    return `${cacheHitColor(pct)}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;
+  },
+  m_avgTokenInSpeed: (c) => {
+    const filter = parseWindowScope(c, {});
+    if (!filter) return null;
+    const agg = fetchSumAggregate(filter);
+    if (agg.sumApiMs === 0) return null;
+    const tps = (agg.sumIn / agg.sumApiMs) * 1000;
+    return `in:${formatSpeed(tps)}`;
+  },
+  m_avgTokenOutSpeed: (c) => {
+    const filter = parseWindowScope(c, {});
+    if (!filter) return null;
+    const agg = fetchSumAggregate(filter);
+    if (agg.sumApiMs === 0) return null;
+    const tps = (agg.sumOut / agg.sumApiMs) * 1000;
+    return `out:${formatSpeed(tps)}`;
+  },
   // v0.3.6+ — bare `m_quote` (no inline args). Picks a quote from
   // the hourly window and renders it plain (no SGR wrapper). Opt-in
   // — the default plan / balance templates do NOT include it.
@@ -2212,31 +2195,166 @@ export function cacheHitColor(pct: number): string {
 // instead of null. The user reads "0" as "tracked, nothing in the
 // window" — distinct from the missing-data case (no samples) which
 // goes through placeholderBare at the call site.
-function windowedTokenLabel(
-  c: RenderContext,
-  windowMs: number,
-  label: string,
-): string | null {
-  const t = c.tokens;
-  if (!t || !t.sessionId || !t.cwd) return null;
-  const since = c.nowMs - windowMs;
-  const samples = readSamples(t.cwd, t.sessionId, since);
-  if (samples.length < 2) return null;
-  // Sort defensively in case the JSONL wasn't appended in time order.
-  const sorted = samples.slice().sort((a, b) => a.at - b.at);
-  const first = sorted[0]!;
-  const last = sorted[sorted.length - 1]!;
-  const deltaIn = Math.max(0, last.in - first.in);
-  const deltaOut = Math.max(0, last.out - first.out);
-  // Per ADR: 5h/7d windows reuse tokenplan Window.resetStartAt when
-  // available (so the window boundary lines up exactly). Falling back
-  // to sliding `now - windowMs` when no plan data is loaded keeps the
-  // module useful for non-tokenplan providers.
-  const total = deltaIn + deltaOut;
-  // v6.x: zero total now renders as "label:0" (truthful zero) rather
-  // than null. Aligns with the "0 直接显示" rule.
-  return `${label}:${formatCompactToken(total)}`;
+// v0.8.0+ — parse a human duration string into milliseconds.
+// Supports "all" (returns the sentinel "all") and any chain of
+// `<digits><unit>` where unit ∈ {d, h, m, s}. The chain is
+// accumulated in canonical order (d → h → m → s) regardless of
+// the input order, so "1m2h" and "2h1m" parse identically.
+// Returns null on malformed input (no digits, bad unit, etc.).
+//
+// Examples:
+//   parseDhms("5h")    → 5 * 3600 * 1000
+//   parseDhms("7d")    → 7 * 86400 * 1000
+//   parseDhms("1h30m") → 1*3600*1000 + 30*60*1000
+//   parseDhms("2d12h") → 2*86400*1000 + 12*3600*1000
+//   parseDhms("all")   → "all" (sentinel)
+//   parseDhms("")      → null
+//   parseDhms("5x")    → null
+function parseDhms(raw: string | undefined): number | "all" | null {
+  if (raw == null) return null;
+  if (raw === "all") return "all";
+  if (raw.length === 0) return null;
+  // Match `<digits><unit>` pairs. The order doesn't matter — we
+  // sum into a single accumulator and pick each unit's contribution
+  // by its letter. Allows e.g. "5h30m" and "30m5h".
+  const re = /(\d+)([dhms])/g;
+  let ms = 0;
+  let matched = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(raw)) !== null) {
+    const n = Number(m[1]);
+    const u = m[2];
+    if (!Number.isFinite(n) || n <= 0) return null;
+    switch (u) {
+      case "d": ms += n * 86400 * 1000; break;
+      case "h": ms += n * 3600 * 1000; break;
+      case "m": ms += n * 60 * 1000; break;
+      case "s": ms += n * 1000; break;
+    }
+    matched += m[0].length;
+  }
+  if (matched === 0) return null;
+  // Trailing junk (e.g. "5hz") is a parse-fail. The whole string
+  // must consist of digit/unit pairs.
+  if (matched !== raw.length) return null;
+  return ms;
 }
+
+// v0.8.0+ — resolve the effective (sinceMs, alignActive, model) for
+// a sum/avg scan. Returns:
+//   sinceMs   — wall-clock anchor. Samples with `at < sinceMs`
+//               are excluded.
+//   alignActive — when true, the caller should re-anchor sinceMs
+//                 against the plan window's resetStartAt (so we
+//                 cover exactly one full window since the last
+//                 refill, not "the last 5h of wall-clock time").
+//   modelFilter — undefined (all rows), "active" (current model),
+//                 or a literal model name.
+//
+// alignActive is forced false when window is the special "all"
+// sentinel (no time anchor to align to) or when resetStartAt is
+// missing on the relevant Window. Otherwise it follows the
+// `params.align` override (default true).
+type SumFilter = {
+  sinceMs: number;
+  alignActive: boolean;
+  modelFilter?: string;
+};
+
+function parseWindowScope(
+  ctx: RenderContext,
+  params: Record<string, ResolvedValue | undefined>,
+): SumFilter | null {
+  const windowRaw = (params.window as string | undefined) ?? "5h";
+  const window = parseDhms(windowRaw);
+  if (window === null) return null;
+  const alignRaw = (params.align as string | undefined) ?? "true";
+  const alignWanted = alignRaw === "true";
+
+  // Resolve model filter.
+  const modelRaw = (params.model as string | undefined) ?? "active";
+  let modelFilter: string | undefined;
+  if (modelRaw === "all") {
+    modelFilter = undefined;
+  } else if (modelRaw === "active") {
+    modelFilter = ctx.tokens?.modelDisplayName ?? undefined;
+  } else {
+    modelFilter = modelRaw;
+  }
+
+  if (window === "all") {
+    // No time anchor — align is meaningless. Scan from epoch.
+    return { sinceMs: 0, alignActive: false, modelFilter };
+  }
+
+  // Try to align to the plan window's resetStartAt if asked.
+  const w: Window | null | undefined =
+    windowRaw === "5h"
+      ? ctx.fiveHour
+      : windowRaw === "7d"
+        ? ctx.weekly
+        : null;
+  if (
+    alignWanted &&
+    w != null &&
+    typeof w.resetStartAt === "number" &&
+    typeof w.resetDurationMs === "number" &&
+    w.resetDurationMs > 0
+  ) {
+    return {
+      sinceMs: w.resetStartAt,
+      alignActive: true,
+      modelFilter,
+    };
+  }
+  return {
+    sinceMs: ctx.nowMs - window,
+    alignActive: false,
+    modelFilter,
+  };
+}
+
+// v0.8.0+ — sum/avg scanning core. Reads the relevant jsonl set
+// (per-session or cross-project) and computes the requested
+// aggregate. The cache key namespacing (D4) puts results in
+// state/cache.json under "sum:v1:…" / "avg:v1:…" with TTL=300s.
+type SumAggregate = {
+  sumIn: number;
+  sumOut: number;
+  sumCached: number;
+  sumTotalIn: number; // sumIn + sumCached
+  sumApiMs: number;
+  rows: number;
+};
+
+function aggregateSamples(samples: TokenSample[]): SumAggregate {
+  let sumIn = 0, sumOut = 0, sumCached = 0, sumApiMs = 0;
+  for (const s of samples) {
+    sumIn += s.in;
+    sumOut += s.out;
+    sumCached += s.ctx_read;
+    sumApiMs += s.deltaApiMs ?? 0;
+  }
+  return { sumIn, sumOut, sumCached, sumTotalIn: sumIn + sumCached, sumApiMs, rows: samples.length };
+}
+
+function fetchSumAggregate(filter: SumFilter): SumAggregate {
+  const key = `sum:v1:${filter.modelFilter ?? "all"}:${filter.sinceMs}:${filter.alignActive}`;
+  const cached = cache.get<SumAggregate>(key, 300_000);
+  if (cached) return cached;
+  // Cross-project scan (no cwd scoping); the inline-args
+  // resolution never carries a cwd key, so we always go through
+  // readAllSamples here. Per-project reads are reserved for the
+  // future "per-cwd window" use case.
+  const samples = readAllSamples(filter.sinceMs);
+  const filtered = filter.modelFilter === undefined
+    ? samples
+    : samples.filter((s) => s.model === filter.modelFilter);
+  const agg = aggregateSamples(filtered);
+  cache.set(key, agg);
+  return agg;
+}
+
 
 function warnUnknownModuleOnce(name: string): void {
   if (_unknownModuleWarned) return;
@@ -2586,6 +2704,46 @@ const SCOPE_PARAM = {
   },
 } as const;
 
+// v0.8.0+ — sum/avg module inline args.
+//
+// `:model:<active|name|all>` — narrow the jsonl scan to one model
+//   identity, "active" (the model currently displayed in m_model),
+//   or "all" (every row). Default is "active". The literal "all"
+//   skips per-row model filtering entirely.
+//
+// `:window:<dhms|all>` — the time window to scan. Accepts any
+//   `<digits><unit>` chain parseable by parseDhms (e.g. "5h",
+//   "7d", "1h30m", "2d12h"), plus the special "all" sentinel
+//   (no time filter, scan the entire jsonl). Default is "5h".
+//
+// `:align:<true|false>` — when true AND window ∈ {5h, 7d} AND
+//   ctx.fiveHour/weekly has resetStartAt+resetDurationMs, use the
+//   plan-aligned window [resetStartAt, resetStartAt + duration]
+//   instead of the wall-clock [now - windowMs, now]. The
+//   tokenplan "5h since 14:00" anchor matters here — without
+//   align, the wall-clock window can read N% under 100% even at
+//   full quota because we miss the recent refill. Default true.
+const MODEL_PARAM = {
+  named: {
+    model: (raw: string): ResolvedValue | null =>
+      raw === "active" || raw === "all" || raw.length > 0 ? raw : null,
+  },
+} as const;
+
+const WINDOW_PARAM = {
+  named: {
+    window: (raw: string): ResolvedValue | null =>
+      parseDhms(raw) !== null ? raw : null,
+  },
+} as const;
+
+const ALIGN_PARAM = {
+  named: {
+    align: (raw: string): ResolvedValue | null =>
+      raw === "true" || raw === "false" ? raw : null,
+  },
+} as const;
+
 // v0.4.0+ — per-module display-mode override (scoped to the bar
 // computation for the window modules). Accepts "used" or
 // "remaining" verbatim; anything else is a parse-fail and the
@@ -2715,8 +2873,18 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   m_sessionApiDuration: placeholderDashesUnit("--"),
   m_linesAdded: placeholderDashesUnit("+ --"),
   m_linesRemoved: placeholderDashesUnit("- --"),
-  m_token5h: placeholderDashesUnit("5h:--"),
-  m_token7d: placeholderDashesUnit("7d:--"),
+  // v0.8.0+ — sum/avg advanced statistics placeholders. Same shape
+  // as the rendered output: "in:n/a" / "out:n/a" / "cache:n/a" /
+  // "api:n/a" for the 5 plain modules; "hit:n/a%" for the ratio.
+  // Empty aggregate (no rows in window) triggers the placeholder.
+  m_sumTokenIn: placeholderNA("in:"),
+  m_sumTokenOut: placeholderNA("out:"),
+  m_sumTokenCachedIn: placeholderNA("cache:"),
+  m_sumTokenTotalIn: placeholderNA("in:"),
+  m_sumApiMs: placeholderNA("api:"),
+  m_avgCacheHitRate: placeholderNA("hit:"),
+  m_avgTokenInSpeed: placeholderNA("in:"),
+  m_avgTokenOutSpeed: placeholderNA("out:"),
   // gauge (placeholder shape is the gray 0% / 100% bar)
   m_window5h: placeholderGauge,
   m_window7d: placeholderGauge,
@@ -2741,8 +2909,6 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   m_tokenOut: placeholderNA("out:"),
   m_tokenInSpeed: placeholderNA("in:"),
   m_tokenOutSpeed: placeholderNA("out:"),
-  m_tokenInAvg: placeholderNA("in:"),
-  m_tokenOutAvg: placeholderNA("out:"),
   // v6.x: previously drop-by-design modules (no age info / no
   // version / no reset data / no balance). Now also follow the
   // placeholder rule — they occupy their slot so adjacent
@@ -2968,12 +3134,8 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_contextSize: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_cacheHitRate: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_tokenCachedIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
-  m_token5h: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
-  m_token7d: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_tokenInSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_tokenOutSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
-  m_tokenInAvg: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
-  m_tokenOutAvg: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_totalTokenIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_totalTokenOut: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_totalTokenWithCacheIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
@@ -2986,6 +3148,20 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_accTokenTotalIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
   m_accApiMs: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
   m_accCacheHitRate: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
+  // v0.8.0+ — sum/avg advanced statistics. All 8 accept the same
+  // 5 inline args: :model:<active|name|all>, :window:<dhms|all>,
+  // :align:<true|false>, :color:<c>, :nulldrop:<b>. The WINDOW
+  // resolver rejects malformed dhms strings at parse time →
+  // badarg → dispatcher warn + drop. Same for the MODEL/ALIGN
+  // schemas.
+  m_sumTokenIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
+  m_sumTokenOut: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
+  m_sumTokenCachedIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
+  m_sumTokenTotalIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
+  m_sumApiMs: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
+  m_avgCacheHitRate: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
+  m_avgTokenInSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
+  m_avgTokenOutSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
   // v0.3.6+ — quote module. Accepts `:freq:<numeric-time>` and
   // `:color:<sgr|shortcut|rainbow|rand-rainbow|hue>`. The freq
   // grammar is the single-unit time format `<digits><unit>` (bare
@@ -3267,16 +3443,6 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
       ? `${color}cache:${label}${RESET}`
       : `${color}cache:${label} (${pct.toFixed(cachePctPrecision())}%)${RESET}`;
   },
-  m_token5h: (params, ctx) => {
-    const body = windowedTokenLabel(ctx, 5 * 60 * 60 * 1000, "5h");
-    if (body == null) return placeholderWithColor("m_token5h", params, ctx);
-    return wrapPlain(body, params.color as string | undefined);
-  },
-  m_token7d: (params, ctx) => {
-    const body = windowedTokenLabel(ctx, 7 * 24 * 60 * 60 * 1000, "7d");
-    if (body == null) return placeholderWithColor("m_token7d", params, ctx);
-    return wrapPlain(body, params.color as string | undefined);
-  },
   // v0.4.0+ — :color:scale (or no :color: at all) → 5-band
   // scale color on the active tick, STALE_COLOR on the
   // cached/inactive tick. :color:<shortcut|SGR> → that exact
@@ -3302,18 +3468,6 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
         ? speedScaleColor("out", probe.tps ?? 0)
         : (userColor ?? STALE_COLOR);
     const r = computeTickSpeed(ctx, "out", activeColor);
-    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack, ctx.tokens.cwd);
-    return r.value;
-  },
-  m_tokenInAvg: (params, ctx) => {
-    const color = (params.color as string | undefined) ?? STALE_COLOR;
-    const r = computeTickAvg(ctx, "in", color);
-    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack, ctx.tokens.cwd);
-    return r.value;
-  },
-  m_tokenOutAvg: (params, ctx) => {
-    const color = (params.color as string | undefined) ?? STALE_COLOR;
-    const r = computeTickAvg(ctx, "out", color);
     if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack, ctx.tokens.cwd);
     return r.value;
   },
@@ -3366,6 +3520,72 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   m_accCacheHitRate: (params, ctx) => {
     const scope = (params.scope as "session" | "project" | "model" | undefined) ?? "session";
     return accHitRateBody(ctx, scope);
+  },
+  // v0.8.0+ — sum/avg inline renderers. Same body shape as the
+  // bare-form MODULES entries; the inline path passes params so
+  // :model:/:window:/:align: take effect. A parse failure on the
+  // inline args has already dropped the token at the schema
+  // resolver, so parseWindowScope here is the runtime fallback
+  // for unexpected shapes (null → INLINE_BADARG path).
+  m_sumTokenIn: (params, ctx) => {
+    const filter = parseWindowScope(ctx, params);
+    if (!filter) return INLINE_BADARG;
+    const agg = fetchSumAggregate(filter);
+    if (agg.rows === 0) return placeholderWithColor("m_sumTokenIn", params, ctx);
+    return wrapPlain(`in:${formatCompactToken(agg.sumIn)}`, params.color as string | undefined);
+  },
+  m_sumTokenOut: (params, ctx) => {
+    const filter = parseWindowScope(ctx, params);
+    if (!filter) return INLINE_BADARG;
+    const agg = fetchSumAggregate(filter);
+    if (agg.rows === 0) return placeholderWithColor("m_sumTokenOut", params, ctx);
+    return wrapPlain(`out:${formatCompactToken(agg.sumOut)}`, params.color as string | undefined);
+  },
+  m_sumTokenCachedIn: (params, ctx) => {
+    const filter = parseWindowScope(ctx, params);
+    if (!filter) return INLINE_BADARG;
+    const agg = fetchSumAggregate(filter);
+    if (agg.rows === 0) return placeholderWithColor("m_sumTokenCachedIn", params, ctx);
+    return wrapPlain(`cache:${formatCompactToken(agg.sumCached)}`, params.color as string | undefined);
+  },
+  m_sumTokenTotalIn: (params, ctx) => {
+    const filter = parseWindowScope(ctx, params);
+    if (!filter) return INLINE_BADARG;
+    const agg = fetchSumAggregate(filter);
+    if (agg.rows === 0) return placeholderWithColor("m_sumTokenTotalIn", params, ctx);
+    return wrapPlain(`in:${formatCompactToken(agg.sumTotalIn)}`, params.color as string | undefined);
+  },
+  m_sumApiMs: (params, ctx) => {
+    const filter = parseWindowScope(ctx, params);
+    if (!filter) return INLINE_BADARG;
+    const agg = fetchSumAggregate(filter);
+    if (agg.rows === 0) return placeholderWithColor("m_sumApiMs", params, ctx);
+    return wrapPlain(`api:${formatCompactToken(agg.sumApiMs)}`, params.color as string | undefined);
+  },
+  m_avgCacheHitRate: (params, ctx) => {
+    const filter = parseWindowScope(ctx, params);
+    if (!filter) return INLINE_BADARG;
+    const agg = fetchSumAggregate(filter);
+    const denom = agg.sumIn + agg.sumCached;
+    if (agg.rows === 0 || denom === 0) return placeholderWithColor("m_avgCacheHitRate", params, ctx);
+    const pct = (agg.sumCached / denom) * 100;
+    return `${cacheHitColor(pct)}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;
+  },
+  m_avgTokenInSpeed: (params, ctx) => {
+    const filter = parseWindowScope(ctx, params);
+    if (!filter) return INLINE_BADARG;
+    const agg = fetchSumAggregate(filter);
+    if (agg.sumApiMs === 0) return placeholderWithColor("m_avgTokenInSpeed", params, ctx);
+    const tps = (agg.sumIn / agg.sumApiMs) * 1000;
+    return wrapPlain(`in:${formatSpeed(tps)}`, params.color as string | undefined);
+  },
+  m_avgTokenOutSpeed: (params, ctx) => {
+    const filter = parseWindowScope(ctx, params);
+    if (!filter) return INLINE_BADARG;
+    const agg = fetchSumAggregate(filter);
+    if (agg.sumApiMs === 0) return placeholderWithColor("m_avgTokenOutSpeed", params, ctx);
+    const tps = (agg.sumOut / agg.sumApiMs) * 1000;
+    return wrapPlain(`out:${formatSpeed(tps)}`, params.color as string | undefined);
   },
   m_quote: (params, ctx) => {
     // Default freq = 1h (per-hour window). The schema resolver
@@ -3751,23 +3971,10 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         inline = expandInlineToken(tok, "m_cacheHitRate", 15, ctx);
       } else if (tok.startsWith("m_tokenCachedIn:")) {
         inline = expandInlineToken(tok, "m_tokenCachedIn", 16, ctx);
-      } else if (tok.startsWith("m_token5h:")) {
-        inline = expandInlineToken(tok, "m_token5h", 10, ctx);
-      } else if (tok.startsWith("m_token7d:")) {
-        inline = expandInlineToken(tok, "m_token7d", 10, ctx);
       } else if (tok.startsWith("m_tokenInSpeed:")) {
         inline = expandInlineToken(tok, "m_tokenInSpeed", 15, ctx);
       } else if (tok.startsWith("m_tokenOutSpeed:")) {
         inline = expandInlineToken(tok, "m_tokenOutSpeed", 16, ctx);
-      } else if (tok.startsWith("m_tokenInAvg:")) {
-        // m_tokenInAvg:color:<…> → skip "m_tokenInAvg:" (length 14).
-        // No prefix-shadowing conflict with m_tokenIn: above
-        // (different char at index 10: 'A' vs ':'), but listed
-        // here with the other speed-family modules for source
-        // cohesion.
-        inline = expandInlineToken(tok, "m_tokenInAvg", 14, ctx);
-      } else if (tok.startsWith("m_tokenOutAvg:")) {
-        inline = expandInlineToken(tok, "m_tokenOutAvg", 15, ctx);
       } else if (tok.startsWith("m_accTokenCachedIn:")) {
         // Longer prefix listed first defensively (18 chars) — siblings
         // m_accTokenIn (12), m_accTokenOut (13), m_accTokenTotalIn
@@ -3788,6 +3995,27 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
       } else if (tok.startsWith("m_accCacheHitRate:")) {
         // m_accCacheHitRate → skip prefix+colon (17 chars).
         inline = expandInlineToken(tok, "m_accCacheHitRate", 17, ctx);
+      } else if (tok.startsWith("m_sumTokenCachedIn:")) {
+        // Longer prefix listed first (19 chars); siblings
+        // m_sumTokenIn (12) / m_sumTokenOut (13) / m_sumTokenTotalIn
+        // (17) / m_sumApiMs (10) differ at later positions.
+        inline = expandInlineToken(tok, "m_sumTokenCachedIn", 19, ctx);
+      } else if (tok.startsWith("m_sumTokenTotalIn:")) {
+        inline = expandInlineToken(tok, "m_sumTokenTotalIn", 18, ctx);
+      } else if (tok.startsWith("m_sumTokenOut:")) {
+        inline = expandInlineToken(tok, "m_sumTokenOut", 14, ctx);
+      } else if (tok.startsWith("m_sumTokenIn:")) {
+        inline = expandInlineToken(tok, "m_sumTokenIn", 13, ctx);
+      } else if (tok.startsWith("m_sumApiMs:")) {
+        inline = expandInlineToken(tok, "m_sumApiMs", 11, ctx);
+      } else if (tok.startsWith("m_avgCacheHitRate:")) {
+        inline = expandInlineToken(tok, "m_avgCacheHitRate", 18, ctx);
+      } else if (tok.startsWith("m_avgTokenOutSpeed:")) {
+        // Longer prefix listed first (19 chars) to avoid
+        // shadowing m_avgTokenInSpeed: (18 chars).
+        inline = expandInlineToken(tok, "m_avgTokenOutSpeed", 19, ctx);
+      } else if (tok.startsWith("m_avgTokenInSpeed:")) {
+        inline = expandInlineToken(tok, "m_avgTokenInSpeed", 18, ctx);
       } else if (tok.startsWith("m_totalTokenWithCacheIn:")) {
         // Longer prefix listed first defensively — no actual
         // shadowing because the only other m_totalToken* prefixes

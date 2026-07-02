@@ -6,7 +6,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { projectHash, sampleFilePath } from "./token-store.ts";
+import { projectHash, sampleFilePath, setStateRoot, resetStateRoot, stateRoot } from "./token-store.ts";
 
 describe("token-store — path helpers", () => {
   it("projectHash: replaces path separators with -", () => {
@@ -59,6 +59,32 @@ describe("token-store — path helpers", () => {
     assert.ok(stateIdx >= 0, "expected state/ in path");
     assert.equal(parts[stateIdx], "state");
     assert.equal(parts[hashIdx], "d--workspace-foo");
+  });
+
+  it("setStateRoot: routes sampleFilePath through the injected root (v0.8.0+ test hook)", () => {
+    // Tests that build jsonl fixtures use this hook to redirect
+    // sample writes into a tmp dir, so the user's real
+    // ~/.claude/.../state/ is never touched.
+    const orig = stateRoot();
+    try {
+      setStateRoot(() => "/tmp/topgauge-test");
+      const p = sampleFilePath("D:\\WorkSpace\\foo", "sess-1");
+      // Path separators on Windows use \\, on POSIX /.
+      // Check that the injected root appears in the result.
+      assert.ok(
+        p.includes("topgauge-test"),
+        `expected injected root in: ${p}`,
+      );
+      // The projectHash + sessionId are appended on top of the
+      // injected root.
+      assert.ok(p.includes("d--workspace-foo"));
+      assert.ok(p.endsWith("sess-1.jsonl"));
+    } finally {
+      resetStateRoot();
+    }
+    // After reset, the root reverts to the env-driven default.
+    const after = stateRoot();
+    assert.equal(after, orig, "resetStateRoot restores the default");
   });
 });
 

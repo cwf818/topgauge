@@ -36,17 +36,33 @@
 // CHANGELOG for the rationale (avoids extra IO on every tick; old
 // samples are time-decaying and most users can re-accumulate).
 
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { TokenSample } from "./types.ts";
 
 // Root of all token-plan plugin state files. Sibling of `upstream-cmd.sh`
 // and `config.json` — survives cache rolls and version bumps. (See
 // scripts/install.sh for the layout reasoning.)
-function stateRoot(): string {
+function defaultStateRoot(): string {
   const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
   const claudeRoot = process.env.CLAUDE_CONFIG_DIR ?? join(home, ".claude");
   return join(claudeRoot, "plugins", "topgauge-cc", "state");
+}
+
+// v0.8.0+ — test isolation hook. Tests that touch the on-disk jsonl
+// (sum/avg cross-project scanners, setStateRoot-style fixtures)
+// point this at a tmp dir so the user's real state is never
+// touched. Production code leaves it on `defaultStateRoot` and
+// the env-driven resolution applies.
+let _stateRoot: () => string = defaultStateRoot;
+export function stateRoot(): string {
+  return _stateRoot();
+}
+export function setStateRoot(fn: () => string): void {
+  _stateRoot = fn;
+}
+export function resetStateRoot(): void {
+  _stateRoot = defaultStateRoot;
 }
 
 // Project hash for the cwd — keeps one project's sessions isolated from
@@ -106,10 +122,16 @@ export function appendSample(
 // memory and is bounded by the window itself. We do NOT rewrite the
 // file to evict — when the file exceeds ~1MB, compaction can be a
 // future `:clean` action; not in scope for v0.4.0.
+//
+// v0.8.0+ — `modelFilter` narrows rows to one model. Older rows
+// without a stamped `model` are EXCLUDED when filter !== undefined
+// (we can't make a model claim for a row we didn't stamp). Pass
+// `undefined` / omit for the legacy "all models" scan.
 export function readSamples(
   cwd: string,
   sessionId: string,
   sinceMs: number,
+  modelFilter?: string,
 ): TokenSample[] {
   const path = sampleFilePath(cwd, sessionId);
   let raw: string;
@@ -140,6 +162,8 @@ export function readSamples(
     ) {
       continue;
     }
+    const rowModel = typeof r.model === "string" ? r.model : undefined;
+    if (modelFilter !== undefined && rowModel !== modelFilter) continue;
     out.push({
       at: r.at,
       in: r.in,
@@ -151,10 +175,91 @@ export function readSamples(
       // they're ignored (the path encodes them). `model` / `apiMs` /
       // `deltaApiMs` are optional; missing → undefined (older rows
       // predate the per-tick delta stamp).
-      model: typeof r.model === "string" ? r.model : undefined,
+      model: rowModel,
       apiMs: typeof r.apiMs === "number" ? r.apiMs : undefined,
       deltaApiMs: typeof r.deltaApiMs === "number" ? r.deltaApiMs : undefined,
     });
+  }
+  return out;
+}
+
+// v0.8.0+ — cross-project jsonl scanner. Walks every
+// state/<projectHash>/<sessionId>.jsonl under the configured state
+// root, concatenating per-row `TokenSample`s from each session.
+// Powers the m_sum* / m_avg* advanced statistics modules that need
+// visibility across projects (the `:scope`/window without `:cwd`
+// gate). The caller applies the sinceMs / modelFilter post-hoc so
+// the same scanner can serve any window / model combination.
+//
+// Performance: the per-project walk is O(projs * sessions) for the
+// stat; the per-row scan is O(rows-in-window). Sum-of-cost is
+// bounded by the 7d upper bound + the per-row scan within. We do
+// NOT pre-cache the result; the caller (the sum/avg module family)
+// keys the result through cache.ts with TTL=300s.
+export function readAllSamples(sinceMs: number): TokenSample[] {
+  const root = stateRoot();
+  const out: TokenSample[] = [];
+  let projectDirs: string[];
+  try {
+    projectDirs = readdirSync(root);
+  } catch {
+    return [];
+  }
+  for (const projDir of projectDirs) {
+    const projPath = join(root, projDir);
+    let st;
+    try {
+      st = statSync(projPath);
+    } catch {
+      continue;
+    }
+    if (!st.isDirectory()) continue;
+    let sessions: string[];
+    try {
+      sessions = readdirSync(projPath);
+    } catch {
+      continue;
+    }
+    for (const f of sessions) {
+      if (!f.endsWith(".jsonl")) continue;
+      const path = join(projPath, f);
+      let raw: string;
+      try {
+        raw = readFileSync(path, "utf8");
+      } catch {
+        continue;
+      }
+      for (const line of raw.split("\n")) {
+        if (!line) continue;
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (!parsed || typeof parsed !== "object") continue;
+        const r = parsed as Record<string, unknown>;
+        if (
+          typeof r.at !== "number" ||
+          r.at < sinceMs ||
+          typeof r.in !== "number" ||
+          typeof r.out !== "number"
+        ) {
+          continue;
+        }
+        out.push({
+          at: r.at,
+          in: r.in,
+          out: r.out,
+          ctx_in: typeof r.ctx_in === "number" ? r.ctx_in : 0,
+          ctx_creation: typeof r.ctx_creation === "number" ? r.ctx_creation : 0,
+          ctx_read: typeof r.ctx_read === "number" ? r.ctx_read : 0,
+          model: typeof r.model === "string" ? r.model : undefined,
+          apiMs: typeof r.apiMs === "number" ? r.apiMs : undefined,
+          deltaApiMs: typeof r.deltaApiMs === "number" ? r.deltaApiMs : undefined,
+        });
+      }
+    }
   }
   return out;
 }

@@ -26,11 +26,12 @@ import {
   __resetForTest as resetStatusForTest,
   setStatusPathResolver,
 } from "./status-store.ts";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { execFileSync } from "node:child_process";
 import { __resetGitInfoCacheForTest } from "./git-info.ts";
+import { setStateRoot, resetStateRoot } from "./token-store.ts";
 import type { TokenSnapshot } from "./types.ts";
 import type { Window } from "./render.ts";
 
@@ -113,6 +114,10 @@ beforeEach(() => {
   setStatusPathResolver(() => join(_tmpDir, "status.json"));
   resetCacheForTest(); // clears in-memory Map + lazy-load guard
   resetStatusForTest(); // clears status-store in-memory cache
+  // v0.8.0+ — token-store's stateRoot hook needs an explicit
+  // reset between tests so sum/avg scans don't leak into a
+  // different test's tmp dir.
+  resetStateRoot();
 });
 // afterEach would be cleaner, but node:test supports only beforeEach
 // in this file's existing pattern; we cleanup via the next beforeEach's
@@ -372,72 +377,6 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(strip(out), "in:40.0 t/s");
   });
 
-  // ----- m_tokenInAvg / m_tokenOutAvg (cumulative across session) -----
-
-  it("m_tokenInAvg: first tick (no avg cache) → assumes prev=0, emits real session avg", () => {
-    // v0.4.0+ (revised 2026-06-29): first tick assumes prev=0,
-    // hasDelta=true, sumIn=38, sumApi=60_000 → 38/60000*1000 =
-    // 0.633 → "in:0.6 t/s". No more "--" sentinel on first tick.
-    const out = renderTemplate(["m_tokenInAvg"], ctxFor(fakeSnapshot())).join("\n");
-    assert.equal(strip(out), "in:0.6 t/s");
-  });
-
-  it("m_tokenInAvg: accumulates and emits session average after one valid tick", () => {
-    // Seed prev so the first tick has a delta.
-    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
-    const out = renderTemplate(["m_tokenInAvg"], ctxFor(fakeSnapshot())).join("\n");
-    // Sum accumulation from the very first valid tick:
-    //   sumIn=38, sumApi=60_000 → 38/60000*1000 = 0.633 → "0.6 t/s"
-    assert.equal(strip(out), "in:0.6 t/s");
-    const avg = peekAvg("sess-test", "D:\\test");
-    assert.ok(avg);
-    assert.equal(avg!.accIn, 38);
-    assert.equal(avg!.accApi, 60_000);
-  });
-
-  it("m_tokenInAvg: second tick accumulates", () => {
-    // First tick establishes the baseline AND accumulates.
-    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
-    renderTemplate(["m_tokenInAvg"], ctxFor(fakeSnapshot()));
-    // Second tick — current.input=200 (this turn's delta), api +5_000.
-    const next = fakeSnapshot({
-      current: { input: 200, output: 250, cacheCreation: 0, cacheRead: 163441 },
-      cost: { totalDurationMs: 700_000, totalApiDurationMs: 65_000, totalLinesAdded: null, totalLinesRemoved: null },
-    });
-    const out = renderTemplate(["m_tokenInAvg"], ctxFor(next)).join("\n");
-    // sumIn = 38 + 200 = 238, sumApi = 60_000 + 5_000 = 65_000
-    // 238/65000*1000 = 3.66 → "3.7 t/s"
-    assert.equal(strip(out), "in:3.7 t/s");
-    const avg = peekAvg("sess-test", "D:\\test");
-    assert.ok(avg);
-    assert.equal(avg!.accIn, 238);
-    assert.equal(avg!.accApi, 65_000);
-  });
-
-  it("m_tokenInAvg: idle tick (deltaApi=0) does NOT accumulate", () => {
-    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
-    renderTemplate(["m_tokenInAvg"], ctxFor(fakeSnapshot()));
-    // Pre-seed prev with the SAME totalApiDurationMs — idle tick.
-    setPrevTick("sess-test", { apiMs: 60_000, in: 38, out: 155, cacheRead: 0 }, "D:\\test");
-    renderTemplate(["m_tokenInAvg"], ctxFor(fakeSnapshot()));
-    const avg = peekAvg("sess-test", "D:\\test");
-    assert.equal(avg!.accIn, 38, "idle tick must not change sumIn");
-    assert.equal(avg!.accApi, 60_000, "idle tick must not change sumApi");
-  });
-
-  it("m_tokenOutAvg: first tick → emits real session avg (no '--' sentinel)", () => {
-    // v0.4.0+ (revised 2026-06-29): first tick assumes prev=0,
-    // sumOut=155, sumApi=60_000 → 155/60000*1000 = 2.583 → "2.6 t/s".
-    const out = renderTemplate(["m_tokenOutAvg"], ctxFor(fakeSnapshot())).join("\n");
-    assert.equal(strip(out), "out:2.6 t/s");
-  });
-
-  it("m_tokenOutAvg: emits session average after one valid tick", () => {
-    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
-    const out = renderTemplate(["m_tokenOutAvg"], ctxFor(fakeSnapshot())).join("\n");
-    // sumOut=155, sumApi=60_000 → 155/60000*1000 = 2.583 → "2.6 t/s"
-    assert.equal(strip(out), "out:2.6 t/s");
-  });
 
   // ----- m_totalTokenIn / m_totalTokenOut / m_totalTokenWithCacheIn
   //   (v0.4.0+ per-session running totals, sharing the tickAvg cache
@@ -620,14 +559,11 @@ describe("renderTemplate — m_token* modules", () => {
     );
   });
 
-  it("m_totalTokenWithCacheIn shares the accumulator with m_tokenInAvg / m_tokenOutAvg", () => {
-    // Single source-of-truth invariant: rendering
-    // m_totalTokenWithCacheIn together with m_tokenInAvg in the
-    // same render reads the same peekAvg cache slot. Document
-    // the contract by interleaving a tick across all three
-    // accumulator-reading modules and asserting the read is
-    // consistent (after the writeBack fires once via the per-
-    // render memo).
+  it("m_totalTokenWithCacheIn shares the accumulator with m_accTokenIn", () => {
+    // v0.8.0+ — m_tokenInAvg / m_tokenOutAvg were removed; the
+    // m_totalToken* family now shares its AccSnapshot slot with
+    // the new m_acc* modules. Both modules read the same
+    // peekAvg cache slot in the same render.
     setPrevTick("sess-total-avg", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
     const out = renderTemplate(
       [
@@ -637,18 +573,17 @@ describe("renderTemplate — m_token* modules", () => {
         "s_space",
         "m_totalTokenWithCacheIn",
         "s_space",
-        "m_tokenInAvg",
+        "m_accTokenIn",
       ],
       ctxFor(fakeSnapshot({ sessionId: "sess-total-avg" })),
     ).join("\n");
     // All three totals read the avg cache the SAME tick — so
-    //   sumIn=38 → "in:38"
+    //   sumIn=38 → "in:38" / "acc:38"
     //   sumOut=155 → "out:155"
     //   sumCache=163441 → "cache:163.4k"
-    //   m_tokenInAvg = 38/60000*1000 = 0.633 → "in:0.6 t/s"
     assert.equal(
       strip(out),
-      "in:38 out:155 cache:163.4k in:0.6 t/s",
+      "in:38 out:155 cache:163.4k acc:38",
     );
     const avg = peekAvg("sess-total-avg", "D:\\test");
     assert.ok(avg);
@@ -1576,23 +1511,6 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     assert.equal(strip(out), "- --");
   });
 
-  it("m_token5h:nulldrop:false renders '5h:--' (placeholder when no samples)", () => {
-    // fakeSnapshot has cwd set but no JSONL samples file → windowedTokenLabel
-    // returns null → placeholder fires.
-    const out = renderTemplate(
-      ["m_token5h:nulldrop:false"],
-      ctxFor(fakeSnapshot()),
-    ).join("\n");
-    assert.equal(strip(out), "5h:--");
-  });
-
-  it("m_token7d:nulldrop:false renders '7d:--' (placeholder when no samples)", () => {
-    const out = renderTemplate(
-      ["m_token7d:nulldrop:false"],
-      ctxFor(fakeSnapshot()),
-    ).join("\n");
-    assert.equal(strip(out), "7d:--");
-  });
 
   // ----- gauge family -----
 
@@ -2788,5 +2706,178 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     ).join("\n");
     // in=500→"500", out=250→"250", hitRate=10000/(10000+500)=95.2%
     assert.equal(strip(out), "acc:500 acc:250 · acc:95.2%");
+  });
+});
+
+// ----- v0.8.0+ sum/avg advanced statistics -------------------------------
+//
+// 8 new modules: 5 sums (in / out / cached / total / apiMs) + 3
+// ratios (cacheHitRate / tokenInSpeed / tokenOutSpeed). All read
+// the per-tick jsonl stream (cross-project via readAllSamples) and
+// filter by `:model:`, `:window:`, `:align:`. Results are cached in
+// state/cache.json under the "sum:v1:<model>:<sinceMs>:<align>"
+// key with TTL=300s.
+//
+// Tests below use a tmpDir as the state root (via setStateRoot)
+// so the user's real on-disk samples are untouched. Each test
+// seeds one or more jsonl rows directly into the per-session
+// file, then asserts on the rendered output.
+
+describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
+  beforeEach(() => {
+    // The cache module also needs a tmp path so cached aggregates
+    // from one test don't leak into the next.
+    setCachePathResolver(() => join(_tmpDir, "cache.json"));
+    resetCacheForTest();
+  });
+
+  // ----- parseDhms / parseWindowScope basics -----
+
+  it("m_sumTokenIn with no samples anywhere → 'in:n/a' placeholder", () => {
+    // Empty state root → no rows → agg.rows=0. The bare
+    // MODULES path returns null (drops the chunk); the inline
+    // form with the default nulldrop:false renders the
+    // placeholder.
+    setStateRoot(() => join(_tmpDir, "sum-empty"));
+    const out = renderTemplate(
+      ["m_sumTokenIn:nulldrop:false"],
+      ctxFor(fakeSnapshot()),
+    ).join("\n");
+    assert.equal(strip(out), "in:n/a");
+  });
+
+  it("m_sumTokenIn:window:invalid_value (parse-fail) → drops with warn", () => {
+    // The WINDOW_PARAM resolver rejects malformed dhms at the
+    // schema layer → parseInlineArgs returns null → dispatcher
+    // warn + drop. We assert the chunk is gone; the warn is
+    // once-per-process and may not fire on every call.
+    setStateRoot(() => join(_tmpDir, "sum-bad-window"));
+    __resetUnknownModuleWarnForTest();
+    const out = renderTemplate(
+      ["m_sumTokenIn:window:xyz"],
+      ctxFor(fakeSnapshot()),
+    );
+    assert.deepEqual(out, []);
+  });
+
+  it("m_sumTokenIn:model:nonexistent-model (no matching rows) → 'in:n/a' placeholder", () => {
+    // An unknown model name is treated as a literal filter — no
+    // matching rows → empty aggregate → inline form renders
+    // placeholder (bare form would drop).
+    setStateRoot(() => join(_tmpDir, "sum-no-model-match"));
+    const out = renderTemplate(
+      ["m_sumTokenIn:model:nonexistent-model"],
+      ctxFor(fakeSnapshot()),
+    ).join("\n");
+    assert.equal(strip(out), "in:n/a");
+  });
+
+  it("m_sumTokenIn:align:invalid (not true/false) is a parse-fail → drops", () => {
+    setStateRoot(() => join(_tmpDir, "sum-bad-align"));
+    __resetUnknownModuleWarnForTest();
+    const out = renderTemplate(
+      ["m_sumTokenIn:align:maybe"],
+      ctxFor(fakeSnapshot()),
+    );
+    assert.deepEqual(out, []);
+  });
+
+  // ----- per-fixture sum -----
+
+  it("m_sumTokenIn reads sum(in) across rows in the configured window", () => {
+    // Seed 3 jsonl rows under a tmpDir state root, each carrying
+    // the per-turn `in` (which is what the sum module sums).
+    // Rows are anchored near the test ctx's nowMs (1_000_000) so
+    // they fall inside the default 5h window.
+    const stateRootDir = join(_tmpDir, "sum-fixture-A");
+    setStateRoot(() => stateRootDir);
+    const projHash = "d--sum-a";
+    const sess = "sess-sum-a";
+    const cwd = "D:\\sum-a";
+    const sessionFile = join(stateRootDir, projHash, `${sess}.jsonl`);
+    mkdirSync(dirname(sessionFile), { recursive: true });
+    // Three valid samples: sumIn = 100 + 200 + 300 = 600.
+    writeFileSync(
+      sessionFile,
+      [
+        JSON.stringify({ at: 999_000, in: 100, out: 50, ctx_in: 0, ctx_creation: 0, ctx_read: 0, model: "MiniMax-M3", deltaApiMs: 1000 }),
+        JSON.stringify({ at: 999_500, in: 200, out: 75, ctx_in: 0, ctx_creation: 0, ctx_read: 0, model: "MiniMax-M3", deltaApiMs: 1000 }),
+        JSON.stringify({ at: 999_900, in: 300, out: 100, ctx_in: 0, ctx_creation: 0, ctx_read: 0, model: "MiniMax-M3", deltaApiMs: 1000 }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const out = renderTemplate(
+      ["m_sumTokenIn"],
+      ctxFor(fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" })),
+    ).join("\n");
+    // formatCompactToken(600) = "600" → "in:600"
+    assert.equal(strip(out), "in:600");
+  });
+
+  it("m_sumTokenIn:window:1d1h narrows the scan to a 25h window (D6 parseDhms)", () => {
+    // Build 4 rows anchored relative to the test ctx's nowMs
+    // (1_000_000): 3 inside the 25h window, 1 far outside. The
+    // outside row should be EXCLUDED.
+    const stateRootDir = join(_tmpDir, "sum-fixture-window");
+    setStateRoot(() => stateRootDir);
+    const projHash = "d--sum-w";
+    const sess = "sess-sum-w";
+    const cwd = "D:\\sum-w";
+    const sessionFile = join(stateRootDir, projHash, `${sess}.jsonl`);
+    mkdirSync(dirname(sessionFile), { recursive: true });
+    // ctxFor's nowMs is hardcoded to 1_000_000; use that anchor.
+    const now = 1_000_000;
+    // Rows at 1h, 5h, 12h before now (all inside 25h) plus one
+    // far outside the window. The 25h window keeps rows
+    // `at >= now - 25h`.
+    writeFileSync(
+      sessionFile,
+      [
+        JSON.stringify({ at: now - 1 * 3600 * 1000, in: 10, out: 0, ctx_in: 0, ctx_creation: 0, ctx_read: 0, model: "MiniMax-M3", deltaApiMs: 100 }),
+        JSON.stringify({ at: now - 5 * 3600 * 1000, in: 20, out: 0, ctx_in: 0, ctx_creation: 0, ctx_read: 0, model: "MiniMax-M3", deltaApiMs: 100 }),
+        JSON.stringify({ at: now - 12 * 3600 * 1000, in: 30, out: 0, ctx_in: 0, ctx_creation: 0, ctx_read: 0, model: "MiniMax-M3", deltaApiMs: 100 }),
+        // 100h ago → outside the 25h window
+        JSON.stringify({ at: now - 100 * 3600 * 1000, in: 9999, out: 0, ctx_in: 0, ctx_creation: 0, ctx_read: 0, model: "MiniMax-M3", deltaApiMs: 100 }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const out = renderTemplate(
+      ["m_sumTokenIn:window:1d1h"],
+      ctxFor(
+        fakeSnapshot({
+          sessionId: sess,
+          cwd,
+          modelDisplayName: "MiniMax-M3",
+        }),
+      ),
+    ).join("\n");
+    // 10 + 20 + 30 = 60 (the 100h-ago row excluded)
+    assert.equal(strip(out), "in:60");
+  });
+
+  it("m_avgTokenInSpeed: sum(in) / sum(apiMs) * 1000 in t/s", () => {
+    const stateRootDir = join(_tmpDir, "sum-fixture-speed");
+    setStateRoot(() => stateRootDir);
+    const projHash = "d--sum-s";
+    const sess = "sess-sum-s";
+    const cwd = "D:\\sum-s";
+    const sessionFile = join(stateRootDir, projHash, `${sess}.jsonl`);
+    mkdirSync(dirname(sessionFile), { recursive: true });
+    // sumIn=1000, sumApiMs=2000 → 1000/2000*1000 = 500 t/s.
+    // Rows anchored near the test ctx's nowMs (1_000_000).
+    writeFileSync(
+      sessionFile,
+      [
+        JSON.stringify({ at: 999_000, in: 500, out: 0, ctx_in: 0, ctx_creation: 0, ctx_read: 0, model: "MiniMax-M3", deltaApiMs: 1000 }),
+        JSON.stringify({ at: 999_500, in: 500, out: 0, ctx_in: 0, ctx_creation: 0, ctx_read: 0, model: "MiniMax-M3", deltaApiMs: 1000 }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const out = renderTemplate(
+      ["m_avgTokenInSpeed"],
+      ctxFor(fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" })),
+    ).join("\n");
+    // 500 t/s → "500.0 t/s"
+    assert.equal(strip(out), "in:500.0 t/s");
   });
 });
