@@ -157,27 +157,34 @@ export function readSamples(
     if (
       typeof r.at !== "number" ||
       r.at < sinceMs ||
-      typeof r.in !== "number" ||
-      typeof r.out !== "number"
+      typeof r.totalIn !== "number" ||
+      typeof r.totalOut !== "number"
     ) {
+      // v0.8.0+ — rows missing the renamed `totalIn`/`totalOut`
+      // fields (v0.4.x–v0.7.x legacy schema) are skipped. We do
+      // NOT migrate legacy fields here — the user direction is
+      // "don't carry compat in dev", so v0.8.0 reads new-schema
+      // rows only. A legacy row is silently dropped from the
+      // sum/avg aggregate; the next tick writes the new schema
+      // and the same jsonl file regains full coverage.
       continue;
     }
     const rowModel = typeof r.model === "string" ? r.model : undefined;
     if (modelFilter !== undefined && rowModel !== modelFilter) continue;
     out.push({
       at: r.at,
-      in: r.in,
-      out: r.out,
-      ctx_in: typeof r.ctx_in === "number" ? r.ctx_in : 0,
-      ctx_creation: typeof r.ctx_creation === "number" ? r.ctx_creation : 0,
-      ctx_read: typeof r.ctx_read === "number" ? r.ctx_read : 0,
+      totalIn: r.totalIn,
+      totalOut: r.totalOut,
+      in: typeof r.in === "number" ? r.in : 0,
+      out: typeof r.out === "number" ? r.out : 0,
+      cacheCreation: typeof r.cacheCreation === "number" ? r.cacheCreation : 0,
+      cacheIn: typeof r.cacheIn === "number" ? r.cacheIn : 0,
       // v6.x — older v0.4.x rows also had `session` / `cwd` here;
-      // they're ignored (the path encodes them). `model` / `apiMs` /
-      // `deltaApiMs` are optional; missing → undefined (older rows
-      // predate the per-tick delta stamp).
+      // they're ignored (the path encodes them). `model` / `totalApiMs` /
+      // `apiMs` are optional; missing → undefined.
       model: rowModel,
+      totalApiMs: typeof r.totalApiMs === "number" ? r.totalApiMs : undefined,
       apiMs: typeof r.apiMs === "number" ? r.apiMs : undefined,
-      deltaApiMs: typeof r.deltaApiMs === "number" ? r.deltaApiMs : undefined,
     });
   }
   return out;
@@ -242,21 +249,24 @@ export function readAllSamples(sinceMs: number): TokenSample[] {
         if (
           typeof r.at !== "number" ||
           r.at < sinceMs ||
-          typeof r.in !== "number" ||
-          typeof r.out !== "number"
+          typeof r.totalIn !== "number" ||
+          typeof r.totalOut !== "number"
         ) {
+          // v0.8.0+ — see comment in readSamples above. Legacy
+          // rows missing the renamed fields are skipped.
           continue;
         }
         out.push({
           at: r.at,
-          in: r.in,
-          out: r.out,
-          ctx_in: typeof r.ctx_in === "number" ? r.ctx_in : 0,
-          ctx_creation: typeof r.ctx_creation === "number" ? r.ctx_creation : 0,
-          ctx_read: typeof r.ctx_read === "number" ? r.ctx_read : 0,
+          totalIn: r.totalIn,
+          totalOut: r.totalOut,
+          in: typeof r.in === "number" ? r.in : 0,
+          out: typeof r.out === "number" ? r.out : 0,
+          cacheCreation: typeof r.cacheCreation === "number" ? r.cacheCreation : 0,
+          cacheIn: typeof r.cacheIn === "number" ? r.cacheIn : 0,
           model: typeof r.model === "string" ? r.model : undefined,
+          totalApiMs: typeof r.totalApiMs === "number" ? r.totalApiMs : undefined,
           apiMs: typeof r.apiMs === "number" ? r.apiMs : undefined,
-          deltaApiMs: typeof r.deltaApiMs === "number" ? r.deltaApiMs : undefined,
         });
       }
     }

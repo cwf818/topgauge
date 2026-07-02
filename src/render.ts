@@ -2422,12 +2422,20 @@ type SumAggregate = {
 };
 
 function aggregateSamples(samples: TokenSample[]): SumAggregate {
+  // v0.8.0+ — TokenSample field rename. The per-turn columns are
+  // now `in` (was `ctx_in`), `cacheIn` (was `ctx_read`), and `apiMs`
+  // (was `deltaApiMs`). The cumulative columns `totalIn` /
+  // `totalOut` / `totalApiMs` are kept on the row for off-line audit
+  // but NOT summed — they're monotonic session totals, so summing
+  // them would produce meaningless numbers. m_sumTokenTotalIn
+  // therefore derives from per-turn columns (sumIn + sumCached)
+  // rather than from the cumulative totalIn field.
   let sumIn = 0, sumOut = 0, sumCached = 0, sumApiMs = 0;
   for (const s of samples) {
     sumIn += s.in;
     sumOut += s.out;
-    sumCached += s.ctx_read;
-    sumApiMs += s.deltaApiMs ?? 0;
+    sumCached += s.cacheIn;
+    sumApiMs += s.apiMs ?? 0;
   }
   return { sumIn, sumOut, sumCached, sumTotalIn: sumIn + sumCached, sumApiMs, rows: samples.length };
 }

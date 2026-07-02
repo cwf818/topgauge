@@ -224,16 +224,21 @@ async function main(): Promise<void> {
     if (deltaApiMs > 0) {
       const sample: TokenSample = {
         at: Date.now(),
-        in: tokens.totals.input,
-        out: tokens.totals.output,
-        ctx_in: tokens.current.input ?? 0,
-        ctx_creation: tokens.current.cacheCreation ?? 0,
-        ctx_read: tokens.current.cacheRead ?? 0,
+        // v0.8.0+ — field names align with the module family they
+        // feed into. See TokenSample comment in types.ts.
+        totalIn: tokens.totals.input,
+        totalOut: tokens.totals.output,
+        in: tokens.current.input ?? 0,
+        out: tokens.current.output ?? 0,
+        cacheCreation: tokens.current.cacheCreation ?? 0,
+        cacheIn: tokens.current.cacheRead ?? 0,
         model: tokens.modelDisplayName ?? undefined,
-        apiMs: tokens.cost.totalApiDurationMs,
+        totalApiMs: tokens.cost.totalApiDurationMs,
         // Per-tick increment vs the previous append. Already gated
         // by deltaApiMs > 0 above, so this is always > 0 here.
-        deltaApiMs,
+        // Field renamed from `deltaApiMs` → `apiMs` for v0.8.0+;
+        // see the new m_apiMs module that reads it.
+        apiMs: deltaApiMs,
       };
       appendSample(tokens.cwd, tokens.sessionId, sample);
     }

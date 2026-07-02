@@ -3092,12 +3092,14 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     const sessionFile = join(stateRootDir, projHash, `${sess}.jsonl`);
     mkdirSync(dirname(sessionFile), { recursive: true });
     // Three valid samples: sumIn = 100 + 200 + 300 = 600.
+    // v0.8.0+ schema: per-turn `in` / cumulative `totalIn` /
+    // per-turn `apiMs` (was `deltaApiMs`).
     writeFileSync(
       sessionFile,
       [
-        JSON.stringify({ at: 999_000, in: 100, out: 50, ctx_in: 0, ctx_creation: 0, ctx_read: 0, model: "MiniMax-M3", deltaApiMs: 1000 }),
-        JSON.stringify({ at: 999_500, in: 200, out: 75, ctx_in: 0, ctx_creation: 0, ctx_read: 0, model: "MiniMax-M3", deltaApiMs: 1000 }),
-        JSON.stringify({ at: 999_900, in: 300, out: 100, ctx_in: 0, ctx_creation: 0, ctx_read: 0, model: "MiniMax-M3", deltaApiMs: 1000 }),
+        JSON.stringify({ at: 999_000, totalIn: 100, totalOut: 50, in: 100, out: 50, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 1000, apiMs: 1000 }),
+        JSON.stringify({ at: 999_500, totalIn: 200, totalOut: 75, in: 200, out: 75, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 1000, apiMs: 1000 }),
+        JSON.stringify({ at: 999_900, totalIn: 300, totalOut: 100, in: 300, out: 100, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 1000, apiMs: 1000 }),
       ].join("\n") + "\n",
       "utf8",
     );
@@ -3128,11 +3130,11 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     writeFileSync(
       sessionFile,
       [
-        JSON.stringify({ at: now - 1 * 3600 * 1000, in: 10, out: 0, ctx_in: 0, ctx_creation: 0, ctx_read: 0, model: "MiniMax-M3", deltaApiMs: 100 }),
-        JSON.stringify({ at: now - 5 * 3600 * 1000, in: 20, out: 0, ctx_in: 0, ctx_creation: 0, ctx_read: 0, model: "MiniMax-M3", deltaApiMs: 100 }),
-        JSON.stringify({ at: now - 12 * 3600 * 1000, in: 30, out: 0, ctx_in: 0, ctx_creation: 0, ctx_read: 0, model: "MiniMax-M3", deltaApiMs: 100 }),
+        JSON.stringify({ at: now - 1 * 3600 * 1000, totalIn: 10, totalOut: 0, in: 10, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 100, apiMs: 100 }),
+        JSON.stringify({ at: now - 5 * 3600 * 1000, totalIn: 20, totalOut: 0, in: 20, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 100, apiMs: 100 }),
+        JSON.stringify({ at: now - 12 * 3600 * 1000, totalIn: 30, totalOut: 0, in: 30, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 100, apiMs: 100 }),
         // 100h ago → outside the 25h window
-        JSON.stringify({ at: now - 100 * 3600 * 1000, in: 9999, out: 0, ctx_in: 0, ctx_creation: 0, ctx_read: 0, model: "MiniMax-M3", deltaApiMs: 100 }),
+        JSON.stringify({ at: now - 100 * 3600 * 1000, totalIn: 9999, totalOut: 0, in: 9999, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 100, apiMs: 100 }),
       ].join("\n") + "\n",
       "utf8",
     );
@@ -3163,8 +3165,8 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     writeFileSync(
       sessionFile,
       [
-        JSON.stringify({ at: 999_000, in: 500, out: 0, ctx_in: 0, ctx_creation: 0, ctx_read: 0, model: "MiniMax-M3", deltaApiMs: 1000 }),
-        JSON.stringify({ at: 999_500, in: 500, out: 0, ctx_in: 0, ctx_creation: 0, ctx_read: 0, model: "MiniMax-M3", deltaApiMs: 1000 }),
+        JSON.stringify({ at: 999_000, totalIn: 500, totalOut: 0, in: 500, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 1000, apiMs: 1000 }),
+        JSON.stringify({ at: 999_500, totalIn: 500, totalOut: 0, in: 500, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 1000, apiMs: 1000 }),
       ].join("\n") + "\n",
       "utf8",
     );
