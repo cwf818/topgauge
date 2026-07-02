@@ -9,22 +9,28 @@
 //   tickStatus:<sessionId>             — per-session accumulator
 //   tickStatus:<providerId>            — per-provider (model name) accumulator
 //
-// Each entry holds the per-tick snapshot fields AND the running
-// totals across the lifetime of that scope:
+// v0.8.0+ — field rename (sum* → acc*). The on-disk schema in
+// `<projectHash>/status.json` now carries:
 //
 //   {
 //     "at":      1782808274334,   // wall-clock ms of the last update
 //     "value": {
-//       "in":          2468,       // this turn's input tokens
+//       "in":          2468,       // this turn's input tokens (per-turn delta)
 //       "out":          248,       // this turn's output tokens
 //       "cacheRead":   33403,      // this turn's cache-read tokens
-//       "sumIn":        3093,      // accumulated in  across API calls
-//       "sumOut":        475,      // accumulated out
-//       "sumCache":    66182,      // accumulated cache_read
-//       "sumApiMs":   132311,      // accumulated total_api_duration_ms
-//       "sumApiCount":    17,      // accumulated API-call count
+//       "accIn":        3093,      // accumulated in       across API calls
+//       "accOut":        475,      // accumulated out      across API calls
+//       "accCached":   66182,      // accumulated cacheRead across API calls
+//       "accApiMs":   132311,      // accumulated cost.total_api_duration_ms
+//       "accApiCount":    17,      // accumulated API-call count
 //     }
 //   }
+//
+//   (sumIn/sumOut/sumCache/sumApiMs/sumApiCount — the v0.4.x names —
+//   are no longer read or written. On-disk upgrades load the file
+//   cleanly: unknown fields are dropped, missing fields default to
+//   0 via the typeof guard in loadFromDisk. No migration shim is
+//   needed; the new fields populate on the next write.)
 //
 // Also stores the simplified `lastActive` slot (formerly
 // `tickSpeedDisplay:<direction>:<sessionId>`) with the same TTL
@@ -35,8 +41,9 @@
 //
 // Why a separate file (vs. cache.json)?
 //   - The legacy `state/cache.json` is the home for provider-specific
-//     data (minimax, deepseek). Tick-status data is per-tick stdin
-//     state — a completely different concern. Keeping them apart
+//     data (minimax, deepseek) AND the v0.8.0+ sum/avg cross-project
+//     cache (see D4 in v0.8.0 plan). Tick-status data is per-tick
+//     stdin state — a completely different concern. Keeping them apart
 //     means `:clean --purge-runtime` can keep provider caches
 //     intact while wiping per-tick state.
 //   - The file lives under `state/<projectHash>/` so concurrent
@@ -67,11 +74,15 @@ export type TickStatusValue = {
   in: number;
   out: number;
   cacheRead: number;
-  sumIn: number;
-  sumOut: number;
-  sumCache: number;
-  sumApiMs: number;
-  sumApiCount: number;
+  // v0.8.0+ — acc* prefix replaces v0.4.x sum* prefix. Same
+  // semantic (accumulated across API calls), renamed for
+  // consistency with the new m_acc* module family. Old on-disk
+  // sum* fields are not read.
+  accIn: number;
+  accOut: number;
+  accCached: number;
+  accApiMs: number;
+  accApiCount: number;
 };
 
 export type LastActiveValue = {
@@ -180,11 +191,11 @@ function loadFromDisk(cwd: string): Store {
           in: typeof v.in === "number" ? v.in : 0,
           out: typeof v.out === "number" ? v.out : 0,
           cacheRead: typeof v.cacheRead === "number" ? v.cacheRead : 0,
-          sumIn: typeof v.sumIn === "number" ? v.sumIn : 0,
-          sumOut: typeof v.sumOut === "number" ? v.sumOut : 0,
-          sumCache: typeof v.sumCache === "number" ? v.sumCache : 0,
-          sumApiMs: typeof v.sumApiMs === "number" ? v.sumApiMs : 0,
-          sumApiCount: typeof v.sumApiCount === "number" ? v.sumApiCount : 0,
+          accIn: typeof v.accIn === "number" ? v.accIn : 0,
+          accOut: typeof v.accOut === "number" ? v.accOut : 0,
+          accCached: typeof v.accCached === "number" ? v.accCached : 0,
+          accApiMs: typeof v.accApiMs === "number" ? v.accApiMs : 0,
+          accApiCount: typeof v.accApiCount === "number" ? v.accApiCount : 0,
         },
         kind: "tickStatus",
       };
@@ -220,11 +231,11 @@ export function emptyTickStatus(): TickStatusValue {
     in: 0,
     out: 0,
     cacheRead: 0,
-    sumIn: 0,
-    sumOut: 0,
-    sumCache: 0,
-    sumApiMs: 0,
-    sumApiCount: 0,
+    accIn: 0,
+    accOut: 0,
+    accCached: 0,
+    accApiMs: 0,
+    accApiCount: 0,
   };
 }
 

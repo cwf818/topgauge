@@ -13,7 +13,17 @@
 // effort, repo, ccversion), context-window stats (size, usedPct,
 // remainingPct), and extended cost fields (totalApiDurationMs,
 // totalLinesAdded, totalLinesRemoved).
+//
+// v0.8.0+ — invariant check on the parsed TokenSnapshot:
+//   total_input_tokens == current.input + current.cacheRead
+// When violated, a `warning` is appended to the per-project
+// diagnostics log (gated by TOPGAUGE_CC_DIAGNOSTICS_ENABLE). This
+// surfaces schema drift early (e.g. a provider changing the
+// cache_read accounting) without breaking the render path — the
+// renderer still gets a fully populated snapshot. See
+// [[token-modules-redesign-v0-8-0]] for the contract.
 import type { TokenSnapshot } from "./types.ts";
+import * as diagnostics from "./diagnostics.ts";
 
 export function parseTokenSnapshot(raw: string): TokenSnapshot | null {
   if (!raw || raw.length === 0) return null;
@@ -84,7 +94,7 @@ export function parseTokenSnapshot(raw: string): TokenSnapshot | null {
     };
   }
 
-  return {
+  const snap: TokenSnapshot = {
     sessionId: strOrNull(r.session_id),
     cwd: strOrNull(r.cwd),
     totals: {
@@ -114,4 +124,30 @@ export function parseTokenSnapshot(raw: string): TokenSnapshot | null {
       remainingPct: numOrNull(cwObj?.remaining_percentage),
     },
   };
+
+  // v0.8.0+ — invariant check: total_input_tokens must equal
+  // (input_tokens + cache_read_input_tokens). Verified on the live
+  // 2026-06-29 stdin sample (140 + 126720 = 126860) and on the
+  // captured `stdin.real.json` fixture. A violation indicates
+  // schema drift from a provider (cache_read accounting change,
+  // a new "cache_creation" channel, etc.) — record it but don't
+  // break the render path. The warning is gated by the
+  // diagnostics system (env TOPGAUGE_CC_DIAGNOSTICS_ENABLE=1) and
+  // deduped 60s per unique message. See diagnostics.ts.
+  if (
+    snap.totals.input != null &&
+    snap.current.input != null &&
+    snap.current.cacheRead != null &&
+    snap.totals.input !== snap.current.input + snap.current.cacheRead
+  ) {
+    diagnostics.append(
+      "warning",
+      "tokenTotalIn-invariant",
+      `total_input_tokens=${snap.totals.input} != input_tokens(${snap.current.input}) + cache_read_input_tokens(${snap.current.cacheRead})`,
+      Date.now(),
+      snap.cwd,
+    );
+  }
+
+  return snap;
 }

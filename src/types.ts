@@ -40,25 +40,40 @@ export type TokenSample = {
   // (`state/<projectHash>/<sessionId>.jsonl`), so the row no longer
   // carries them. `model` and `apiMs` are stamped when
   // totalApiDurationMs>0 so per-model splits and delta api-ms are
-  // available to m_token5h/m_token7d consumers. Older rows without
-  // these fields are read with model=undefined, apiMs=undefined.
+  // available to m_sumTokenIn:window:5h / m_sumTokenIn:window:7d
+  // consumers (the v0.8.0+ replacements for the v0.4.x m_token5h /
+  // m_token7d modules). `deltaApiMs` is the
+  // per-tick increment of `cost.totalApiDurationMs` since the prior
+  // append (first tick assumes prior=0), so off-line consumers can
+  // reconstruct per-API-call latency without replaying the in-memory
+  // prev-tick cache. Older rows without `deltaApiMs` read as
+  // undefined.
   model?: string;
   apiMs?: number;
+  deltaApiMs?: number;
 };
 
 // What the renderer needs to know about a single tick. Built once in
 // src/index.ts (drains stdin, samples, appends to disk) and passed to
 // the renderer's `RenderContext` extension below.
 //
-// `current` = post-turn snapshot (used by m_ctx, m_cacheRead,
-//            m_cacheHitRate, m_tokenIn, m_tokenOut, m_tokenInSpeed,
+// `current` = post-turn snapshot (used by m_tokenIn, m_tokenOut,
+//            m_tokenCachedIn, m_cacheHitRate, m_tokenInSpeed,
 //            m_tokenOutSpeed). `totals` = session cumulative (used by
 //            m_tokenInTotal, m_tokenOutTotal, m_tokenTotal).
 //            `cost` = stdin.cost block. `contextWindow` = context
-//            window size + used% (m_contextSize, m_contextUsed,
+//            window size + used% (m_contextSize, m_contextUsedPercent,
 //            m_windowContext). The session-identity / metadata
 //            fields (sessionName, modelDisplayName, effort, repo,
 //            ccversion) feed the corresponding m_* modules verbatim.
+//
+// v0.8.0+ — semantic clarification:
+//   - `current.input` / `current.output` / `current.cacheRead` are
+//     PER-TURN DELTAS (the contract formalized in
+//     [[per-turn-delta-contract]]). The user's invariant
+//     `total_input_tokens == input_tokens + cache_read_input_tokens`
+//     must hold; a diagnostics warning is emitted on violation.
+//   - `totals.input` / `totals.output` are session-cumulative.
 export type TokenSnapshot = {
   sessionId: string | null;
   cwd: string | null;
@@ -98,6 +113,38 @@ export type TokenSnapshot = {
     usedPct: number | null;
     remainingPct: number | null;
   };
+};
+
+// v0.8.0+ — per-session / per-model / per-project accumulator
+// snapshot. Replaces the v0.4.x `AvgSnapshot` type (which used the
+// `sum*` prefix). The setAvg / peekAvg / __resetAvgForTest helpers in
+// src/render.ts return / consume this shape. Field semantics:
+//
+//   accIn        — accumulated current.input  across API calls
+//   accOut       — accumulated current.output across API calls
+//   accCached    — accumulated current.cacheRead across API calls
+//                  (renamed from `sumCache` so the name matches the
+//                  per-turn module `m_tokenCachedIn`)
+//   accApiMs     — accumulated cost.total_api_duration_ms across API
+//                  calls (cumulative, not per-tick delta — the
+//                  per-tick writeBack uses `apiMs` directly)
+//   accApiCount  — count of valid API calls that produced
+//                  input tokens (see sumApiCount contract in
+//                  render.ts:computeTickAvg)
+//
+// The same shape is persisted at three slots in `status.json`:
+//   tickStatus             (project-wide, accumulating)
+//   tickStatus:<sessionId> (per-session, absolute since reset)
+//   tickStatus:<modelName> (per-model, accumulating)
+//
+// All three are kept in sync by setAvg's atomic three-slot write
+// (see render.ts:947-1035).
+export type AccSnapshot = {
+  accIn: number;
+  accOut: number;
+  accCached: number;
+  accApiMs: number;
+  accApiCount: number;
 };
 
 // One provider's declarative config block. All fields are required;

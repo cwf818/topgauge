@@ -286,13 +286,36 @@ function formatOneChunkColored(
   return `${left}${rightChunk} ${override}${displayedPct}%${RESET}`;
 }
 
-// Reset-suffix portion of a window. Returns the parens-wrapped
-// `(countdown<arrow> label)` when resetAt is present, or just the
-// bare `label` (e.g. "5h") when resetAt is missing. The leading
-// space is intentionally NOT included here — spacing between modules
-// is controlled by the surrounding s_N separator tokens in the
-// lineTemplate. Returns "" when windowLabel is empty (used by
-// tests that build fake windows without a label).
+// Decide whether a window's countdown should be displayed as the
+// `n/a` placeholder — when ctx.stale (fetch failed; serving cached
+// data) AND the cached resetAt is already in the past. AND-only
+// because:
+//   - stale=true, future reset: cached countdown still useful.
+//   - stale=false, past-due reset: a fresh fetch is due any
+//     moment; the next tick will roll the countdown forward.
+function isStaleAndPastDue(w: Window, stale: boolean, nowMs: number): boolean {
+  if (!stale) return false;
+  if (!w.resetAt) return false;
+  const t = Date.parse(w.resetAt);
+  if (!Number.isFinite(t)) return false;
+  return t <= nowMs;
+}
+
+// Build the `(n/a<arrow> <label>)` body that replaces the regular
+// past-due "(0m<arrow> <label>)" body when ctx.stale AND resetAt
+// is in the past. The arrow still comes from pickResetArrow so the
+// user sees the same fill-state glyph they would have seen for
+// that elapsed ratio — index 0 when ratio ≤ 0 (matches the
+// fresh-data past-due path). Caller is responsible for wrapping
+// the body in STALE_COLOR.
+function formatStalePastDueResetSuffix(
+  windowLabel: string,
+  w: Window,
+  nowMs: number,
+): string {
+  const arrow = pickResetArrow(nowMs, w.resetStartAt, w.resetDurationMs);
+  return `(n/a${arrow} ${windowLabel})`;
+}
 function formatOneResetSuffix(
   windowLabel: string,
   w: Window,
@@ -765,7 +788,7 @@ export type PrevTickSnapshot = {
 
 // Public: looks up the previous tick for a given session. Reads
 // the unified `tickStatus:<sid>` slot from status.json and
-// returns the prev-tick-shaped projection (apiMs = sumApiMs).
+// returns the prev-tick-shaped projection (apiMs = accApiMs).
 // Returns null on miss (no prior tick). The caller is responsible
 // for the post-call `setPrevTick` to keep the cache fresh.
 export function peekPrevTick(
@@ -776,7 +799,7 @@ export function peekPrevTick(
   const v = statusStore.readTickStatus(cwd, `tickStatus:${sessionId}`);
   if (!v) return null;
   return {
-    apiMs: v.sumApiMs,
+    apiMs: v.accApiMs,
     in: v.in,
     out: v.out,
     cacheRead: v.cacheRead,
@@ -804,7 +827,7 @@ export function setPrevTick(
   next.in = snap.in;
   next.out = snap.out;
   next.cacheRead = snap.cacheRead;
-  next.sumApiMs = snap.apiMs;
+  next.accApiMs = snap.apiMs;
   statusStore.writeTickStatus(cwd, `tickStatus:${sessionId}`, next);
 }
 
@@ -875,11 +898,23 @@ export function __resetPrevTickForTest(
 // of tickStatus:<sessionId>. Existing tests that read via
 // peekAvg(<sid>, <cwd>) keep working: returns the accumulator
 // subset of the tickStatus entry.
+//
+// v0.8.0+ — field rename: `sum*` → `acc*` to match the on-disk
+// schema in src/status-store.ts (TickStatusValue.acc*) and the
+// new `m_acc*` module family. The `acc*` prefix reads more naturally
+// for "accumulator" and lines up with the per-turn `m_token*`
+// modules that this accumulates. Old callers that referenced
+// `sumIn` / `sumOut` etc. need to migrate; see [[token-modules-redesign-v0-8-0]].
+//
+// Note: `accApi` here is the API-duration accumulator expressed as
+// an alias of `accApiMs` so the AvgSnapshot shape stays
+// caller-friendly (callers don't need to remember the `Ms` suffix).
 export type AvgSnapshot = {
-  sumIn: number;
-  sumOut: number;
-  sumApi: number;
-  sumCache: number;
+  accIn: number;
+  accOut: number;
+  accApi: number;
+  accCached: number;
+  accApiCount: number;
 };
 
 export function peekAvg(
@@ -890,17 +925,18 @@ export function peekAvg(
   const v = statusStore.readTickStatus(cwd, `tickStatus:${sessionId}`);
   if (!v) return null;
   return {
-    sumIn: v.sumIn,
-    sumOut: v.sumOut,
-    sumApi: v.sumApiMs,
-    sumCache: v.sumCache,
+    accIn: v.accIn,
+    accOut: v.accOut,
+    accApi: v.accApiMs,
+    accCached: v.accCached,
+    accApiCount: v.accApiCount,
   };
 }
 
 // Canonical write path for the running accumulator. Reads the
 // current tickStatus:<sid> entry (or starts from zero), adds the
 // per-tick deltas, and writes the unified shape back — including
-// the new `sumApiCount` field (see sumApiCount contract above).
+// the new `accApiCount` field (see accApiCount contract above).
 // Also bumps the project-wide `tickStatus` and (when available)
 // `tickStatus:<modelDisplayName>` entries with the SAME delta so
 // every scoping level reflects this tick.
@@ -910,15 +946,27 @@ export function peekAvg(
 // fields so the next tick can read a consistent snapshot in one
 // disk read instead of stitching two slots together.
 //
+// v0.8.0+ — field rename (sum* → acc*) on both the `AvgSnapshot`
+// argument shape and the `TickStatusValue` on-disk schema.
+// See [[token-modules-redesign-v0-8-0]]. `snap` field meanings:
+//   snap.accIn     = session-cumulative current.input   (replaces sumIn)
+//   snap.accOut    = session-cumulative current.output  (replaces sumOut)
+//   snap.accApi    = session-cumulative cost.totalApiDurationMs
+//                    (replaces sumApi — the on-disk field is accApiMs)
+//   snap.accCached = session-cumulative current.cacheRead
+//                    (replaces sumCache)
+//   snap.accApiCount = session-cumulative count of API calls
+//                    (replaces sumApiCount)
+//
 // Caller passes the delta math (computeAndCacheTickDelta already
 // produced it). Per-tick `in`/`out`/`cacheRead` fields are also
 // stamped with the latest values so peekPrevTick's projection
 // returns current state immediately (no extra write needed).
 //
 // IMPORTANT: the per-session slot stores ABSOLUTE cumulative
-// values for that session (`sumIn = session_prev_sumIn + delta`).
+// values for that session (`accIn = session_prev_accIn + delta`).
 // The project-wide and per-provider slots store DELTAS ACCUMULATED
-// across ticks (`sumIn += deltaIn`), so multiple sessions tick
+// across ticks (`accIn += deltaIn`), so multiple sessions tick
 // into the same aggregate without overwriting each other. Per-tick
 // fields on the aggregates always hold the latest tick's value.
 export function setAvg(
@@ -943,7 +991,7 @@ export function setAvg(
   },
 ): void {
   if (!sessionId) return;
-  // Increment sumApiCount only on a valid API call that produced
+  // Increment accApiCount only on a valid API call that produced
   // input tokens (per the user's revised contract: AND gate).
   // extras.deltaApiCount is pre-computed by the caller (1 or 0)
   // to keep the gate logic colocated with the delta math.
@@ -951,11 +999,11 @@ export function setAvg(
   // Per-session slot — ABSOLUTE cumulative values.
   const existing = statusStore.readTickStatus(cwd, `tickStatus:${sessionId}`);
   const next: statusStore.TickStatusValue = existing ?? statusStore.emptyTickStatus();
-  next.sumIn = snap.sumIn;
-  next.sumOut = snap.sumOut;
-  next.sumApiMs = snap.sumApi;
-  next.sumCache = snap.sumCache;
-  if (incrementCount > 0) next.sumApiCount += incrementCount;
+  next.accIn = snap.accIn;
+  next.accOut = snap.accOut;
+  next.accApiMs = snap.accApi;
+  next.accCached = snap.accCached;
+  next.accApiCount = snap.accApiCount;
   // Also stamp the per-tick fields so peekPrevTick reads a
   // consistent baseline without needing a separate setPrevTick
   // call. Caller passes current values; fall back to whatever
@@ -964,7 +1012,7 @@ export function setAvg(
   if (extras?.currentIn != null) next.in = extras.currentIn;
   if (extras?.currentOut != null) next.out = extras.currentOut;
   if (extras?.currentCacheRead != null) next.cacheRead = extras.currentCacheRead;
-  if (extras?.currentApiMs != null) next.sumApiMs = extras.currentApiMs;
+  if (extras?.currentApiMs != null) next.accApiMs = extras.currentApiMs;
   statusStore.writeTickStatus(cwd, `tickStatus:${sessionId}`, next);
 
   // Project-wide aggregate — ACCUMULATE per-tick deltas so two
@@ -979,11 +1027,11 @@ export function setAvg(
   ) {
     const agg = statusStore.readTickStatus(cwd, "tickStatus") ??
       statusStore.emptyTickStatus();
-    if (extras?.deltaIn) agg.sumIn += extras.deltaIn;
-    if (extras?.deltaOut) agg.sumOut += extras.deltaOut;
-    if (extras?.deltaCache) agg.sumCache += extras.deltaCache;
-    if (extras?.deltaApiMs) agg.sumApiMs += extras.deltaApiMs;
-    if (incrementCount > 0) agg.sumApiCount += incrementCount;
+    if (extras?.deltaIn) agg.accIn += extras.deltaIn;
+    if (extras?.deltaOut) agg.accOut += extras.deltaOut;
+    if (extras?.deltaCache) agg.accCached += extras.deltaCache;
+    if (extras?.deltaApiMs) agg.accApiMs += extras.deltaApiMs;
+    if (incrementCount > 0) agg.accApiCount += incrementCount;
     if (extras?.currentIn != null) agg.in = extras.currentIn;
     if (extras?.currentOut != null) agg.out = extras.currentOut;
     if (extras?.currentCacheRead != null) agg.cacheRead = extras.currentCacheRead;
@@ -999,11 +1047,11 @@ export function setAvg(
   if (model && model.length > 0) {
     const prov = statusStore.readTickStatus(cwd, `tickStatus:${model}`) ??
       statusStore.emptyTickStatus();
-    if (extras?.deltaIn) prov.sumIn += extras.deltaIn;
-    if (extras?.deltaOut) prov.sumOut += extras.deltaOut;
-    if (extras?.deltaCache) prov.sumCache += extras.deltaCache;
-    if (extras?.deltaApiMs) prov.sumApiMs += extras.deltaApiMs;
-    if (incrementCount > 0) prov.sumApiCount += incrementCount;
+    if (extras?.deltaIn) prov.accIn += extras.deltaIn;
+    if (extras?.deltaOut) prov.accOut += extras.deltaOut;
+    if (extras?.deltaCache) prov.accCached += extras.deltaCache;
+    if (extras?.deltaApiMs) prov.accApiMs += extras.deltaApiMs;
+    if (incrementCount > 0) prov.accApiCount += incrementCount;
     if (extras?.currentIn != null) prov.in = extras.currentIn;
     if (extras?.currentOut != null) prov.out = extras.currentOut;
     if (extras?.currentCacheRead != null) prov.cacheRead = extras.currentCacheRead;
@@ -1345,14 +1393,15 @@ function computeTickAvg(
     _tickAvgWriteMemo.set(ctx, true);
     const prev = peekAvg(t.sessionId, t.cwd);
     const next: AvgSnapshot = {
-      sumIn: (prev?.sumIn ?? 0) + r.deltaIn,
-      sumOut: (prev?.sumOut ?? 0) + r.deltaOut,
-      sumApi: (prev?.sumApi ?? 0) + r.deltaApi,
+      accIn: (prev?.accIn ?? 0) + r.deltaIn,
+      accOut: (prev?.accOut ?? 0) + r.deltaOut,
+      accApi: (prev?.accApi ?? 0) + r.deltaApi,
       // v0.4.0+: m_totalTokenWithCacheIn reads sumCache. The avg
       // module pair is the canonical accumulator — keeping the
       // sumCache update here means either module family alone in
       // a template still maintains the cache.
-      sumCache: (prev?.sumCache ?? 0) + r.deltaCacheRead,
+      accCached: (prev?.accCached ?? 0) + r.deltaCacheRead,
+      accApiCount: (prev?.accApiCount ?? 0) + (r.deltaApi > 0 ? 1 : 0),
     };
     // v0.4.x — sumApiCount contract: increment by 1 on a tick
     // where deltaApiMs > 0 AND input_tokens > 0.
@@ -1375,10 +1424,10 @@ function computeTickAvg(
   // v6.x: sumIn / sumOut / sumApi all zero (idle, no accumulation
   // yet) → render "0.0 t/s" (truthful zero rate). Previously
   // returned "--". Mirrors computeTickSpeed's idle-vs-zero split.
-  if (!avg || avg.sumApi <= 0) {
+  if (!avg || avg.accApi <= 0) {
     return { value: `${color}${direction}:${formatSpeed(0)}${RESET}`, writeBack: r.writeBack };
   }
-  const denom = direction === "in" ? avg.sumIn / avg.sumApi : avg.sumOut / avg.sumApi;
+  const denom = direction === "in" ? avg.accIn / avg.accApi : avg.accOut / avg.accApi;
   const tps = denom * 1000;
   return { value: `${color}${direction}:${formatSpeed(tps)}${RESET}`, writeBack: r.writeBack };
 }
@@ -1449,10 +1498,11 @@ function computeTickTotals(
     _tickAvgWriteMemo.set(ctx, true);
     const prev = peekAvg(t.sessionId, t.cwd);
     const next: AvgSnapshot = {
-      sumIn: (prev?.sumIn ?? 0) + r.deltaIn,
-      sumOut: (prev?.sumOut ?? 0) + r.deltaOut,
-      sumApi: (prev?.sumApi ?? 0) + r.deltaApi,
-      sumCache: (prev?.sumCache ?? 0) + r.deltaCacheRead,
+      accIn: (prev?.accIn ?? 0) + r.deltaIn,
+      accOut: (prev?.accOut ?? 0) + r.deltaOut,
+      accApi: (prev?.accApi ?? 0) + r.deltaApi,
+      accCached: (prev?.accCached ?? 0) + r.deltaCacheRead,
+      accApiCount: (prev?.accApiCount ?? 0) + (r.deltaApi > 0 ? 1 : 0),
     };
     // v0.4.x — see sumApiCount contract in computeTickAvg above.
     const deltaApiCount =
@@ -1476,7 +1526,7 @@ function computeTickTotals(
   // is empty by definition). Previously returned "0" too; this
   // path stays the same so the value-zero rule holds.
   if (!avg) return { value: `${prefix}:0` };
-  const n = kind === "in" ? avg.sumIn : kind === "out" ? avg.sumOut : avg.sumCache;
+  const n = kind === "in" ? avg.accIn : kind === "out" ? avg.accOut : avg.accCached;
   return { value: `${prefix}:${formatCompactToken(n)}` };
 }
 
@@ -1522,16 +1572,30 @@ const MODULES: Record<string, Module> = {
   // inline behavior). When resetAt is missing the helper still
   // emits " <label>" (e.g. " 5h") so the m_countdown5h token
   // doubles as the window-label module for legacy/no-reset data.
+  //
+  // v0.7.x: when ctx.stale AND resetAt <= nowMs (past-due), the
+  // cached countdown is no longer trustworthy — swap the body for
+  // "(n/a<arrow> <label>)" and tint it STALE_COLOR so the user
+  // sees a gray "already-expired, no longer readable" reading
+  // instead of the default teal "(0m<arrow> <label>)".
   m_countdown5h: Object.assign(
-    ((c: RenderContext) => c.fiveHour
-      ? wrapPlainDefault("m_countdown5h", formatOneResetSuffix("5h", c.fiveHour, c.nowMs), undefined)
-      : placeholderBare("m_countdown5h", c)),
+    ((c: RenderContext) => {
+      if (!c.fiveHour) return placeholderBare("m_countdown5h", c);
+      if (isStaleAndPastDue(c.fiveHour, c.stale, c.nowMs)) {
+        return `${STALE_COLOR}${formatStalePastDueResetSuffix("5h", c.fiveHour, c.nowMs)}${RESET}`;
+      }
+      return wrapPlainDefault("m_countdown5h", formatOneResetSuffix("5h", c.fiveHour, c.nowMs), undefined);
+    }),
     { type: "plan" as const },
   ),
   m_countdown7d: Object.assign(
-    ((c: RenderContext) => c.weekly
-      ? wrapPlainDefault("m_countdown7d", formatOneResetSuffix("7d", c.weekly, c.nowMs), undefined)
-      : placeholderBare("m_countdown7d", c)),
+    ((c: RenderContext) => {
+      if (!c.weekly) return placeholderBare("m_countdown7d", c);
+      if (isStaleAndPastDue(c.weekly, c.stale, c.nowMs)) {
+        return `${STALE_COLOR}${formatStalePastDueResetSuffix("7d", c.weekly, c.nowMs)}${RESET}`;
+      }
+      return wrapPlainDefault("m_countdown7d", formatOneResetSuffix("7d", c.weekly, c.nowMs), undefined);
+    }),
     { type: "plan" as const },
   ),
   // The DeepSeek balance chunk. v6.x: when there's nothing to
@@ -1615,100 +1679,69 @@ const MODULES: Record<string, Module> = {
       (t.current.cacheCreation ?? 0) + (t.current.cacheRead ?? 0);
     return `session:${formatCompactToken(inT + outT + cache)}`;
   },
-  // Current post-turn context length (current_usage.input + creation + read,
-  // excludes output per ccstatusline convention). v6.x: bare form
-  // now follows the placeholder rule — when there's no stdin OR
-  // when the total is 0, render "ctx:0" (was: drop). The user's
-  // "0 直接显示" rule now applies here. The placeholder path is
-  // reserved for the truly missing-data case (no current at all).
-  m_ctx: (c) => {
-    const t = c.tokens?.current;
-    if (!t) return placeholderBare("m_ctx", c);
-    const len =
-      (t.input ?? 0) + (t.cacheCreation ?? 0) + (t.cacheRead ?? 0);
-    // v6.x: zero length now renders as "ctx:0" — the user reads
-    // "0" as "context window truly empty" (distinct from missing
-    // stdin, which would show "ctx:n/a" via placeholderBare).
-    return `ctx:${formatCompactToken(len)}`;
+  // v0.8.0+ — renamed from `m_ctx`. The new semantic: "context
+  // size" = `context_window.total_input_tokens` (the cumulative
+  // amount of input tokens currently in the context window).
+  // Previously `m_ctx` computed `current.input + current.cacheCreation
+  // + current.cacheRead` (the per-turn context length). The new
+  // semantic is what users mean when they say "size" — the actual
+  // occupancy, sourced from the cumulative `total_input_tokens`
+  // field. Prefix: `size:<N>`. The capacity (upper bound) is a
+  // separate module: `m_contextWidowsSize` (typo preserved per
+  // user direction). See [[token-modules-redesign-v0-8-0]].
+  //
+  // v6.x: zero length renders as "size:0" (the user's "0 直接显示"
+  // rule). The placeholder path is reserved for the truly
+  // missing-data case (no totals.input at all).
+  m_contextSize: (c) => {
+    const total = c.tokens?.totals?.input;
+    if (total == null) return placeholderBare("m_contextSize", c);
+    return `size:${formatCompactToken(total)}`;
   },
-  // Cache hit rate — session-aggregate formula:
-  //   sumCacheRead / (sumCacheRead + sumIn) * 100
-  // i.e. the same total fields that m_totalTokenWithCacheIn and
-  // m_totalTokenIn render. NOT the per-turn `cacheRead/(cacheRead
-  // + cacheCreation)` ratio (which would compute a per-API-call hit
-  // rate and lose all session context). Coloring still uses the
-  // cacheHitColors palette (good ≥ 80%, warn ≥ 50%, bad < 50%).
-  // v6.x: missing sid / missing avg / zero denominator → render
-  // "hit:n/a" placeholder (was: drop).
+  // v0.8.0+ — semantic change: per-turn hit rate, not session-aggregate.
+  // New formula: m_tokenCachedIn / m_tokenTotalIn (per-turn snapshot)
+  //   = current_usage.cache_read_input_tokens / context_window.total_input_tokens
+  // The session-aggregate formula
+  //   (accCached / (accCached + accIn), v0.4.x semantics) is now
+  // exposed as a separate module: m_accCacheHitRate (see
+  // [[token-modules-redesign-v0-8-0]]). Coloring still uses the
+  // cacheHitColor palette (good ≥ 80%, warn ≥ 50%, bad < 50%).
+  //
+  // Zero denominator (no input and no cache reads) renders as
+  // "hit:0.0%" — the "0 直接显示" rule. Missing-totals or
+  // missing-cacheRead → "hit:n/a" placeholder.
   m_cacheHitRate: (c) => {
-    const sid = c.tokens?.sessionId;
-    if (!sid) return placeholderBare("m_cacheHitRate", c);
-    // Trigger the accumulator write so peekAvg reflects this tick's
-    // delta even when this module is the ONLY per-API-call module
-    // in the template (the totals/avg modules would otherwise be the
-    // canonical primer; without them we'd see stale "0%" forever).
-    // setAvg is idempotent via _tickAvgWriteMemo so coexisting
-    // totals/avg modules in the same render don't double-count.
-    const r = computeAndCacheTickDelta(c);
-    if (r.writeBack && sid) setPrevTick(sid, r.writeBack, c.tokens?.cwd);
-    if (r.hasDelta && !_tickAvgWriteMemo.get(c)) {
-      _tickAvgWriteMemo.set(c, true);
-      const prev = peekAvg(sid, c.tokens?.cwd);
-      const next: AvgSnapshot = {
-        sumIn: (prev?.sumIn ?? 0) + r.deltaIn,
-        sumOut: (prev?.sumOut ?? 0) + r.deltaOut,
-        sumApi: (prev?.sumApi ?? 0) + r.deltaApi,
-        sumCache: (prev?.sumCache ?? 0) + r.deltaCacheRead,
-      };
-      // v0.4.x — see sumApiCount contract in computeTickAvg.
-      const tcache = c.tokens;
-      const deltaApiCount =
-        r.deltaApi > 0 &&
-        tcache?.current.input != null &&
-        tcache.current.input > 0
-          ? 1
-          : 0;
-      setAvg(sid, next, c.tokens?.cwd, {
-        modelDisplayName: tcache?.modelDisplayName ?? null,
-        deltaApiCount,
-        currentIn: tcache?.current.input ?? undefined,
-        currentOut: tcache?.current.output ?? undefined,
-        currentCacheRead: tcache?.current.cacheRead ?? undefined,
-        currentApiMs: tcache?.cost.totalApiDurationMs ?? undefined,
-        deltaIn: r.deltaIn,
-        deltaOut: r.deltaOut,
-        deltaCache: r.deltaCacheRead,
-        deltaApiMs: r.deltaApi,
-      });
-    }
-    const avg = peekAvg(sid, c.tokens?.cwd);
-    if (!avg) return placeholderBare("m_cacheHitRate", c);
-    const denom = avg.sumCache + avg.sumIn;
-    // v6.x: zero denominator now falls back to "hit:0.0%" rather
-    // than dropping. sumCache=0 AND sumIn=0 means we have no
-    // measurements at all, which after the user's "0 直接显示"
-    // direction should still produce a value. (Truthful 0% is
-    // distinct from missing data, which we can't reach here since
-    // we have a sid.)
-    if (denom === 0) return `${cacheHitColor(0)}hit:0.0%${RESET}`;
-    const pct = (avg.sumCache / denom) * 100;
+    const t = c.tokens;
+    if (!t) return placeholderBare("m_cacheHitRate", c);
+    const total = t.totals?.input;
+    const cacheRead = t.current?.cacheRead;
+    if (total == null || cacheRead == null) return placeholderBare("m_cacheHitRate", c);
+    if (total === 0) return `${cacheHitColor(0)}hit:0.0%${RESET}`;
+    const pct = (cacheRead / total) * 100;
     const color = cacheHitColor(pct);
     return `${color}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;
   },
-  // Cache read tokens + context share (ccstatusline-style: "163k (99.2%)").
-  // Single-color (STALE_COLOR); the percentage is informational, not
-  // a health indicator on its own. v6.x: zero reads now render as
-  // "cache:0" (with the (0.0%) share); null cacheRead field on a
-  // present snapshot falls back to placeholder "cache:n/a". The
-  // double-zero render preserves the value-zero rule.
-  m_cacheRead: (c) => {
+  // v0.8.0+ — renamed from `m_cacheRead`. The old name's `cache`
+  // prefix collided conceptually with m_cacheHitRate (which is the
+  // session-aggregate hit-rate percentage). The new name lives in
+  // the `m_token*` family: it's "this turn's cache-read input
+  // tokens", a sibling of m_tokenIn / m_tokenOut / m_tokenTotalIn.
+  // See [[token-modules-redesign-v0-8-0]] for the rename rationale.
+  //
+  // Source: `current_usage.cache_read_input_tokens` (per-turn snapshot,
+  // not session-cumulative). Single-color (STALE_COLOR); the percentage
+  // is informational, not a health indicator on its own. v6.x: zero
+  // reads now render as "cache:0" (with the (0.0%) share); null
+  // cacheRead field on a present snapshot falls back to placeholder
+  // "cache:n/a". The double-zero render preserves the value-zero rule.
+  m_tokenCachedIn: (c) => {
     const t = c.tokens?.current;
-    if (!t) return placeholderBare("m_cacheRead", c);
+    if (!t) return placeholderBare("m_tokenCachedIn", c);
     // v6.x: cacheRead=null is now distinct from cacheRead=0.
     // null (field not shipped by stdin) → "cache:n/a" placeholder;
     // 0 (real zero cache reads) → "cache:0 (0.0%)" — the user can
     // see "we tracked, nothing cached" vs "no tracking at all".
-    if (t.cacheRead == null) return placeholderBare("m_cacheRead", c);
+    if (t.cacheRead == null) return placeholderBare("m_tokenCachedIn", c);
     const read = t.cacheRead;
     const denom =
       (t.input ?? 0) + read + (t.cacheCreation ?? 0);
@@ -1886,18 +1919,35 @@ const MODULES: Record<string, Module> = {
     if (!cwd) return placeholderBare("m_apiCalls", c);
     const v = statusStore.readTickStatus(cwd, "tickStatus");
     if (!v) return wrapPlainDefault("m_apiCalls", "calls:0", undefined);
-    return wrapPlainDefault("m_apiCalls", `calls:${v.sumApiCount}`, undefined);
+    return wrapPlainDefault("m_apiCalls", `calls:${v.accApiCount}`, undefined);
   },
-  // Context window size. v6.x: size=null → "size:n/a" placeholder.
-  m_contextSize: (c) => {
+  // v0.8.0+ — renamed from `m_contextSize`. The old name now lives
+  // at `m_contextSize` with a different source (the cumulative
+  // occupancy, see m_contextSize entry above). The new name holds
+  // the capacity (upper bound) of the context window. Typo
+  // `Widows` is preserved per user direction.
+  //
+  // Source: `context_window.context_window_size`. v6.x: size=null →
+  // "size:n/a" placeholder.
+  m_contextWidowsSize: (c) => {
     const sz = c.tokens?.contextWindow?.size;
-    return sz != null ? wrapPlainDefault("m_contextSize", `size:${formatCompactToken(sz)}`, undefined) : placeholderBare("m_contextSize", c);
+    return sz != null ? wrapPlainDefault("m_contextWidowsSize", `size:${formatCompactToken(sz)}`, undefined) : placeholderBare("m_contextWidowsSize", c);
   },
-  // Context window used percentage. v6.x: usedPct=null → "n/a%"
-  // placeholder. Zero renders as "0%".
-  m_contextUsed: (c) => {
+  // v0.8.0+ — renamed from `m_contextUsed` (the `Percent` suffix
+  // makes the unit explicit and matches m_cacheHitRate's % output
+  // style). Source: `context_window.used_percentage`. v6.x:
+  // usedPct=null → "n/a%" placeholder. Zero renders as "0%".
+  m_contextUsedPercent: (c) => {
     const pct = c.tokens?.contextWindow?.usedPct;
-    return pct != null ? wrapPlainDefault("m_contextUsed", `used:${pct}%`, undefined) : placeholderBare("m_contextUsed", c);
+    return pct != null ? wrapPlainDefault("m_contextUsedPercent", `used:${pct}%`, undefined) : placeholderBare("m_contextUsedPercent", c);
+  },
+  // v0.8.0+ — new per-turn module. Sibling of m_contextUsedPercent,
+  // rendering the inverse: the unused share of the context window.
+  // Source: `context_window.remaining_percentage`. Zero renders
+  // as "0%"; null → "remain:n/a%" placeholder.
+  m_contextRemainingPercent: (c) => {
+    const pct = c.tokens?.contextWindow?.remainingPct;
+    return pct != null ? wrapPlainDefault("m_contextRemainingPercent", `remain:${pct}%`, undefined) : placeholderBare("m_contextRemainingPercent", c);
   },
   // Context window bar + 5-band-colored percentage. v6.x: bare
   // form now follows the placeholder rule — when the synthetic
@@ -2125,7 +2175,9 @@ const DEFAULT_COLORS: Record<string, string> = {
   m_countdown5h: NAMED_PALETTE.teal,
   m_countdown7d: NAMED_PALETTE.teal,
   m_contextSize: NAMED_PALETTE.gray,
-  m_contextUsed: NAMED_PALETTE.gray,
+  m_contextWidowsSize: NAMED_PALETTE.gray,
+  m_contextUsedPercent: NAMED_PALETTE.gray,
+  m_contextRemainingPercent: NAMED_PALETTE.gray,
 };
 
 // Snapshot of `cfg().colors` + the `brightBlack` input shortcut. Read
@@ -2333,11 +2385,12 @@ const COLOR_PARAM = {
 //     disappears and adjacent separators are skipped.
 //
 // The bare MODULES path (no inline args) keeps the original drop
-// semantics — bare `m_ctx` still drops on null. To get the
-// placeholder behavior the user must use the inline form `m_ctx`
-// (which now defaults to placeholder — see above). This is a
-// BREAKING change for any existing inline template that lists a
-// module whose value is sometimes null (the slot is now always
+// semantics — bare `m_contextSize` (or any m_token* module) still
+// drops on null. To get the placeholder behavior the user must
+// use the inline form `m_contextSize` (which now defaults to
+// placeholder — see above). This is a BREAKING change for any
+// existing inline template that lists a module whose value is
+// sometimes null (the slot is now always
 // visible). Users who want the old drop behavior add
 // `:nulldrop:true` to those tokens.
 //
@@ -2457,14 +2510,15 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   m_totalTokenIn: placeholderNA("in:"),
   m_totalTokenOut: placeholderNA("out:"),
   m_totalTokenWithCacheIn: placeholderNA("cache:"),
-  m_ctx: placeholderNA("ctx:"),
-  m_cacheRead: placeholderNA("cache:"),
+  m_tokenCachedIn: placeholderNA("cache:"),
   m_cacheHitRate: placeholderNA("hit:"),
   m_contextSize: placeholderNA("size:"),
-  // m_contextUsed's natural shape is "${pct}%" — the placeholder
-  // preserves the unit suffix so users see "used:n/a%" rather than
-  // bare "n/a" when usedPct is null.
-  m_contextUsed: placeholderDashesUnit("used:n/a%"),
+  m_contextWidowsSize: placeholderNA("size:"),
+  // m_contextUsedPercent's natural shape is "${pct}%" — the
+  // placeholder preserves the unit suffix so users see "used:n/a%"
+  // rather than bare "n/a" when usedPct is null.
+  m_contextUsedPercent: placeholderDashesUnit("used:n/a%"),
+  m_contextRemainingPercent: placeholderDashesUnit("remain:n/a%"),
   // number+unit — placeholder shape is the module's normal body
   // with "--" swapped in for the numeric value (e.g. "5h:--",
   // "+ --", "-- t/s"). Empty body = bare dash.
@@ -2722,9 +2776,9 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_tokenOut: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_tokenTotal: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_tokenSession: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
-  m_ctx: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_contextSize: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_cacheHitRate: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
-  m_cacheRead: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_tokenCachedIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_token5h: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_token7d: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_tokenInSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
@@ -2764,8 +2818,9 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_tokenInTotal: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_tokenOutTotal: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_apiCalls: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
-  m_contextSize: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
-  m_contextUsed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_contextWidowsSize: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_contextUsedPercent: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_contextRemainingPercent: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_windowContext: { named: { ...COLOR_PARAM.named, ...DISPLAY_PARAM.named, ...NULDROP_PARAM.named } },
   // v0.4.0+ — sub-template reference. First argument is the key
   // into cfg().lineTemplates (the user's reusable-fragment
@@ -2896,6 +2951,14 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // v6.x: missing window → "5h:--" placeholder (was: drop).
     // Bare MODULES already does this; inline now matches.
     if (!ctx.fiveHour) return placeholderWithColor("m_countdown5h", params, ctx);
+    // v0.7.x: stale AND past-due → "(n/a<arrow> 5h)" wrapped in
+    // STALE_COLOR. An explicit :color: still wins (no override).
+    if (isStaleAndPastDue(ctx.fiveHour, ctx.stale, ctx.nowMs)) {
+      const userColor = params.color as string | undefined;
+      const color = userColor ?? STALE_COLOR;
+      const body = formatStalePastDueResetSuffix("5h", ctx.fiveHour, ctx.nowMs);
+      return `${color}${body}${RESET}`;
+    }
     const body = formatOneResetSuffix("5h", ctx.fiveHour, ctx.nowMs);
     if (body === "") return null;
     return wrapPlainDefault("m_countdown5h", body, params.color as string | undefined);
@@ -2903,6 +2966,12 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   m_countdown7d: (params, ctx) => {
     // v6.x: missing window → "7d:--" placeholder.
     if (!ctx.weekly) return placeholderWithColor("m_countdown7d", params, ctx);
+    if (isStaleAndPastDue(ctx.weekly, ctx.stale, ctx.nowMs)) {
+      const userColor = params.color as string | undefined;
+      const color = userColor ?? STALE_COLOR;
+      const body = formatStalePastDueResetSuffix("7d", ctx.weekly, ctx.nowMs);
+      return `${color}${body}${RESET}`;
+    }
     const body = formatOneResetSuffix("7d", ctx.weekly, ctx.nowMs);
     if (body === "") return null;
     return wrapPlainDefault("m_countdown7d", body, params.color as string | undefined);
@@ -2954,76 +3023,43 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (body == null) return placeholderWithColor("m_tokenSession", params, ctx);
     return wrapPlain(body, params.color as string | undefined);
   },
-  m_ctx: (params, ctx) => {
-    const t = ctx.tokens?.current;
-    if (!t) return placeholderWithColor("m_ctx", params, ctx);
-    const len = (t.input ?? 0) + (t.cacheCreation ?? 0) + (t.cacheRead ?? 0);
-    // v6.x: zero length now renders as "ctx:0" (was: "ctx:n/a"
-    // placeholder). Aligns with the bare-path change — 0 is a
-    // real value, not missing data.
+  // v0.8.0+ — inline form of m_contextSize (cumulative occupancy,
+  // total_input_tokens). See MODULES entry for the new semantic.
+  m_contextSize: (params, ctx) => {
+    const total = ctx.tokens?.totals?.input;
+    if (total == null) return placeholderWithColor("m_contextSize", params, ctx);
     return wrapPlain(
-      `ctx:${formatCompactToken(len)}`,
+      `size:${formatCompactToken(total)}`,
       params.color as string | undefined,
     );
   },
+  // v0.8.0+ — per-turn hit rate (see MODULES entry for the
+  // formula and rename rationale). The inline form takes an
+  // optional `:color:` override; the bare form is the canonical
+  // per-turn hit rate. The session-aggregate formula moved to
+  // m_accCacheHitRate.
   m_cacheHitRate: (params, ctx) => {
-    const sid = ctx.tokens?.sessionId;
-    if (!sid) return placeholderWithColor("m_cacheHitRate", params, ctx);
-    // v0.4.0+ session-aggregate formula:
-    //   sumCacheRead / (sumCacheRead + sumIn) * 100
-    // Mirrors the totals modules: prime the accumulator from this
-    // tick's delta so peekAvg reflects this turn even when cacheHitRate
-    // is the only per-API-call module in the template.
-    const r = computeAndCacheTickDelta(ctx);
-    if (r.writeBack && sid) setPrevTick(sid, r.writeBack, ctx.tokens?.cwd);
-    if (r.hasDelta && !_tickAvgWriteMemo.get(ctx)) {
-      _tickAvgWriteMemo.set(ctx, true);
-      const prev = peekAvg(sid, ctx.tokens?.cwd);
-      const next: AvgSnapshot = {
-        sumIn: (prev?.sumIn ?? 0) + r.deltaIn,
-        sumOut: (prev?.sumOut ?? 0) + r.deltaOut,
-        sumApi: (prev?.sumApi ?? 0) + r.deltaApi,
-        sumCache: (prev?.sumCache ?? 0) + r.deltaCacheRead,
-      };
-      // v0.4.x — see sumApiCount contract in computeTickAvg.
-      const tcache = ctx.tokens;
-      const deltaApiCount =
-        r.deltaApi > 0 &&
-        tcache?.current.input != null &&
-        tcache.current.input > 0
-          ? 1
-          : 0;
-      setAvg(sid, next, ctx.tokens?.cwd, {
-        modelDisplayName: tcache?.modelDisplayName ?? null,
-        deltaApiCount,
-        currentIn: tcache?.current.input ?? undefined,
-        currentOut: tcache?.current.output ?? undefined,
-        currentCacheRead: tcache?.current.cacheRead ?? undefined,
-        currentApiMs: tcache?.cost.totalApiDurationMs ?? undefined,
-        deltaIn: r.deltaIn,
-        deltaOut: r.deltaOut,
-        deltaCache: r.deltaCacheRead,
-        deltaApiMs: r.deltaApi,
-      });
+    const t = ctx.tokens;
+    if (!t) return placeholderWithColor("m_cacheHitRate", params, ctx);
+    const total = t.totals?.input;
+    const cacheRead = t.current?.cacheRead;
+    if (total == null || cacheRead == null) {
+      return placeholderWithColor("m_cacheHitRate", params, ctx);
     }
-    const avg = peekAvg(sid, ctx.tokens?.cwd);
-    if (!avg) return placeholderWithColor("m_cacheHitRate", params, ctx);
-    const denom = avg.sumCache + avg.sumIn;
-    // v6.x: zero denominator now renders "hit:0.0%" (was:
-    // placeholder drop). Aligns with bare-path change.
-    if (denom === 0) return `${cacheHitColor(0)}hit:0.0%${RESET}`;
-    const pct = (avg.sumCache / denom) * 100;
+    if (total === 0) return `${cacheHitColor(0)}hit:0.0%${RESET}`;
+    const pct = (cacheRead / total) * 100;
     const color = (params.color as string | undefined) ?? cacheHitColor(pct);
     return `${color}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;
   },
-  m_cacheRead: (params, ctx) => {
+  // v0.8.0+ — renamed from `m_cacheRead` (see MODULES entry).
+  m_tokenCachedIn: (params, ctx) => {
     const t = ctx.tokens?.current;
-    if (!t) return placeholderWithColor("m_cacheRead", params, ctx);
+    if (!t) return placeholderWithColor("m_tokenCachedIn", params, ctx);
     // v6.x: distinguish cacheRead=null (field not shipped by
     // stdin) from cacheRead=0 (real zero cache reads).
     //   null → placeholder "cache:n/a"
     //   0    → "cache:0 (0.0%)" (real zero, not hidden)
-    if (t.cacheRead == null) return placeholderWithColor("m_cacheRead", params, ctx);
+    if (t.cacheRead == null) return placeholderWithColor("m_tokenCachedIn", params, ctx);
     const read = t.cacheRead;
     const denom = (t.input ?? 0) + read + (t.cacheCreation ?? 0);
     const pct = denom > 0 ? (read / denom) * 100 : null;
@@ -3208,17 +3244,25 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (!cwd) return wrapPlainDefault("m_apiCalls", "calls:0", params.color as string | undefined);
     const v = statusStore.readTickStatus(cwd, "tickStatus");
     if (!v) return wrapPlainDefault("m_apiCalls", "calls:0", params.color as string | undefined);
-    return wrapPlainDefault("m_apiCalls", `calls:${v.sumApiCount}`, params.color as string | undefined);
+    return wrapPlainDefault("m_apiCalls", `calls:${v.accApiCount}`, params.color as string | undefined);
   },
-  m_contextSize: (params, ctx) => {
+  // v0.8.0+ — inline form of m_contextWidowsSize (capacity).
+  m_contextWidowsSize: (params, ctx) => {
     const sz = ctx.tokens?.contextWindow?.size;
-    if (sz == null) return placeholderWithColor("m_contextSize", params, ctx);
-    return wrapPlainDefault("m_contextSize", `size:${formatCompactToken(sz)}`, params.color as string | undefined);
+    if (sz == null) return placeholderWithColor("m_contextWidowsSize", params, ctx);
+    return wrapPlainDefault("m_contextWidowsSize", `size:${formatCompactToken(sz)}`, params.color as string | undefined);
   },
-  m_contextUsed: (params, ctx) => {
+  // v0.8.0+ — inline form of m_contextUsedPercent.
+  m_contextUsedPercent: (params, ctx) => {
     const pct = ctx.tokens?.contextWindow?.usedPct;
-    if (pct == null) return placeholderWithColor("m_contextUsed", params, ctx);
-    return wrapPlainDefault("m_contextUsed", `used:${pct}%`, params.color as string | undefined);
+    if (pct == null) return placeholderWithColor("m_contextUsedPercent", params, ctx);
+    return wrapPlainDefault("m_contextUsedPercent", `used:${pct}%`, params.color as string | undefined);
+  },
+  // v0.8.0+ — inline form of m_contextRemainingPercent.
+  m_contextRemainingPercent: (params, ctx) => {
+    const pct = ctx.tokens?.contextWindow?.remainingPct;
+    if (pct == null) return placeholderWithColor("m_contextRemainingPercent", params, ctx);
+    return wrapPlainDefault("m_contextRemainingPercent", `remain:${pct}%`, params.color as string | undefined);
   },
   m_windowContext: (params, ctx) => {
     if (!ctx.contextWindow) return placeholderWithColor("m_windowContext", params, ctx);
@@ -3465,12 +3509,12 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         inline = expandInlineToken(tok, "m_tokenTotal", 13, ctx);
       } else if (tok.startsWith("m_tokenSession:")) {
         inline = expandInlineToken(tok, "m_tokenSession", 15, ctx);
-      } else if (tok.startsWith("m_ctx:")) {
-        inline = expandInlineToken(tok, "m_ctx", 6, ctx);
+      } else if (tok.startsWith("m_contextSize:")) {
+        inline = expandInlineToken(tok, "m_contextSize", 14, ctx);
       } else if (tok.startsWith("m_cacheHitRate:")) {
         inline = expandInlineToken(tok, "m_cacheHitRate", 15, ctx);
-      } else if (tok.startsWith("m_cacheRead:")) {
-        inline = expandInlineToken(tok, "m_cacheRead", 12, ctx);
+      } else if (tok.startsWith("m_tokenCachedIn:")) {
+        inline = expandInlineToken(tok, "m_tokenCachedIn", 16, ctx);
       } else if (tok.startsWith("m_token5h:")) {
         inline = expandInlineToken(tok, "m_token5h", 10, ctx);
       } else if (tok.startsWith("m_token7d:")) {
@@ -3539,10 +3583,12 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
       } else if (tok.startsWith("m_linesRemoved:")) {
         // m_linesRemoved:color:<c> → skip "m_linesRemoved:" (length 15).
         inline = expandInlineToken(tok, "m_linesRemoved", 15, ctx);
-      } else if (tok.startsWith("m_contextSize:")) {
-        inline = expandInlineToken(tok, "m_contextSize", 14, ctx);
-      } else if (tok.startsWith("m_contextUsed:")) {
-        inline = expandInlineToken(tok, "m_contextUsed", 14, ctx);
+      } else if (tok.startsWith("m_contextWidowsSize:")) {
+        inline = expandInlineToken(tok, "m_contextWidowsSize", 20, ctx);
+      } else if (tok.startsWith("m_contextUsedPercent:")) {
+        inline = expandInlineToken(tok, "m_contextUsedPercent", 21, ctx);
+      } else if (tok.startsWith("m_contextRemainingPercent:")) {
+        inline = expandInlineToken(tok, "m_contextRemainingPercent", 25, ctx);
       } else if (tok.startsWith("m_windowContext:")) {
         inline = expandInlineToken(tok, "m_windowContext", 16, ctx);
       } else if (tok.startsWith("m_template:")) {

@@ -2,11 +2,17 @@
 // at the heart of the token-usage module. Validates against the
 // real schema captured 2026-06-29 (see __fixtures__/stdin.real.json).
 
-import { describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseTokenSnapshot } from "./session-parse.ts";
+import {
+  __resetDedupeForTest,
+  diagnosticsPath,
+} from "./diagnostics.ts";
 
 // Real-shape fixture (captured 2026-06-29). Loaded once at module top
 // so individual tests can assert against it without re-reading the file.
@@ -202,5 +208,121 @@ describe("parseTokenSnapshot — null cases", () => {
 
   it("array root → null", () => {
     assert.equal(parseTokenSnapshot("[1, 2, 3]"), null);
+  });
+});
+
+// v0.8.0+ — invariant check on parse:
+//   total_input_tokens == current.input + current.cacheRead
+// When violated, parseTokenSnapshot appends a `warning` to the
+// per-project diagnostics log. The warning is gated by
+// `TOPGAUGE_CC_DIAGNOSTICS_ENABLE=1`. Tests below exercise both
+// the satisfied-invariant and violated-invariant paths against a
+// sandboxed CLAUDE_CONFIG_DIR so the user's real diagnostics log
+// is never touched.
+describe("parseTokenSnapshot — v0.8.0 tokenTotalIn invariant", () => {
+  let sandbox: string;
+  let prevConfigDir: string | undefined;
+  let prevGate: string | undefined;
+
+  beforeEach(() => {
+    sandbox = mkdtempSync(join(tmpdir(), "topgauge-cc-invariant-"));
+    prevConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    prevGate = process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE;
+    process.env.CLAUDE_CONFIG_DIR = sandbox;
+    process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE = "1";
+    __resetDedupeForTest();
+  });
+
+  afterEach(() => {
+    if (prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = prevConfigDir;
+    if (prevGate === undefined) delete process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE;
+    else process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE = prevGate;
+    rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  function lastLine(cwd: string | null): string | null {
+    const p = diagnosticsPath(cwd);
+    let raw: string;
+    try { raw = readFileSync(p, "utf8"); } catch { return null; }
+    const lines = raw.split("\n").filter((l) => l.length > 0);
+    return lines.length > 0 ? lines[lines.length - 1]! : null;
+  }
+
+  it("real stdin (140 + 126720 = 126860) satisfies invariant — no warn", () => {
+    const snap = parseTokenSnapshot(STDIN_REAL);
+    assert.ok(snap);
+    const line = lastLine(snap!.cwd);
+    assert.equal(line, null, "no diagnostics line should be written");
+  });
+
+  it("violation: totals=200, in=100, cacheRead=50 → warn (200 != 100+50)", () => {
+    const cwd = "D:\\invariant-test";
+    const raw = JSON.stringify({
+      session_id: "sess-1",
+      cwd,
+      context_window: {
+        total_input_tokens: 200,
+        current_usage: {
+          input_tokens: 100,
+          cache_read_input_tokens: 50,
+        },
+      },
+    });
+    parseTokenSnapshot(raw);
+    const line = lastLine(cwd);
+    assert.ok(line, "expected a warning line to be written");
+    const e = JSON.parse(line!) as { level: string; source: string; msg: string };
+    assert.equal(e.level, "warning");
+    assert.equal(e.source, "tokenTotalIn-invariant");
+    assert.match(e.msg, /total_input_tokens=200/);
+    assert.match(e.msg, /input_tokens\(100\)/);
+    assert.match(e.msg, /cache_read_input_tokens\(50\)/);
+  });
+
+  it("violation still renders the full snapshot (no throw)", () => {
+    const raw = JSON.stringify({
+      session_id: "sess-2",
+      cwd: "D:\\invariant-test-2",
+      context_window: {
+        total_input_tokens: 999,
+        current_usage: { input_tokens: 1, cache_read_input_tokens: 1 },
+      },
+    });
+    const snap = parseTokenSnapshot(raw);
+    assert.ok(snap);
+    // Returns the parsed values verbatim — invariant violation is
+    // a signal, not a hard error.
+    assert.equal(snap!.totals.input, 999);
+    assert.equal(snap!.current.input, 1);
+    assert.equal(snap!.current.cacheRead, 1);
+  });
+
+  it("missing field → invariant skipped (no warn on partial stdin)", () => {
+    const raw = JSON.stringify({
+      session_id: "sess-3",
+      cwd: "D:\\invariant-test-3",
+      context_window: { total_input_tokens: 100 },
+      // current_usage absent — invariant requires all three fields
+    });
+    parseTokenSnapshot(raw);
+    const line = lastLine("D:\\invariant-test-3");
+    assert.equal(line, null, "no warn when input or cacheRead is null");
+  });
+
+  it("no warn when gate is OFF (opt-in diagnostics)", () => {
+    delete process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE;
+    const cwd = "D:\\invariant-test-4";
+    const raw = JSON.stringify({
+      session_id: "sess-4",
+      cwd,
+      context_window: {
+        total_input_tokens: 200,
+        current_usage: { input_tokens: 100, cache_read_input_tokens: 50 },
+      },
+    });
+    parseTokenSnapshot(raw);
+    const line = lastLine(cwd);
+    assert.equal(line, null, "no warn when diagnostics gate is off");
   });
 });

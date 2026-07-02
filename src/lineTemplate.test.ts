@@ -1104,9 +1104,10 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
     assert.ok(!line.includes("\x1b[90m⛓️‍💥"), `STALE_COLOR leaked into broken: ${JSON.stringify(line)}`);
   });
 
-  it("m_cacheRead:color:yellow replaces STALE_COLOR with yellow", () => {
+  it("m_tokenCachedIn:color:yellow replaces STALE_COLOR with yellow", () => {
+    // v0.8.0+ — renamed from m_cacheRead (see render-tokens.test.ts).
     __resetForTest({
-      statuslineTemplate:["m_cacheRead:color:yellow"],
+      statuslineTemplate:["m_tokenCachedIn:color:yellow"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -1157,11 +1158,8 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
     __resetForTest({
       statuslineTemplate:["m_cacheHitRate:color:brightGreen"],
     });
-    // v0.4.0+ session-aggregate formula:
-    //   sumCacheRead / (sumCacheRead + sumIn) * 100
-    // Seed prev=0 and totalApiDurationMs=1000 so hasDelta=true;
-    // setAvg accumulates sumCacheRead=900, sumIn=100 → 90.0%.
-    setPrevTick("sess-hit", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "C:\\fake");
+    // v0.8.0+ per-turn formula: current.cacheRead / totals.input.
+    // Set totals.input=1000, current.cacheRead=900 → 90.0%.
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
       fiveHour: null, weekly: null, balance: null,
@@ -1169,12 +1167,12 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
       tokens: {
         cwd: "C:\\fake",
         sessionId: "sess-hit",
-        totals: { input: 0, output: 0 },
+        totals: { input: 1000, output: 0 },
         current: { input: 100, output: 0, cacheCreation: 0, cacheRead: 900 },
         cost: { totalDurationMs: 1000, totalApiDurationMs: 1000, totalLinesAdded: null, totalLinesRemoved: null },
       },
     });
-    // Hit rate = 90% (900 read / (900 read + 100 in)). Default band
+    // Hit rate = 90% (900 read / 1000 totals.input). Default band
     // color is "good" (\x1b[38;5;41m brightGreen). Override forces
     // the same color (since 90% is already in the "good" band) — the
     // assertion verifies the SGR wraps "hit:90%" with brightGreen.
@@ -1233,9 +1231,11 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
     assert.equal(line, "in:1.5k", `got: ${JSON.stringify(line)}`);
   });
 
-  it("m_ctx:color:orange wraps the 'ctx:N' chunk in orange", () => {
+  it("m_contextSize:color:orange wraps the 'size:N' chunk in orange", () => {
+    // v0.8.0+ — m_ctx was renamed to m_contextSize (cumulative
+    // occupancy, sourced from totals.input).
     __resetForTest({
-      statuslineTemplate:["m_ctx:color:orange"],
+      statuslineTemplate:["m_contextSize:color:orange"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -1244,13 +1244,13 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
       tokens: {
         cwd: "C:\\fake",
         sessionId: "sess-ctx",
-        totals: { input: 0, output: 0 },
+        totals: { input: 1000, output: 0 },
         current: { input: 800, output: 0, cacheCreation: 0, cacheRead: 200 },
         cost: { totalDurationMs: 0, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null },
       },
     });
-    // Total ctx length = 800 + 0 + 200 = 1000 → "ctx:1.0k". Orange = \x1b[38;5;208m.
-    assert.equal(line, "\x1b[38;5;208mctx:1.0k\x1b[0m", `got: ${JSON.stringify(line)}`);
+    // m_contextSize = totals.input = 1000 → "size:1.0k". Orange = \x1b[38;5;208m.
+    assert.equal(line, "\x1b[38;5;208msize:1.0k\x1b[0m", `got: ${JSON.stringify(line)}`);
   });
 
   it("m_tokenOut:color:yellow does NOT warn when current.output is missing (v0.3.4 regression)", () => {
