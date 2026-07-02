@@ -720,7 +720,7 @@ captured by `/statusline`):
 | `m_linesAdded`           | Session-cumulative lines added — e.g. `+ 3965` (with leading space). Reads stdin `cost.total_lines_added`. |
 | `m_linesRemoved`         | Session-cumulative lines removed — e.g. `- 967`. Reads stdin `cost.total_lines_removed`. |
 | `m_tokenInTotal`         | Session-cumulative input tokens — e.g. `in:163k`. **v0.4.0**: new module, replaces the pre-v0.4.0 `m_tokenIn` semantic. Reads stdin `context_window.total_input_tokens`. |
-| `m_tokenOutTotal`        | Session-cumulative output tokens — e.g. `out:155`. **v0.4.0**: new module, replaces the pre-v0.4.0 `m_tokenOut` semantic. |
+| `m_tokenTotalOut`       | Session-cumulative output tokens — e.g. `out:155`. Reads stdin `context_window.total_output_tokens`. **v0.8.0**: renamed from `m_tokenOutTotal` so it sits in the `totalOut` family alongside `totalOut` on-disk / `m_accTokenOut` / `m_sumTokenOut`. |
 | `m_contextSize`          | Context window size (compact) — e.g. `size:200.0k`. Reads stdin `context_window.context_window_size`. |
 | `m_contextUsed`          | Context used percentage — e.g. `used:63%`. Reads stdin `context_window.used_percentage`. |
 | `m_windowContext`        | Context bar + 5-band-colored percentage, parallel to `m_window5h` / `m_window7d` — e.g. `▓▓▓▓▓░░░ 63%`. Synthesized from `used_percentage`. |
@@ -769,7 +769,7 @@ The bare forms (`m_modeLabel`, `s_0`, `m_window5h`, `m_tokenIn`, …) keep worki
 
 ### Per-module `:color:` override (v0.3.4+)
 
-Every existing module — `m_window5h`, `m_window7d`, `m_countdown5h`, `m_countdown7d`, `m_balance`, `m_age`, `m_version`, `m_tokenIn`, `m_tokenOut`, `m_tokenTotal`, `m_tokenSession`, `m_ctx`, `m_cacheHitRate`, `m_cacheRead`, `m_token5h`, `m_token7d`, `m_tokenInSpeed`, `m_tokenOutSpeed`, `m_tokenInAvg`, `m_tokenOutAvg`, `m_totalTokenIn`, `m_totalTokenOut`, `m_totalTokenWithCacheIn`, plus the v0.4.0+ session-info modules (`m_session`, `m_model`, `m_effort`, `m_repo`, `m_ccVersion`, `m_sessionDuration`, `m_sessionApiDuration`, `m_linesAdded`, `m_linesRemoved`, `m_tokenInTotal`, `m_tokenOutTotal`, `m_contextSize`, `m_contextUsed`, `m_windowContext`) — also accepts an optional `:color:<c>` segment. Two cases:
+Every existing module — `m_window5h`, `m_window7d`, `m_countdown5h`, `m_countdown7d`, `m_balance`, `m_age`, `m_version`, `m_tokenIn`, `m_tokenOut`, `m_tokenTotal`, `m_tokenSession`, `m_ctx`, `m_cacheHitRate`, `m_cacheRead`, `m_token5h`, `m_token7d`, `m_tokenInSpeed`, `m_tokenOutSpeed`, `m_tokenInAvg`, `m_tokenOutAvg`, `m_totalTokenIn`, `m_totalTokenOut`, `m_totalTokenWithCacheIn`, plus the v0.4.0+ session-info modules (`m_session`, `m_model`, `m_effort`, `m_repo`, `m_ccVersion`, `m_sessionDuration`, `m_sessionApiDuration`, `m_linesAdded`, `m_linesRemoved`, `m_tokenInTotal`, `m_tokenTotalOut`, `m_contextSize`, `m_contextUsed`, `m_windowContext`) — also accepts an optional `:color:<c>` segment. Two cases:
 
 - **Plain-text modules** (e.g. `m_version`, `m_tokenIn`, `m_countdown5h`, `m_ctx`): the override simply wraps the natural output in `<color>…<RESET>` SGR. The module's own body is unchanged.
 - **Already-colored modules** (e.g. `m_window5h`, `m_balance`, `m_cacheHitRate`, `m_cacheRead`, `m_age`, `m_tokenInSpeed`, `m_tokenOutSpeed`): the override **replaces** the natural color choice — band-based, cache-hit-band, or fixed `stale` color — with your `<color>`. The user's color always wins; if you didn't say `:color:`, the module keeps its existing coloring and the default `lineTemplate` output is byte-for-byte identical to v0.3.3.

@@ -37,7 +37,8 @@ export type CompareMethod = "EXACT" | "INCLUDE" | "STARTWITH";
 //   totalIn        = session-cumulative input tokens (was `in`)
 //                      → m_tokenTotalIn, m_sumTokenTotalIn
 //   totalOut       = session-cumulative output tokens (was `out`)
-//                      → m_tokenOutTotal, m_sumTokenOut
+//                      → m_tokenTotalOut (v0.8.0+ rename from
+//                        m_tokenOutTotal), m_sumTokenOut
 //   in             = per-turn input delta (was `ctx_in`)
 //                      → m_tokenIn, m_sumTokenIn
 //   cacheIn        = per-turn cache_read_input_tokens (was `ctx_read`)
@@ -96,7 +97,7 @@ export type TokenSample = {
 // `current` = post-turn snapshot (used by m_tokenIn, m_tokenOut,
 //            m_tokenCachedIn, m_cacheHitRate, m_tokenInSpeed,
 //            m_tokenOutSpeed). `totals` = session cumulative (used by
-//            m_tokenInTotal, m_tokenOutTotal, m_tokenTotal).
+//            m_tokenInTotal, m_tokenTotalOut, m_tokenTotal).
 //            `cost` = stdin.cost block. `contextWindow` = context
 //            window size + used% (m_contextSize, m_contextUsedPercent,
 //            m_windowContext). The session-identity / metadata

@@ -76,7 +76,7 @@ Claude Code's `statusLine.command` spawns a child process that reads a session J
    - `m_tokenIn` / `m_tokenOut` — current.input / current.output (per-turn deltas)
    - `m_tokenCachedIn` — current.cacheRead
    - `m_tokenTotalIn` — totals.input (session cumulative)
-   - `m_tokenInTotal` / `m_tokenOutTotal` — totals.input / totals.output (session cumulative)
+   - `m_tokenInTotal` / `m_tokenTotalOut` — totals.input / totals.output (session cumulative; v0.8.0+ renamed from `m_tokenOutTotal` to sit in the `totalOut` family alongside `totalOut` on-disk / `m_accTokenOut` / `m_sumTokenOut`)
    - `m_tokenSession` — `totals.input + totals.output`
    - `m_tokenInSpeed` / `m_tokenOutSpeed` — session-avg tps (last-active-tick cache, color:scale)
    - `m_apiMs` — per-turn delta of `cost.totalApiDurationMs` formatted as dhms time string with hardcoded `api:` prefix (e.g. `api:1m`, `api:5s`, `api:<1m`); idle tick → `api:--` placeholder. Honors `timeFormat.minUnit` (`m` default → sub-minute collapses to `<1m`; `s` opt-in → second precision). Reuses `computeAndCacheTickDelta` memo so prev-tick baseline is shared with `m_tokenIn` / `m_tokenOut` / `m_tokenInSpeed`.

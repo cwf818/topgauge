@@ -1163,8 +1163,8 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     assert.equal(strip(out), "in:163.5k");
   });
 
-  it("m_tokenOutTotal: 'out:155' (cumulative)", () => {
-    const out = renderTemplate(["m_tokenOutTotal"], ctxFor(fakeSnapshot())).join("\n");
+  it("m_tokenTotalOut: 'out:155' (cumulative)", () => {
+    const out = renderTemplate(["m_tokenTotalOut"], ctxFor(fakeSnapshot())).join("\n");
     assert.equal(strip(out), "out:155");
   });
 
@@ -1564,7 +1564,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
       ["m_linesAdded", "+ --"],
       ["m_linesRemoved", "- --"],
       ["m_tokenInTotal", "in:n/a"],
-      ["m_tokenOutTotal", "out:n/a"],
+      ["m_tokenTotalOut", "out:n/a"],
       ["m_contextWindowsSize", "size:n/a"],
       ["m_contextSize", "size:n/a"],
       ["m_contextUsedPercent", "used:n/a%"],
@@ -1741,9 +1741,9 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     assert.equal(strip(out), "in:n/a");
   });
 
-  it("m_tokenOutTotal:nulldrop:false renders 'out:n/a' when totals.output is null", () => {
+  it("m_tokenTotalOut:nulldrop:false renders 'out:n/a' when totals.output is null", () => {
     const out = renderTemplate(
-      ["m_tokenOutTotal:nulldrop:false"],
+      ["m_tokenTotalOut:nulldrop:false"],
       ctxFor(
         fakeSnapshot({ totals: { input: null, output: null } }),
       ),
@@ -3235,10 +3235,10 @@ describe("renderTemplate — v0.8.0+ labels.* config customization", () => {
     });
   });
 
-  it("labelOut override reaches m_tokenOut / m_tokenOutTotal", () => {
+  it("labelOut override reaches m_tokenOut / m_tokenTotalOut", () => {
     withLabels({ labelOut: "↓:" }, () => {
       const a = renderTemplate(["m_tokenOut"], ctxFor(fakeSnapshot())).join("\n");
-      const b = renderTemplate(["m_tokenOutTotal"], ctxFor(fakeSnapshot())).join("\n");
+      const b = renderTemplate(["m_tokenTotalOut"], ctxFor(fakeSnapshot())).join("\n");
       assert.equal(strip(a), "↓:155");
       assert.equal(strip(b), "↓:155");
     });

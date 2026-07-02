@@ -115,7 +115,7 @@ the strict-vs-lenient validation rules.
   - `m_sessionDuration`, `m_sessionApiDuration` — elapsed wall-clock
     duration in `1d2h3m` format.
   - `m_linesAdded`, `m_linesRemoved` — `+ 3965` / `- 967` style.
-  - `m_tokenInTotal`, `m_tokenOutTotal` — session-cumulative input
+  - `m_tokenInTotal`, `m_tokenTotalOut` — session-cumulative input
     / output tokens (replaces the pre-v0.4.0 `m_tokenIn` /
     `m_tokenOut` semantics).
   - `m_contextSize`, `m_contextUsed` — context window size (compact
@@ -198,7 +198,7 @@ the strict-vs-lenient validation rules.
   or any cache miss now assumes **`prev.apiMs=0`** so the
   first turn still contributes its per-turn delta (no more
   `in:0` sentinel on first tick). For session-cumulative
-  totals, use `m_tokenInTotal` / `m_tokenOutTotal` (or the
+  totals, use `m_tokenInTotal` / `m_tokenTotalOut` (or the
   existing `m_tokenTotal` / `m_tokenSession` for the
   in+out+cache total).
 - `m_tokenInSpeed` and `m_tokenOutSpeed` compute the per-API-call

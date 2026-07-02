@@ -267,7 +267,7 @@ describe("buildProviderLine — null provider (no ANTHROPIC_BASE_URL match)", ()
     // here; we deliberately exclude them so the assertion is
     // independent of mode filters.
     //
-    // Uses m_tokenInTotal / m_tokenOutTotal (read from stdin
+    // Uses m_tokenInTotal / m_tokenTotalOut (read from stdin
     // context_window.total_input_tokens) instead of m_tokenIn /
     // m_tokenOut — the latter are per-API-call DELTAS that depend
     // on the prior-tick cache, which is empty on the first render
@@ -280,7 +280,7 @@ describe("buildProviderLine — null provider (no ANTHROPIC_BASE_URL match)", ()
     __resetForTest({
       statuslineTemplate: [
         "m_session", "s_0", "m_model",
-        "s_0", "m_tokenInTotal", "s_0", "m_tokenOutTotal",
+        "s_0", "m_tokenInTotal", "s_0", "m_tokenTotalOut",
       ],
     });
     try {

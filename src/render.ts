@@ -2120,11 +2120,17 @@ const MODULES: Record<string, Module> = {
       ? `${labelFor("in")}${formatCompactToken(c.tokens.totals.input)}`
       : placeholderBare("m_tokenInTotal", c),
   // Session-cumulative output tokens. v6.x: totals.output=null →
-  // "out:n/a" placeholder.
-  m_tokenOutTotal: (c) =>
+  // "out:n/a" placeholder. v0.8.0+ — renamed from `m_tokenOutTotal`
+  // to `m_tokenTotalOut` so it sits in the `totalOut` family
+  // alongside `m_accTokenOut` (in-memory acc) / `m_sumTokenOut`
+  // (cross-project sum) / `totalOut` on-disk jsonl column. Source
+  // unchanged: reads `tokens.totals.output` (= stdin
+  // `context_window.total_output_tokens`) directly, distinct from
+  // `m_accTokenOut`'s in-memory accumulator rollup.
+  m_tokenTotalOut: (c) =>
     c.tokens?.totals.output != null
       ? `${labelFor("out")}${formatCompactToken(c.tokens.totals.output)}`
-      : placeholderBare("m_tokenOutTotal", c),
+      : placeholderBare("m_tokenTotalOut", c),
   // v0.8.0+ — new module added to fix the v0.8.0 contract gap.
   // Source: same as m_tokenInTotal (stdin.context_window.
   // total_input_tokens); the distinguishing semantics is that
@@ -2962,7 +2968,7 @@ function placeholderLabelOr(axis: LabelAxis): PlaceholderBody {
 const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   // pure-number — placeholder shape is "<prefix>n/a"
   m_tokenInTotal: placeholderLabelOr("in"),
-  m_tokenOutTotal: placeholderLabelOr("out"),
+  m_tokenTotalOut: placeholderLabelOr("out"),
   m_apiCalls: placeholderNA("calls:"),
   m_totalTokenIn: placeholderNA("in:"),
   m_totalTokenOut: placeholderNA("out:"),
@@ -3334,7 +3340,7 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_linesAdded: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_linesRemoved: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_tokenInTotal: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
-  m_tokenOutTotal: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_tokenTotalOut: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_tokenTotalIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_apiCalls: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_contextWindowsSize: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
@@ -3838,9 +3844,9 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
       params.color as string | undefined,
     );
   },
-  m_tokenOutTotal: (params, ctx) => {
+  m_tokenTotalOut: (params, ctx) => {
     const t = ctx.tokens;
-    if (!t || t.totals.output == null) return placeholderWithColor("m_tokenOutTotal", params, ctx);
+    if (!t || t.totals.output == null) return placeholderWithColor("m_tokenTotalOut", params, ctx);
     return wrapPlain(
       `${labelFor("out")}${formatCompactToken(t.totals.output)}`,
       params.color as string | undefined,
@@ -4121,11 +4127,15 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
       } else if (tok.startsWith("m_tokenInTotal:")) {
         // Longer prefix must come BEFORE m_tokenIn: would match first;
         // m_tokenIn: would shadow m_tokenInTotal:color:… if ordered
-        // the other way. Same rationale for m_tokenOutTotal vs
+        // the other way. Same rationale for m_tokenTotalOut vs
         // m_tokenOut.
         inline = expandInlineToken(tok, "m_tokenInTotal", 15, ctx);
-      } else if (tok.startsWith("m_tokenOutTotal:")) {
-        inline = expandInlineToken(tok, "m_tokenOutTotal", 16, ctx);
+      } else if (tok.startsWith("m_tokenTotalOut:")) {
+        // m_tokenTotalOut: (16 chars) must come BEFORE m_tokenTotal:
+        // (13 chars) so the longer literal wins — otherwise
+        // `m_tokenTotalOut:color:red` would match the m_tokenTotal:
+        // branch with remainder "Out:color:red" and parse-fail.
+        inline = expandInlineToken(tok, "m_tokenTotalOut", 16, ctx);
       } else if (tok.startsWith("m_apiCalls:")) {
         // m_apiCalls:color:<c> / :nulldrop:… → skip "m_apiCalls:"
         // (length 11).
