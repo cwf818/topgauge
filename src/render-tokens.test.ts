@@ -17,7 +17,8 @@ import {
   setAvg,
   setPrevTick,
 } from "./render.ts";
-import { __resetForTest } from "./config.ts";
+import { __resetForTest, configStore } from "./config.ts";
+import type { Config } from "./config.ts";
 import {
   __resetForTest as resetCacheForTest,
   setCachePathResolver,
@@ -578,12 +579,13 @@ describe("renderTemplate — m_token* modules", () => {
       ctxFor(fakeSnapshot({ sessionId: "sess-total-avg" })),
     ).join("\n");
     // All three totals read the avg cache the SAME tick — so
-    //   sumIn=38 → "in:38" / "acc:38"
+    //   sumIn=38 → "in:38" / "in:38" (m_accTokenIn shares the
+    //     labelIn axis with the per-turn m_tokenIn)
     //   sumOut=155 → "out:155"
     //   sumCache=163441 → "cache:163.4k"
     assert.equal(
       strip(out),
-      "in:38 out:155 cache:163.4k acc:38",
+      "in:38 out:155 cache:163.4k in:38",
     );
     const avg = peekAvg("sess-total-avg", "D:\\test");
     assert.ok(avg);
@@ -912,6 +914,24 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
   it("m_tokenOutTotal: 'out:155' (cumulative)", () => {
     const out = renderTemplate(["m_tokenOutTotal"], ctxFor(fakeSnapshot())).join("\n");
     assert.equal(strip(out), "out:155");
+  });
+
+  // v0.8.0+ — newly registered module under the labelTotalIn
+  // family. Reads the same source as m_tokenInTotal but emits the
+  // labelTotalIn prefix instead of labelIn — both default to
+  // "in:" / "total:" respectively, but a user override on either
+  // axis diverges them.
+  it("m_tokenTotalIn: 'total:163.5k' (cumulative, labelTotalIn axis)", () => {
+    const out = renderTemplate(["m_tokenTotalIn"], ctxFor(fakeSnapshot())).join("\n");
+    assert.equal(strip(out), "total:163.5k");
+  });
+
+  it("m_tokenTotalIn:nulldrop:false renders 'total:n/a' placeholder on null totals.input", () => {
+    const out = renderTemplate(
+      ["m_tokenTotalIn:nulldrop:false"],
+      ctxFor(fakeSnapshot({ totals: { input: null, output: null } })),
+    ).join("\n");
+    assert.equal(strip(out), "total:n/a");
   });
 
   // ----- m_apiCalls (v0.4.x) -------------------------------------------
@@ -2279,18 +2299,23 @@ describe("renderTemplate — named separator aliases (v0.4.x)", () => {
 //   project: tickStatus            (read via statusStore.readTickStatus)
 //   model:   tickStatus:<model>    (read via statusStore.readTickStatus)
 //
-// Placeholders: "acc:n/a" (5 plain modules), "acc:n/a%" (hit rate).
-// Inline default is the placeholder (nulldrop:false behavior); bare
-// form also renders the placeholder when data is missing — matching
-// the v6.x bare-vs-inline parity rule.
+// Placeholders (v0.8.0+ labels.*): the four token-axis acc
+// modules (m_accTokenIn/Out/CachedIn/TotalIn) read their prefix
+// from labelFor so the placeholder matches the configured
+// labelIn/Out/CacheIn/TotalIn. m_accApiMs / m_accCacheHitRate
+// are NOT in the user-facing axis set, so they keep their
+// hardcoded "acc:" / "acc:n/a%" prefix shape. Inline default is
+// the placeholder (nulldrop:false behavior); bare form also
+// renders the placeholder when data is missing — matching the
+// v6.x bare-vs-inline parity rule.
 describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)", () => {
-  it("m_accTokenIn: bare form with no session slot → 'acc:n/a' placeholder", () => {
+  it("m_accTokenIn: bare form with no session slot → 'in:n/a' placeholder", () => {
     // No setAvg called → peekAvg returns null → placeholder fires.
     const out = renderTemplate(
       ["m_accTokenIn"],
       ctxFor(fakeSnapshot({ sessionId: "sess-fresh-1" })),
     ).join("\n");
-    assert.equal(strip(out), "acc:n/a");
+    assert.equal(strip(out), "in:n/a");
     assert.ok(out.includes(STALE), `expected STALE wrap on: ${JSON.stringify(out)}`);
   });
 
@@ -2318,8 +2343,10 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       ["m_accTokenIn"],
       ctxFor(fakeSnapshot({ sessionId: "sess-acc-in" })),
     ).join("\n");
-    // formatCompactToken(42000) = "42.0k" → "acc:42.0k"
-    assert.equal(strip(out), "acc:42.0k");
+    // formatCompactToken(42000) = "42.0k" → "in:42.0k" (v0.8.0+
+    // labels.* — m_accTokenIn shares the labelIn axis with its
+    // per-turn sibling m_tokenIn)
+    assert.equal(strip(out), "in:42.0k");
   });
 
   it("m_accTokenOut: session scope reads accOut from per-session slot", () => {
@@ -2344,8 +2371,10 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       ["m_accTokenOut"],
       ctxFor(fakeSnapshot({ sessionId: "sess-acc-out" })),
     ).join("\n");
-    // formatCompactToken(1234) = "1.2k"
-    assert.equal(strip(out), "acc:1.2k");
+    // formatCompactToken(1234) = "1.2k" → "out:1.2k" (v0.8.0+
+    // labels.* — m_accTokenOut shares the labelOut axis with
+    // m_tokenOut)
+    assert.equal(strip(out), "out:1.2k");
   });
 
   it("m_accTokenCachedIn: session scope reads accCached from per-session slot", () => {
@@ -2370,11 +2399,13 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       ["m_accTokenCachedIn"],
       ctxFor(fakeSnapshot({ sessionId: "sess-acc-cached" })),
     ).join("\n");
-    // formatCompactToken(163441) = "163.4k"
-    assert.equal(strip(out), "acc:163.4k");
+    // formatCompactToken(163441) = "163.4k" → "cache:163.4k"
+    // (v0.8.0+ labels.* — m_accTokenCachedIn shares the labelCacheIn
+    // axis with m_tokenCachedIn)
+    assert.equal(strip(out), "cache:163.4k");
   });
 
-  it("m_accTokenTotalIn: derived field accIn + accCached → 'acc:163.5k' (0+163441+38 total)", () => {
+  it("m_accTokenTotalIn: derived field accIn + accCached → 'total:163.5k' (0+163441+38 total)", () => {
     // Real shape: with both accIn=38 and accCached=163441, total is 163479.
     setAvg(
       "sess-acc-total",
@@ -2397,8 +2428,10 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       ["m_accTokenTotalIn"],
       ctxFor(fakeSnapshot({ sessionId: "sess-acc-total" })),
     ).join("\n");
-    // 38 + 163441 = 163479 → "163.5k"
-    assert.equal(strip(out), "acc:163.5k");
+    // 38 + 163441 = 163479 → "163.5k" → "total:163.5k" (v0.8.0+
+    // labels.* — m_accTokenTotalIn shares the labelTotalIn axis
+    // with m_tokenTotalIn and m_sumTokenTotalIn)
+    assert.equal(strip(out), "total:163.5k");
   });
 
   it("m_accApiMs: session scope reads accApi from per-session slot", () => {
@@ -2536,7 +2569,8 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       ["m_accTokenIn:scope:project"],
       ctxFor(fakeSnapshot({ sessionId: "sess-Z", cwd: "D:\\project-scope-test" })),
     ).join("\n");
-    assert.equal(strip(out), "acc:250");
+    // v0.8.0+ labels.* — m_accTokenIn renders under labelIn.
+    assert.equal(strip(out), "in:250");
   });
 
   it("m_accTokenIn:scope:model reads the per-model slot (cross-session, single model)", () => {
@@ -2589,26 +2623,29 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
         }),
       ),
     ).join("\n");
-    assert.equal(strip(out), "acc:250");
+    // v0.8.0+ labels.* — m_accTokenIn renders under labelIn.
+    assert.equal(strip(out), "in:250");
   });
 
-  it("m_accTokenIn:scope:model with no modelDisplayName on snapshot → 'acc:n/a'", () => {
+  it("m_accTokenIn:scope:model with no modelDisplayName on snapshot → 'in:n/a'", () => {
     // peekAcc's model branch returns null when ctx.tokens has no
     // modelDisplayName (cannot resolve the model slot key).
     const out = renderTemplate(
       ["m_accTokenIn:scope:model"],
       ctxFor(fakeSnapshot({ sessionId: "sess-no-model", modelDisplayName: null })),
     ).join("\n");
-    assert.equal(strip(out), "acc:n/a");
+    // v0.8.0+ labels.* — placeholder reads labelIn.
+    assert.equal(strip(out), "in:n/a");
   });
 
-  it("m_accTokenIn:scope:session (explicit) on a fresh snapshot → 'acc:n/a' placeholder", () => {
+  it("m_accTokenIn:scope:session (explicit) on a fresh snapshot → 'in:n/a' placeholder", () => {
     // No setAvg called → per-session slot missing → placeholder.
     const out = renderTemplate(
       ["m_accTokenIn:scope:session"],
       ctxFor(fakeSnapshot({ sessionId: "sess-scope-fresh" })),
     ).join("\n");
-    assert.equal(strip(out), "acc:n/a");
+    // v0.8.0+ labels.* — placeholder reads labelIn.
+    assert.equal(strip(out), "in:n/a");
   });
 
   it("m_accTokenIn:scope:invalid (not session/project/model) is a parse-fail — drops", () => {
@@ -2629,12 +2666,13 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       ["m_accTokenIn:nulldrop:false"],
       ctxFor(fakeSnapshot({ sessionId: "sess-no-data" })),
     ).join("\n");
-    assert.equal(strip(out), "acc:n/a");
+    // v0.8.0+ labels.* — placeholder reads labelIn.
+    assert.equal(strip(out), "in:n/a");
   });
 
   it("m_accTokenIn:nulldrop:true is a no-op (function never returns null)", () => {
     // The m_accTokenIn renderer never returns null — it always
-    // returns either "acc:N" or "acc:n/a" placeholder (via
+    // returns either "in:N" or "in:n/a" placeholder (via
     // wrapPlainDefault → STALE_COLOR wrap). Therefore
     // `:nulldrop:true` has no effect (the dispatcher can only
     // short-circuit on a null return). Same shape as m_apiCalls
@@ -2643,7 +2681,8 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       ["m_accTokenIn:nulldrop:true"],
       ctxFor(fakeSnapshot({ sessionId: "sess-no-data" })),
     ).join("\n");
-    assert.equal(strip(out), "acc:n/a");
+    // v0.8.0+ labels.* — placeholder reads labelIn.
+    assert.equal(strip(out), "in:n/a");
   });
 
   it("m_accTokenIn:color:brightGreen wraps the chunk in brightGreen", () => {
@@ -2668,8 +2707,9 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       ["m_accTokenIn:color:brightGreen"],
       ctxFor(fakeSnapshot({ sessionId: "sess-acc-colored" })),
     ).join("\n");
-    // formatCompactToken(12345) = "12.3k" → "acc:12.3k"
-    assert.equal(strip(out), "acc:12.3k");
+    // formatCompactToken(12345) = "12.3k" → "in:12.3k" (v0.8.0+
+    // labels.* — m_accTokenIn renders under labelIn)
+    assert.equal(strip(out), "in:12.3k");
     assert.ok(out.includes(GREEN), `expected GREEN wrap on: ${JSON.stringify(out)}`);
   });
 
@@ -2705,7 +2745,10 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       ctxFor(fakeSnapshot({ sessionId: "sess-multi" })),
     ).join("\n");
     // in=500→"500", out=250→"250", hitRate=10000/(10000+500)=95.2%
-    assert.equal(strip(out), "acc:500 acc:250 · acc:95.2%");
+    // v0.8.0+ labels.* — m_accTokenIn/Out pick up labelIn/labelOut;
+    // m_accCacheHitRate is NOT in the label axis set, so its
+    // "acc:" prefix is preserved.
+    assert.equal(strip(out), "in:500 out:250 · acc:95.2%");
   });
 });
 
@@ -2879,5 +2922,78 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     ).join("\n");
     // 500 t/s → "500.0 t/s"
     assert.equal(strip(out), "in:500.0 t/s");
+  });
+});
+
+// v0.8.0+ — labels.* config customization. Each module that emits
+// a token-stat prefix reads the corresponding cfg().labels.* axis at
+// render time. Overriding labelIn/labelOut/labelCacheIn/labelTotalIn
+// in config should propagate to: per-turn (m_tokenIn/Out/CachedIn/
+// TotalIn), totals (m_tokenInTotal/OutTotal), acc (m_accTokenIn/
+// Out/CachedIn/TotalIn/TokenIn/Out), sum/avg (m_sumTokenIn/Out/
+// CachedIn/TotalIn + m_avgTokenIn/OutSpeed).
+describe("renderTemplate — v0.8.0+ labels.* config customization", () => {
+  // Apply a custom labels override to configStore for these tests,
+  // then reset in the next beforeEach (the file-level beforeEach
+  // at line 106 already calls configStore.__resetForTest()).
+  // Helpers below reach into configStore via __resetForTest with a
+  // partial override — that's the documented test path.
+  function withLabels(labels: Partial<Config["labels"]>, fn: () => void) {
+    __resetForTest({ labels: { ...configStore.get().labels, ...labels } });
+    try { fn(); } finally { __resetForTest(); }
+  }
+
+  it("labelIn override reaches per-turn m_tokenInTotal and m_tokenTotalIn", () => {
+    withLabels({ labelIn: "Δ:" }, () => {
+      const a = renderTemplate(["m_tokenInTotal"], ctxFor(fakeSnapshot())).join("\n");
+      // labelTotalIn still defaults → "total:…".
+      const b = renderTemplate(["m_tokenTotalIn"], ctxFor(fakeSnapshot())).join("\n");
+      assert.equal(strip(a), "Δ:163.5k");
+      assert.equal(strip(b), "total:163.5k");
+    });
+  });
+
+  it("labelTotalIn override reaches m_tokenTotalIn / m_accTokenTotalIn / m_sumTokenTotalIn", () => {
+    // Pin stateRoot to a fresh empty dir so m_sumTokenTotalIn
+    // sees no rows (production state has months of data that
+    // would otherwise produce a 100M+ value here).
+    setStateRoot(() => join(_tmpDir, "labels-test"));
+    withLabels({ labelTotalIn: "Total:" }, () => {
+      // Use a fresh sessionId for m_accTokenTotalIn so any avg
+      // snapshot left over from prior tests doesn't leak into
+      // the rendered value (we only need to verify the prefix).
+      const a = renderTemplate(["m_tokenTotalIn"], ctxFor(fakeSnapshot())).join("\n");
+      const b = renderTemplate(
+        ["m_accTokenTotalIn"],
+        ctxFor(fakeSnapshot({ sessionId: "label-total-acc" })),
+      ).join("\n");
+      // m_sumTokenTotalIn needs no rows → placeholder path; verifies
+      // the configured label is read for the placeholder too.
+      // Force nulldrop:false so the placeholder renders (bare
+      // form defaults to drop-on-null).
+      const c = renderTemplate(
+        ["m_sumTokenTotalIn:nulldrop:false"],
+        ctxFor(fakeSnapshot({ sessionId: "label-test", cwd: "D:\\label-test" })),
+      ).join("\n");
+      assert.match(strip(a), /^Total:/);
+      assert.match(strip(b), /^Total:/);
+      assert.match(strip(c), /^Total:n\/a$/);
+    });
+  });
+
+  it("labelOut override reaches m_tokenOut / m_tokenOutTotal", () => {
+    withLabels({ labelOut: "↓:" }, () => {
+      const a = renderTemplate(["m_tokenOut"], ctxFor(fakeSnapshot())).join("\n");
+      const b = renderTemplate(["m_tokenOutTotal"], ctxFor(fakeSnapshot())).join("\n");
+      assert.equal(strip(a), "↓:155");
+      assert.equal(strip(b), "↓:155");
+    });
+  });
+
+  it("labelCacheIn override reaches m_tokenCachedIn", () => {
+    withLabels({ labelCacheIn: "⚡:" }, () => {
+      const out = renderTemplate(["m_tokenCachedIn"], ctxFor(fakeSnapshot())).join("\n");
+      assert.match(strip(out), /^⚡:/);
+    });
   });
 });

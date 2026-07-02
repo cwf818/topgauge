@@ -636,6 +636,64 @@ describe("loadConfig — modeLabels.balance (v0.2.17)", () => {
   });
 });
 
+// v0.8.0+ — top-level `labels` overrides for the four token-stat
+// prefix axes (labelIn / labelOut / labelCacheIn / labelTotalIn).
+// Partial-merge semantics match modeLabels: each field optional,
+// invalid type → warn + default retained.
+describe("loadConfig — labels (v0.8.0+ token-stat prefix customization)", () => {
+  it("defaults reproduce v0.7.x literal-string behavior", () => {
+    assert.equal(__testing.DEFAULT_CONFIG.labels.labelIn, "in:");
+    assert.equal(__testing.DEFAULT_CONFIG.labels.labelOut, "out:");
+    assert.equal(__testing.DEFAULT_CONFIG.labels.labelCacheIn, "cache:");
+    assert.equal(__testing.DEFAULT_CONFIG.labels.labelTotalIn, "total:");
+  });
+
+  it("accepts a custom labelIn; other axes keep defaults", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      labels: { labelIn: "Δ:" },
+    }));
+    const cfg = await loadConfig();
+    assert.equal(cfg.labels.labelIn, "Δ:");
+    assert.equal(cfg.labels.labelOut, "out:");
+    assert.equal(cfg.labels.labelCacheIn, "cache:");
+    assert.equal(cfg.labels.labelTotalIn, "total:");
+  });
+
+  it("accepts overrides for all four axes simultaneously", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      labels: {
+        labelIn: "In:",
+        labelOut: "Out:",
+        labelCacheIn: "Cache:",
+        labelTotalIn: "Total:",
+      },
+    }));
+    const cfg = await loadConfig();
+    assert.equal(cfg.labels.labelIn, "In:");
+    assert.equal(cfg.labels.labelOut, "Out:");
+    assert.equal(cfg.labels.labelCacheIn, "Cache:");
+    assert.equal(cfg.labels.labelTotalIn, "Total:");
+  });
+
+  it("rejects a non-string label field and warns", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      labels: { labelIn: 42 },
+    }));
+    const cfg = await loadConfig();
+    assert.equal(cfg.labels.labelIn, "in:");
+    assert.match(capturedStderr, /labels\.labelIn/);
+  });
+
+  it("rejects labels as a non-object and warns", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      labels: "nope",
+    }));
+    const cfg = await loadConfig();
+    assert.equal(cfg.labels.labelIn, "in:");
+    assert.match(capturedStderr, /labels must be an object/);
+  });
+});
+
 describe("configStore.setVersion (v0.2.17)", () => {
   it("mutates cfg().version", () => {
     __resetForTest();

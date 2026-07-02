@@ -58,6 +58,28 @@ function cfg() {
   return configStore.get();
 }
 
+// v0.8.0+ — top-level token-label resolver. Each call reads
+// configStore (same lazy-read pattern as `cfg()`) and returns the
+// configured prefix for the requested axis. The four axes map 1:1
+// to the v0.8.0+ config schema:
+//   "in"      → cfg().labels.labelIn      (per-turn delta, totals, acc, sum, avg-in-speed)
+//   "out"     → cfg().labels.labelOut     (per-turn delta, totals, acc, sum, avg-out-speed)
+//   "cacheIn" → cfg().labels.labelCacheIn (cache-read columns: per-turn, acc, sum)
+//   "totalIn" → cfg().labels.labelTotalIn (session-cumulative total_input / sum-totalIn / acc-totalIn)
+// Defaults reproduce the v0.7.x literal "in:" / "out:" / "cache:"
+// / "Total:" so existing line templates render byte-identical until
+// the user overrides labels.* in config.json.
+type LabelAxis = "in" | "out" | "cacheIn" | "totalIn";
+function labelFor(axis: LabelAxis): string {
+  const labels = cfg().labels;
+  switch (axis) {
+    case "in": return labels.labelIn;
+    case "out": return labels.labelOut;
+    case "cacheIn": return labels.labelCacheIn;
+    case "totalIn": return labels.labelTotalIn;
+  }
+}
+
 // Exported so sibling modules (src/dispatch.ts, src/composition.ts) can
 // compose colored output without duplicating these literal strings.
 export const RESET = "\x1b[0m";
@@ -1391,20 +1413,24 @@ function computeTickDelta(
   direction: "in" | "out",
 ): { value: string; writeBack: PrevTickSnapshot | null } {
   const t = ctx.tokens;
+  // v0.8.0+ — prefix is the configured label (default "In:" / "Out:").
+  // The `direction` still drives the actual delta math; only the
+  // emitted prefix string reads from config now.
+  const prefix = labelFor(direction);
   // v6.x: snapshot missing → "n/a" placeholder (not "0"). Without
   // this gate the function returns "in:0" for both missing-snapshot
   // and idle cases, conflating them.
   if (!t || !t.sessionId) {
-    return { value: `${direction}:n/a`, writeBack: null };
+    return { value: `${prefix}n/a`, writeBack: null };
   }
   const r = computeAndCacheTickDelta(ctx);
   if (!r.hasDelta) {
     // snapshot read but no API call this tick — truthful 0.
-    return { value: `${direction}:0`, writeBack: r.writeBack };
+    return { value: `${prefix}0`, writeBack: r.writeBack };
   }
   const n = direction === "in" ? r.deltaIn : r.deltaOut;
   return {
-    value: `${direction}:${formatCompactToken(n)}`,
+    value: `${prefix}${formatCompactToken(n)}`,
     writeBack: r.writeBack,
   };
 }
@@ -1551,7 +1577,22 @@ function accBody(
     case "apiMs": n = v.accApi; break;
     case "total": n = v.accIn + v.accCached; break;
   }
-  return `acc:${formatCompactToken(n)}`;
+  // v0.8.0+ — acc* family prefixes use the same label axes as their
+  // per-turn siblings. m_accTokenIn/Out/CachedIn/TotalIn share
+  // labelIn / labelOut / labelCacheIn / labelTotalIn; m_accApiMs
+  // retains its hardcoded "acc:" prefix (the API-ms series is not a
+  // user-facing label axis). Defaults reproduce the v0.7.x literal
+  // "acc:" prefix for the in/out/cached/total fields via the
+  // corresponding label.* defaults.
+  let prefix: string;
+  switch (field) {
+    case "in": prefix = labelFor("in"); break;
+    case "out": prefix = labelFor("out"); break;
+    case "cached": prefix = labelFor("cacheIn"); break;
+    case "total": prefix = labelFor("totalIn"); break;
+    case "apiMs": prefix = "acc:"; break;
+  }
+  return `${prefix}${formatCompactToken(n)}`;
 }
 
 // m_accCacheHitRate — session-aggregate formula
@@ -1585,11 +1626,22 @@ function placeholderAcc(
   _scope: "session" | "project" | "model",
   _ctx: RenderContext,
 ): string {
-  // Reuse the bare-path STALE_COLOR wrap style. Hit-rate gets
-  // its own "acc:n/a%" suffix shape to mirror the rendered
-  // "acc:N.N%" output (the % glyph is part of the placeholder
-  // identity, not just a unit).
-  const body = field === "hitRate" ? "acc:n/a%" : "acc:n/a";
+  // v0.8.0+ labels.* — the four token-axis fields read their
+  // prefix from labelFor so the placeholder matches the user's
+  // configured labelIn / labelOut / labelCacheIn / labelTotalIn.
+  // apiMs stays on the hardcoded "acc:" prefix (not part of the
+  // user-facing axis set); hitRate keeps its "acc:n/a%" shape so
+  // the % glyph stays part of the placeholder identity.
+  let prefix: string;
+  switch (field) {
+    case "in": prefix = labelFor("in"); break;
+    case "out": prefix = labelFor("out"); break;
+    case "cached": prefix = labelFor("cacheIn"); break;
+    case "total": prefix = labelFor("totalIn"); break;
+    case "apiMs": prefix = "acc:"; break;
+    case "hitRate": prefix = "acc:"; break;
+  }
+  const body = field === "hitRate" ? `${prefix}n/a%` : `${prefix}n/a`;
   return `${STALE_COLOR}${body}${RESET}`;
 }
 
@@ -1810,9 +1862,10 @@ const MODULES: Record<string, Module> = {
       (t.input ?? 0) + read + (t.cacheCreation ?? 0);
     const pct = denom > 0 ? (read / denom) * 100 : null;
     const label = formatCompactToken(read);
+    const prefix = labelFor("cacheIn");
     return pct == null
-      ? `${STALE_COLOR}cache:${label}${RESET}`
-      : `${STALE_COLOR}cache:${label} (${pct.toFixed(cachePctPrecision())}%)${RESET}`;
+      ? `${STALE_COLOR}${prefix}${label}${RESET}`
+      : `${STALE_COLOR}${prefix}${label} (${pct.toFixed(cachePctPrecision())}%)${RESET}`;
   },
   // v0.4.0+ — per-API-call input speed. Reads the previous-tick
   // snapshot from cache (keyed by sessionId) and computes
@@ -1906,25 +1959,25 @@ const MODULES: Record<string, Module> = {
     const filter = parseWindowScope(c, {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
-    return agg.rows === 0 ? null : `in:${formatCompactToken(agg.sumIn)}`;
+    return agg.rows === 0 ? null : `${labelFor("in")}${formatCompactToken(agg.sumIn)}`;
   },
   m_sumTokenOut: (c) => {
     const filter = parseWindowScope(c, {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
-    return agg.rows === 0 ? null : `out:${formatCompactToken(agg.sumOut)}`;
+    return agg.rows === 0 ? null : `${labelFor("out")}${formatCompactToken(agg.sumOut)}`;
   },
   m_sumTokenCachedIn: (c) => {
     const filter = parseWindowScope(c, {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
-    return agg.rows === 0 ? null : `cache:${formatCompactToken(agg.sumCached)}`;
+    return agg.rows === 0 ? null : `${labelFor("cacheIn")}${formatCompactToken(agg.sumCached)}`;
   },
   m_sumTokenTotalIn: (c) => {
     const filter = parseWindowScope(c, {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
-    return agg.rows === 0 ? null : `in:${formatCompactToken(agg.sumTotalIn)}`;
+    return agg.rows === 0 ? null : `${labelFor("totalIn")}${formatCompactToken(agg.sumTotalIn)}`;
   },
   m_sumApiMs: (c) => {
     const filter = parseWindowScope(c, {});
@@ -1947,7 +2000,7 @@ const MODULES: Record<string, Module> = {
     const agg = fetchSumAggregate(filter);
     if (agg.sumApiMs === 0) return null;
     const tps = (agg.sumIn / agg.sumApiMs) * 1000;
-    return `in:${formatSpeed(tps)}`;
+    return `${labelFor("in")}${formatSpeed(tps)}`;
   },
   m_avgTokenOutSpeed: (c) => {
     const filter = parseWindowScope(c, {});
@@ -1955,7 +2008,7 @@ const MODULES: Record<string, Module> = {
     const agg = fetchSumAggregate(filter);
     if (agg.sumApiMs === 0) return null;
     const tps = (agg.sumOut / agg.sumApiMs) * 1000;
-    return `out:${formatSpeed(tps)}`;
+    return `${labelFor("out")}${formatSpeed(tps)}`;
   },
   // v0.3.6+ — bare `m_quote` (no inline args). Picks a quote from
   // the hourly window and renders it plain (no SGR wrapper). Opt-in
@@ -2035,14 +2088,26 @@ const MODULES: Record<string, Module> = {
   // v6.x: totals.input=null → "in:n/a" placeholder (was: drop).
   m_tokenInTotal: (c) =>
     c.tokens?.totals.input != null
-      ? `in:${formatCompactToken(c.tokens.totals.input)}`
+      ? `${labelFor("in")}${formatCompactToken(c.tokens.totals.input)}`
       : placeholderBare("m_tokenInTotal", c),
   // Session-cumulative output tokens. v6.x: totals.output=null →
   // "out:n/a" placeholder.
   m_tokenOutTotal: (c) =>
     c.tokens?.totals.output != null
-      ? `out:${formatCompactToken(c.tokens.totals.output)}`
+      ? `${labelFor("out")}${formatCompactToken(c.tokens.totals.output)}`
       : placeholderBare("m_tokenOutTotal", c),
+  // v0.8.0+ — new module added to fix the v0.8.0 contract gap.
+  // Source: same as m_tokenInTotal (stdin.context_window.
+  // total_input_tokens); the distinguishing semantics is that
+  // m_tokenTotalIn is in the total_input family alongside
+  // m_accTokenTotalIn / m_sumTokenTotalIn, all sharing the
+  // labelTotalIn label. The bare form below is identical to
+  // m_tokenInTotal's data path; the two names exist so callers
+  // can pick the family whose label matches their config.
+  m_tokenTotalIn: (c) =>
+    c.tokens?.totals.input != null
+      ? `${labelFor("totalIn")}${formatCompactToken(c.tokens.totals.input)}`
+      : placeholderBare("m_tokenTotalIn", c),
   // Project-wide count of valid API calls since first tick.
   // v6.x: missing cwd → "calls:n/a" placeholder (was: "calls:0").
   // Calls=0 still renders as "calls:0" — the v0.4.x always-render
@@ -2830,34 +2895,56 @@ function placeholderGauge(
 // a `return null`. The four families cover every existing drop
 // case: pure-number ("n/a"), number+unit ("-- <unit>"), gauge
 // ("gray bar + 0%"), bare-string ("n/a").
+//
+// v0.8.0+: placeholderNA / placeholderDashesUnit factories take
+// the prefix (or body) as a string OR as a function. The function
+// form is used for the four `labels.*` axes (in / out / cacheIn /
+// totalIn) so the placeholder reflects the user's configured
+// label rather than the hardcoded literal. The function is
+// invoked at placeholder-fire time, reading configStore.get()
+// at the same moment the renderer did.
 type PlaceholderBody = (
   params: Record<string, ResolvedValue>,
   ctx: RenderContext,
 ) => string;
 
+// Label-aware NA placeholder: receives the LabelAxis enum (always
+// one of the four label axes). The body defers label resolution
+// until placeholder-fire time so any subsequent config override
+// is picked up. Defaults reproduce the v0.7.x literal-string
+// behavior exactly because cfg().labels.labelIn === "in:" etc.
+function placeholderLabelOr(axis: LabelAxis): PlaceholderBody {
+  return (_p, _c) => `${labelFor(axis)}n/a`;
+}
+
 const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   // pure-number — placeholder shape is "<prefix>n/a"
-  m_tokenInTotal: placeholderNA("in:"),
-  m_tokenOutTotal: placeholderNA("out:"),
+  m_tokenInTotal: placeholderLabelOr("in"),
+  m_tokenOutTotal: placeholderLabelOr("out"),
   m_apiCalls: placeholderNA("calls:"),
   m_totalTokenIn: placeholderNA("in:"),
   m_totalTokenOut: placeholderNA("out:"),
   m_totalTokenWithCacheIn: placeholderNA("cache:"),
-  // m_acc* — placeholder shape is "acc:n/a" (or "acc:n/a%" for
-  // m_accCacheHitRate). The :scope: inline arg is ignored at the
-  // placeholder level (placeholderNA returns the same body
-  // regardless of scope — see placeholderAcc comment for the
-  // future-extension hook).
-  m_accTokenIn: placeholderNA("acc:"),
-  m_accTokenOut: placeholderNA("acc:"),
-  m_accTokenCachedIn: placeholderNA("acc:"),
-  m_accTokenTotalIn: placeholderNA("acc:"),
+  // m_acc* — v0.8.0+ labels.*: the four token-axis acc modules
+  // (m_accTokenIn/Out/CachedIn/TotalIn) share their prefix with
+  // the per-turn siblings via labelFor. m_accApiMs and
+  // m_accCacheHitRate are NOT in the user-facing label axis set
+  // (apiMs is an internal ms-suffix series, cacheHitRate is a
+  // ratio with its own "hit:" convention), so they keep a
+  // hardcoded "acc:" placeholder. The :scope: inline arg is
+  // ignored at the placeholder level (placeholderNA returns the
+  // same body regardless of scope — see placeholderAcc comment
+  // for the future-extension hook).
+  m_accTokenIn: placeholderLabelOr("in"),
+  m_accTokenOut: placeholderLabelOr("out"),
+  m_accTokenCachedIn: placeholderLabelOr("cacheIn"),
+  m_accTokenTotalIn: placeholderLabelOr("totalIn"),
   m_accApiMs: placeholderNA("acc:"),
   // m_accCacheHitRate — the "hit:N%" shape needs a "%" suffix on
   // the placeholder too, matching m_cacheHitRate's
   // placeholderDashesUnit convention.
   m_accCacheHitRate: placeholderDashesUnit("acc:n/a%"),
-  m_tokenCachedIn: placeholderNA("cache:"),
+  m_tokenCachedIn: placeholderLabelOr("cacheIn"),
   m_cacheHitRate: placeholderNA("hit:"),
   m_contextSize: placeholderNA("size:"),
   m_contextWindowsSize: placeholderNA("size:"),
@@ -2877,14 +2964,18 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   // as the rendered output: "in:n/a" / "out:n/a" / "cache:n/a" /
   // "api:n/a" for the 5 plain modules; "hit:n/a%" for the ratio.
   // Empty aggregate (no rows in window) triggers the placeholder.
-  m_sumTokenIn: placeholderNA("in:"),
-  m_sumTokenOut: placeholderNA("out:"),
-  m_sumTokenCachedIn: placeholderNA("cache:"),
-  m_sumTokenTotalIn: placeholderNA("in:"),
+  m_sumTokenIn: placeholderLabelOr("in"),
+  m_sumTokenOut: placeholderLabelOr("out"),
+  m_sumTokenCachedIn: placeholderLabelOr("cacheIn"),
+  m_sumTokenTotalIn: placeholderLabelOr("totalIn"),
   m_sumApiMs: placeholderNA("api:"),
   m_avgCacheHitRate: placeholderNA("hit:"),
-  m_avgTokenInSpeed: placeholderNA("in:"),
-  m_avgTokenOutSpeed: placeholderNA("out:"),
+  m_avgTokenInSpeed: placeholderLabelOr("in"),
+  m_avgTokenOutSpeed: placeholderLabelOr("out"),
+  // v0.8.0+ — newly added m_tokenTotalIn (session-cumulative
+  // total_input_tokens). Shares the labelTotalIn axis with its
+  // sum/avg siblings.
+  m_tokenTotalIn: placeholderLabelOr("totalIn"),
   // gauge (placeholder shape is the gray 0% / 100% bar)
   m_window5h: placeholderGauge,
   m_window7d: placeholderGauge,
@@ -2905,10 +2996,10 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   // → "in:0" / "out:0" / "in:0.0 t/s"; 0 is always rendered, never
   // hidden. The bare MODULES paths now route through these
   // placeholders instead of returning null so layout stays stable.
-  m_tokenIn: placeholderNA("in:"),
-  m_tokenOut: placeholderNA("out:"),
-  m_tokenInSpeed: placeholderNA("in:"),
-  m_tokenOutSpeed: placeholderNA("out:"),
+  m_tokenIn: placeholderLabelOr("in"),
+  m_tokenOut: placeholderLabelOr("out"),
+  m_tokenInSpeed: placeholderLabelOr("in"),
+  m_tokenOutSpeed: placeholderLabelOr("out"),
   // v6.x: previously drop-by-design modules (no age info / no
   // version / no reset data / no balance). Now also follow the
   // placeholder rule — they occupy their slot so adjacent
@@ -3191,6 +3282,7 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_linesRemoved: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_tokenInTotal: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_tokenOutTotal: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_tokenTotalIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_apiCalls: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_contextWindowsSize: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_contextUsedPercent: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
@@ -3439,9 +3531,10 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const pct = denom > 0 ? (read / denom) * 100 : null;
     const label = formatCompactToken(read);
     const color = (params.color as string | undefined) ?? STALE_COLOR;
+    const prefix = labelFor("cacheIn");
     return pct == null
-      ? `${color}cache:${label}${RESET}`
-      : `${color}cache:${label} (${pct.toFixed(cachePctPrecision())}%)${RESET}`;
+      ? `${color}${prefix}${label}${RESET}`
+      : `${color}${prefix}${label} (${pct.toFixed(cachePctPrecision())}%)${RESET}`;
   },
   // v0.4.0+ — :color:scale (or no :color: at all) → 5-band
   // scale color on the active tick, STALE_COLOR on the
@@ -3532,28 +3625,28 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (!filter) return INLINE_BADARG;
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderWithColor("m_sumTokenIn", params, ctx);
-    return wrapPlain(`in:${formatCompactToken(agg.sumIn)}`, params.color as string | undefined);
+    return wrapPlain(`${labelFor("in")}${formatCompactToken(agg.sumIn)}`, params.color as string | undefined);
   },
   m_sumTokenOut: (params, ctx) => {
     const filter = parseWindowScope(ctx, params);
     if (!filter) return INLINE_BADARG;
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderWithColor("m_sumTokenOut", params, ctx);
-    return wrapPlain(`out:${formatCompactToken(agg.sumOut)}`, params.color as string | undefined);
+    return wrapPlain(`${labelFor("out")}${formatCompactToken(agg.sumOut)}`, params.color as string | undefined);
   },
   m_sumTokenCachedIn: (params, ctx) => {
     const filter = parseWindowScope(ctx, params);
     if (!filter) return INLINE_BADARG;
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderWithColor("m_sumTokenCachedIn", params, ctx);
-    return wrapPlain(`cache:${formatCompactToken(agg.sumCached)}`, params.color as string | undefined);
+    return wrapPlain(`${labelFor("cacheIn")}${formatCompactToken(agg.sumCached)}`, params.color as string | undefined);
   },
   m_sumTokenTotalIn: (params, ctx) => {
     const filter = parseWindowScope(ctx, params);
     if (!filter) return INLINE_BADARG;
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderWithColor("m_sumTokenTotalIn", params, ctx);
-    return wrapPlain(`in:${formatCompactToken(agg.sumTotalIn)}`, params.color as string | undefined);
+    return wrapPlain(`${labelFor("totalIn")}${formatCompactToken(agg.sumTotalIn)}`, params.color as string | undefined);
   },
   m_sumApiMs: (params, ctx) => {
     const filter = parseWindowScope(ctx, params);
@@ -3577,7 +3670,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const agg = fetchSumAggregate(filter);
     if (agg.sumApiMs === 0) return placeholderWithColor("m_avgTokenInSpeed", params, ctx);
     const tps = (agg.sumIn / agg.sumApiMs) * 1000;
-    return wrapPlain(`in:${formatSpeed(tps)}`, params.color as string | undefined);
+    return wrapPlain(`${labelFor("in")}${formatSpeed(tps)}`, params.color as string | undefined);
   },
   m_avgTokenOutSpeed: (params, ctx) => {
     const filter = parseWindowScope(ctx, params);
@@ -3585,7 +3678,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const agg = fetchSumAggregate(filter);
     if (agg.sumApiMs === 0) return placeholderWithColor("m_avgTokenOutSpeed", params, ctx);
     const tps = (agg.sumOut / agg.sumApiMs) * 1000;
-    return wrapPlain(`out:${formatSpeed(tps)}`, params.color as string | undefined);
+    return wrapPlain(`${labelFor("out")}${formatSpeed(tps)}`, params.color as string | undefined);
   },
   m_quote: (params, ctx) => {
     // Default freq = 1h (per-hour window). The schema resolver
@@ -3676,7 +3769,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const t = ctx.tokens;
     if (!t || t.totals.input == null) return placeholderWithColor("m_tokenInTotal", params, ctx);
     return wrapPlain(
-      `in:${formatCompactToken(t.totals.input)}`,
+      `${labelFor("in")}${formatCompactToken(t.totals.input)}`,
       params.color as string | undefined,
     );
   },
@@ -3684,7 +3777,18 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const t = ctx.tokens;
     if (!t || t.totals.output == null) return placeholderWithColor("m_tokenOutTotal", params, ctx);
     return wrapPlain(
-      `out:${formatCompactToken(t.totals.output)}`,
+      `${labelFor("out")}${formatCompactToken(t.totals.output)}`,
+      params.color as string | undefined,
+    );
+  },
+  // v0.8.0+ — total_input_tokens under the labelTotalIn label
+  // family. Reads the same input as m_tokenInTotal; the two
+  // modules differ in which labels.* axis labels them.
+  m_tokenTotalIn: (params, ctx) => {
+    const t = ctx.tokens;
+    if (!t || t.totals.input == null) return placeholderWithColor("m_tokenTotalIn", params, ctx);
+    return wrapPlain(
+      `${labelFor("totalIn")}${formatCompactToken(t.totals.input)}`,
       params.color as string | undefined,
     );
   },
@@ -3961,6 +4065,12 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         // m_apiCalls:color:<c> / :nulldrop:… → skip "m_apiCalls:"
         // (length 11).
         inline = expandInlineToken(tok, "m_apiCalls", 11, ctx);
+      } else if (tok.startsWith("m_tokenTotalIn:")) {
+        // m_tokenTotalIn: → skip prefix+colon (15 chars). Listed
+        // BEFORE m_tokenTotal: which would otherwise shadow it
+        // (m_tokenTotal: is a 13-char prefix; m_tokenTotalIn: starts
+        // with the same 13 chars).
+        inline = expandInlineToken(tok, "m_tokenTotalIn", 15, ctx);
       } else if (tok.startsWith("m_tokenTotal:")) {
         inline = expandInlineToken(tok, "m_tokenTotal", 13, ctx);
       } else if (tok.startsWith("m_tokenSession:")) {

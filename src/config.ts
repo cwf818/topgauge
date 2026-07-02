@@ -498,6 +498,18 @@ const DEFAULT_CONFIG: {
   fetchTimeoutMs: number;
   display: DisplayMode;
   modeLabels: { used: string; remaining: string; balance: string };
+  // v0.8.0+ — top-level prefix labels for the four token-stat axes
+  // used across all three module families (per-turn / acc /
+  // sum-avg / totals). Each value already includes its trailing
+  // colon (e.g. "In:") so the renderer can just concat. Defaults
+  // reproduce the v0.7.x literal-string behavior exactly so
+  // existing line templates render byte-identical.
+  labels: {
+    labelIn: string;
+    labelOut: string;
+    labelCacheIn: string;
+    labelTotalIn: string;
+  };
   colors: typeof DEFAULT_COLORS;
   cacheHitColors: typeof DEFAULT_CACHE_HIT_COLORS;
   thresholds: typeof DEFAULT_THRESHOLDS;
@@ -533,6 +545,7 @@ const DEFAULT_CONFIG: {
   // so the m_modeLabel module for the DeepSeek path can pick it up. Defaults
   // to "Balance:" to preserve the v0.2.16 hardcoded literal.
   modeLabels: { used: "Usage:", remaining: "Remain:", balance: "Balance:" },
+  labels: { labelIn: "in:", labelOut: "out:", labelCacheIn: "cache:", labelTotalIn: "total:" },
   colors: DEFAULT_COLORS,
   cacheHitColors: DEFAULT_CACHE_HIT_COLORS,
   thresholds: DEFAULT_THRESHOLDS,
@@ -797,6 +810,34 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
         warn("modeLabels.balance must be a string; using default");
     } else {
       warn("modeLabels must be an object; using default");
+    }
+  }
+
+  // v0.8.0+ — top-level token-label overrides. Same partial-merge
+  // shape as modeLabels: each field is optional, invalid types are
+  // dropped with a one-line warn, valid strings overwrite the
+  // default verbatim (no further coercion — callers append the
+  // value to a number, so the configured string must not contain
+  // a trailing space).
+  if ("labels" in raw) {
+    const l = raw.labels;
+    if (l && typeof l === "object" && !Array.isArray(l)) {
+      const lm = l as Record<string, unknown>;
+      const fields: Array<keyof typeof out.labels> = [
+        "labelIn",
+        "labelOut",
+        "labelCacheIn",
+        "labelTotalIn",
+      ];
+      for (const f of fields) {
+        if (typeof lm[f] === "string") {
+          out.labels[f] = lm[f] as string;
+        } else if (f in lm) {
+          warn(`labels.${f} must be a string; using default`);
+        }
+      }
+    } else {
+      warn("labels must be an object; using default");
     }
   }
 
