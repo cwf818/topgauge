@@ -869,6 +869,219 @@ describe("m_window5h/7d — stale coloring (v0.6.0+)", () => {
   });
 });
 
+describe("m_countdown5h/7d — stale AND past-due renders '(n/a🕒 5h)' in STALE_COLOR (v0.7.x)", () => {
+  // The countdown module is the only one that swaps its body on
+  // the stale+past-due combination. The trigger is AND-combined:
+  //   - stale=true, future reset   → "(Xm🕒 5h)" default teal
+  //   - stale=false, past-due      → "(0m🕒 5h)" default teal
+  //   - stale=true, past-due       → "(n/a🕒 5h)" STALE_COLOR (this block)
+  //
+  // The body swap uses the n/a placeholder instead of "0m" so the
+  // user can distinguish "cached value already expired" from a
+  // fresh past-due tick that's about to roll forward.
+
+  // Default teal used by wrapPlainDefault for m_countdown5h/7d.
+  const TEAL_DEFAULT = "\x1b[38;5;80m";
+
+  it("bare m_countdown5h emits '(n/a🕒 5h)' in STALE_COLOR when stale=true AND resetAt is past-due", () => {
+    const nowMs = Date.parse("2026-06-24T12:00:00Z");
+    __resetForTest({
+      statuslineTemplate: ["m_countdown5h"],
+      timeFormat: { minUnit: "m", maxUnitCount: 2 },
+    });
+    try {
+      const line = renderProviderLine("minimax", {
+        mode: "used", nowMs,
+        fiveHour: { pct: 30, resetAt: new Date(nowMs - 60_000).toISOString() },
+        weekly: null, balance: null,
+        ageMs: 5 * 60_000, stale: true, version: "",
+      });
+      const clean = strip(line);
+      // Body should be the n/a form, NOT "0m".
+      assert.ok(
+        clean.includes("(n/a"),
+        `stale+past-due should emit n/a body: ${clean}`,
+      );
+      assert.ok(
+        !clean.includes("0m"),
+        `stale+past-due should NOT include 0m: ${clean}`,
+      );
+      assert.ok(
+        clean.includes("5h)"),
+        `body should still close with the window label: ${clean}`,
+      );
+      // Color: STALE_COLOR wraps the whole block.
+      assert.ok(
+        line.includes(`${STALE_COLOR}(n/a`),
+        `stale+past-due body should start with STALE_COLOR: ${line}`,
+      );
+      assert.ok(
+        !line.includes(TEAL_DEFAULT),
+        `stale+past-due body should NOT use default teal: ${line}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("bare m_countdown5h keeps '(0m🕒 5h)' default teal when stale=false (fresh tick, past-due)", () => {
+    // The fresh-but-past-due case is a separate state — the next
+    // tick will roll the countdown forward, so we don't gray it.
+    const nowMs = Date.parse("2026-06-24T12:00:00Z");
+    __resetForTest({
+      statuslineTemplate: ["m_countdown5h"],
+      timeFormat: { minUnit: "m", maxUnitCount: 2 },
+    });
+    try {
+      const line = renderProviderLine("minimax", {
+        mode: "used", nowMs,
+        fiveHour: { pct: 30, resetAt: new Date(nowMs - 60_000).toISOString() },
+        weekly: null, balance: null,
+        ageMs: 0, stale: false, version: "",
+      });
+      const clean = strip(line);
+      assert.ok(
+        clean.includes("(0m"),
+        `fresh past-due should still emit 0m body: ${clean}`,
+      );
+      assert.ok(
+        !line.includes(STALE_COLOR),
+        `fresh past-due should NOT use STALE_COLOR: ${line}`,
+      );
+      assert.ok(
+        line.includes(TEAL_DEFAULT),
+        `fresh past-due should use default teal: ${line}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("bare m_countdown5h keeps default teal when stale=true but resetAt is still in the future", () => {
+    // stale-only (no past-due): the cached countdown is still
+    // truthful within the fetch window; do not gray.
+    const nowMs = Date.parse("2026-06-24T12:00:00Z");
+    __resetForTest({
+      statuslineTemplate: ["m_countdown5h"],
+      timeFormat: { minUnit: "m", maxUnitCount: 2 },
+    });
+    try {
+      const line = renderProviderLine("minimax", {
+        mode: "used", nowMs,
+        fiveHour: { pct: 30, resetAt: new Date(nowMs + 30 * 60_000).toISOString() },
+        weekly: null, balance: null,
+        ageMs: 5 * 60_000, stale: true, version: "",
+      });
+      const clean = strip(line);
+      assert.ok(
+        clean.includes("(30m"),
+        `stale-but-future should keep its real countdown: ${clean}`,
+      );
+      assert.ok(
+        !line.includes(STALE_COLOR),
+        `stale-but-future should NOT use STALE_COLOR: ${line}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("bare m_countdown7d mirrors the same stale+past-due n/a rule", () => {
+    const nowMs = Date.parse("2026-06-24T12:00:00Z");
+    __resetForTest({
+      statuslineTemplate: ["m_countdown7d"],
+      timeFormat: { minUnit: "m", maxUnitCount: 2 },
+    });
+    try {
+      const line = renderProviderLine("minimax", {
+        mode: "used", nowMs,
+        fiveHour: null,
+        weekly: { pct: 50, resetAt: new Date(nowMs - 60_000).toISOString() },
+        balance: null,
+        ageMs: 5 * 60_000, stale: true, version: "",
+      });
+      const clean = strip(line);
+      assert.ok(
+        clean.includes("(n/a"),
+        `stale+past-due 7d should emit n/a body: ${clean}`,
+      );
+      assert.ok(
+        line.includes(`${STALE_COLOR}(n/a`),
+        `stale+past-due 7d should wrap in STALE_COLOR: ${line}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("inline :color:red wins over the stale+past-due STALE_COLOR override", () => {
+    // Same precedence rule as m_window*: an explicit :color:
+    // always wins. But the BODY swap to n/a still happens — only
+    // the color is overridden.
+    const nowMs = Date.parse("2026-06-24T12:00:00Z");
+    __resetForTest({
+      statuslineTemplate: ["m_countdown5h:color:" + RED],
+      timeFormat: { minUnit: "m", maxUnitCount: 2 },
+    });
+    try {
+      const line = renderProviderLine("minimax", {
+        mode: "used", nowMs,
+        fiveHour: { pct: 30, resetAt: new Date(nowMs - 60_000).toISOString() },
+        weekly: null, balance: null,
+        ageMs: 5 * 60_000, stale: true, version: "",
+      });
+      const clean = strip(line);
+      assert.ok(
+        clean.includes("(n/a"),
+        `explicit :color: should still swap body to n/a: ${clean}`,
+      );
+      assert.ok(
+        line.includes(`${RED}(n/a`),
+        `explicit :color: should override STALE_COLOR on the wrap: ${line}`,
+      );
+      assert.ok(
+        !line.includes(STALE_COLOR),
+        `explicit :color: should NOT also inject STALE_COLOR: ${line}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("other modules are unaffected by the stale+past-due branch", () => {
+    // The m_window5h / m_window7d stale coloring path (v0.6.0+) is
+    // a separate concern — gated on ctx.stale alone, NOT on
+    // past-due. Make sure the new branch in m_countdown5h doesn't
+    // accidentally leak STALE_COLOR into the window module.
+    const nowMs = Date.parse("2026-06-24T12:00:00Z");
+    __resetForTest({
+      statuslineTemplate: ["m_window5h", "m_countdown5h"],
+      timeFormat: { minUnit: "m", maxUnitCount: 2 },
+    });
+    try {
+      const line = renderProviderLine("minimax", {
+        mode: "used", nowMs,
+        fiveHour: { pct: 30, resetAt: new Date(nowMs - 60_000).toISOString() },
+        weekly: null, balance: null,
+        ageMs: 5 * 60_000, stale: true, version: "",
+      });
+      // m_window5h in stale mode uses STALE_COLOR around bar+percent.
+      // It must NOT be confused with the countdown's n/a block.
+      const clean = strip(line);
+      assert.ok(
+        clean.includes("30%"),
+        `window percent should still render: ${clean}`,
+      );
+      assert.ok(
+        clean.includes("(n/a"),
+        `countdown should still render n/a: ${clean}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+});
+
 describe("formatStaleSuffix", () => {
   it("returns empty only for non-finite ageMs; ageMs = 0 renders the X-ago label", () => {
     // v0.4.0: formatStaleSuffix no longer short-circuits on ageMs <= 0.

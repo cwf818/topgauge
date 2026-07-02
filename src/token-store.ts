@@ -148,10 +148,12 @@ export function readSamples(
       ctx_creation: typeof r.ctx_creation === "number" ? r.ctx_creation : 0,
       ctx_read: typeof r.ctx_read === "number" ? r.ctx_read : 0,
       // v6.x — older v0.4.x rows also had `session` / `cwd` here;
-      // they're ignored (the path encodes them). `model` / `apiMs`
-      // are optional; missing → undefined.
+      // they're ignored (the path encodes them). `model` / `apiMs` /
+      // `deltaApiMs` are optional; missing → undefined (older rows
+      // predate the per-tick delta stamp).
       model: typeof r.model === "string" ? r.model : undefined,
       apiMs: typeof r.apiMs === "number" ? r.apiMs : undefined,
+      deltaApiMs: typeof r.deltaApiMs === "number" ? r.deltaApiMs : undefined,
     });
   }
   return out;

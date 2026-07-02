@@ -172,4 +172,23 @@ Then re-install:
 /topgauge-cc:install
 ```
 
+## Dev loop: minimal deploy after every src/ change
+
+**Always run this immediately after `npm test` (or after editing src/)**, before declaring any task done. Claude Code's statusline reads `~/.claude/plugins/cache/topgauge-cc/topgauge-cc/<HIGHEST_VERSION>/dist/index.js` on every tick — editing source without rebuilding + overwriting the cache bundle leaves the runtime reading yesterday's code, and the user sees no change on the statusline.
+
+```bash
+npm run build
+HIGHEST=$(ls -d ~/.claude/plugins/cache/topgauge-cc/topgauge-cc/*/ | sort -V | tail -1)
+cp dist/index.js "${HIGHEST}dist/index.js"
+# Smoke check: pick a unique identifier from your change and grep
+# for it in the cache bundle. Count must be > 0.
+grep -c "<unique_identifier_from_your_change>" "${HIGHEST}dist/index.js"
+```
+
+The trailing `grep -c` is the smoke check: it must be `> 0` to confirm the cache bundle contains the new code. Pure `npm test` is insufficient — tests exercise the source tree, not the runtime cache.
+
+When the change adds new files under `src/` (not just edits existing modules), or touches `scripts/wrapper.sh` / `scripts/install.sh` / `.claude-plugin/*.json`, the minimal overwrite is NOT enough — fall back to the **full mirror** flow above (bump version, mirror sources, update installed_plugins.json, re-run install).
+
+Why this is "every task, not just when asked": the deploy is fast (~50ms cp of a 160kb bundle) and idempotent. Skipping it produces confusing bugs where tests pass but the statusline reads stale. See `memory/local-deploy-procedure.md` for the full procedure and history.
+
 If the loader still says "EPERM" after `dev:uninstall`, the most common cause is a Claude Code process holding a file lock on the marketplace dir. **Quit all running Claude Code sessions** (not just this one) and re-run `npm run dev:uninstall`.

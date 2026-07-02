@@ -231,6 +231,9 @@ async function main(): Promise<void> {
         ctx_read: tokens.current.cacheRead ?? 0,
         model: tokens.modelDisplayName ?? undefined,
         apiMs: tokens.cost.totalApiDurationMs,
+        // Per-tick increment vs the previous append. Already gated
+        // by deltaApiMs > 0 above, so this is always > 0 here.
+        deltaApiMs,
       };
       appendSample(tokens.cwd, tokens.sessionId, sample);
     }
