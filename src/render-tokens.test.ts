@@ -680,6 +680,258 @@ describe("renderTemplate — m_token* modules", () => {
   });
 });
 
+// ----- v0.8.0+ per-turn API-ms delta (m_apiMs) ---------------------------
+//
+// Per-tick delta of cost.totalApiDurationMs formatted as a dhms
+// time string with the "api:" prefix. Distinct from m_accApiMs
+// (session-cumulative token count, prefix "acc:") and m_sumApiMs
+// (cross-project sum token count, prefix "api:" but token
+// formatted). The new module's value semantics:
+//
+//   m_apiMs = current total_api_duration_ms − prev total_api_duration_ms
+//
+// Gate: hasDelta (deltaApi > 0). Idle tick (current == prev) →
+// "api:--". No stdin or no sessionId → "api:--". The
+// writeBack path mirrors m_tokenIn / m_tokenOut: the renderer
+// fires setPrevTick on every call so the next tick has a fresh
+// baseline regardless of which per-turn module appears in the
+// user's template.
+
+describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
+  beforeEach(() => {
+    __resetPrevTickForTest("any-session");
+  });
+
+  it("m_apiMs: first tick (prev=0, current=90_000) → 'api:1m'", () => {
+    // Per the per-turn-delta contract, first tick assumes
+    // prior baseline = 0 → delta = 90_000ms → "1m" under the
+    // default minUnit='m'.
+    setPrevTick(
+      "sess-apims-first",
+      { apiMs: 0, in: 0, out: 0, cacheRead: 0 },
+      "D:\\test",
+    );
+    const out = renderTemplate(
+      ["m_apiMs"],
+      ctxFor(
+        fakeSnapshot({
+          sessionId: "sess-apims-first",
+          cost: { totalDurationMs: 120_000, totalApiDurationMs: 90_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+        }),
+      ),
+    ).join("\n");
+    assert.equal(strip(out), "api:1m");
+  });
+
+  it("m_apiMs: delta=90_000 (prev=0, current=90_000) renders as 'api:1m' under default minUnit='m'", () => {
+    // Same delta as the first-tick test, but verifies the
+    // prev-tick cache is read on subsequent ticks too.
+    setPrevTick(
+      "sess-apims-delta",
+      { apiMs: 0, in: 0, out: 0, cacheRead: 0 },
+      "D:\\test",
+    );
+    const out = renderTemplate(
+      ["m_apiMs"],
+      ctxFor(
+        fakeSnapshot({
+          sessionId: "sess-apims-delta",
+          cost: { totalDurationMs: 120_000, totalApiDurationMs: 90_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+        }),
+      ),
+    ).join("\n");
+    assert.equal(strip(out), "api:1m");
+  });
+
+  it("m_apiMs: sub-minute delta (40s) renders '<1m' under default minUnit='m'", () => {
+    // Default cfg().timeFormat.minUnit is 'm' → sub-minute deltas
+    // collapse to '<1m'. The user can opt into second precision
+    // via timeFormat.minUnit: 's' in config.json.
+    setPrevTick(
+      "sess-apims-sub",
+      { apiMs: 0, in: 0, out: 0, cacheRead: 0 },
+      "D:\\test",
+    );
+    __resetForTest({
+      timeFormat: { ...configStore.get().timeFormat, minUnit: "m" },
+    });
+    const out = renderTemplate(
+      ["m_apiMs"],
+      ctxFor(
+        fakeSnapshot({
+          sessionId: "sess-apims-sub",
+          cost: { totalDurationMs: 60_000, totalApiDurationMs: 40_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+        }),
+      ),
+    ).join("\n");
+    assert.equal(strip(out), "api:<1m");
+  });
+
+  it("m_apiMs: sub-minute delta (40s) renders '40s' under minUnit='s' override", () => {
+    // The user-facing knob: timeFormat.minUnit: 's' enables
+    // second precision for sub-minute deltas. The format
+    // pipeline honors cfg().timeFormat.minUnit — same as
+    // m_sessionDuration / m_sessionApiDuration.
+    setPrevTick(
+      "sess-apims-sec",
+      { apiMs: 0, in: 0, out: 0, cacheRead: 0 },
+      "D:\\test",
+    );
+    __resetForTest({
+      timeFormat: { ...configStore.get().timeFormat, minUnit: "s" },
+    });
+    const out = renderTemplate(
+      ["m_apiMs"],
+      ctxFor(
+        fakeSnapshot({
+          sessionId: "sess-apims-sec",
+          cost: { totalDurationMs: 60_000, totalApiDurationMs: 40_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+        }),
+      ),
+    ).join("\n");
+    assert.equal(strip(out), "api:40s");
+  });
+
+  it("m_apiMs: idle tick (current == prev → deltaApi=0) → placeholder 'api:--'", () => {
+    setPrevTick(
+      "sess-apims-idle",
+      { apiMs: 30_000, in: 0, out: 0, cacheRead: 0 },
+      "D:\\test",
+    );
+    const out = renderTemplate(
+      ["m_apiMs"],
+      ctxFor(
+        fakeSnapshot({
+          sessionId: "sess-apims-idle",
+          cost: { totalDurationMs: 60_000, totalApiDurationMs: 30_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+        }),
+      ),
+    ).join("\n");
+    assert.equal(strip(out), "api:--");
+    assert.ok(out.includes(STALE), `expected STALE wrap on: ${JSON.stringify(out)}`);
+  });
+
+  it("m_apiMs: no stdin (tokens=null) → placeholder 'api:--'", () => {
+    const out = renderTemplate(["m_apiMs"], ctxFor(null)).join("\n");
+    assert.equal(strip(out), "api:--");
+    assert.ok(out.includes(STALE), `expected STALE wrap on: ${JSON.stringify(out)}`);
+  });
+
+  it("m_apiMs: totalApiDurationMs=null on an otherwise-present snapshot → placeholder 'api:--'", () => {
+    // totalApiDurationMs is OPTIONAL in TokenSnapshot.cost. When
+    // null but other fields are present, computeAndCacheTickDelta
+    // bails to hasDelta=false → placeholder fires.
+    const out = renderTemplate(
+      ["m_apiMs"],
+      ctxFor(
+        fakeSnapshot({
+          sessionId: "sess-apims-noapi",
+          cost: { totalDurationMs: 600_000, totalApiDurationMs: null, totalLinesAdded: 0, totalLinesRemoved: 0 },
+        }),
+      ),
+    ).join("\n");
+    assert.equal(strip(out), "api:--");
+  });
+
+  it("m_apiMs: inline :color:brightGreen wraps the chunk in the green SGR", () => {
+    setPrevTick(
+      "sess-apims-color",
+      { apiMs: 0, in: 0, out: 0, cacheRead: 0 },
+      "D:\\test",
+    );
+    const out = renderTemplate(
+      ["m_apiMs:color:brightGreen"],
+      ctxFor(
+        fakeSnapshot({
+          sessionId: "sess-apims-color",
+          cost: { totalDurationMs: 120_000, totalApiDurationMs: 90_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+        }),
+      ),
+    ).join("\n");
+    assert.equal(strip(out), "api:1m");
+    assert.ok(out.includes(GREEN), `expected GREEN wrap on: ${JSON.stringify(out)}`);
+  });
+
+  it("m_apiMs: inline :nulldrop:true is a no-op (function never returns null)", () => {
+    // The m_apiMs renderer always returns either "api:1m" or
+    // "api:--" placeholder (via wrapPlainDefault /
+    // placeholderWithColor, which wrap in STALE_COLOR). Therefore
+    // `:nulldrop:true` has no effect — the dispatcher can only
+    // short-circuit on a null return. Same property as
+    // m_tokenInTotal / m_apiCalls / m_sessionDuration.
+    setPrevTick(
+      "sess-apims-nulldrop",
+      { apiMs: 0, in: 0, out: 0, cacheRead: 0 },
+      "D:\\test",
+    );
+    const out = renderTemplate(
+      ["m_apiMs:nulldrop:true"],
+      ctxFor(
+        fakeSnapshot({
+          sessionId: "sess-apims-nulldrop",
+          cost: { totalDurationMs: 120_000, totalApiDurationMs: 90_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+        }),
+      ),
+    ).join("\n");
+    assert.equal(strip(out), "api:1m");
+  });
+
+  it("m_apiMs: writeBack fires setPrevTick so the NEXT tick has a fresh baseline", () => {
+    // When m_apiMs is rendered ALONE (no other per-turn module),
+    // it's the only consumer of computeAndCacheTickDelta. The
+    // renderer must still fire setPrevTick so the NEXT tick can
+    // compute the correct delta (otherwise we'd see the original
+    // baseline forever).
+    setPrevTick(
+      "sess-apims-write",
+      { apiMs: 0, in: 0, out: 0, cacheRead: 0 },
+      "D:\\test",
+    );
+    // First render — delta = 90_000 - 0 = 90_000 → "api:1m".
+    renderTemplate(
+      ["m_apiMs"],
+      ctxFor(
+        fakeSnapshot({
+          sessionId: "sess-apims-write",
+          cost: { totalDurationMs: 120_000, totalApiDurationMs: 90_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+        }),
+      ),
+    );
+    // Second render — delta = 180_000 - 90_000 = 90_000 → "api:1m".
+    // If writeBack didn't fire, this would still see prev=0 and
+    // produce "api:3m" (wrong).
+    const out2 = renderTemplate(
+      ["m_apiMs"],
+      ctxFor(
+        fakeSnapshot({
+          sessionId: "sess-apims-write",
+          cost: { totalDurationMs: 240_000, totalApiDurationMs: 180_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+        }),
+      ),
+    ).join("\n");
+    assert.equal(strip(out2), "api:1m");
+  });
+
+  it("m_apiMs: default tint is brown (matches the time-format family)", () => {
+    setPrevTick(
+      "sess-apims-brown",
+      { apiMs: 0, in: 0, out: 0, cacheRead: 0 },
+      "D:\\test",
+    );
+    const out = renderTemplate(
+      ["m_apiMs"],
+      ctxFor(
+        fakeSnapshot({
+          sessionId: "sess-apims-brown",
+          cost: { totalDurationMs: 120_000, totalApiDurationMs: 90_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+        }),
+      ),
+    ).join("\n");
+    const BROWN = "\x1b[38;5;130m";
+    assert.ok(out.includes(BROWN), `expected BROWN wrap on: ${JSON.stringify(out)}`);
+  });
+});
+
 describe("renderTemplate — newline separator (v0.4.0+ multi-line layout)", () => {
   beforeEach(() => {
     __resetForTest({

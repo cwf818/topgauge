@@ -2072,6 +2072,35 @@ const MODULES: Record<string, Module> = {
     const ms = c.tokens?.cost.totalApiDurationMs;
     return ms != null ? wrapPlainDefault("m_sessionApiDuration", formatRemainingMs(ms), undefined) : placeholderBare("m_sessionApiDuration", c);
   },
+  // v0.8.0+ — per-turn delta of cost.totalApiDurationMs rendered
+  // as a dhms time string with the "api:" prefix. Reuses the
+  // shared computeAndCacheTickDelta memo (same r.deltaApi that
+  // m_tokenIn / m_tokenOut / m_tokenInSpeed read), so the
+  // prev-tick baseline is maintained regardless of which
+  // per-turn module appears in the user's template.
+  //
+  // Gate: hasDelta (deltaApi > 0). Idle ticks → "api:--"
+  // placeholder via PLACEHOLDERS; first tick with prev=0
+  // baseline → real value (per the per-turn-delta contract:
+  // current_usage IS the per-turn delta, so the safe assumption
+  // is prior=0). No snapshot / no sessionId → placeholder.
+  //
+  // The writeBack path mirrors m_tokenIn / m_tokenOut: when
+  // computeAndCacheTickDelta returns a non-null writeBack we
+  // fire setPrevTick so the NEXT tick has a fresh baseline.
+  // When this module is rendered alone in a template (no other
+  // per-turn module), the writeBack here is the only one —
+  // still sufficient because setPrevTick is idempotent and the
+  // next tick's computeAndCacheTickDelta will overwrite with
+  // the freshest snapshot.
+  m_apiMs: (c) => {
+    const t = c.tokens;
+    if (!t || !t.sessionId) return placeholderBare("m_apiMs", c);
+    const r = computeAndCacheTickDelta(c);
+    if (r.writeBack && t.sessionId) setPrevTick(t.sessionId, r.writeBack, t.cwd);
+    if (!r.hasDelta) return placeholderBare("m_apiMs", c);
+    return wrapPlainDefault("m_apiMs", `api:${formatRemainingMs(r.deltaApi)}`, undefined);
+  },
   // Session-cumulative lines added (stdin.cost.total_lines_added).
   // v6.x: missing field → "+ --" placeholder (was: drop). Zero is
   // a real value and renders as "+ 0".
@@ -2502,6 +2531,11 @@ const DEFAULT_COLORS: Record<string, string> = {
   // Duration / count class (numeric but NOT 5-band / scale)
   m_sessionDuration: NAMED_PALETTE.brown,
   m_sessionApiDuration: NAMED_PALETTE.brown,
+  // v0.8.0+ — per-turn delta of cost.totalApiDurationMs,
+  // formatted as a dhms time string ("api:5s" / "api:1m30s").
+  // Brown matches the existing time-format family; the "api:"
+  // prefix is hardcoded (not part of the labels.* axis set).
+  m_apiMs: NAMED_PALETTE.brown,
   m_linesAdded: "\x1b[1;38;5;22m",   // bold + dark green (muted git-style added)
   m_linesRemoved: "\x1b[1;38;5;88m", // bold + dim red (muted git-style removed)
   m_apiCalls: NAMED_PALETTE.cyan,
@@ -2958,6 +2992,13 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   // "+ --", "-- t/s"). Empty body = bare dash.
   m_sessionDuration: placeholderDashesUnit("--"),
   m_sessionApiDuration: placeholderDashesUnit("--"),
+  // v0.8.0+ — per-turn API-ms delta placeholder. Shape preserves
+  // the "api:" prefix + dashes-unit ("--") so the rendered body
+  // matches the live output ("api:5s" / "api:--"). Note the dash
+  // count stays at "--" (not "5s:--") because the dhms slot
+  // collapses to a single segment when value is absent — there's
+  // no "5h 30m" structure to mirror at placeholder time.
+  m_apiMs: placeholderDashesUnit("api:--"),
   m_linesAdded: placeholderDashesUnit("+ --"),
   m_linesRemoved: placeholderDashesUnit("- --"),
   // v0.8.0+ — sum/avg advanced statistics placeholders. Same shape
@@ -3278,6 +3319,10 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_ccversion: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_sessionDuration: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_sessionApiDuration: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  // v0.8.0+ — per-turn API-ms delta. Same inline-args grammar as
+  // m_sessionDuration (color + nulldrop). The dispatcher accepts
+  // both `:color:` and `:nulldrop:` overrides via this schema.
+  m_apiMs: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_linesAdded: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_linesRemoved: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_tokenInTotal: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
@@ -3755,6 +3800,18 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (ms == null) return placeholderWithColor("m_sessionApiDuration", params, ctx);
     return wrapPlainDefault("m_sessionApiDuration", formatRemainingMs(ms), params.color as string | undefined);
   },
+  // v0.8.0+ — per-turn API-ms delta (mirror of MODULES path with
+  // inline-args color support). Bare-form default color comes
+  // from DEFAULT_COLORS.m_apiMs; the inline `:color:` override
+  // takes precedence here.
+  m_apiMs: (params, ctx) => {
+    const t = ctx.tokens;
+    if (!t || !t.sessionId) return placeholderWithColor("m_apiMs", params, ctx);
+    const r = computeAndCacheTickDelta(ctx);
+    if (r.writeBack && t.sessionId) setPrevTick(t.sessionId, r.writeBack, t.cwd);
+    if (!r.hasDelta) return placeholderWithColor("m_apiMs", params, ctx);
+    return wrapPlainDefault("m_apiMs", `api:${formatRemainingMs(r.deltaApi)}`, params.color as string | undefined);
+  },
   m_linesAdded: (params, ctx) => {
     const n = ctx.tokens?.cost.totalLinesAdded;
     if (n == null) return placeholderWithColor("m_linesAdded", params, ctx);
@@ -4172,6 +4229,14 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         inline = expandInlineToken(tok, "m_sessionApiDuration", 21, ctx);
       } else if (tok.startsWith("m_sessionDuration:")) {
         inline = expandInlineToken(tok, "m_sessionDuration", 18, ctx);
+      } else if (tok.startsWith("m_apiMs:")) {
+        // v0.8.0+ — per-turn API-ms delta. No prefix-shadowing
+        // concern: m_apiMs (8) and m_accApiMs (11) share the
+        // "m_a" prefix but diverge at position 3 ("piMs" vs
+        // "ccApiMs"), so the literal startsWith check is exact.
+        // Placed adjacent to m_sessionDuration for cohesion
+        // (both are dhms time-format modules).
+        inline = expandInlineToken(tok, "m_apiMs", 8, ctx);
       } else if (tok.startsWith("m_linesAdded:")) {
         inline = expandInlineToken(tok, "m_linesAdded", 13, ctx);
       } else if (tok.startsWith("m_linesRemoved:")) {
