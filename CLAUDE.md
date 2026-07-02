@@ -36,7 +36,7 @@ src/
   composition.ts      # reads TOPGAUGE_CC_UPSTREAM env, prepends (preserving ANSI/multi-line) and appends line
   __fixtures__/       # remains.real.json, balance.real.json, balance.multi.json, …
   session-parse.ts    # parseTokenSnapshot — stdin JSON → TokenSnapshot (extracted from index.ts so unit tests don't drag index side effects)
-  token-store.ts      # append-only JSONL state file at state/<projectHash>/<sessionId>.jsonl for m_token5h/m_token7d (v0.4.x+)
+  token-store.ts      # append-only JSONL state file at state/<projectHash>/<sessionId>.jsonl for sum/avg modules (v0.4.x+; v0.8.0 adds readAllSamples cross-project scan)
   *.test.ts           # node:test unit tests
 .claude-plugin/
   plugin.json         # plugin manifest (name, version, commands, homepage)
@@ -70,7 +70,37 @@ Claude Code's `statusLine.command` spawns a child process that reads a session J
 4. Cache: `src/cache.ts` holds a single 60-second TTL entry. On fetch failure it returns the stale value so the statusline doesn't blank.
 5. Render: `src/render.ts` emits a single compact line `Usage: ▓░░░░░░░ 9% (4h47m🕔 5h) · ▓▓░░░░░░ 25% (2d8h🕔 7d)`. Layout: a single mode label prefix (`Usage:` or `Remain:`), then per-window `<bar> <coloredN%><RESET> (<countdown><glyph> <windowLabel>)` segments joined with ` · `. When the window has no reset time (DeepSeek, legacy), the segment renders as ` <windowLabel>` (no parens, no arrow). Sub-minute remaining renders as `<1m` by default (so a window about to reset is distinguishable from one with a full minute left) — set `stale.minUnit: "s"` to opt into second precision (`47s` instead). Default mode is **`used`** (line begins with `Usage:`); set `display: "remaining"` in `config.json` to switch. 5-band colors (256-color SGR): bright green / dark green / yellow / orange / red, applied to the displayed value at 0/20/40/60/80 boundaries. The colored chunk is always on the right side of the bar, sized by the displayed value. The reset arrow glyph comes from `stale.resetArrows` (default 12 clock-face emoji `🕛,🕚,🕙,…,🕐`), indexed by `remainingMs / resetDurationMs` so the array reads left-to-right as "few remaining → many remaining" (i.e. ascending by remaining-time ratio). Two glyphs (`["⏳","⌛"]`) reproduce the v0.2.1 hourglass pair; one glyph is static. Providers without start data (DeepSeek, legacy) fall back to index 0.
 6. Compose: `src/composition.ts` emits upstream (whatever `TOPGAUGE_CC_UPSTREAM` contains — possibly multi-line, possibly ANSI-colored) on the leading lines and our line last. It strips only trailing whitespace, injects `\x1b[0m` if upstream ends with an unclosed SGR, and otherwise preserves upstream verbatim.
-7. **Token-usage module (v0.4.0+):** In addition to the tokenplan 5h/7d window display, the plugin reads the session JSON from stdin (verified schema: `context_window.{total_input_tokens, total_output_tokens, current_usage.{input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens}}`, `cost.total_duration_ms`, `session_id`, `cwd`) and exposes fine-grained modules via `lineTemplate`: `m_tokenIn`, `m_tokenOut`, `m_tokenTotal`/`m_tokenSession`, `m_ctx`, `m_cacheHitRate`, `m_cacheRead`, `m_token5h`, `m_token7d`, `m_tokenInSpeed`, `m_tokenOutSpeed`. All modules are opt-in — the default `lineTemplate` does NOT include any token module, so existing v0.3.x configs render byte-identical after upgrade. Live data comes from stdin (zero IO for m_tokenIn/m_tokenOut/m_ctx/m_cacheRead/m_cacheHitRate/m_tokenInSpeed/m_tokenOutSpeed); 5h/7d modules read an append-only JSONL state file at `state/<projectHash>/<sessionId>.jsonl` (~120B per tick, ~700KB over 7d). See `memory/token-usage-design-adr.md` for the full module list, color policy, and trade-off rationale.
+7. **Token-usage modules (v0.8.0+):** In addition to the tokenplan 5h/7d window display, the plugin reads the session JSON from stdin (verified schema: `context_window.{total_input_tokens, total_output_tokens, current_usage.{input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens}}`, `cost.total_duration_ms`, `session_id`, `cwd`) and exposes fine-grained modules via `lineTemplate`. Modules are split into three tiers — **per-turn** (stdin-only, zero IO), **acc** (in-memory three-layer accumulator: session / project / model), and **sum/avg** (cross-project JSONL scan, TTL=300s). All modules are opt-in — the default `lineTemplate` does NOT include any token module, so existing v0.7.x configs render byte-identical after upgrade. The `m_tokenTotalIn` invariant (`total_input_tokens == current.input_tokens + current.cache_read_input_tokens`) is verified in `session-parse.ts` and a violation emits a `warning` to `state/<projectHash>/diagnostics.jsonl` (gated by `TOPGAUGE_CC_DIAGNOSTICS_ENABLE=1`, 60s dedupe).
+
+   **Per-turn modules (stdin-only):**
+   - `m_tokenIn` / `m_tokenOut` — current.input / current.output (per-turn deltas)
+   - `m_tokenCachedIn` — current.cacheRead
+   - `m_tokenTotalIn` — totals.input (session cumulative)
+   - `m_tokenInTotal` / `m_tokenOutTotal` — totals.input / totals.output (session cumulative)
+   - `m_tokenSession` — `totals.input + totals.output`
+   - `m_tokenInSpeed` / `m_tokenOutSpeed` — session-avg tps (last-active-tick cache, color:scale)
+   - `m_contextSize` — totals.input (actual used)
+   - `m_contextWidowsSize` — context_window.size (capacity; typo preserved)
+   - `m_contextUsedPercent` / `m_contextRemainingPercent` — contextWindow.usedPct / .remainingPct
+   - `m_cacheHitRate` — per-turn `m_tokenCachedIn / m_tokenTotalIn`
+
+   **Acc modules (three-layer in-memory accumulator, see `status-store.ts`):**
+   - `m_accTokenIn` / `m_accTokenOut` / `m_accTokenCachedIn` — per-tick current.input / current.output / current.cacheRead
+   - `m_accTokenTotalIn` — per-tick totals.input delta
+   - `m_accApiMs` — per-tick cost.totalApiDurationMs delta
+   - `m_accCacheHitRate` — `m_accTokenCachedIn / m_accTokenTotalIn`
+   - Inline args: `:scope:<session|project|model>`, `:nulldrop:<b>`, `:color:<c>`.
+
+   **Sum/avg modules (cross-project JSONL scan, TTL=300s):**
+   - `m_sumTokenIn` / `m_sumTokenOut` / `m_sumTokenCachedIn` / `m_sumTokenTotalIn` — sum of ctx_in / out / ctx_read / in over the window
+   - `m_sumApiMs` — sum of deltaApiMs over the window
+   - `m_avgCacheHitRate` — `sumTokenCachedIn / sumTokenTotalIn` over the window
+   - `m_avgTokenInSpeed` / `m_avgTokenOutSpeed` — `sumTokenIn / sumApiMs * 1000` (t/s) over the window
+   - Inline args: `:window:<dhms|all>` (default 5h), `:model:<active|name|all>` (default active), `:align:<true|false>` (default true; only effective when model=active AND window∈{5h,7d} AND ctx.fiveHour/weekly.resetStartAt is set, else wall-clock fallback), `:nulldrop:<b>`, `:color:<c>`.
+
+   **Removed in v0.8.0 (no alias):** `m_token5h`, `m_token7d`, `m_tokenInAvg`, `m_tokenOutAvg`, `m_ctx` (→ `m_contextSize`), `m_cachedTokenIn` (→ `m_tokenCachedIn`), `m_cacheRead` (→ `m_tokenCachedIn`), `m_contextUsed` (→ `m_contextUsedPercent`). The old v0.4.0 ADR at `memory/token-usage-design-adr.md` is marked DEPRECATED — refer to [[token-modules-redesign-v0-8-0]] + [[sum-avg-modules-step2]] for the v0.8.0 contract.
+
+   The append-only JSONL state file `state/<projectHash>/<sessionId>.jsonl` (~120B per tick, ~700KB over 7d) is the data source for sum/avg; per-turn modules read stdin directly. The cross-project scanner `readAllSamples(sinceMs)` walks every `state/<projectHash>/` subdir and concatenates per-row `TokenSample`s.
 
 ### Per-Project State Layout (v0.4.x+)
 
