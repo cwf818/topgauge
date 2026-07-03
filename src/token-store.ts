@@ -4,7 +4,7 @@
 // `<claude-root>/plugins/topgauge-cc/state/<projectHash>/<sessionId>.jsonl`
 // (one per project, NOT in a `token-samples/` subdir — see Per-Project Layout below).
 // m_token5h / m_token7d read this file (filtered to the window) on every
-// render. m_tokenIn / m_tokenOut / m_ctx / m_cacheRead / m_cacheHitRate /
+// render. m_tokenIn / m_tokenOut / m_ctx / m_cacheRead / m_tokenHitRate /
 // m_tokenInSpeed / m_tokenOutSpeed do NOT read this file — they read the
 // live stdin snapshot directly, which is cheaper and always fresh.
 //

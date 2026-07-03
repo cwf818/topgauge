@@ -78,25 +78,26 @@ Claude Code's `statusLine.command` spawns a child process that reads a session J
    - `m_tokenTotalIn` — totals.input (session cumulative)
    - `m_tokenInTotal` / `m_tokenTotalOut` — totals.input / totals.output (session cumulative; v0.8.0+ renamed from `m_tokenOutTotal` to sit in the `totalOut` family alongside `totalOut` on-disk / `m_accTokenOut` / `m_sumTokenOut`)
    - `m_tokenSession` — `totals.input + totals.output`
-   - `m_tokenInSpeed` / `m_tokenOutSpeed` — session-avg tps (last-active-tick cache, color:scale)
-   - `m_apiMs` — per-turn delta of `cost.totalApiDurationMs` formatted as dhms time string with hardcoded `api:` prefix (e.g. `api:1m`, `api:5s`, `api:<1m`); idle tick → `api:--` placeholder. Honors `timeFormat.minUnit` (`m` default → sub-minute collapses to `<1m`; `s` opt-in → second precision). Reuses `computeAndCacheTickDelta` memo so prev-tick baseline is shared with `m_tokenIn` / `m_tokenOut` / `m_tokenInSpeed`.
+   - `m_tokenInSpeed` / `m_tokenOutSpeed` — session-avg tps (last-active-tick cache, color:scale). v0.8.x R7 — TTL gate disabled: idle ticks always surface the cached value STALE_COLORed, never expire. The `LAST_ACTIVE_TTL_MS` constant in `status-store.ts` is retained for future opt-in via config, but the read path no longer compares against it.
+   - `m_apiMs` — per-turn delta of `cost.totalApiDurationMs` formatted as dhms time string with hardcoded `api:` prefix (e.g. `api:1m`, `api:5s`, `api:<1m`); idle tick → cached value STALE_COLORed (R7; previously the `api:--` placeholder after 60s). Honors `timeFormat.minUnit` (`m` default → sub-minute collapses to `<1m`; `s` opt-in → second precision). Reuses `computeAndCacheTickDelta` memo so prev-tick baseline is shared with `m_tokenIn` / `m_tokenOut` / `m_tokenInSpeed`.
    - `m_contextSize` — totals.input (actual used)
    - `m_contextWindowsSize` — context_window.size (capacity; typo preserved)
    - `m_contextUsedPercent` / `m_contextRemainingPercent` — contextWindow.usedPct / .remainingPct
-   - `m_cacheHitRate` — per-turn `m_tokenCachedIn / m_tokenTotalIn`
+   - `m_tokenHitRate` — per-turn `m_tokenCachedIn / m_tokenTotalIn`. v0.8.x R7 — TTL gate disabled: idle ticks (or stdin lacking cacheRead) surface the cached percentage STALE_COLORed, never expire. Same `LAST_ACTIVE_TTL_MS` retention note as the speed/apiMs modules.
 
    **Acc modules (three-layer in-memory accumulator, see `status-store.ts`):**
    - `m_accTokenIn` / `m_accTokenOut` / `m_accTokenCachedIn` — per-tick current.input / current.output / current.cacheRead
    - `m_accTokenTotalIn` — per-tick totals.input delta
    - `m_accApiMs` — per-tick cost.totalApiDurationMs delta
-   - `m_accCacheHitRate` — `m_accTokenCachedIn / m_accTokenTotalIn`
-   - Inline args: `:scope:<session|project|model>`, `:nulldrop:<b>`, `:color:<c>`.
+   - `m_accApiCalls` — `accApiCount` (count of valid API calls in the chosen scope's slot, renders `calls:N`)
+   - `m_accTokenHitRate` — `m_accTokenCachedIn / m_accTokenTotalIn` (renders `hit:N%` — v0.8.x R8 unified the prefix with m_tokenHitRate / m_sumTokenHitRate so all three hit-rate modules share the same `hit:` prefix)
+   - Inline args: `:scope:<session|project|model|ccsession>` (default `ccsession` — per-claude-code-process, resets only on totalApiMs regression), `:nulldrop:<b>`, `:color:<c>`.
 
    **Sum/avg modules (cross-project JSONL scan, TTL=300s):**
    - `m_sumTokenIn` / `m_sumTokenOut` / `m_sumTokenCachedIn` / `m_sumTokenTotalIn` — sum of ctx_in / out / ctx_read / in over the window
    - `m_sumApiMs` — sum of deltaApiMs over the window
-   - `m_avgCacheHitRate` — `sumTokenCachedIn / sumTokenTotalIn` over the window
-   - `m_avgTokenInSpeed` / `m_avgTokenOutSpeed` — `sumTokenIn / sumApiMs * 1000` (t/s) over the window
+   - `m_sumTokenHitRate` — `sumTokenCachedIn / sumTokenTotalIn` over the window
+   - `m_sumTokenInSpeed` / `m_sumTokenOutSpeed` — `sumTokenIn / sumApiMs * 1000` (t/s) over the window
    - Inline args: `:window:<dhms|all>` (default 5h), `:model:<active|name|all>` (default active), `:align:<true|false>` (default true; only effective when model=active AND window∈{5h,7d} AND ctx.fiveHour/weekly.resetStartAt is set, else wall-clock fallback), `:nulldrop:<b>`, `:color:<c>`.
 
    **Removed in v0.8.0 (no alias):** `m_token5h`, `m_token7d`, `m_tokenInAvg`, `m_tokenOutAvg`, `m_ctx` (→ `m_contextSize`), `m_cachedTokenIn` (→ `m_tokenCachedIn`), `m_cacheRead` (→ `m_tokenCachedIn`), `m_contextUsed` (→ `m_contextUsedPercent`). The old v0.4.0 ADR at `memory/token-usage-design-adr.md` is marked DEPRECATED — refer to [[token-modules-redesign-v0-8-0]] + [[sum-avg-modules-step2]] for the v0.8.0 contract.

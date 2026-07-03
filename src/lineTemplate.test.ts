@@ -967,7 +967,7 @@ describe("lineTemplate — m_modeLabel:color inline-args tokens", () => {
 //   - plain-text modules (m_version, m_tokenIn, …) — the override
 //     wraps the bare body in `<c>body<RESET>`.
 //   - already-colored modules (m_window5h/7d, m_balance, m_age,
-//     m_cacheHitRate, m_cacheRead, m_tokenInSpeed, m_tokenOutSpeed) —
+//     m_tokenHitRate, m_cacheRead, m_tokenInSpeed, m_tokenOutSpeed) —
 //     the override REPLACES the natural color (user always wins).
 //   - invalid :color: → hard noop (drop + warn), same as m_label.
 //   - bare `<module>` form is byte-for-byte identical to pre-v0.3.3.
@@ -1420,9 +1420,9 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
     assert.ok(line.includes("\x1b[38;5;196min:50.0 t/s"), `got: ${JSON.stringify(line)}`);
   });
 
-  it("m_cacheHitRate|color|brightGreen replaces the band-based cache color with brightGreen", () => {
+  it("m_tokenHitRate|color|brightGreen replaces the band-based cache color with brightGreen", () => {
     __resetForTest({
-      statuslineTemplate:["m_cacheHitRate|color|brightGreen"],
+      statuslineTemplate:["m_tokenHitRate|color|brightGreen"],
     });
     // v0.8.0+ per-turn formula: current.cacheRead / totals.input.
     // Set totals.input=1000, current.cacheRead=900 → 90.0%.

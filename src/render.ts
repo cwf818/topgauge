@@ -906,6 +906,51 @@ export function setLastSpeed(
   void _sessionId;
   statusStore.writeLastActive(cwd, direction, tps);
 }
+// v0.8.x — parallel helpers for m_apiMs's TTL-bounded fallback
+// cache. Mirrors peekLastSpeed/setLastSpeed but stores the raw
+// deltaApiMs (NOT a tps) on the "apiMs" direction slot. The
+// 60s TTL on status-store's readLastActive applies the same way
+// as the tps slots — an idle tick within 60s of the last active
+// tick renders the cached ms value (STALE_COLORed), exactly like
+// m_tokenInSpeed/m_tokenOutSpeed's idle-tick fallback.
+export function peekLastApiMs(
+  _sessionId: string,
+  cwd?: string | null,
+): number | null {
+  void _sessionId;
+  return statusStore.readLastActive(cwd, "apiMs");
+}
+export function setLastApiMs(
+  _sessionId: string,
+  deltaApiMs: number,
+  cwd?: string | null,
+): void {
+  void _sessionId;
+  statusStore.writeLastActive(cwd, "apiMs", deltaApiMs);
+}
+// v0.8.x — parallel helpers for m_tokenHitRate's TTL-bounded
+// fallback cache. Mirrors peekLastApiMs/setLastApiMs but stores
+// the per-turn hit-rate percentage (e.g. 99.5 for "99.5%") on the
+// "tokenHitRate" direction slot. The 60s TTL on status-store's
+// readLastActive applies the same way: when this tick's stdin
+// lacks cache_read_input_tokens, render the cached percentage
+// STALE_COLORed within the TTL window; outside the window or with
+// no prior measurement, drop to the "hit:n/a" placeholder.
+export function peekLastTokenHitRate(
+  _sessionId: string,
+  cwd?: string | null,
+): number | null {
+  void _sessionId;
+  return statusStore.readLastActive(cwd, "tokenHitRate");
+}
+export function setLastTokenHitRate(
+  _sessionId: string,
+  pct: number,
+  cwd?: string | null,
+): void {
+  void _sessionId;
+  statusStore.writeLastActive(cwd, "tokenHitRate", pct);
+}
 // Test-only: clear the last-active entry for a direction. v0.4.x:
 // the entry lives in status.json under the project dir; tests
 // that need a clean slot should use a tmp-dir path resolver.
@@ -1567,7 +1612,7 @@ function computeTickDelta(
 // support, peekAcc returns null on the very first tick and the
 // m_acc* module stays at the "n/a" placeholder forever. Both
 // accBody and accHitRateBody invoke this helper at the top, so
-// placing m_accTokenIn alone in a template (or m_accCacheHitRate
+// placing m_accTokenIn alone in a template (or m_accTokenHitRate
 // alone) now works the same way m_totalTokenIn / m_totalTokenOut
 // used to.
 //
@@ -1630,7 +1675,7 @@ function accPrimer(ctx: RenderContext): void {
     accApi: currentApi,
     // accCached intentionally NOT touched here — see header
     // "Primer gate" above. The m_accTokenCachedIn /
-    // m_accCacheHitRate bodies call accCachePrimer() to bump
+    // m_accTokenHitRate bodies call accCachePrimer() to bump
     // accCached on a separate code path.
     accCached: 0,
     accApiCount: r.deltaApi > 0 && t.current.input != null && t.current.input > 0 ? 1 : 0,
@@ -1652,7 +1697,7 @@ function accPrimer(ctx: RenderContext): void {
 // Fire the cache-specific delta (accCached) on a separate code
 // path. The m_token* family does NOT bump accCached on its own
 // (it gates on a separate code path), so the m_accTokenCachedIn /
-// m_accCacheHitRate bodies call this helper to add the per-tick
+// m_accTokenHitRate bodies call this helper to add the per-tick
 // delta. setAvg ACCUMULATES, so re-firing on a populated slot
 // is safe and correct — the cache delta is added to whatever
 // the slot already holds. _tickCacheWriteMemo dedupes within
@@ -1699,7 +1744,7 @@ function accCachePrimer(ctx: RenderContext): void {
 
 function accBody(
   ctx: RenderContext,
-  field: "in" | "out" | "cached" | "total" | "apiMs",
+  field: "in" | "out" | "cached" | "total" | "apiMs" | "apiCalls",
   scope?: "session" | "project" | "model" | "ccsession",
 ): string {
   // v0.8.x cwf-tickStatus-v2 — self-priming. When the m_acc* family
@@ -1717,7 +1762,7 @@ function accBody(
   if (!v) {
     // v0.8.x cwf-tickStatus-v2 — the accCached track only writes
     // when stdin carries the cache field. m_accTokenCachedIn /
-    // m_accTokenTotalIn / m_accCacheHitRate must still honor
+    // m_accTokenTotalIn / m_accTokenHitRate must still honor
     // the "field not shipped" → "--" contract, so we don't fire
     // accCachePrimer here on a missing slot — the placeholder
     // shape is the only honest signal in that case.
@@ -1725,7 +1770,7 @@ function accBody(
   }
   // v0.8.x cwf-tickStatus-v2 — the "field not shipped" contract on
   // the cache track (m_accTokenCachedIn / m_accTokenTotalIn /
-  // m_accCacheHitRate): when stdin lacks cache_read_input_tokens
+  // m_accTokenHitRate): when stdin lacks cache_read_input_tokens
   // entirely, render the field-specific "--" placeholder rather
   // than "0" / "total:0". Mirrors the v0.4.x m_totalTokenWith
   // CacheIn behavior.
@@ -1748,6 +1793,7 @@ function accBody(
     case "out": n = v2.accOut; break;
     case "cached": n = v2.accCached; break;
     case "apiMs": n = v2.accApi; break;
+    case "apiCalls": n = v2.accApiCount; break;
     case "total": n = v2.accIn + v2.accCached; break;
   }
   // v0.8.0+ — acc* family prefixes use the same label axes as their
@@ -1773,16 +1819,28 @@ function accBody(
     // totalApiMs, so the formatted string grows monotonically as
     // the session ages (e.g. "api:5m", "api:1h12m").
     case "apiMs": prefix = "api:"; body = formatRemainingMs(n); break;
+    // v0.8.x — m_accApiCalls mirrors m_apiCalls's `calls:N` shape
+    // (the value-zero rule says count:0 still renders, since
+    // zero is a real measured count, not a "no data" signal).
+    case "apiCalls": prefix = "calls:"; body = String(n); break;
   }
   return `${prefix}${body}`;
 }
 
-// m_accCacheHitRate — session-aggregate formula
+// m_accTokenHitRate — session-aggregate formula
 // (accCached / (accCached + accIn) * 100). Colored via the
 // cacheHitColor palette (good ≥ 80%, warn ≥ 50%, bad < 50%).
 // Zero denominator (no input and no cache reads) renders
-// "acc:0.0%"; missing-acc placeholder when the slot has never
+// "hit:0.0%"; missing-acc placeholder when the slot has never
 // been written.
+//
+// v0.8.x R8 — prefix unified with m_tokenHitRate: both modules
+// now render "hit:N%" (was "acc:N%" for the acc variant). The
+// acc/sum/per-turn triple shares the same "hit:" prefix so
+// users can compose them in a lineTemplate without having to
+// re-bind the prefix. The scope distinction is still visible
+// via the surrounding context (m_acc* siblings use the same
+// default ccsession scope, m_tokenHitRate is per-turn).
 function accHitRateBody(
   ctx: RenderContext,
   scope?: "session" | "project" | "model" | "ccsession",
@@ -1790,7 +1848,7 @@ function accHitRateBody(
   // See accBody for the primer rationale.
   accPrimer(ctx);
   // v0.8.x cwf-tickStatus-v2 — "field not shipped" signal on
-  // the cache track. m_accCacheHitRate is undefined when stdin
+  // the cache track. m_accTokenHitRate is undefined when stdin
   // lacks cache_read_input_tokens — render the placeholder
   // rather than fabricating a 0% hit rate.
   if (ctx.tokens?.current?.cacheRead === null) {
@@ -1801,10 +1859,10 @@ function accHitRateBody(
   const v = peekAcc(useScope, ctx);
   if (!v) return placeholderAcc("hitRate", useScope, ctx);
   const denom = v.accCached + v.accIn;
-  if (denom === 0) return `${cacheHitColor(0)}acc:0.0%${RESET}`;
+  if (denom === 0) return `${cacheHitColor(0)}hit:0.0%${RESET}`;
   const pct = (v.accCached / denom) * 100;
   const color = cacheHitColor(pct);
-  return `${color}acc:${pct.toFixed(cachePctPrecision())}%${RESET}`;
+  return `${color}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;
 }
 
 // m_acc* placeholder shape: "acc:n/a" for plain fields, "acc:n/a%"
@@ -1814,7 +1872,7 @@ function accHitRateBody(
 // the call site is self-documenting and a future tweak that
 // distinguishes scopes (e.g. "acc(total):n/a") has a hook.
 function placeholderAcc(
-  field: "in" | "out" | "cached" | "total" | "apiMs" | "hitRate",
+  field: "in" | "out" | "cached" | "total" | "apiMs" | "apiCalls" | "hitRate",
   _scope: "session" | "project" | "model" | "ccsession",
   ctx: RenderContext,
 ): string {
@@ -1822,8 +1880,10 @@ function placeholderAcc(
   // prefix from labelFor so the placeholder matches the user's
   // configured labelIn / labelOut / labelCacheIn / labelTotalIn.
   // apiMs mirrors m_apiMs's "api:" prefix (not part of the
-  // user-facing axis set); hitRate keeps its "acc:n/a%" shape so
-  // the % glyph stays part of the placeholder identity.
+  // user-facing axis set). v0.8.x R8 — hitRate mirrors
+  // m_tokenHitRate's "hit:" prefix (was "acc:" before R8) so
+  // the per-turn / acc / sum triple all share the same "hit:n/a%"
+  // placeholder shape.
   let prefix: string;
   switch (field) {
     case "in": prefix = labelFor("in"); break;
@@ -1831,7 +1891,8 @@ function placeholderAcc(
     case "cached": prefix = labelFor("cacheIn"); break;
     case "total": prefix = labelFor("totalIn"); break;
     case "apiMs": prefix = "api:"; break;
-    case "hitRate": prefix = "acc:"; break;
+    case "apiCalls": prefix = "calls:"; break;
+    case "hitRate": prefix = "hit:"; break;
   }
   // v0.8.x cwf-tickStatus-v2 — "cached" and "total" use the
   // "field not shipped" → "--" shape ONLY when the cache field
@@ -2031,54 +2092,99 @@ const MODULES: Record<string, Module> = {
   //   = current_usage.cache_read_input_tokens / context_window.total_input_tokens
   // The session-aggregate formula
   //   (accCached / (accCached + accIn), v0.4.x semantics) is now
-  // exposed as a separate module: m_accCacheHitRate (see
+  // exposed as a separate module: m_accTokenHitRate (see
   // [[token-modules-redesign-v0-8-0]]). Coloring still uses the
   // cacheHitColor palette (good ≥ 80%, warn ≥ 50%, bad < 50%).
   //
   // Zero denominator (no input and no cache reads) renders as
   // "hit:0.0%" — the "0 直接显示" rule. Missing-totals or
   // missing-cacheRead → "hit:n/a" placeholder.
-  m_cacheHitRate: (c) => {
+  m_tokenHitRate: (c) => {
     const t = c.tokens;
-    if (!t) return placeholderBare("m_cacheHitRate", c);
+    if (!t) return placeholderBare("m_tokenHitRate", c);
     const total = t.totals?.input;
     const cacheRead = t.current?.cacheRead;
-    if (total == null || cacheRead == null) return placeholderBare("m_cacheHitRate", c);
-    if (total === 0) return `${cacheHitColor(0)}hit:0.0%${RESET}`;
+    if (total == null || cacheRead == null) {
+      // v0.8.x — mirror m_apiMs / m_tokenInSpeed / m_tokenOutSpeed:
+      // when the field is not shipped this tick but a prior
+      // measurement sits in the lastActive:tokenHitRate slot
+      // within the 60s TTL window, surface it STALE_COLORed
+      // instead of dropping to the "hit:n/a" placeholder. The
+      // user-facing rationale: the per-turn hit rate is a
+      // reading that decays slowly; an idle tick should display
+      // the last known value, not blank.
+      if (c.tokens?.sessionId) {
+        const cached = peekLastTokenHitRate(c.tokens.sessionId, c.tokens.cwd);
+        if (cached != null) {
+          return wrapPlainDefault(
+            "m_tokenHitRate",
+            `hit:${cached.toFixed(cachePctPrecision())}%`,
+            STALE_COLOR,
+          );
+        }
+      }
+      return placeholderBare("m_tokenHitRate", c);
+    }
+    if (total === 0) return `${STALE_COLOR}hit:0.0%${RESET}`;
     const pct = (cacheRead / total) * 100;
+    // v0.8.x — cache the active measurement so subsequent ticks
+    // that lack cacheRead can fall back to it (mirrors setLastSpeed
+    // / setLastApiMs). Only persist when the per-tick delta is
+    // actually present (the gate above already required cacheRead
+    // != null), so a "field not shipped" tick never writes 0/0.
+    if (t.sessionId) {
+      setLastTokenHitRate(t.sessionId, pct, t.cwd);
+    }
+    // v0.8.x — "active" coloring: the per-turn hit rate is only
+    // a fresh reading when the API actually did work this tick
+    // (hasDelta=true from computeAndCacheTickDelta, the same
+    // signal m_tokenInSpeed / m_tokenOutSpeed / m_apiMs use to
+    // decide STALE_COLOR vs band-color). An idle tick's
+    // current.cacheRead is the same value the prior tick had
+    // (the field doesn't change when the API is idle), so the
+    // displayed rate is "from a previous API call" — gray it,
+    // matching the tps siblings. The setLastTokenHitRate above
+    // already idempotently overwrites with the same value, so
+    // the cache is unaffected by an idle re-render.
+    const r = computeAndCacheTickDelta(c);
+    if (r.writeBack && t.sessionId) setPrevTick(t.sessionId, r.writeBack, t.cwd, {
+      sessionId: t.sessionId, cwd: t.cwd, model: t.modelDisplayName ?? null,
+    });
+    if (!r.hasDelta) {
+      return wrapPlainDefault(
+        "m_tokenHitRate",
+        `hit:${pct.toFixed(cachePctPrecision())}%`,
+        STALE_COLOR,
+      );
+    }
     const color = cacheHitColor(pct);
     return `${color}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;
   },
   // v0.8.0+ — renamed from `m_cacheRead`. The old name's `cache`
-  // prefix collided conceptually with m_cacheHitRate (which is the
+  // prefix collided conceptually with m_tokenHitRate (which is the
   // session-aggregate hit-rate percentage). The new name lives in
   // the `m_token*` family: it's "this turn's cache-read input
   // tokens", a sibling of m_tokenIn / m_tokenOut / m_tokenTotalIn.
   // See [[token-modules-redesign-v0-8-0]] for the rename rationale.
   //
   // Source: `current_usage.cache_read_input_tokens` (per-turn snapshot,
-  // not session-cumulative). Single-color (STALE_COLOR); the percentage
-  // is informational, not a health indicator on its own. v6.x: zero
-  // reads now render as "cache:0" (with the (0.0%) share); null
-  // cacheRead field on a present snapshot falls back to placeholder
-  // "cache:n/a". The double-zero render preserves the value-zero rule.
+  // not session-cumulative). Single-color (STALE_COLOR). v6.x: zero
+  // reads now render as "cache:0"; null cacheRead field on a present
+  // snapshot falls back to placeholder "cache:n/a". The bare-token
+  // shape dropped the `(XX%)` share suffix in v0.8.6+ — the
+  // dedicated m_tokenHitRate module renders the ratio for users who
+  // want it, keeping m_tokenCachedIn focused on the raw token count.
   m_tokenCachedIn: (c) => {
     const t = c.tokens?.current;
     if (!t) return placeholderBare("m_tokenCachedIn", c);
     // v6.x: cacheRead=null is now distinct from cacheRead=0.
     // null (field not shipped by stdin) → "cache:n/a" placeholder;
-    // 0 (real zero cache reads) → "cache:0 (0.0%)" — the user can
+    // 0 (real zero cache reads) → "cache:0" — the user can
     // see "we tracked, nothing cached" vs "no tracking at all".
     if (t.cacheRead == null) return placeholderBare("m_tokenCachedIn", c);
-    const read = t.cacheRead;
-    const denom =
-      (t.input ?? 0) + read + (t.cacheCreation ?? 0);
-    const pct = denom > 0 ? (read / denom) * 100 : null;
-    const label = formatCompactToken(read);
+    const label = formatCompactToken(t.cacheRead);
     const prefix = labelFor("cacheIn");
-    return pct == null
-      ? `${STALE_COLOR}${prefix}${label}${RESET}`
-      : `${STALE_COLOR}${prefix}${label} (${pct.toFixed(cachePctPrecision())}%)${RESET}`;
+    return `${STALE_COLOR}${prefix}${label}${RESET}`;
   },
   // v0.4.0+ — per-API-call input speed. Reads the previous-tick
   // snapshot from cache (keyed by sessionId) and computes
@@ -2126,7 +2232,7 @@ const MODULES: Record<string, Module> = {
   //   m_totalTokenWithCacheIn → m_accTokenCachedIn
   // v0.8.0+ — six per-session/per-model/per-project accumulators
   // (m_accTokenIn / m_accTokenOut / m_accTokenCachedIn /
-  // m_accTokenTotalIn / m_accApiMs / m_accCacheHitRate). They all
+  // m_accTokenTotalIn / m_accApiMs / m_accTokenHitRate). They all
   // read the four-layer accumulator (ccsession / session / project /
   // model) via peekAcc and render in the same shape:
   //
@@ -2153,13 +2259,22 @@ const MODULES: Record<string, Module> = {
   m_accTokenCachedIn: (c) => accBody(c, "cached"),
   m_accTokenTotalIn: (c) => accBody(c, "total"),
   m_accApiMs: (c) => accBody(c, "apiMs"),
-  // m_accCacheHitRate — session-aggregate formula
+  // v0.8.x — m_accApiCalls mirrors m_apiCalls (`calls:N`) but reads
+  // the chosen scope's accApiCount slot from status.json. Default
+  // scope is ccsession (per-process, resets only on totalApiMs
+  // regression). Inline `m_accApiCalls|scope|project` etc. to widen
+  // or narrow. value=0 still renders as `calls:0` (the value-zero
+  // rule — count:0 is real data, not a placeholder).
+  m_accApiCalls: (c) => accBody(c, "apiCalls"),
+  // m_accTokenHitRate — session-aggregate formula
   // (accCached / (accCached + accIn) * 100), the v0.4.x semantic
-  // that m_cacheHitRate (per-turn) replaced. Coloring uses the
-  // cacheHitColor palette.
-  m_accCacheHitRate: (c) => accHitRateBody(c),
+  // that m_tokenHitRate (per-turn) replaced. Coloring uses the
+  // cacheHitColor palette. v0.8.x — renamed from m_accCacheHitRate
+  // to align the namespace with m_tokenHitRate (per-turn) and
+  // m_sumTokenHitRate (cross-project).
+  m_accTokenHitRate: (c) => accHitRateBody(c),
   // v0.8.0+ — sum/avg advanced statistics. 5 plain sums (in/out/
-  // cached/total/apiMs) + 3 ratios (cacheHitRate + tokenInSpeed +
+  // cached/total/apiMs) + 3 ratios (tokenHitRate + tokenInSpeed +
   // tokenOutSpeed). All default to "|model|active" + "|window|5h"
   // + "|align|true" — the inline form `m_sumTokenIn|window|7d` etc
   // overrides. See parseWindowScope + fetchSumAggregate for the
@@ -2197,7 +2312,15 @@ const MODULES: Record<string, Module> = {
     const agg = fetchSumAggregate(filter);
     return agg.rows === 0 ? null : `api:${formatRemainingMs(agg.sumApiMs)}`;
   },
-  m_avgCacheHitRate: (c) => {
+  // v0.8.x — m_avg* renamed to m_sum* to align the namespace with
+  // the cross-project JSONL scan family (m_sumTokenIn/Out/...).
+  // m_sumTokenHitRate replaces m_avgCacheHitRate (the SUM-OF-
+  // CACHED-OVER-TOTAL formula, NOT the per-turn m_tokenHitRate);
+  // m_sumTokenInSpeed / m_sumTokenOutSpeed replace the
+  // m_avgTokenInSpeed / m_avgTokenOutSpeed tps averages. The old
+  // m_avg* names are REMOVED with no alias (consistent with the
+  // v0.8.0 major-bump).
+  m_sumTokenHitRate: (c) => {
     const filter = parseWindowScope(c, {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
@@ -2206,7 +2329,7 @@ const MODULES: Record<string, Module> = {
     const pct = (agg.sumCached / denom) * 100;
     return `${cacheHitColor(pct)}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;
   },
-  m_avgTokenInSpeed: (c) => {
+  m_sumTokenInSpeed: (c) => {
     const filter = parseWindowScope(c, {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
@@ -2214,7 +2337,7 @@ const MODULES: Record<string, Module> = {
     const tps = (agg.sumIn / agg.sumApiMs) * 1000;
     return `${labelFor("in")}${formatSpeed(tps)}`;
   },
-  m_avgTokenOutSpeed: (c) => {
+  m_sumTokenOutSpeed: (c) => {
     const filter = parseWindowScope(c, {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
@@ -2324,7 +2447,28 @@ const MODULES: Record<string, Module> = {
     if (r.writeBack && t.sessionId) setPrevTick(t.sessionId, r.writeBack, t.cwd, {
       sessionId: t.sessionId, cwd: t.cwd, model: t.modelDisplayName ?? null,
     });
-    if (!r.hasDelta) return placeholderBare("m_apiMs", c);
+    if (!r.hasDelta) {
+      // v0.8.x — mirror m_tokenInSpeed/m_tokenOutSpeed: when this
+      // tick has no API-call delta, fall back to the last cached
+      // deltaApiMs within the 60s TTL window instead of dropping
+      // to "api:--". The cached value is rendered STALE_COLORed
+      // (gray) so the user sees the reading is from a previous
+      // API call, not this tick — same convention as the tps
+      // siblings. Outside the TTL or with no prior measurement,
+      // we still drop to the placeholder.
+      const cached = peekLastApiMs(t.sessionId, t.cwd);
+      if (cached != null) {
+        return wrapPlainDefault(
+          "m_apiMs",
+          `api:${formatRemainingMs(cached)}`,
+          STALE_COLOR,
+        );
+      }
+      return placeholderBare("m_apiMs", c);
+    }
+    // Active tick — cache the deltaApiMs so subsequent idle ticks
+    // within the TTL window can fall back to it.
+    setLastApiMs(t.sessionId, r.deltaApi, t.cwd);
     return wrapPlainDefault("m_apiMs", `api:${formatRemainingMs(r.deltaApi)}`, undefined);
   },
   // Session-cumulative lines added (stdin.cost.total_lines_added).
@@ -2395,7 +2539,7 @@ const MODULES: Record<string, Module> = {
     return sz != null ? wrapPlainDefault("m_contextWindowsSize", `size:${formatCompactToken(sz)}`, undefined) : placeholderBare("m_contextWindowsSize", c);
   },
   // v0.8.0+ — renamed from `m_contextUsed` (the `Percent` suffix
-  // makes the unit explicit and matches m_cacheHitRate's % output
+  // makes the unit explicit and matches m_tokenHitRate's % output
   // style). Source: `context_window.used_percentage`. v6.x:
   // usedPct=null → "n/a%" placeholder. Zero renders as "0%".
   m_contextUsedPercent: (c) => {
@@ -2832,7 +2976,7 @@ const DEFAULT_COLORS: Record<string, string> = {
   m_contextRemainingPercent: NAMED_PALETTE.gray,
   // v0.8.0+ — m_acc* family. Plain numeric accumulators get
   // STALE_COLOR (gray) so they read as "data" rather than
-  // "status"; m_accCacheHitRate is governed by the band-based
+  // "status"; m_accTokenHitRate is governed by the band-based
   // cacheHitColor helper, so the DEFAULT_COLORS entry is moot
   // for the value but keeps the dispatcher / inline path happy.
   m_accTokenIn: NAMED_PALETTE.stale,
@@ -2840,7 +2984,8 @@ const DEFAULT_COLORS: Record<string, string> = {
   m_accTokenCachedIn: NAMED_PALETTE.stale,
   m_accTokenTotalIn: NAMED_PALETTE.stale,
   m_accApiMs: NAMED_PALETTE.stale,
-  m_accCacheHitRate: NAMED_PALETTE.stale,
+  m_accApiCalls: NAMED_PALETTE.stale,
+  m_accTokenHitRate: NAMED_PALETTE.stale,
 };
 
 // Snapshot of `cfg().colors` + the `brightBlack` input shortcut. Read
@@ -3021,7 +3166,7 @@ type InlineSchema = {
 //
 // For modules that emit plain text (no internal SGR), the override
 // is a simple wrap. For modules that already apply a band-based /
-// single-color SGR (m_window5h/7d, m_balance, m_cacheHitRate,
+// single-color SGR (m_window5h/7d, m_balance, m_tokenHitRate,
 // m_cacheRead, m_age, m_tokenInSpeed, m_tokenOutSpeed), the override
 // REPLACES the natural color choice — the user's `color` always wins.
 // (Per spec: "如果与现有颜色方案冲突，则无视该参数" — interpreted as
@@ -3314,25 +3459,29 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   // REMOVED. Use the m_acc* family with scope=ccsession (default).
   // m_acc* — v0.8.0+ labels.*: the four token-axis acc modules
   // (m_accTokenIn/Out/CachedIn/TotalIn) share their prefix with
-  // the per-turn siblings via labelFor. m_accApiMs and
-  // m_accCacheHitRate are NOT in the user-facing label axis set
-  // (apiMs is an internal ms-suffix series, cacheHitRate is a
-  // ratio with its own "hit:" convention), so they keep a
-  // hardcoded "acc:" placeholder. The :scope: inline arg is
-  // ignored at the placeholder level (placeholderNA returns the
-  // same body regardless of scope — see placeholderAcc comment
-  // for the future-extension hook).
+  // the per-turn siblings via labelFor. m_accApiMs keeps its
+  // hardcoded "api:" prefix (mirrors m_apiMs). m_accTokenHitRate
+  // (v0.8.x R8) now also mirrors its per-turn sibling — "hit:"
+  // prefix, matching m_tokenHitRate / m_sumTokenHitRate. The
+  // :scope: inline arg is ignored at the placeholder level
+  // (placeholderNA returns the same body regardless of scope —
+  // see placeholderAcc comment for the future-extension hook).
   m_accTokenIn: placeholderLabelOr("in"),
   m_accTokenOut: placeholderLabelOr("out"),
   m_accTokenCachedIn: placeholderLabelOr("cacheIn"),
   m_accTokenTotalIn: placeholderLabelOr("totalIn"),
   m_accApiMs: placeholderNA("api:"),
-  // m_accCacheHitRate — the "hit:N%" shape needs a "%" suffix on
-  // the placeholder too, matching m_cacheHitRate's
-  // placeholderDashesUnit convention.
-  m_accCacheHitRate: placeholderDashesUnit("acc:n/a%"),
+  m_accApiCalls: placeholderNA("calls:"),
+  // v0.8.x R8 — m_accTokenHitRate now mirrors m_tokenHitRate's
+  // "hit:" prefix (was "acc:"). The placeholder is therefore
+  // "hit:n/a%" — same body as the per-turn sibling, so users
+  // composing `m_tokenHitRate m_accTokenHitRate m_sumTokenHitRate`
+  // see a consistent prefix across the triple. The "hit:N%" shape
+  // needs a "%" suffix on the placeholder too, matching
+  // m_tokenHitRate's placeholderDashesUnit convention.
+  m_accTokenHitRate: placeholderDashesUnit("hit:n/a%"),
   m_tokenCachedIn: placeholderLabelOr("cacheIn"),
-  m_cacheHitRate: placeholderNA("hit:"),
+  m_tokenHitRate: placeholderNA("hit:"),
   m_contextSize: placeholderNA("size:"),
   m_contextWindowsSize: placeholderNA("size:"),
   // m_contextUsedPercent's natural shape is "${pct}%" — the
@@ -3363,9 +3512,9 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   m_sumTokenCachedIn: placeholderLabelOr("cacheIn"),
   m_sumTokenTotalIn: placeholderLabelOr("totalIn"),
   m_sumApiMs: placeholderNA("api:"),
-  m_avgCacheHitRate: placeholderNA("hit:"),
-  m_avgTokenInSpeed: placeholderLabelOr("in"),
-  m_avgTokenOutSpeed: placeholderLabelOr("out"),
+  m_sumTokenHitRate: placeholderNA("hit:"),
+  m_sumTokenInSpeed: placeholderLabelOr("in"),
+  m_sumTokenOutSpeed: placeholderLabelOr("out"),
   m_sumApiCalls: placeholderNA("calls:"),
   // v0.8.0+ — newly added m_tokenTotalIn (session-cumulative
   // total_input_tokens). Shares the labelTotalIn axis with its
@@ -3636,7 +3785,7 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_tokenTotal: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_tokenSession: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_contextSize: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
-  m_cacheHitRate: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_tokenHitRate: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_tokenCachedIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_tokenInSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_tokenOutSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
@@ -3650,7 +3799,8 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_accTokenCachedIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
   m_accTokenTotalIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
   m_accApiMs: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
-  m_accCacheHitRate: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
+  m_accApiCalls: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
+  m_accTokenHitRate: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
   // v0.8.0+ — sum/avg advanced statistics. All 8 accept the same
   // 5 inline args: :model|<active|name|all>, :window|<dhms|all>,
   // :align|<true|false>, :color|<c>, :nulldrop|<b>. The WINDOW
@@ -3662,9 +3812,9 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_sumTokenCachedIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
   m_sumTokenTotalIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
   m_sumApiMs: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
-  m_avgCacheHitRate: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
-  m_avgTokenInSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
-  m_avgTokenOutSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
+  m_sumTokenHitRate: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
+  m_sumTokenInSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
+  m_sumTokenOutSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
   m_sumApiCalls: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
   // v0.3.6+ — quote module. Accepts `:freq|<numeric-time>` and
   // `:color|<sgr|shortcut|rainbow|rand-rainbow|hue>`. The freq
@@ -3931,38 +4081,71 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   // formula and rename rationale). The inline form takes an
   // optional `:color|` override; the bare form is the canonical
   // per-turn hit rate. The session-aggregate formula moved to
-  // m_accCacheHitRate.
-  m_cacheHitRate: (params, ctx) => {
+  // m_accTokenHitRate.
+  m_tokenHitRate: (params, ctx) => {
     const t = ctx.tokens;
-    if (!t) return placeholderWithColor("m_cacheHitRate", params, ctx);
+    if (!t) return placeholderWithColor("m_tokenHitRate", params, ctx);
     const total = t.totals?.input;
     const cacheRead = t.current?.cacheRead;
     if (total == null || cacheRead == null) {
-      return placeholderWithColor("m_cacheHitRate", params, ctx);
+      // v0.8.x — TTL-bounded cache fallback (mirrors MODULES path
+      // and the m_apiMs / m_tokenInSpeed convention). Idle tick
+      // within 60s of the last active tick renders the cached
+      // percentage in STALE_COLOR; outside the window or with no
+      // prior measurement, the placeholder drops in. STALE_COLOR
+      // wins over the user's |color| override, matching
+      // computeTickSpeed's convention — gray is the canonical
+      // "this is from a previous tick" signal.
+      if (t.sessionId) {
+        const cached = peekLastTokenHitRate(t.sessionId, t.cwd);
+        if (cached != null) {
+          return wrapPlainDefault(
+            "m_tokenHitRate",
+            `hit:${cached.toFixed(cachePctPrecision())}%`,
+            STALE_COLOR,
+          );
+        }
+      }
+      return placeholderWithColor("m_tokenHitRate", params, ctx);
     }
-    if (total === 0) return `${cacheHitColor(0)}hit:0.0%${RESET}`;
+    if (total === 0) return `${STALE_COLOR}hit:0.0%${RESET}`;
     const pct = (cacheRead / total) * 100;
+    if (t.sessionId) setLastTokenHitRate(t.sessionId, pct, t.cwd);
+    // v0.8.x — "active" coloring (mirrors MODULES body and the
+    // m_tokenInSpeed / m_tokenOutSpeed / m_apiMs convention). The
+    // per-turn hit rate is only a fresh reading when the API
+    // actually did work this tick (hasDelta=true). An idle tick
+    // renders STALE_COLOR regardless of the user's |color|
+    // override, matching computeTickSpeed.
+    const r = computeAndCacheTickDelta(ctx);
+    if (r.writeBack && t.sessionId) setPrevTick(t.sessionId, r.writeBack, t.cwd, {
+      sessionId: t.sessionId, cwd: t.cwd, model: t.modelDisplayName ?? null,
+    });
+    if (!r.hasDelta) {
+      return wrapPlainDefault(
+        "m_tokenHitRate",
+        `hit:${pct.toFixed(cachePctPrecision())}%`,
+        STALE_COLOR,
+      );
+    }
     const color = (params.color as string | undefined) ?? cacheHitColor(pct);
     return `${color}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;
   },
-  // v0.8.0+ — renamed from `m_cacheRead` (see MODULES entry).
+  // v0.8.0+ — renamed from `m_cacheRead` (see MODULES entry). The
+  // `(XX%)` share suffix was dropped in v0.8.6+ — use m_tokenHitRate
+  // for the ratio.
   m_tokenCachedIn: (params, ctx) => {
     const t = ctx.tokens?.current;
     if (!t) return placeholderWithColor("m_tokenCachedIn", params, ctx);
     // v6.x: distinguish cacheRead=null (field not shipped by
     // stdin) from cacheRead=0 (real zero cache reads).
     //   null → placeholder "cache:n/a"
-    //   0    → "cache:0 (0.0%)" (real zero, not hidden)
+    //   0    → "cache:0" (real zero, not hidden)
     if (t.cacheRead == null) return placeholderWithColor("m_tokenCachedIn", params, ctx);
-    const read = t.cacheRead;
-    const denom = (t.input ?? 0) + read + (t.cacheCreation ?? 0);
-    const pct = denom > 0 ? (read / denom) * 100 : null;
-    const label = formatCompactToken(read);
+    const label = formatCompactToken(t.cacheRead);
     const color = (params.color as string | undefined) ?? STALE_COLOR;
     const prefix = labelFor("cacheIn");
-    return pct == null
-      ? `${color}${prefix}${label}${RESET}`
-      : `${color}${prefix}${label} (${pct.toFixed(cachePctPrecision())}%)${RESET}`;
+    return `${color}${prefix}${label}${RESET}`;
   },
   // v0.4.0+ — :color|scale (or no :color| at all) → 5-band
   // scale color on the active tick, STALE_COLOR on the
@@ -4029,10 +4212,14 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const scope = (params.scope as "session" | "project" | "model" | "ccsession" | undefined) ?? "ccsession";
     return wrapPlainDefault("m_accApiMs", accBody(ctx, "apiMs", scope), params.color as string | undefined);
   },
+  m_accApiCalls: (params, ctx) => {
+    const scope = (params.scope as "session" | "project" | "model" | "ccsession" | undefined) ?? "ccsession";
+    return wrapPlainDefault("m_accApiCalls", accBody(ctx, "apiCalls", scope), params.color as string | undefined);
+  },
   // Hit rate is special: ccsession-scoped by default (per-process
   // lifetime). Pass :scope:session/:scope:project/:scope:model to
   // opt into a narrower or wider aggregate.
-  m_accCacheHitRate: (params, ctx) => {
+  m_accTokenHitRate: (params, ctx) => {
     const scope = (params.scope as "session" | "project" | "model" | "ccsession" | undefined) ?? "ccsession";
     return accHitRateBody(ctx, scope);
   },
@@ -4077,28 +4264,28 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (agg.rows === 0) return placeholderWithColor("m_sumApiMs", params, ctx);
     return wrapPlain(`api:${formatRemainingMs(agg.sumApiMs)}`, params.color as string | undefined);
   },
-  m_avgCacheHitRate: (params, ctx) => {
+  m_sumTokenHitRate: (params, ctx) => {
     const filter = parseWindowScope(ctx, params);
     if (!filter) return INLINE_BADARG;
     const agg = fetchSumAggregate(filter);
     const denom = agg.sumIn + agg.sumCached;
-    if (agg.rows === 0 || denom === 0) return placeholderWithColor("m_avgCacheHitRate", params, ctx);
+    if (agg.rows === 0 || denom === 0) return placeholderWithColor("m_sumTokenHitRate", params, ctx);
     const pct = (agg.sumCached / denom) * 100;
     return `${cacheHitColor(pct)}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;
   },
-  m_avgTokenInSpeed: (params, ctx) => {
+  m_sumTokenInSpeed: (params, ctx) => {
     const filter = parseWindowScope(ctx, params);
     if (!filter) return INLINE_BADARG;
     const agg = fetchSumAggregate(filter);
-    if (agg.sumApiMs === 0) return placeholderWithColor("m_avgTokenInSpeed", params, ctx);
+    if (agg.sumApiMs === 0) return placeholderWithColor("m_sumTokenInSpeed", params, ctx);
     const tps = (agg.sumIn / agg.sumApiMs) * 1000;
     return wrapPlain(`${labelFor("in")}${formatSpeed(tps)}`, params.color as string | undefined);
   },
-  m_avgTokenOutSpeed: (params, ctx) => {
+  m_sumTokenOutSpeed: (params, ctx) => {
     const filter = parseWindowScope(ctx, params);
     if (!filter) return INLINE_BADARG;
     const agg = fetchSumAggregate(filter);
-    if (agg.sumApiMs === 0) return placeholderWithColor("m_avgTokenOutSpeed", params, ctx);
+    if (agg.sumApiMs === 0) return placeholderWithColor("m_sumTokenOutSpeed", params, ctx);
     const tps = (agg.sumOut / agg.sumApiMs) * 1000;
     return wrapPlain(`${labelFor("out")}${formatSpeed(tps)}`, params.color as string | undefined);
   },
@@ -4196,7 +4383,28 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (r.writeBack && t.sessionId) setPrevTick(t.sessionId, r.writeBack, t.cwd, {
       sessionId: t.sessionId, cwd: t.cwd, model: t.modelDisplayName ?? null,
     });
-    if (!r.hasDelta) return placeholderWithColor("m_apiMs", params, ctx);
+    if (!r.hasDelta) {
+      // v0.8.x — TTL-bounded cache fallback (mirrors MODULES path
+      // and the m_tokenInSpeed/m_tokenOutSpeed convention). Idle
+      // tick within 60s of the last active tick renders the
+      // cached deltaApiMs in STALE_COLOR; outside the window or
+      // with no prior measurement, the placeholder drops in.
+      const cached = peekLastApiMs(t.sessionId, t.cwd);
+      if (cached != null) {
+        // v0.8.x — the user's inline `|color|` override loses to
+        // the STALE_COLOR convention here, matching the tps
+        // siblings: gray signals "this is from a previous API
+        // call, not this tick" regardless of the user's color
+        // choice. See computeTickSpeed.
+        return wrapPlainDefault(
+          "m_apiMs",
+          `api:${formatRemainingMs(cached)}`,
+          STALE_COLOR,
+        );
+      }
+      return placeholderWithColor("m_apiMs", params, ctx);
+    }
+    setLastApiMs(t.sessionId, r.deltaApi, t.cwd);
     return wrapPlainDefault("m_apiMs", `api:${formatRemainingMs(r.deltaApi)}`, params.color as string | undefined);
   },
   m_linesAdded: (params, ctx) => {
@@ -4539,8 +4747,9 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         inline = expandInlineToken(tok, "m_tokenSession", 15, ctx);
       } else if (tok.startsWith("m_contextSize|")) {
         inline = expandInlineToken(tok, "m_contextSize", 14, ctx);
-      } else if (tok.startsWith("m_cacheHitRate|")) {
-        inline = expandInlineToken(tok, "m_cacheHitRate", 15, ctx);
+      } else if (tok.startsWith("m_tokenHitRate|")) {
+        // m_tokenHitRate → skip prefix+pipe (15 chars).
+        inline = expandInlineToken(tok, "m_tokenHitRate", 15, ctx);
       } else if (tok.startsWith("m_tokenCachedIn|")) {
         inline = expandInlineToken(tok, "m_tokenCachedIn", 16, ctx);
       } else if (tok.startsWith("m_tokenInSpeed|")) {
@@ -4565,32 +4774,61 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
       } else if (tok.startsWith("m_accApiMs|")) {
         // m_accApiMs → skip prefix+pipe (11 chars).
         inline = expandInlineToken(tok, "m_accApiMs", 11, ctx);
-      } else if (tok.startsWith("m_accCacheHitRate|")) {
-        // m_accCacheHitRate → skip prefix+pipe (18 chars).
-        inline = expandInlineToken(tok, "m_accCacheHitRate", 18, ctx);
+      } else if (tok.startsWith("m_accApiCalls|")) {
+        // m_accApiCalls → skip prefix+pipe (14 chars). Listed
+        // before m_accTokenHitRate (19) and the m_sum* family to
+        // keep the m_acc* cluster contiguous; shares length with
+        // m_sumApiCalls (14) but diverges at index 5 ('c' vs 's').
+        inline = expandInlineToken(tok, "m_accApiCalls", 14, ctx);
+      } else if (tok.startsWith("m_accTokenHitRate|")) {
+        // m_accTokenHitRate → skip prefix+pipe (18 chars). Renamed
+        // from m_accCacheHitRate to align the namespace with
+        // m_tokenHitRate (per-turn) / m_sumTokenHitRate
+        // (cross-project). 18 chars shares length with
+        // m_accTokenTotalIn (18) and m_sumTokenTotalIn (18) but
+        // diverges at position 14 ('H' vs 'T' / 'T'), so no shadow.
+        inline = expandInlineToken(tok, "m_accTokenHitRate", 18, ctx);
+      } else if (tok.startsWith("m_sumTokenOutSpeed|")) {
+        // v0.8.x — m_avgTokenOutSpeed renamed to m_sumTokenOutSpeed.
+        // 19 chars; shares length with m_sumTokenCachedIn (19)
+        // but diverges at position 14 ('O' vs 'C'). MUST be
+        // listed before m_sumTokenOut (14) to avoid the
+        // m_sumTokenOutSpeed|...|xxx token being matched by
+        // startsWith("m_sumTokenOut|").
+        inline = expandInlineToken(tok, "m_sumTokenOutSpeed", 20, ctx);
       } else if (tok.startsWith("m_sumTokenCachedIn|")) {
-        // Longer prefix listed first (19 chars); siblings
-        // m_sumTokenIn (12) / m_sumTokenOut (13) / m_sumTokenTotalIn
-        // (17) / m_sumApiMs (10) differ at later positions.
+        // 19 chars; siblings m_sumTokenIn (12) / m_sumTokenOut (13) /
+        // m_sumTokenTotalIn (17) / m_sumApiMs (10) /
+        // m_sumTokenInSpeed (18) / m_sumTokenHitRate (18) differ at
+        // later positions.
         inline = expandInlineToken(tok, "m_sumTokenCachedIn", 19, ctx);
+      } else if (tok.startsWith("m_sumTokenInSpeed|")) {
+        // v0.8.x — m_avgTokenInSpeed renamed to m_sumTokenInSpeed.
+        // 18 chars; shares length with m_sumTokenTotalIn (18) and
+        // m_sumTokenHitRate (18) but diverges at position 14 ('I' vs
+        // 'T' / 'H'). MUST be listed before m_sumTokenIn (13) to
+        // avoid the m_sumTokenInSpeed|...|xxx token being matched
+        // by startsWith("m_sumTokenIn|").
+        inline = expandInlineToken(tok, "m_sumTokenInSpeed", 19, ctx);
       } else if (tok.startsWith("m_sumTokenTotalIn|")) {
         inline = expandInlineToken(tok, "m_sumTokenTotalIn", 18, ctx);
+      } else if (tok.startsWith("m_sumTokenHitRate|")) {
+        // v0.8.x — m_avgCacheHitRate renamed to m_sumTokenHitRate.
+        // 18 chars; shares length with m_sumTokenTotalIn (18) and
+        // m_sumTokenInSpeed (18) but diverges at position 14 ('H'
+        // vs 'T' / 'I'). The user-facing hit-rate prefix ("hit:N%")
+        // is unchanged; the rename aligns the namespace with the
+        // cross-project JSONL scan family (sits next to
+        // m_sumTokenIn/Out/etc.).
+        inline = expandInlineToken(tok, "m_sumTokenHitRate", 18, ctx);
       } else if (tok.startsWith("m_sumTokenOut|")) {
         inline = expandInlineToken(tok, "m_sumTokenOut", 14, ctx);
+      } else if (tok.startsWith("m_sumApiCalls|")) {
+        inline = expandInlineToken(tok, "m_sumApiCalls", 14, ctx);
       } else if (tok.startsWith("m_sumTokenIn|")) {
         inline = expandInlineToken(tok, "m_sumTokenIn", 13, ctx);
       } else if (tok.startsWith("m_sumApiMs|")) {
         inline = expandInlineToken(tok, "m_sumApiMs", 11, ctx);
-      } else if (tok.startsWith("m_avgCacheHitRate|")) {
-        inline = expandInlineToken(tok, "m_avgCacheHitRate", 18, ctx);
-      } else if (tok.startsWith("m_avgTokenOutSpeed|")) {
-        // Longer prefix listed first (19 chars) to avoid
-        // shadowing m_avgTokenInSpeed: (18 chars).
-        inline = expandInlineToken(tok, "m_avgTokenOutSpeed", 19, ctx);
-      } else if (tok.startsWith("m_sumApiCalls|")) {
-        inline = expandInlineToken(tok, "m_sumApiCalls", 14, ctx);
-      } else if (tok.startsWith("m_avgTokenInSpeed|")) {
-        inline = expandInlineToken(tok, "m_avgTokenInSpeed", 18, ctx);
       } else if (tok.startsWith("m_quote|")) {
         // m_quote|freq|<…>|color|<…> → skip "m_quote|" (length 8).
         inline = expandInlineToken(tok, "m_quote", 8, ctx);

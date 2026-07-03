@@ -100,7 +100,18 @@ export type PrevTickStatusValue = {
 };
 
 export type LastActiveValue = {
-  direction: "in" | "out";
+  // v0.8.x — widened to cover the apiMs and tokenHitRate dimensions
+  // (m_apiMs and m_tokenHitRate use the same persistent cache as
+  // m_tokenInSpeed/m_tokenOutSpeed, so idle ticks can fall back to
+  // the last active measurement indefinitely). The `direction`
+  // field's `"apiMs"` variant carries `tps` as the raw deltaApiMs
+  // value (the per-API-call ms increment, NOT a rate); the
+  // `"tokenHitRate"` variant carries `tps` as the per-turn hit
+  // rate percentage (e.g. 99.5 = 99.5%). R7 — TTL gate disabled:
+  // the cache is the persistent "last known good" value, not a
+  // 60s-stale snapshot. The LAST_ACTIVE_TTL_MS constant in
+  // readLastActive is retained for future opt-in.
+  direction: "in" | "out" | "apiMs" | "tokenHitRate";
   tps: number;
 };
 
@@ -112,7 +123,21 @@ export type LastActiveValue = {
 // `tickStatus` (no suffix) — that was the v0.8.0 project-wide
 // slot, now keyed by projectHash.
 //
-// lastActive:in / lastActive:out — per-direction tps cache, 60s TTL.
+// lastActive:in / lastActive:out — per-direction tps cache.
+// lastActive:apiMs — last deltaApiMs cache (feeds m_apiMs's
+//                     idle-tick fallback so the module renders the
+//                     last measurement instead of "api:--" when
+//                     stdin shows no API call this turn).
+// lastActive:tokenHitRate — last per-turn hit-rate percentage cache
+//                     (feeds m_tokenHitRate's fallback so the module
+//                     renders the last hit rate instead of "hit:n/a"
+//                     when stdin lacks cacheRead this tick).
+//
+// v0.8.x R7 — TTL gate is disabled: the lastActive:* entries are
+// effectively permanent (the LAST_ACTIVE_TTL_MS constant in
+// readLastActive is retained for future opt-in via config, but
+// the read path no longer compares against it). Idle ticks
+// surface the last active measurement indefinitely.
 
 export const CCSESSION_KEY = "tickStatus:ccsession";
 export const PREV_TICK_KEY = "prevTickStatus";
@@ -197,9 +222,16 @@ function loadFromDisk(cwd: string): Store {
   for (const [key, rawEntry] of Object.entries(parsed as Record<string, unknown>)) {
     const e = rawEntry as { at?: unknown; value?: unknown };
     if (typeof e.at !== "number" || !e.value || typeof e.value !== "object") continue;
-    if (key === "lastActive:in" || key === "lastActive:out") {
+    if (key === "lastActive:in" || key === "lastActive:out" || key === "lastActive:apiMs" || key === "lastActive:tokenHitRate") {
       const v = e.value as Record<string, unknown>;
-      const dir: "in" | "out" = key === "lastActive:in" ? "in" : "out";
+      // v0.8.x — wider direction set; "apiMs" carries the raw
+      // deltaApiMs and "tokenHitRate" carries the per-turn
+      // hit-rate percentage (tps field is repurposed).
+      const dir: "in" | "out" | "apiMs" | "tokenHitRate" =
+        key === "lastActive:in" ? "in" :
+        key === "lastActive:out" ? "out" :
+        key === "lastActive:apiMs" ? "apiMs" :
+        "tokenHitRate";
       const tps = typeof v.tps === "number" ? v.tps : 0;
       out[key] = {
         at: e.at,
@@ -341,28 +373,56 @@ export function writePrevTickStatus(
 //
 // The pre-existing `tickSpeedDisplay:<direction>:<sessionId>` cache
 // slot survives, simplified: no session dimension (single global
-// per-project entry) and a 60s TTL. Used by m_tokenInSpeed /
-// m_tokenOutSpeed so an idle tick (no API call this turn) can
-// surface the last-active-tick tps instead of rendering "-- t/s".
+// per-project entry). Used by m_tokenInSpeed / m_tokenOutSpeed so
+// an idle tick (no API call this turn) can surface the
+// last-active-tick tps instead of rendering "-- t/s".
+//
+// v0.8.x — widened the `direction` set to include "apiMs" and
+// "tokenHitRate" so m_apiMs and m_tokenHitRate can use the SAME
+// persistent cache pattern: store the last measurement on an
+// active tick, fall back to it on an idle tick. The `tps` field
+// is repurposed for both cases (carries the raw ms value for
+// apiMs, the hit-rate percentage for tokenHitRate — neither is
+// a true rate).
+//
+// v0.8.x R7 — TTL gate disabled. The cache is the persistent
+// "last known good" value: idle ticks surface the last active
+// measurement indefinitely. The LAST_ACTIVE_TTL_MS constant in
+// readLastActive is retained for future opt-in via config (e.g.
+// a `lastActiveTtlMs` setting), but the read path no longer
+// compares against it.
 
-const LAST_ACTIVE_TTL_MS = 60_000;
+// v0.8.x — TTL capability retained but the gate is disabled.
+// The constant is kept for future opt-in (e.g. a config flag to
+// re-enable the 60s window) but readLastActive no longer compares
+// `Date.now() - e.at` against it. The cache is effectively
+// permanent: the last value written survives across idle ticks
+// indefinitely, and is only overwritten when a fresher active
+// measurement arrives. The "always read" decision was made in
+// R7 — keeping active/inactive distinction but treating the cache
+// as the "last known good" value rather than a 60s-stale snapshot.
+export const LAST_ACTIVE_TTL_MS = 60_000;
 
 export function readLastActive(
   cwd: string | null | undefined,
-  direction: "in" | "out",
+  direction: "in" | "out" | "apiMs" | "tokenHitRate",
 ): number | null {
   if (!cwd) return null;
   const store = loadFromDisk(cwd);
   const key = `lastActive:${direction}`;
   const e = store[key];
   if (!e || e.kind !== "lastActive") return null;
-  if (Date.now() - e.at > LAST_ACTIVE_TTL_MS) return null;
+  // v0.8.x R7 — TTL gate removed. The cache is the persistent
+  // "last active measurement"; idle ticks always surface it.
+  // (The LAST_ACTIVE_TTL_MS constant above stays for future
+  // opt-in via config; the `> LAST_ACTIVE_TTL_MS` check is
+  // intentionally NOT evaluated here.)
   return Number.isFinite(e.value.tps) ? e.value.tps : null;
 }
 
 export function writeLastActive(
   cwd: string | null | undefined,
-  direction: "in" | "out",
+  direction: "in" | "out" | "apiMs" | "tokenHitRate",
   tps: number,
 ): void {
   if (!cwd) return;

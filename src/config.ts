@@ -164,7 +164,7 @@ export const PLAN_PRESETS: Record<string, string[]> = {
     "m_tokenOut:nulldrop:false", "s_space",
     "m_tokenOutSpeed:nulldrop:false", "s_space",
     "m_ctx:nulldrop:false", "s_space",
-    "m_cacheHitRate:nulldrop:false",
+    "m_tokenHitRate:nulldrop:false",
   ],
   // line 0 = session info, line 1 = tokenplan, line 2 = context & token.
   // For the user running this plugin as the SOLE statusline (no
@@ -189,7 +189,7 @@ export const PLAN_PRESETS: Record<string, string[]> = {
     "m_tokenOut:nulldrop:false", "s_space",
     "m_tokenOutSpeed:nulldrop:false", "s_space",
     "m_ctx:nulldrop:false", "s_space",
-    "m_cacheHitRate:nulldrop:false",
+    "m_tokenHitRate:nulldrop:false",
   ],
   // line 0 = session + git, line 1 = tokenplan, line 2 = context & token.
   // For users with a deeper-git-workflow statusline.
@@ -215,7 +215,7 @@ export const PLAN_PRESETS: Record<string, string[]> = {
     "m_tokenOut:nulldrop:false", "s_space",
     "m_tokenOutSpeed:nulldrop:false", "s_space",
     "m_ctx:nulldrop:false", "s_space",
-    "m_cacheHitRate:nulldrop:false",
+    "m_tokenHitRate:nulldrop:false",
   ],
   // 4 lines: adds line counts (m_linesAdded / m_linesRemoved) and
   // totals (m_totalToken*) on a 4th line. NOT recommended — verbose;
@@ -242,7 +242,7 @@ export const PLAN_PRESETS: Record<string, string[]> = {
     "m_tokenOut:nulldrop:false", "s_space",
     "m_tokenOutSpeed:nulldrop:false", "s_space",
     "m_ctx:nulldrop:false", "s_space",
-    "m_cacheHitRate:nulldrop:false",
+    "m_tokenHitRate:nulldrop:false",
     "s_newline",
     "m_label:Total:color:yellow", "s_newline",
     "m_totalTokenIn:nulldrop:false", "s_space",
@@ -286,7 +286,7 @@ const DEFAULT_COLORS = {
   broken: "\x1b[31m",
 };
 
-// v0.4.0+ — 3-band palette for the m_cacheHitRate module. Higher is
+// v0.4.0+ — 3-band palette for the m_tokenHitRate module. Higher is
 // better: cache_read / (cache_read + cache_creation) ≥ 80% → green,
 // 50–80% → yellow, <50% → orange. Bands chosen to match the visual
 // vocabulary of the existing 5-band thresholds (green/yellow/orange)

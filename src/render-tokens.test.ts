@@ -17,6 +17,7 @@ import {
   setAvg,
   setPrevTick,
 } from "./render.ts";
+import type { PrevTickSnapshot } from "./render.ts";
 import { __resetForTest, configStore } from "./config.ts";
 import type { Config } from "./config.ts";
 import {
@@ -583,13 +584,13 @@ describe("renderTemplate — m_token* modules", () => {
 
   // ----- generic snapshot tests -----
 
-  it("tokens is null → m_tokenIn / m_tokenOut render 'n/a'; m_contextSize / m_cacheHitRate render 'n/a' (v6.x placeholders)", () => {
+  it("tokens is null → m_tokenIn / m_tokenOut render 'n/a'; m_contextSize / m_tokenHitRate render 'n/a' (v6.x placeholders)", () => {
     // v6.x — null/no-snapshot is now distinct from "zero". All
     // per-API-call modules emit "n/a" placeholders rather than
     // "0" or drop. The bare-form parity rule means m_tokenIn and
     // m_contextSize both keep their slot when stdin is missing.
     const out = renderTemplate(
-      ["m_tokenIn", "s_space", "m_tokenOut", "s_space", "m_contextSize", "s_space", "m_cacheHitRate"],
+      ["m_tokenIn", "s_space", "m_tokenOut", "s_space", "m_contextSize", "s_space", "m_tokenHitRate"],
       ctxFor(null),
     ).join("\n");
     assert.equal(strip(out), "in:n/a out:n/a size:n/a hit:n/a");
@@ -608,23 +609,23 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(strip(out), "in:0.0 t/s");
   });
 
-  it("m_cacheHitRate| per-turn cacheRead / totals.input = 100.0% (v0.8.0 per-turn formula)", () => {
+  it("m_tokenHitRate| per-turn cacheRead / totals.input = 100.0% (v0.8.0 per-turn formula)", () => {
     // v0.8.0+ formula: current.cacheRead / totals.input. With the
     // fakeSnapshot (totals.input=163479, current.cacheRead=163441),
     // the rate is 163441/163479 = 99.978% → toFixed(1) rounds to
     // "100.0%" (the user-acceptable "near-total" display).
     const out = renderTemplate(
-      ["m_cacheHitRate"],
+      ["m_tokenHitRate"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
     assert.equal(strip(out), "hit:100.0%");
   });
 
-  it("m_cacheHitRate| 0 cache reads / 38 totals.input = 0.0% (v0.8.0 per-turn formula)", () => {
+  it("m_tokenHitRate| 0 cache reads / 38 totals.input = 0.0% (v0.8.0 per-turn formula)", () => {
     // v0.8.0+ — when current.cacheRead=0 and totals.input=38, the
     // per-turn rate is 0/38 = 0.0% (NOT a null/drop).
     const out = renderTemplate(
-      ["m_cacheHitRate"],
+      ["m_tokenHitRate"],
       ctxFor(
         fakeSnapshot({
           totals: { input: 38, output: 155 },
@@ -633,6 +634,146 @@ describe("renderTemplate — m_token* modules", () => {
       ),
     ).join("\n");
     assert.equal(strip(out), "hit:0.0%");
+  });
+
+  // v0.8.x — m_tokenHitRate cache-fallback: when this tick's
+  // stdin lacks cache_read_input_tokens (cacheRead=null) but
+  // lastActive:tokenHitRate holds a value within the 60s TTL
+  // window, render the cached percentage STALE_COLORed instead
+  // of dropping to the "hit:n/a" placeholder. Mirrors m_apiMs's
+  // fallback added in this session.
+  it("m_tokenHitRate| cacheRead=null WITH cached lastActive:tokenHitRate (within TTL) → 'hit|99.5%' (STALE_COLORed)", () => {
+    // First render: cacheRead is present → 99.978% → setLastTokenHitRate
+    // fires from the MODULES body, persisting ~99.978 to status.json.
+    renderTemplate(
+      ["m_tokenHitRate"],
+      ctxFor(fakeSnapshot({ sessionId: "sess-hr-cache-fallback" })),
+    );
+    // Second render: cacheRead=null on stdin (field not shipped this
+    // tick). The cached lastActive:tokenHitRate (~99.978) must
+    // surface, not the placeholder.
+    const out = renderTemplate(
+      ["m_tokenHitRate"],
+      ctxFor(
+        fakeSnapshot({
+          sessionId: "sess-hr-cache-fallback",
+          current: { input: 0, output: 0, cacheCreation: 0, cacheRead: null },
+        }),
+      ),
+    ).join("\n");
+    // 163441/163479 = 99.978% → toFixed(1) = "100.0%" (rounds up).
+    // The point of the test: it must NOT be the placeholder; it must
+    // be the cached percentage wrapped in STALE_COLOR.
+    assert.equal(strip(out), "hit:100.0%");
+    assert.ok(out.includes(STALE), `expected STALE wrap on cached fallback: ${JSON.stringify(out)}`);
+  });
+
+  it("m_tokenHitRate| cacheRead=null with NO prior cached value → placeholder 'hit|n/a'", () => {
+    // Fresh session: first tick has cacheRead=null AND no
+    // lastActive:tokenHitRate has been written (beforeEach resets
+    // status.json per test). Placeholder must fire.
+    const out = renderTemplate(
+      ["m_tokenHitRate"],
+      ctxFor(
+        fakeSnapshot({
+          sessionId: "sess-hr-no-cache",
+          current: { input: 0, output: 0, cacheCreation: 0, cacheRead: null },
+        }),
+      ),
+    ).join("\n");
+    assert.equal(strip(out), "hit:n/a");
+  });
+
+  it("m_tokenHitRate| inline |color|red on cached fallback: STALE_COLOR wins over user color (mirror of tps siblings)", () => {
+    // v0.8.x — the TTL-bounded cache fallback overrides the
+    // user's |color| override with STALE_COLOR, matching
+    // computeTickSpeed's behavior for m_tokenInSpeed /
+    // m_tokenOutSpeed and m_apiMs. Gray is the canonical
+    // "this is from a previous tick" signal.
+    renderTemplate(
+      ["m_tokenHitRate"],
+      ctxFor(fakeSnapshot({ sessionId: "sess-hr-inline-color" })),
+    );
+    const out = renderTemplate(
+      ["m_tokenHitRate|color|red"],
+      ctxFor(
+        fakeSnapshot({
+          sessionId: "sess-hr-inline-color",
+          current: { input: 0, output: 0, cacheCreation: 0, cacheRead: null },
+        }),
+      ),
+    ).join("\n");
+    assert.equal(strip(out), "hit:100.0%");
+    assert.ok(out.includes(STALE), `expected STALE wrap: ${JSON.stringify(out)}`);
+  });
+
+  // v0.8.x — m_tokenHitRate idle-tick STALE_COLOR: when this
+  // tick's stdin is present (cacheRead != null) but the API
+  // did not do work (hasDelta=false → deltaApi=0), the rendered
+  // hit rate is the same value as the prior tick, NOT a fresh
+  // measurement. Mirror the m_tokenInSpeed / m_tokenOutSpeed /
+  // m_apiMs convention: gray it.
+  it("m_tokenHitRate| idle tick (deltaApi=0, cacheRead present) → 'hit|99.5%' STALE_COLORed", () => {
+    // First tick: prime the prev-tick cache to apiMs=60_000. After
+    // priming, current.input=38 etc. moves by a non-zero amount.
+    setPrevTick(
+      "sess-hr-idle",
+      { apiMs: 0, in: 0, out: 0, cacheRead: 0, totalIn: 0 },
+      "D:\\test",
+    );
+    // Second tick: stdin same as fakeSnapshot defaults (cacheRead
+    // present, total > 0) but prev.apiMs = current.apiMs → deltaApi=0
+    // → hasDelta=false. computeAndCacheTickDelta fires, sets
+    // prevTick back, hasDelta is false.
+    setPrevTick(
+      "sess-hr-idle",
+      { apiMs: 60_000, in: 38, out: 155, cacheRead: 163441, totalIn: 163479 },
+      "D:\\test",
+    );
+    const out = renderTemplate(
+      ["m_tokenHitRate"],
+      ctxFor(fakeSnapshot({ sessionId: "sess-hr-idle" })),
+    ).join("\n");
+    // The rendered text is the same 100.0% (163441/163479 rounds
+    // up) — but the WRAPPER must be STALE_COLOR (gray), not the
+    // band-based cacheHitColor. This is the visual consistency
+    // the user asked for: idle ticks across m_tokenInSpeed /
+    // m_tokenOutSpeed / m_apiMs / m_tokenHitRate all share the
+    // gray STALE_COLOR.
+    assert.equal(strip(out), "hit:100.0%");
+    assert.ok(
+      out.includes(STALE),
+      `expected STALE_COLOR wrap on idle tick: ${JSON.stringify(out)}`,
+    );
+  });
+
+  it("m_tokenHitRate| active tick (deltaApi>0) keeps cacheHitColor band", () => {
+    // First tick (active): prime the prev-tick cache.
+    setPrevTick(
+      "sess-hr-active",
+      { apiMs: 0, in: 0, out: 0, cacheRead: 0, totalIn: 0 },
+      "D:\\test",
+    );
+    // Second tick: stdin has higher totalApiDurationMs than the
+    // prev baseline → hasDelta=true → active branch fires →
+    // cacheHitColor(pct) wrapper, NOT STALE_COLOR.
+    const out = renderTemplate(
+      ["m_tokenHitRate"],
+      ctxFor(
+        fakeSnapshot({
+          sessionId: "sess-hr-active",
+          cost: { totalDurationMs: 120_000, totalApiDurationMs: 90_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+        }),
+      ),
+    ).join("\n");
+    // The text is 100.0% (rounded). The wrapper MUST NOT be
+    // STALE_COLOR — it must be the band-based cacheHitColor
+    // (bright green for ≥ 80% hit rate, in the default config).
+    assert.equal(strip(out), "hit:100.0%");
+    assert.ok(
+      !out.includes(STALE),
+      `expected band color (NOT STALE) on active tick: ${JSON.stringify(out)}`,
+    );
   });
 
   it("composed template with multiple token modules + separator", () => {
@@ -795,6 +936,114 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
     ).join("\n");
     assert.equal(strip(out), "api:--");
     assert.ok(out.includes(STALE), `expected STALE wrap on: ${JSON.stringify(out)}`);
+  });
+
+  // v0.8.x — m_apiMs cache-fallback: when the current tick is
+  // idle (no API call) but the lastActive:apiMs slot in
+  // status.json holds a value within the 60s TTL window, render
+  // the cached value STALE_COLORed instead of the "api:--"
+  // placeholder. Mirrors m_tokenInSpeed/m_tokenOutSpeed's idle-
+  // tick behavior.
+  it("m_apiMs| idle tick WITH cached lastActive:apiMs (within TTL) → 'api|1m' (STALE_COLORed)", () => {
+    // Set up: first tick establishes prev=0 and the active tick
+    // lands deltaApi=90_000 → 1m. setLastApiMs fires from the
+    // m_apiMs MODULES body, persisting to status.json.
+    setPrevTick(
+      "sess-apims-cache-fallback",
+      { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0},
+      "D:\\test",
+    );
+    renderTemplate(
+      ["m_apiMs"],
+      ctxFor(
+        fakeSnapshot({
+          sessionId: "sess-apims-cache-fallback",
+          cost: { totalDurationMs: 120_000, totalApiDurationMs: 90_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+        }),
+      ),
+    );
+    // Second tick: NO API call (current == prev → deltaApi=0).
+    // The cached lastActive:apiMs (90_000 from the first render)
+    // must surface, not the placeholder.
+    setPrevTick(
+      "sess-apims-cache-fallback",
+      { apiMs: 90_000, in: 0, out: 0, cacheRead: 0 , totalIn: 0},
+      "D:\\test",
+    );
+    const out = renderTemplate(
+      ["m_apiMs"],
+      ctxFor(
+        fakeSnapshot({
+          sessionId: "sess-apims-cache-fallback",
+          cost: { totalDurationMs: 120_000, totalApiDurationMs: 90_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+        }),
+      ),
+    ).join("\n");
+    assert.equal(strip(out), "api:1m");
+    // The cached-fallback render MUST be wrapped in STALE_COLOR
+    // (gray) so the user sees the reading is from a previous API
+    // call, not this tick — same convention as the tps siblings.
+    assert.ok(out.includes(STALE), `expected STALE wrap on cached fallback: ${JSON.stringify(out)}`);
+  });
+
+  it("m_apiMs| idle tick with NO prior cached value → placeholder 'api|--'", () => {
+    // Fresh session, first tick is idle (prev=current → no delta),
+    // AND no lastActive:apiMs has been written yet (beforeEach
+    // resets status.json per test). Placeholder must fire.
+    setPrevTick(
+      "sess-apims-no-cache",
+      { apiMs: 30_000, in: 0, out: 0, cacheRead: 0 , totalIn: 0},
+      "D:\\test",
+    );
+    const out = renderTemplate(
+      ["m_apiMs"],
+      ctxFor(
+        fakeSnapshot({
+          sessionId: "sess-apims-no-cache",
+          cost: { totalDurationMs: 60_000, totalApiDurationMs: 30_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+        }),
+      ),
+    ).join("\n");
+    assert.equal(strip(out), "api:--");
+  });
+
+  it("m_apiMs| inline |color|red on cached fallback: STALE_COLOR wins over user color (mirror of tps siblings)", () => {
+    // v0.8.x — the TTL-bounded cache fallback overrides the
+    // user's |color| override with STALE_COLOR, matching
+    // computeTickSpeed's behavior for m_tokenInSpeed /
+    // m_tokenOutSpeed. The user-facing rationale: gray is the
+    // canonical "this is from a previous tick" signal; letting
+    // the user paint it would defeat the convention.
+    setPrevTick(
+      "sess-apims-inline-color",
+      { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0},
+      "D:\\test",
+    );
+    renderTemplate(
+      ["m_apiMs"],
+      ctxFor(
+        fakeSnapshot({
+          sessionId: "sess-apims-inline-color",
+          cost: { totalDurationMs: 120_000, totalApiDurationMs: 90_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+        }),
+      ),
+    );
+    setPrevTick(
+      "sess-apims-inline-color",
+      { apiMs: 90_000, in: 0, out: 0, cacheRead: 0 , totalIn: 0},
+      "D:\\test",
+    );
+    const out = renderTemplate(
+      ["m_apiMs|color|red"],
+      ctxFor(
+        fakeSnapshot({
+          sessionId: "sess-apims-inline-color",
+          cost: { totalDurationMs: 120_000, totalApiDurationMs: 90_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+        }),
+      ),
+    ).join("\n");
+    assert.equal(strip(out), "api:1m");
+    assert.ok(out.includes(STALE), `expected STALE wrap: ${JSON.stringify(out)}`);
   });
 
   it("m_apiMs| no stdin (tokens=null) → placeholder 'api|--'", () => {
@@ -1615,10 +1864,12 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     assert.deepEqual(out, []);
   });
 
-  it("m_tokenCachedIn|nulldrop|false with cacheRead=0 renders 'cache|0 (0.0%)' (v6.x zero rule)", () => {
-    // v6.x — cacheRead=0 is now rendered as "cache:0 (0.0%)" — a
-    // real zero, not the placeholder. The placeholder path is
-    // reserved for cacheRead=null (field not shipped by stdin).
+  it("m_tokenCachedIn|nulldrop|false with cacheRead=0 renders 'cache|0' (v0.8.6+ dropped pct suffix)", () => {
+    // v0.8.6+ — m_tokenCachedIn dropped the `(XX%)` share suffix;
+    // it's the raw cache-read token count. Use m_tokenHitRate for
+    // the ratio. cacheRead=0 still renders "cache:0" (real zero,
+    // not placeholder). The placeholder path is reserved for
+    // cacheRead=null (field not shipped by stdin).
     const out = renderTemplate(
       ["m_tokenCachedIn|nulldrop|false"],
       ctxFor(
@@ -1627,7 +1878,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
         }),
       ),
     ).join("\n");
-    assert.equal(strip(out), "cache:0 (0.0%)");
+    assert.equal(strip(out), "cache:0");
   });
 
   it("m_tokenCachedIn|nulldrop|false with cacheRead=null renders 'cache|n/a' (placeholder)", () => {
@@ -1644,10 +1895,10 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     assert.equal(strip(out), "cache:n/a");
   });
 
-  it("m_tokenCachedIn bare form emits 'cache:0 (0.0%)' when read=0 (v6.x zero rule)", () => {
-    // v6.x — bare m_tokenCachedIn renders the real "cache:0 (0.0%)"
-    // chunk when read=0, matching the inline default. Drop is
-    // reserved for cacheRead=null (the missing-field case).
+  it("m_tokenCachedIn bare form emits 'cache:0' when read=0 (v0.8.6+ dropped pct suffix)", () => {
+    // v0.8.6+ — bare m_tokenCachedIn renders "cache:0" without
+    // the `(XX%)` share suffix. Drop is reserved for cacheRead=null
+    // (the missing-field case).
     const out = renderTemplate(
       ["m_tokenCachedIn"],
       ctxFor(
@@ -1656,15 +1907,15 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
         }),
       ),
     ).join("\n");
-    assert.equal(strip(out), "cache:0 (0.0%)");
+    assert.equal(strip(out), "cache:0");
   });
 
-  it("m_cacheHitRate|nulldrop|false| 0 cache / 38 totals.input = 0.0% (v0.8.0 per-turn formula)", () => {
+  it("m_tokenHitRate|nulldrop|false| 0 cache / 38 totals.input = 0.0% (v0.8.0 per-turn formula)", () => {
     // v0.8.0+ formula is current.cacheRead / totals.input. When
     // cacheRead=0 and totals.input=38, the rate is 0/38 = 0.0% —
     // a truthful zero, NOT a placeholder drop.
     const out = renderTemplate(
-      ["m_cacheHitRate|nulldrop|false"],
+      ["m_tokenHitRate|nulldrop|false"],
       ctxFor(
         fakeSnapshot({
           totals: { input: 38, output: 155 },
@@ -2249,6 +2500,121 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     const out = renderTemplate(["m_tokenInSpeed"], ctxFor(fakeSnapshot())).join("\n");
     assert.equal(strip(out), "in:0.6 t/s");
   });
+
+  // ----- v0.8.x R7 — TTL gate disabled for the 4 speed/api/hitrate
+  // modules. The 60s TTL is no longer enforced: any cached value in
+  // status.json (even one written long ago) must surface on idle
+  // ticks. The four tests below pre-write a status.json entry with
+  // `at: Date.now() - 5*60_000` (5 minutes ago — well past the old
+  // 60s window) and confirm each module's idle render still pulls
+  // the cached value rather than the placeholder.
+  //
+  // The LAST_ACTIVE_TTL_MS constant in status-store is retained
+  // for future opt-in via config, but readLastActive no longer
+  // compares against it. The cache is now the persistent "last
+  // known good" value.
+
+  const seedBackdatedLastActive = (
+    direction: "in" | "out" | "apiMs" | "tokenHitRate",
+    value: number,
+    prevTick?: PrevTickSnapshot,
+  ): void => {
+    // Direct write into the tmp status.json the test resolver
+    // points at. We bypass the writeLastActive helper because
+    // that helper stamps `at: Date.now()`, which would defeat
+    // the point of the test (we want the entry to look 5
+    // minutes old). Schema mirrors status-store's loader.
+    // We also write a prev-tick entry if supplied (passed AFTER
+    // this function returns, the in-memory _stores Map will be
+    // cleared by resetStatusForTest, so the on-disk JSON is
+    // authoritative). setPrevTick → writePrevTickStatus →
+    // flushToDisk would otherwise rewrite the file, clobbering
+    // the backdated entry — the right ordering is: build the
+    // whole status.json here, then call resetStatusForTest, then
+    // render.
+    const path = join(_tmpDir, "status.json");
+    const store: Record<string, unknown> = {
+      [`lastActive:${direction}`]: {
+        at: Date.now() - 5 * 60_000,
+        value: { direction, tps: value },
+        kind: "lastActive",
+      },
+    };
+    if (prevTick) {
+      store["prevTickStatus"] = {
+        at: Date.now(),
+        value: {
+          in: prevTick.in,
+          out: prevTick.out,
+          cachedIn: prevTick.cacheRead,
+          totalIn: prevTick.totalIn,
+          totalApiMs: prevTick.apiMs,
+          sessionId: null,
+          cwd: null,
+          model: null,
+        },
+        kind: "prevTickStatus",
+      };
+    }
+    writeFileSync(path, JSON.stringify(store));
+  };
+
+  it("m_tokenInSpeed| backdated (5 min old) lastActive:in → idle tick surfaces cached tps (TTL gate disabled, R7)", () => {
+    // Pre-write a 5-minute-old lastActive:in with tps=12.5.
+    // The old 60s TTL would have hidden this; the new R7 contract
+    // surfaces it indefinitely. Build status.json with prev-tick
+    // (apiMs=60_000) + backdated lastActive:in. current stdin
+    // carries apiMs=60_000 too, so deltaApi=0 → idle tick →
+    // STALE_COLORed cached value.
+    seedBackdatedLastActive("in", 12.5, { apiMs: 60_000, in: 0, out: 0, cacheRead: 0, totalIn: 0 });
+    resetStatusForTest();
+    const out = renderTemplate(["m_tokenInSpeed"], ctxFor(fakeSnapshot())).join("\n");
+    assert.equal(strip(out), "in:12.5 t/s");
+    assert.ok(out.includes(STALE), `expected STALE on backdated cache: ${JSON.stringify(out)}`);
+  });
+
+  it("m_tokenOutSpeed| backdated (5 min old) lastActive:out → idle tick surfaces cached tps (TTL gate disabled, R7)", () => {
+    seedBackdatedLastActive("out", 8.25, { apiMs: 60_000, in: 0, out: 0, cacheRead: 0, totalIn: 0 });
+    resetStatusForTest();
+    const out = renderTemplate(["m_tokenOutSpeed"], ctxFor(fakeSnapshot())).join("\n");
+    assert.equal(strip(out), "out:8.3 t/s");
+    assert.ok(out.includes(STALE), `expected STALE on backdated cache: ${JSON.stringify(out)}`);
+  });
+
+  it("m_apiMs| backdated (5 min old) lastActive:apiMs → idle tick surfaces cached ms (TTL gate disabled, R7)", () => {
+    // apiMs=30_000 in both prev and current → deltaApi=0 → idle.
+    seedBackdatedLastActive("apiMs", 90_000, { apiMs: 30_000, in: 0, out: 0, cacheRead: 0, totalIn: 0 });
+    resetStatusForTest();
+    const out = renderTemplate(
+      ["m_apiMs"],
+      ctxFor(
+        fakeSnapshot({
+          sessionId: "sess-apims-r7",
+          cost: { totalDurationMs: 60_000, totalApiDurationMs: 30_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+        }),
+      ),
+    ).join("\n");
+    assert.equal(strip(out), "api:1m");
+    assert.ok(out.includes(STALE), `expected STALE on backdated cache: ${JSON.stringify(out)}`);
+  });
+
+  it("m_tokenHitRate| backdated (5 min old) lastActive:tokenHitRate → idle tick surfaces cached pct (TTL gate disabled, R7)", () => {
+    // cacheRead=null on stdin AND deltaApi=0 (idle). Both fall-back
+    // paths converge on the same lastActive:tokenHitRate lookup.
+    seedBackdatedLastActive("tokenHitRate", 87.3, { apiMs: 60_000, in: 0, out: 0, cacheRead: 0, totalIn: 0 });
+    resetStatusForTest();
+    const out = renderTemplate(
+      ["m_tokenHitRate"],
+      ctxFor(
+        fakeSnapshot({
+          sessionId: "sess-hr-r7",
+          current: { input: 0, output: 0, cacheCreation: 0, cacheRead: null },
+        }),
+      ),
+    ).join("\n");
+    assert.equal(strip(out), "hit:87.3%");
+    assert.ok(out.includes(STALE), `expected STALE on backdated cache: ${JSON.stringify(out)}`);
+  });
 });
 
 // ----- v0.4.0+ m_template module -----
@@ -2514,14 +2880,14 @@ describe("renderTemplate — named separator aliases (v0.4.x)", () => {
 //                        the model has seen this session, counting
 //                        cache_read as already-paid-for" view)
 //   m_accApiMs         — session-cumulative cost.totalApiDurationMs
-//   m_accCacheHitRate  — accCached / (accCached + accIn) * 100%
+//   m_accTokenHitRate  — accCached / (accCached + accIn) * 100%
 //
 // All six accept an optional `:scope:<session|project|model>` arg.
 // Default scope:
 //   - the 5 plain modules fall back to "project" when no
 //     sessionId is on the snapshot (so a fresh project renders
 //     placeholders instead of empty), otherwise "session".
-//   - m_accCacheHitRate defaults to "session" — a per-session
+//   - m_accTokenHitRate defaults to "session" — a per-session
 //     ratio is the natural "what % of MY model reads are cache
 //     hits" answer; project/model are opt-in.
 //
@@ -2533,10 +2899,11 @@ describe("renderTemplate — named separator aliases (v0.4.x)", () => {
 // Placeholders (v0.8.0+ labels.*): the four token-axis acc
 // modules (m_accTokenIn/Out/CachedIn/TotalIn) read their prefix
 // from labelFor so the placeholder matches the configured
-// labelIn/Out/CacheIn/TotalIn. m_accApiMs / m_accCacheHitRate
-// are NOT in the user-facing axis set, so they keep their
-// hardcoded "acc:" / "acc:n/a%" prefix shape. Inline default is
-// the placeholder (nulldrop:false behavior); bare form also
+// labelIn/Out/CacheIn/TotalIn. m_accApiMs keeps its hardcoded
+// "api:" prefix (mirrors m_apiMs). m_accTokenHitRate (v0.8.x R8)
+// now mirrors m_tokenHitRate's "hit:" prefix (was "acc:") so the
+// per-turn / acc / sum triple shares one prefix. Inline default
+// is the placeholder (nulldrop:false behavior); bare form also
 // renders the placeholder when data is missing — matching the
 // v6.x bare-vs-inline parity rule.
 describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)", () => {
@@ -2683,7 +3050,101 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     assert.equal(strip(out), "api:1m");
   });
 
-  it("m_accCacheHitRate| session scope formula accCached / (accCached + accIn) = 99.978%", () => {
+  // v0.8.x — m_accApiCalls reads accApiCount from the chosen scope
+  // slot in status.json, mirroring m_apiCalls's `calls:N` shape.
+  // value=0 still renders (value-zero rule — count:0 is real data,
+  // not a placeholder). Tokens=null or no-slot → "calls:n/a".
+  it("m_accApiCalls|scope|session reads accApiCount from per-session slot", () => {
+    // Default scope is ccsession; for the session slot we must
+    // pass `|scope|session` explicitly. setAvg's deltas fire
+    // accPrimer when renderTemplate runs, which adds 1 to
+    // accApiCount (deltaApiCount) — so the seeded 7 + 1 = 8.
+    setAvg(
+      "sess-acc-calls",
+      { accIn: 0, accOut: 0, accApi: 0, accCached: 0, accApiCount: 7 , accTotalIn: 0},
+      "D:\\test",
+      {
+        modelDisplayName: "MiniMax-M3",
+        deltaApiCount: 1,
+        currentApiMs: 0,
+        deltaIn: 0,
+        deltaOut: 0,
+        deltaCache: 0,
+        deltaApiMs: 0,
+      },
+    );
+    const out = renderTemplate(
+      ["m_accApiCalls|scope|session"],
+      ctxFor(fakeSnapshot({ sessionId: "sess-acc-calls" })),
+    ).join("\n");
+    assert.equal(strip(out), "calls:8");
+  });
+
+  it("m_accApiCalls| ccsession default scope → reads tickStatus:ccsession", () => {
+    // The ccsession slot uses `incrementCount` (deltaApiCount
+    // from setAvg's extras), NOT snap.accApiCount. The ccsession
+    // path was designed for "count of API calls that fired this
+    // tick", not the cumulative count. So setAvg's seeded 7
+    // lands on the SESSION slot (via snap.accApiCount) but only
+    // +1 lands on ccsession (via deltaApiCount=1). The primer
+    // then adds another +1 from this render's deltaApiCount.
+    // Net: ccsession = 0 + 1 (seed) + 1 (primer) = 2.
+    setAvg(
+      "any-sid-ccs",
+      { accIn: 0, accOut: 0, accApi: 0, accCached: 0, accApiCount: 7 , accTotalIn: 0},
+      "D:\\test",
+      {
+        modelDisplayName: "MiniMax-M3",
+        deltaApiCount: 1,
+        currentApiMs: 0,
+        deltaIn: 0,
+        deltaOut: 0,
+        deltaCache: 0,
+        deltaApiMs: 0,
+      },
+    );
+    const out = renderTemplate(
+      ["m_accApiCalls"],
+      ctxFor(fakeSnapshot({ sessionId: "any-sid-ccs" })),
+    ).join("\n");
+    assert.equal(strip(out), "calls:2");
+  });
+
+  it("m_accApiCalls| value=0 still renders as 'calls:N' (value-zero rule; primer adds 1)", () => {
+    setAvg(
+      "sess-acc-calls-zero",
+      { accIn: 0, accOut: 0, accApi: 0, accCached: 0, accApiCount: 0 , accTotalIn: 0},
+      "D:\\test",
+      {
+        modelDisplayName: null,
+        deltaApiCount: 0,
+        currentApiMs: 0,
+        deltaIn: 0,
+        deltaOut: 0,
+        deltaCache: 0,
+        deltaApiMs: 0,
+      },
+    );
+    const out = renderTemplate(
+      ["m_accApiCalls|scope|session"],
+      ctxFor(fakeSnapshot({ sessionId: "sess-acc-calls-zero" })),
+    ).join("\n");
+    // self-priming fires accPrimer → bumps accApiCount by 1
+    // (deltaApiCount) on the same call. So the rendered value is
+    // 1, not 0. The point of the test is that it does NOT render
+    // the placeholder "calls:n/a" — count:1 is real data.
+    assert.equal(strip(out), "calls:1");
+  });
+
+  it("m_accApiCalls| tokens=null → 'calls:n/a' placeholder", () => {
+    const out = renderTemplate(
+      ["m_accApiCalls"],
+      ctxFor(null),
+    ).join("\n");
+    assert.equal(strip(out), "calls:n/a");
+  });
+
+  it("m_accTokenHitRate| session scope formula accCached / (accCached + accIn) = 99.978%", () => {
     // 163441 / (163441 + 38) * 100 = 99.97799… → toFixed(1) → "100.0%".
     setAvg(
       "sess-acc-hit",
@@ -2700,15 +3161,17 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       },
     );
     const out = renderTemplate(
-      ["m_accCacheHitRate"],
+      ["m_accTokenHitRate"],
       ctxFor(fakeSnapshot({ sessionId: "sess-acc-hit" })),
     ).join("\n");
-    assert.equal(strip(out), "acc:100.0%");
+    // v0.8.x R8 — prefix unified with m_tokenHitRate / m_sumTokenHitRate.
+    assert.equal(strip(out), "hit:100.0%");
   });
 
-  it("m_accCacheHitRate| zero denominator → 'acc|0.0%' (no placeholder drop)", () => {
+  it("m_accTokenHitRate| zero denominator → 'hit|0.0%' (no placeholder drop)", () => {
     // All-zero slot → no input and no cache → 0/0. Per the v6.x
-    // zero-value rule, render "acc:0.0%" rather than "acc:n/a%".
+    // zero-value rule, render "hit:0.0%" rather than "hit:n/a%"
+    // (R8 prefix).
     setAvg(
       "sess-acc-zero",
       { accIn: 0, accOut: 0, accApi: 0, accCached: 0, accApiCount: 0 , accTotalIn: 0},
@@ -2724,26 +3187,26 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       },
     );
     const out = renderTemplate(
-      ["m_accCacheHitRate"],
+      ["m_accTokenHitRate"],
       ctxFor(fakeSnapshot({ sessionId: "sess-acc-zero" })),
     ).join("\n");
     // v0.8.x cwf-tickStatus-v2 — self-priming adds the per-tick
     // cacheRead delta (163441) and input delta (38) on top of
     // the seeded zeros. Hit rate = 163441 / (163441+38) ≈ 99.98%
-    // → "100.0%".
-    assert.equal(strip(out), "acc:100.0%");
+    // → "100.0%". v0.8.x R8 — prefix unified with m_tokenHitRate.
+    assert.equal(strip(out), "hit:100.0%");
   });
 
-  it("m_accCacheHitRate| fresh session self-primes → 'acc:0.0%' (zero input, zero cache)", () => {
+  it("m_accTokenHitRate| fresh session self-primes → 'hit:0.0%' (zero input, zero cache)", () => {
     // v0.8.x cwf-tickStatus-v2 — self-priming makes the
-    // m_accCacheHitRate module work on a fresh session without
+    // m_accTokenHitRate module work on a fresh session without
     // a pre-seeded slot. With stdin carrying cache_read (163441)
     // and input (38), the hit rate is non-zero; with the
     // fakeSnapshot defaults, current.input=38, current.output=155,
     // current.cacheRead=163441. Hit rate = 163441 / (163441+38) ≈
     // 99.98% (rendered as "100.0%" or similar).
     const out = renderTemplate(
-      ["m_accCacheHitRate"],
+      ["m_accTokenHitRate"],
       ctxFor(fakeSnapshot({ sessionId: "sess-hit-fresh" })),
     ).join("\n");
     // Self-priming on a fresh session lands a real hit rate; the
@@ -2961,7 +3424,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
         "s_space",
         "s_dot",
         "s_space",
-        "m_accCacheHitRate",
+        "m_accTokenHitRate",
       ],
       ctxFor(fakeSnapshot({ sessionId: "sess-multi" })),
     ).join("\n");
@@ -2970,15 +3433,16 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     // the seeded values:
     //   in=500+38=538 → "538"
     //   out=250+155=405 → "405"
-    //   hitRate=173441/(173441+538)=99.69% → "99.7%"
-    assert.equal(strip(out), "in:538 out:405 · acc:99.7%");
+    //   hitRate=173441/(173441+538)=99.69% → "99.7%".
+    // v0.8.x R8 — m_accTokenHitRate prefix unified with m_tokenHitRate.
+    assert.equal(strip(out), "in:538 out:405 · hit:99.7%");
   });
 });
 
 // ----- v0.8.0+ sum/avg advanced statistics -------------------------------
 //
 // 8 new modules: 5 sums (in / out / cached / total / apiMs) + 3
-// ratios (cacheHitRate / tokenInSpeed / tokenOutSpeed). All read
+// ratios (tokenHitRate / tokenInSpeed / tokenOutSpeed). All read
 // the per-tick jsonl stream (cross-project via readAllSamples) and
 // filter by `:model:`, `:window:`, `:align:`. Results are cached in
 // state/cache.json under the "stat:<model>:<window>:<align>" key
@@ -3205,7 +3669,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     assert.equal(out, "");
   });
 
-  it("m_avgTokenInSpeed| sum(in) / sum(apiMs) * 1000 in t/s", () => {
+  it("m_sumTokenInSpeed| sum(in) / sum(apiMs) * 1000 in t/s", () => {
     const stateRootDir = join(_tmpDir, "sum-fixture-speed");
     setStateRoot(() => stateRootDir);
     const projHash = "d--sum-s";
@@ -3224,7 +3688,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
       "utf8",
     );
     const out = renderTemplate(
-      ["m_avgTokenInSpeed"],
+      ["m_sumTokenInSpeed"],
       ctxFor(fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" })),
     ).join("\n");
     // 500 t/s → "500.0 t/s"

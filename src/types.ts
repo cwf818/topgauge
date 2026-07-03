@@ -104,7 +104,7 @@ export type TokenSample = {
 // the renderer's `RenderContext` extension below.
 //
 // `current` = post-turn snapshot (used by m_tokenIn, m_tokenOut,
-//            m_tokenCachedIn, m_cacheHitRate, m_tokenInSpeed,
+//            m_tokenCachedIn, m_tokenHitRate, m_tokenInSpeed,
 //            m_tokenOutSpeed). `totals` = session cumulative (used by
 //            m_tokenInTotal, m_tokenTotalOut, m_tokenTotal).
 //            `cost` = stdin.cost block. `contextWindow` = context
