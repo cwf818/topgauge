@@ -88,6 +88,15 @@ export type TokenSample = {
   model?: string;
   totalApiMs?: number;
   apiMs?: number;
+  // v0.8.x — the cached prev apiMs at write time. Lets off-line
+  // inspectors distinguish a real delta from a fallback path:
+  //   prevApiMs === null  → cache miss on first tick (no baseline);
+  //                          apiMs may be the fallback value (out/50*1000)
+  //                          or the full session total if totalApiMs > 0.
+  //   prevApiMs === 0     → cache hit but baseline was zero.
+  //   prevApiMs > 0       → normal case, apiMs = totalApiMs - prevApiMs.
+  // undefined for legacy rows written before this field existed.
+  prevApiMs?: number | null;
 };
 
 // What the renderer needs to know about a single tick. Built once in

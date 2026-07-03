@@ -36,7 +36,23 @@ import { dirname, join } from "node:path";
 // strip both). defaultCachePath() prefers the explicit env vars first
 // and only falls back to homedir() as a last resort.
 
-type Entry<T> = { at: number; value: T };
+type Entry<T> = { at: number; value: T; ttlMs?: number };
+
+// v0.8.x — legacy key prefixes from the v0.8.0-pre stat cache
+// (sum:v1:*, avg:v1:*). The schema-v1 keys embedded `sinceMs` in
+// the key itself, which exploded the key space (one entry per
+// sinceMs instance). After the rewrite to `stat:model:window:align`
+// the old keys are unreachable but the disk file still holds them
+// because cache.set never deleted entries. We strip them on load
+// so the next flush writes them out. Subsequent reloads will not
+// re-introduce them (no new code writes the old prefixes).
+const LEGACY_KEY_PREFIXES = ["sum:v1:", "avg:v1:"];
+function isLegacyKey(key: string): boolean {
+  for (const p of LEGACY_KEY_PREFIXES) {
+    if (key.startsWith(p)) return true;
+  }
+  return false;
+}
 
 // Exported for tests; treat as read-only outside of this module.
 export const store = new Map<string, Entry<unknown>>;
@@ -124,13 +140,19 @@ function loadFromDisk(): void {
     return;
   }
   for (const [key, raw] of Object.entries(parsed as Record<string, unknown>)) {
-    const e = raw as { at?: unknown; value?: unknown };
+    // v0.8.x — drop legacy sum:v1:*/avg:v1:* keys. They were written
+    // by the pre-refactor stat cache and are no longer reachable
+    // from any get()/peek() call site. Keeping them in the in-memory
+    // Map would just leak them back to disk on the next flush.
+    if (isLegacyKey(key)) continue;
+    const e = raw as { at?: unknown; value?: unknown; ttlMs?: unknown };
     if (
       typeof e.at === "number" &&
       Number.isFinite(e.at) &&
       "value" in e
     ) {
-      store.set(key, { at: e.at, value: e.value });
+      const ttlMs = typeof e.ttlMs === "number" && e.ttlMs > 0 ? e.ttlMs : undefined;
+      store.set(key, { at: e.at, value: e.value, ttlMs });
     }
   }
 }
@@ -148,10 +170,19 @@ function flushToDisk(): void {
     );
     return;
   }
-  // JSON.stringify of the Map gives an object literal — fine for our
-  // purposes (small N, keys are provider names).
+  // v0.8.x — TTL-aware flush. Before writing, evict any entry whose
+  // own ttlMs has elapsed. Entries written before this change (no
+  // ttlMs on disk) are kept verbatim — their TTL is still enforced
+  // by get()/peek(), we just don't proactively reclaim them here.
+  const now = Date.now();
   const obj: Record<string, Entry<unknown>> = {};
-  for (const [k, v] of store.entries()) obj[k] = v;
+  for (const [k, v] of store) {
+    if (v.ttlMs != null && now - v.at > v.ttlMs) {
+      store.delete(k);
+      continue;
+    }
+    obj[k] = v;
+  }
   try {
     writeFileSync(path, JSON.stringify(obj));
   } catch {
@@ -187,9 +218,9 @@ export function getWithAge<T>(
   return { value: e.value, ageMs };
 }
 
-export function set<T>(key: string, value: T): void {
+export function set<T>(key: string, value: T, ttlMs?: number): void {
   loadFromDisk();
-  store.set(key, { at: Date.now(), value });
+  store.set(key, { at: Date.now(), value, ttlMs });
   flushToDisk();
 }
 

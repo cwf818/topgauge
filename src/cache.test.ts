@@ -428,3 +428,149 @@ describe("cache disk persistence", () => {
     }
   });
 });
+
+// ----- v0.8.x: TTL-aware flush + legacy key cleanup -----
+//
+// After the stat cache rewrite (`sum:v1:…` → `stat:model:window:align`)
+// the disk file could hold hundreds of stale `sum:v1:*` entries because
+// cache.set never deletes unreferenced keys. Two new behaviors:
+//
+//   1. set(key, value, ttlMs) records the entry's TTL; flushToDisk
+//      prunes expired entries (those with `ttlMs` AND age > ttlMs).
+//      Entries lacking `ttlMs` (legacy disk entries written by older
+//      versions) are kept verbatim — their TTL is still enforced by
+//      get()/peek(), we just don't proactively reclaim them here.
+//   2. loadFromDisk strips sum:v1:* / avg:v1:* legacy keys before they
+//      re-enter the in-memory store.
+
+describe("cache — v0.8.x TTL flush + legacy key cleanup", () => {
+  let dir: string;
+  let cacheFile: string;
+
+  function resetModuleState(): void {
+    resetForTest();
+  }
+
+  function setupTmpDir(): void {
+    dir = mkdtempSync(join(tmpdir(), "topgauge-cc-cache-v8-"));
+    cacheFile = join(dir, "cache.json");
+    setCachePathResolver(() => cacheFile);
+  }
+
+  function teardownTmpDir(): void {
+    resetCachePathResolver();
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Best-effort cleanup; tmp dir will be reaped by the OS.
+    }
+  }
+
+  it("flushToDisk evicts entries whose ttlMs has elapsed", () => {
+    setupTmpDir();
+    try {
+      resetModuleState();
+      // Set with a 1s TTL, then backdate to make it already-expired
+      // by the time we trigger the next set() (which is when flush
+      // runs). The expired entry must NOT appear in the flushed file.
+      set("will-expire", { v: 1 }, 1_000);
+      (cache as any).store.set("will-expire", {
+        at: Date.now() - 10_000,
+        value: { v: 1 },
+        ttlMs: 1_000,
+      });
+      // The next set triggers flushToDisk.
+      set("keep", { v: 2 }, 60_000);
+
+      const raw = JSON.parse(readFileSync(cacheFile, "utf8"));
+      assert.equal(raw["will-expire"], undefined, "expired entry should be evicted");
+      assert.ok(raw["keep"], "fresh entry should survive");
+      assert.deepEqual(raw["keep"].value, { v: 2 });
+      assert.equal(raw["keep"].ttlMs, 60_000, "ttlMs should round-trip on disk");
+    } finally {
+      teardownTmpDir();
+    }
+  });
+
+  it("flushToDisk keeps legacy entries without ttlMs (no proactive eviction)", () => {
+    // Entries written by pre-v0.8.x code lack `ttlMs` on disk. flush
+    // must NOT delete them (their age check is the caller's job via
+    // get()). The only way to remove them is via clear() or by the
+    // legacy-prefix filter on load.
+    setupTmpDir();
+    try {
+      resetModuleState();
+      const stale = { at: Date.now() - 10 * 60_000, value: { old: true } };
+      writeFileSync(
+        cacheFile,
+        JSON.stringify({ "no-ttl-legacy": stale }),
+      );
+      resetModuleState();
+      // Trigger a flush by setting an unrelated key.
+      set("trigger", "x", 60_000);
+
+      const raw = JSON.parse(readFileSync(cacheFile, "utf8"));
+      assert.ok(
+        raw["no-ttl-legacy"],
+        "legacy entry without ttlMs must survive flush",
+      );
+      assert.ok(raw["trigger"], "new entry must also survive");
+    } finally {
+      teardownTmpDir();
+    }
+  });
+
+  it("loadFromDisk strips sum:v1:* and avg:v1:* legacy keys", () => {
+    // Pre-fix: cache.json held hundreds of sum:v1:… entries because
+    // the old key embedded sinceMs (different per call). After the
+    // refactor these are unreachable; loadFromDisk now drops them on
+    // sight, so the next flush writes a clean file.
+    setupTmpDir();
+    try {
+      const fixture = {
+        "sum:v1:kimi-k2.6:1783029296489:false": {
+          at: Date.now() - 60_000,
+          value: { sumIn: 1, rows: 1 },
+        },
+        "sum:v1:MiniMax-M3:1783032209946:false": {
+          at: Date.now() - 60_000,
+          value: { sumIn: 2, rows: 2 },
+        },
+        "avg:v1:kimi:0:false": {
+          at: Date.now() - 60_000,
+          value: { sumIn: 3, rows: 3 },
+        },
+        "stat:MiniMax-M3:5h:false": {
+          at: Date.now() - 60_000,
+          value: { sumIn: 4, rows: 4 },
+        },
+        minimax: { at: Date.now() - 60_000, value: { data: "stays" } },
+      };
+      writeFileSync(cacheFile, JSON.stringify(fixture));
+
+      resetModuleState();
+      // Trigger load (any get/peek does it). Legacy keys must NOT
+      // be in the in-memory store.
+      get("stat:MiniMax-M3:5h:false", 60_000);
+
+      const storeKeys = Array.from((cache as any).store.keys()).sort();
+      assert.deepEqual(
+        storeKeys,
+        ["minimax", "stat:MiniMax-M3:5h:false"],
+        `legacy sum:v1:*/avg:v1:* keys must be stripped; got ${JSON.stringify(storeKeys)}`,
+      );
+
+      // Subsequent flush must NOT write the legacy keys back.
+      set("after-flush", "x", 60_000);
+      const raw = JSON.parse(readFileSync(cacheFile, "utf8"));
+      assert.equal(raw["sum:v1:kimi-k2.6:1783029296489:false"], undefined);
+      assert.equal(raw["sum:v1:MiniMax-M3:1783032209946:false"], undefined);
+      assert.equal(raw["avg:v1:kimi:0:false"], undefined);
+      assert.ok(raw["stat:MiniMax-M3:5h:false"], "stat: key survives");
+      assert.ok(raw["minimax"], "non-legacy key survives");
+      assert.ok(raw["after-flush"], "new key present");
+    } finally {
+      teardownTmpDir();
+    }
+  });
+});

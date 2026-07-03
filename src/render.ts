@@ -1954,7 +1954,9 @@ const MODULES: Record<string, Module> = {
   // + ":align:true" — the inline form `m_sumTokenIn:window:7d` etc
   // overrides. See parseWindowScope + fetchSumAggregate for the
   // resolution path; results are cached in state/cache.json under
-  // the "sum:v1:<model>:<sinceMs>:<align>" key with TTL=300s.
+  // the "stat:<model>:<window>:<align>" key (window ∈ {"5h","7d",
+  // "all"}) with TTL=300s. sinceMs is derived but not part of the
+  // key, capping the cache at 12 entries.
   m_sumTokenIn: (c) => {
     const filter = parseWindowScope(c, {});
     if (!filter) return null;
@@ -1983,7 +1985,7 @@ const MODULES: Record<string, Module> = {
     const filter = parseWindowScope(c, {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
-    return agg.rows === 0 ? null : `api:${formatCompactToken(agg.sumApiMs)}`;
+    return agg.rows === 0 ? null : `api:${formatRemainingMs(agg.sumApiMs)}`;
   },
   m_avgCacheHitRate: (c) => {
     const filter = parseWindowScope(c, {});
@@ -2009,6 +2011,18 @@ const MODULES: Record<string, Module> = {
     if (agg.sumApiMs === 0) return null;
     const tps = (agg.sumOut / agg.sumApiMs) * 1000;
     return `${labelFor("out")}${formatSpeed(tps)}`;
+  },
+  // v0.8.x — total count of API calls (rows with apiMs > 0) in the
+  // window. Honors :model:, :window:, :align: like the other
+  // m_sum* modules. Despite the family being "sum" (cross-tick
+  // aggregate), the value is a COUNT, not a token — kept under the
+  // m_sum prefix because the rendering path is the same
+  // (windowed cross-project JSONL scan → single cached aggregate).
+  m_sumApiCalls: (c) => {
+    const filter = parseWindowScope(c, {});
+    if (!filter) return null;
+    const agg = fetchSumAggregate(filter);
+    return agg.calls === 0 ? null : `calls:${agg.calls}`;
   },
   // v0.3.6+ — bare `m_quote` (no inline args). Picks a quote from
   // the hourly window and renders it plain (no SGR wrapper). Opt-in
@@ -2340,22 +2354,26 @@ function parseDhms(raw: string | undefined): number | "all" | null {
   return ms;
 }
 
-// v0.8.0+ — resolve the effective (sinceMs, alignActive, model) for
-// a sum/avg scan. Returns:
-//   sinceMs   — wall-clock anchor. Samples with `at < sinceMs`
-//               are excluded.
-//   alignActive — when true, the caller should re-anchor sinceMs
-//                 against the plan window's resetStartAt (so we
-//                 cover exactly one full window since the last
-//                 refill, not "the last 5h of wall-clock time").
-//   modelFilter — undefined (all rows), "active" (current model),
-//                 or a literal model name.
+// v0.8.x — resolve the effective (windowKey, sinceMs, alignActive,
+// model) for a sum/avg scan.
 //
-// alignActive is forced false when window is the special "all"
-// sentinel (no time anchor to align to) or when resetStartAt is
-// missing on the relevant Window. Otherwise it follows the
-// `params.align` override (default true).
+//   windowKey   — discrete cache key segment. One of "5h" / "7d" /
+//                 "all". Any other dhms input (e.g. "1d2h") is
+//                 rejected at parse time so the cache key space
+//                 stays bounded (≤ 12 entries: 2 model × 3 window ×
+//                 2 align).
+//   sinceMs     — wall-clock anchor. Samples with `at < sinceMs` are
+//                 excluded. Derived from windowKey + ctx.nowMs +
+//                 optionally resetStartAt.
+//   alignActive — when true, sinceMs is resetStartAt (cover exactly
+//                 one full window since the last refill); when
+//                 false, sinceMs is nowMs-window (the trailing N ms
+//                 of wall-clock). Forced false for window="all" or
+//                 when resetStartAt is missing on the relevant Window.
+//   modelFilter — undefined (all rows), "active" (current model), or
+//                 a literal model name.
 type SumFilter = {
+  windowKey: "5h" | "7d" | "all";
   sinceMs: number;
   alignActive: boolean;
   modelFilter?: string;
@@ -2366,8 +2384,23 @@ function parseWindowScope(
   params: Record<string, ResolvedValue | undefined>,
 ): SumFilter | null {
   const windowRaw = (params.window as string | undefined) ?? "5h";
-  const window = parseDhms(windowRaw);
-  if (window === null) return null;
+  // Normalize the raw window string into one of the three discrete
+  // cache-key values. Any other dhms is rejected (drops the module).
+  // The full parseDhms validation still runs so e.g. "5x" returns
+  // null, and the standard warn-unknown-window path can fire.
+  let windowKey: "5h" | "7d" | "all";
+  if (windowRaw === "all") {
+    windowKey = "all";
+  } else if (windowRaw === "5h") {
+    windowKey = "5h";
+  } else if (windowRaw === "7d") {
+    windowKey = "7d";
+  } else {
+    // Anything else (free-form dhms like "1d2h") is not allowed in
+    // v0.8.x — refuse rather than minting a unique cache key.
+    return null;
+  }
+
   const alignRaw = (params.align as string | undefined) ?? "true";
   const alignWanted = alignRaw === "true";
 
@@ -2382,18 +2415,16 @@ function parseWindowScope(
     modelFilter = modelRaw;
   }
 
-  if (window === "all") {
+  if (windowKey === "all") {
     // No time anchor — align is meaningless. Scan from epoch.
-    return { sinceMs: 0, alignActive: false, modelFilter };
+    return { windowKey, sinceMs: 0, alignActive: false, modelFilter };
   }
 
   // Try to align to the plan window's resetStartAt if asked.
   const w: Window | null | undefined =
-    windowRaw === "5h"
+    windowKey === "5h"
       ? ctx.fiveHour
-      : windowRaw === "7d"
-        ? ctx.weekly
-        : null;
+      : ctx.weekly;
   if (
     alignWanted &&
     w != null &&
@@ -2402,32 +2433,39 @@ function parseWindowScope(
     w.resetDurationMs > 0
   ) {
     return {
+      windowKey,
       sinceMs: w.resetStartAt,
       alignActive: true,
       modelFilter,
     };
   }
+  const windowMs = windowKey === "5h" ? 5 * 3600_000 : 7 * 86400_000;
   return {
-    sinceMs: ctx.nowMs - window,
+    windowKey,
+    sinceMs: ctx.nowMs - windowMs,
     alignActive: false,
     modelFilter,
   };
 }
 
-// v0.8.0+ — sum/avg scanning core. Reads the relevant jsonl set
-// (per-session or cross-project) and computes the requested
-// aggregate. The cache key namespacing (D4) puts results in
-// state/cache.json under "sum:v1:…" / "avg:v1:…" with TTL=300s.
-type SumAggregate = {
+// v0.8.x — sum/avg scanning core. The cache key is
+// "stat:<model|"all">:<window>:<align>" with TTL=300s and value
+// the StatAggregate dict below. ReadAllSamples is called with the
+// resolved sinceMs and applies a mtime pre-filter to skip stale
+// files before opening them.
+type StatAggregate = {
   sumIn: number;
   sumOut: number;
   sumCached: number;
   sumTotalIn: number; // sumIn + sumCached
   sumApiMs: number;
-  rows: number;
+  rows: number; // total rows scanned (incl. fallback apiMs=0 rows)
+  calls: number; // v0.8.x — count of rows with apiMs > 0 (real API activity)
+  lastAt: number; // max sample `at`; 0 when no rows
+  generatedAt: number; // Date.now() at scan time; for diagnostics
 };
 
-function aggregateSamples(samples: TokenSample[]): SumAggregate {
+function aggregateSamples(samples: TokenSample[]): StatAggregate {
   // v0.8.0+ — TokenSample field rename. The per-turn columns are
   // now `in` (was `ctx_in`), `cacheIn` (was `ctx_read`), and `apiMs`
   // (was `deltaApiMs`). The cumulative columns `totalIn` /
@@ -2436,30 +2474,48 @@ function aggregateSamples(samples: TokenSample[]): SumAggregate {
   // them would produce meaningless numbers. m_sumTokenTotalIn
   // therefore derives from per-turn columns (sumIn + sumCached)
   // rather than from the cumulative totalIn field.
-  let sumIn = 0, sumOut = 0, sumCached = 0, sumApiMs = 0;
+  let sumIn = 0, sumOut = 0, sumCached = 0, sumApiMs = 0, lastAt = 0, calls = 0;
   for (const s of samples) {
     sumIn += s.in;
     sumOut += s.out;
     sumCached += s.cacheIn;
     sumApiMs += s.apiMs ?? 0;
+    if ((s.apiMs ?? 0) > 0) calls += 1;
+    if (s.at > lastAt) lastAt = s.at;
   }
-  return { sumIn, sumOut, sumCached, sumTotalIn: sumIn + sumCached, sumApiMs, rows: samples.length };
+  return {
+    sumIn,
+    sumOut,
+    sumCached,
+    sumTotalIn: sumIn + sumCached,
+    sumApiMs,
+    rows: samples.length,
+    calls,
+    lastAt,
+    generatedAt: Date.now(),
+  };
 }
 
-function fetchSumAggregate(filter: SumFilter): SumAggregate {
-  const key = `sum:v1:${filter.modelFilter ?? "all"}:${filter.sinceMs}:${filter.alignActive}`;
-  const cached = cache.get<SumAggregate>(key, 300_000);
+function fetchSumAggregate(filter: SumFilter): StatAggregate {
+  // Key is bound to the discrete filter triple (model, window, align)
+  // — `sinceMs` is derived but NOT part of the key. That caps the
+  // key space at 12 entries (2 model × 3 window × 2 align). Value is
+  // the StatAggregate dict feeding all 8 sum/avg modules; on TTL
+  // expiry we re-scan (no incremental reuse).
+  const key = `stat:${filter.modelFilter ?? "all"}:${filter.windowKey}:${filter.alignActive}`;
+  const cached = cache.get<StatAggregate>(key, 300_000);
   if (cached) return cached;
   // Cross-project scan (no cwd scoping); the inline-args
   // resolution never carries a cwd key, so we always go through
-  // readAllSamples here. Per-project reads are reserved for the
+  // readAllSamples here. readAllSamples applies a mtime pre-filter
+  // to skip stale files. Per-project reads are reserved for the
   // future "per-cwd window" use case.
   const samples = readAllSamples(filter.sinceMs);
   const filtered = filter.modelFilter === undefined
     ? samples
     : samples.filter((s) => s.model === filter.modelFilter);
   const agg = aggregateSamples(filtered);
-  cache.set(key, agg);
+  cache.set(key, agg, 300_000);
   return agg;
 }
 
@@ -2545,6 +2601,7 @@ const DEFAULT_COLORS: Record<string, string> = {
   // Duration / count class (numeric but NOT 5-band / scale)
   m_sessionDuration: NAMED_PALETTE.brown,
   m_sessionApiDuration: NAMED_PALETTE.brown,
+  m_sumApiCalls: NAMED_PALETTE.cyan,
   // v0.8.0+ — per-turn delta of cost.totalApiDurationMs,
   // formatted as a dhms time string ("api:5s" / "api:1m30s").
   // Brown matches the existing time-format family; the "api:"
@@ -3027,6 +3084,7 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   m_avgCacheHitRate: placeholderNA("hit:"),
   m_avgTokenInSpeed: placeholderLabelOr("in"),
   m_avgTokenOutSpeed: placeholderLabelOr("out"),
+  m_sumApiCalls: placeholderNA("calls:"),
   // v0.8.0+ — newly added m_tokenTotalIn (session-cumulative
   // total_input_tokens). Shares the labelTotalIn axis with its
   // sum/avg siblings.
@@ -3308,6 +3366,7 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_avgCacheHitRate: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
   m_avgTokenInSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
   m_avgTokenOutSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
+  m_sumApiCalls: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
   // v0.3.6+ — quote module. Accepts `:freq:<numeric-time>` and
   // `:color:<sgr|shortcut|rainbow|rand-rainbow|hue>`. The freq
   // grammar is the single-unit time format `<digits><unit>` (bare
@@ -3712,7 +3771,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (!filter) return INLINE_BADARG;
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderWithColor("m_sumApiMs", params, ctx);
-    return wrapPlain(`api:${formatCompactToken(agg.sumApiMs)}`, params.color as string | undefined);
+    return wrapPlain(`api:${formatRemainingMs(agg.sumApiMs)}`, params.color as string | undefined);
   },
   m_avgCacheHitRate: (params, ctx) => {
     const filter = parseWindowScope(ctx, params);
@@ -3738,6 +3797,14 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (agg.sumApiMs === 0) return placeholderWithColor("m_avgTokenOutSpeed", params, ctx);
     const tps = (agg.sumOut / agg.sumApiMs) * 1000;
     return wrapPlain(`${labelFor("out")}${formatSpeed(tps)}`, params.color as string | undefined);
+  },
+  // v0.8.x — total count of API calls in window. See MODULES twin.
+  m_sumApiCalls: (params, ctx) => {
+    const filter = parseWindowScope(ctx, params);
+    if (!filter) return INLINE_BADARG;
+    const agg = fetchSumAggregate(filter);
+    if (agg.calls === 0) return placeholderWithColor("m_sumApiCalls", params, ctx);
+    return wrapPlain(`calls:${agg.calls}`, params.color as string | undefined);
   },
   m_quote: (params, ctx) => {
     // Default freq = 1h (per-hour window). The schema resolver
@@ -4199,6 +4266,8 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         // Longer prefix listed first (19 chars) to avoid
         // shadowing m_avgTokenInSpeed: (18 chars).
         inline = expandInlineToken(tok, "m_avgTokenOutSpeed", 19, ctx);
+      } else if (tok.startsWith("m_sumApiCalls:")) {
+        inline = expandInlineToken(tok, "m_sumApiCalls", 14, ctx);
       } else if (tok.startsWith("m_avgTokenInSpeed:")) {
         inline = expandInlineToken(tok, "m_avgTokenInSpeed", 18, ctx);
       } else if (tok.startsWith("m_totalTokenWithCacheIn:")) {

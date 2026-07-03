@@ -27,7 +27,7 @@ import {
   __resetForTest as resetStatusForTest,
   setStatusPathResolver,
 } from "./status-store.ts";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -3010,8 +3010,10 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
 // ratios (cacheHitRate / tokenInSpeed / tokenOutSpeed). All read
 // the per-tick jsonl stream (cross-project via readAllSamples) and
 // filter by `:model:`, `:window:`, `:align:`. Results are cached in
-// state/cache.json under the "sum:v1:<model>:<sinceMs>:<align>"
-// key with TTL=300s.
+// state/cache.json under the "stat:<model>:<window>:<align>" key
+// (window ∈ {"5h","7d","all"}) with TTL=300s. sinceMs is derived
+// from window + ctx.nowMs + optional resetStartAt but is NOT part
+// of the key, capping the cache at 12 entries.
 //
 // Tests below use a tmpDir as the state root (via setStateRoot)
 // so the user's real on-disk samples are untouched. Each test
@@ -3111,10 +3113,10 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     assert.equal(strip(out), "in:600");
   });
 
-  it("m_sumTokenIn:window:1d1h narrows the scan to a 25h window (D6 parseDhms)", () => {
-    // Build 4 rows anchored relative to the test ctx's nowMs
-    // (1_000_000): 3 inside the 25h window, 1 far outside. The
-    // outside row should be EXCLUDED.
+  it("m_sumTokenIn:window:1d1h is rejected — v0.8.x only accepts 5h/7d/all as window keys", () => {
+    // v0.8.x: free-form dhms like "1d1h" no longer map to a cache
+    // key segment (would explode the key space). parseWindowScope
+    // returns null and the module drops (renders empty).
     const stateRootDir = join(_tmpDir, "sum-fixture-window");
     setStateRoot(() => stateRootDir);
     const projHash = "d--sum-w";
@@ -3122,20 +3124,12 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     const cwd = "D:\\sum-w";
     const sessionFile = join(stateRootDir, projHash, `${sess}.jsonl`);
     mkdirSync(dirname(sessionFile), { recursive: true });
-    // ctxFor's nowMs is hardcoded to 1_000_000; use that anchor.
     const now = 1_000_000;
-    // Rows at 1h, 5h, 12h before now (all inside 25h) plus one
-    // far outside the window. The 25h window keeps rows
-    // `at >= now - 25h`.
+    // Seed one row so a successful parse would render something
+    // visible; the assertion below verifies it gets DROPPED.
     writeFileSync(
       sessionFile,
-      [
-        JSON.stringify({ at: now - 1 * 3600 * 1000, totalIn: 10, totalOut: 0, in: 10, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 100, apiMs: 100 }),
-        JSON.stringify({ at: now - 5 * 3600 * 1000, totalIn: 20, totalOut: 0, in: 20, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 100, apiMs: 100 }),
-        JSON.stringify({ at: now - 12 * 3600 * 1000, totalIn: 30, totalOut: 0, in: 30, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 100, apiMs: 100 }),
-        // 100h ago → outside the 25h window
-        JSON.stringify({ at: now - 100 * 3600 * 1000, totalIn: 9999, totalOut: 0, in: 9999, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 100, apiMs: 100 }),
-      ].join("\n") + "\n",
+      JSON.stringify({ at: now - 3600_000, totalIn: 10, totalOut: 0, in: 10, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 100, apiMs: 100 }) + "\n",
       "utf8",
     );
     const out = renderTemplate(
@@ -3148,8 +3142,96 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
         }),
       ),
     ).join("\n");
-    // 10 + 20 + 30 = 60 (the 100h-ago row excluded)
+    assert.equal(out, "");
+  });
+
+  it("m_sumTokenIn:window:7d excludes rows older than 7d (canonical window)", () => {
+    // v0.8.x: the canonical 7d window must drop rows whose `at`
+    // is more than 7 days old, even if the jsonl file itself is
+    // freshly written. This is the row-level sinceMs filter
+    // inside readAllSamples; the mtime pre-filter only skips
+    // files whose mtime predates sinceMs (here the file's mtime
+    // is "now", so the pre-filter passes and the row filter runs).
+    const stateRootDir = join(_tmpDir, "sum-fixture-window-7d");
+    setStateRoot(() => stateRootDir);
+    const projHash = "d--sum-w7";
+    const sess = "sess-sum-w7";
+    const cwd = "D:\\sum-w7";
+    const sessionFile = join(stateRootDir, projHash, `${sess}.jsonl`);
+    mkdirSync(dirname(sessionFile), { recursive: true });
+    const now = 1_700_000_000_000; // big enough to keep old rows positive
+    writeFileSync(
+      sessionFile,
+      [
+        // Inside 7d: 1d ago, 3d ago, 6d ago
+        JSON.stringify({ at: now - 1 * 86400_000, totalIn: 10, totalOut: 0, in: 10, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 100, apiMs: 100 }),
+        JSON.stringify({ at: now - 3 * 86400_000, totalIn: 20, totalOut: 0, in: 20, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 100, apiMs: 100 }),
+        JSON.stringify({ at: now - 6 * 86400_000, totalIn: 30, totalOut: 0, in: 30, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 100, apiMs: 100 }),
+        // Outside 7d: 10d ago
+        JSON.stringify({ at: now - 10 * 86400_000, totalIn: 9999, totalOut: 0, in: 9999, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 100, apiMs: 100 }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const out = renderTemplate(
+      ["m_sumTokenIn:window:7d"],
+      {
+        ...ctxFor(
+          fakeSnapshot({
+            sessionId: sess,
+            cwd,
+            modelDisplayName: "MiniMax-M3",
+          }),
+        ),
+        nowMs: now,
+      },
+    ).join("\n");
+    // 10 + 20 + 30 = 60; the 10d row is excluded
     assert.equal(strip(out), "in:60");
+  });
+
+  it("readAllSamples mtime pre-filter: stale jsonl is skipped even if its row timestamps are recent", () => {
+    // Performance contract: when a file's mtime is older than
+    // sinceMs, readAllSamples MUST skip it without readFileSync.
+    // We assert behaviorally by setting the file mtime to before
+    // the sinceMs anchor (now - 5h) but writing a row that would
+    // otherwise be inside the 5h window — the row should NOT be
+    // counted because the whole file is skipped.
+    const stateRootDir = join(_tmpDir, "sum-fixture-mtime");
+    setStateRoot(() => stateRootDir);
+    const projHash = "d--sum-mt";
+    const sess = "sess-sum-mt";
+    const cwd = "D:\\sum-mt";
+    const sessionFile = join(stateRootDir, projHash, `${sess}.jsonl`);
+    mkdirSync(dirname(sessionFile), { recursive: true });
+    const now = 1_700_000_000_000;
+    // One row, recent `at`, but we will rewrite the file with a
+    // stale mtime below.
+    writeFileSync(
+      sessionFile,
+      JSON.stringify({ at: now - 60_000, totalIn: 5, totalOut: 0, in: 5, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 100, apiMs: 100 }) + "\n",
+      "utf8",
+    );
+    // Backdate mtime to before now-5h (the default sinceMs for
+    // window=5h without align-resetStartAt).
+    const stale = (now - 10 * 3600_000) / 1000; // seconds
+    utimesSync(sessionFile, stale, stale);
+
+    const out = renderTemplate(
+      ["m_sumTokenIn"], // default 5h window, no align-reset
+      {
+        ...ctxFor(
+          fakeSnapshot({
+            sessionId: sess,
+            cwd,
+            modelDisplayName: "MiniMax-M3",
+          }),
+        ),
+        nowMs: now,
+      },
+    ).join("\n");
+    // mtime pre-filter drops the whole file → rows=0 → module
+    // drops (null) → renders empty.
+    assert.equal(out, "");
   });
 
   it("m_avgTokenInSpeed: sum(in) / sum(apiMs) * 1000 in t/s", () => {
@@ -3176,6 +3258,125 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     ).join("\n");
     // 500 t/s → "500.0 t/s"
     assert.equal(strip(out), "in:500.0 t/s");
+  });
+
+  it("m_sumApiMs formats sum as dhms (v0.8.x — was formatCompactToken in earlier builds)", () => {
+    // Seed 2 rows: apiMs 30s + 90s = 120s total → "api:2m"
+    // (formatRemainingMs floors sub-minute to <1m, so 119s → <1m,
+    // but 120s renders as "2m" only if maxUnitCount=2 — actually
+    // 120s collapses to "2m" via formatRemainingMs's "single-unit
+    // 60+ ms → round up" rule).
+    const stateRootDir = join(_tmpDir, "sum-fixture-sumapims");
+    setStateRoot(() => stateRootDir);
+    const projHash = "d--sum-api";
+    const sess = "sess-sum-api";
+    const cwd = "D:\\sum-api";
+    const sessionFile = join(stateRootDir, projHash, `${sess}.jsonl`);
+    mkdirSync(dirname(sessionFile), { recursive: true });
+    const now = 1_700_000_000_000;
+    writeFileSync(
+      sessionFile,
+      [
+        JSON.stringify({ at: now - 1_000, totalIn: 100, totalOut: 50, in: 100, out: 50, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 30_000, apiMs: 30_000 }),
+        JSON.stringify({ at: now - 2_000, totalIn: 200, totalOut: 100, in: 100, out: 50, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 120_000, apiMs: 90_000 }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const out = renderTemplate(
+      ["m_sumApiMs"],
+      ctxFor(
+        fakeSnapshot({
+          sessionId: sess,
+          cwd,
+          modelDisplayName: "MiniMax-M3",
+        }),
+      ),
+    ).join("\n");
+    // 30_000 + 90_000 = 120_000ms = 2m. formatRemainingMs renders this.
+    assert.equal(strip(out), "api:2m");
+  });
+
+  it("m_sumApiCalls counts only rows with apiMs > 0", () => {
+    // 3 rows: 2 with apiMs > 0 (real calls), 1 with apiMs = 0
+    // (fallback path row from first-tick fallback). agg.calls
+    // should be 2, NOT agg.rows (3).
+    const stateRootDir = join(_tmpDir, "sum-fixture-apicalls");
+    setStateRoot(() => stateRootDir);
+    const projHash = "d--calls";
+    const sess = "sess-calls";
+    const cwd = "D:\\calls";
+    const sessionFile = join(stateRootDir, projHash, `${sess}.jsonl`);
+    mkdirSync(dirname(sessionFile), { recursive: true });
+    const now = 1_700_000_000_000;
+    writeFileSync(
+      sessionFile,
+      [
+        JSON.stringify({ at: now - 3_000, totalIn: 100, totalOut: 50, in: 100, out: 50, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 30_000, apiMs: 30_000 }),
+        JSON.stringify({ at: now - 2_000, totalIn: 200, totalOut: 100, in: 100, out: 50, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 120_000, apiMs: 0 }),
+        JSON.stringify({ at: now - 1_000, totalIn: 300, totalOut: 150, in: 100, out: 50, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 200_000, apiMs: 80_000 }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const out = renderTemplate(
+      ["m_sumApiCalls"],
+      ctxFor(
+        fakeSnapshot({
+          sessionId: sess,
+          cwd,
+          modelDisplayName: "MiniMax-M3",
+        }),
+      ),
+    ).join("\n");
+    // 2 of 3 rows have apiMs > 0 → calls:2
+    assert.equal(strip(out), "calls:2");
+  });
+
+  it("m_sumApiCalls: no rows in window → drops (renders empty)", () => {
+    // Isolate stateRoot to a fresh tmp subdir so we don't pick up
+    // the user's real on-disk samples (289+ rows in production).
+    const stateRootDir = join(_tmpDir, "avg-fixture-apicalls-empty");
+    setStateRoot(() => stateRootDir);
+    const out = renderTemplate(
+      ["m_sumApiCalls"],
+      ctxFor(
+        fakeSnapshot({
+          sessionId: "sess-empty",
+          cwd: "D:\\empty",
+          modelDisplayName: "MiniMax-M3",
+        }),
+      ),
+    ).join("\n");
+    assert.equal(out, "");
+  });
+
+  it("m_sumApiCalls: inline args (:window:7d, :model:all) are honored", () => {
+    const stateRootDir = join(_tmpDir, "sum-fixture-apicalls-inline");
+    setStateRoot(() => stateRootDir);
+    const projHash = "d--ci";
+    const sess = "sess-ci";
+    const cwd = "D:\\ci";
+    const sessionFile = join(stateRootDir, projHash, `${sess}.jsonl`);
+    mkdirSync(dirname(sessionFile), { recursive: true });
+    const now = 1_700_000_000_000;
+    writeFileSync(
+      sessionFile,
+      [
+        JSON.stringify({ at: now - 1_000, totalIn: 100, totalOut: 50, in: 100, out: 50, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 30_000, apiMs: 30_000 }),
+        JSON.stringify({ at: now - 2_000, totalIn: 200, totalOut: 100, in: 100, out: 50, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 120_000, apiMs: 90_000 }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const out = renderTemplate(
+      ["m_sumApiCalls:model:all:window:7d"],
+      ctxFor(
+        fakeSnapshot({
+          sessionId: sess,
+          cwd,
+          modelDisplayName: "MiniMax-M3",
+        }),
+      ),
+    ).join("\n");
+    assert.equal(strip(out), "calls:2");
   });
 });
 

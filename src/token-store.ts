@@ -185,6 +185,9 @@ export function readSamples(
       model: rowModel,
       totalApiMs: typeof r.totalApiMs === "number" ? r.totalApiMs : undefined,
       apiMs: typeof r.apiMs === "number" ? r.apiMs : undefined,
+      // v0.8.x — preserve prevApiMs for post-hoc fallback detection.
+      // null = first tick; number = real baseline; undefined = legacy row.
+      prevApiMs: r.prevApiMs === null ? null : (typeof r.prevApiMs === "number" ? r.prevApiMs : undefined),
     });
   }
   return out;
@@ -230,6 +233,21 @@ export function readAllSamples(sinceMs: number): TokenSample[] {
     for (const f of sessions) {
       if (!f.endsWith(".jsonl")) continue;
       const path = join(projPath, f);
+      // mtime pre-filter (v0.8.x): skip files whose mtime predates
+      // sinceMs entirely — the file's newest row can only be as
+      // recent as mtime. Cheap fs.stat, avoids readFileSync +
+      // JSON.parse + split on stale files. The row-level filter
+      // below remains the correctness guarantee (mtime can lag
+      // behind the most-recent row by a few ms).
+      if (sinceMs > 0) {
+        let fst;
+        try {
+          fst = statSync(path);
+        } catch {
+          continue;
+        }
+        if (fst.mtimeMs < sinceMs) continue;
+      }
       let raw: string;
       try {
         raw = readFileSync(path, "utf8");
@@ -267,6 +285,8 @@ export function readAllSamples(sinceMs: number): TokenSample[] {
           model: typeof r.model === "string" ? r.model : undefined,
           totalApiMs: typeof r.totalApiMs === "number" ? r.totalApiMs : undefined,
           apiMs: typeof r.apiMs === "number" ? r.apiMs : undefined,
+          // v0.8.x — see readSamples for the three-state contract.
+          prevApiMs: r.prevApiMs === null ? null : (typeof r.prevApiMs === "number" ? r.prevApiMs : undefined),
         });
       }
     }

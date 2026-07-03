@@ -29,7 +29,8 @@
 import * as cache from "./cache.ts";
 import { type Remains } from "./api.ts";
 import { type Balance } from "./api.deepseek.ts";
-import type { Provider, TokenSample } from "./types.ts";
+import type { Provider } from "./types.ts";
+import { resolveApiMsSample } from "./api-ms.ts";
 import { compose } from "./composition.ts";
 import { type FetchResult, buildProviderLine } from "./dispatch.ts";
 import { applyProviderOverrides, configStore, loadConfig } from "./config.ts";
@@ -150,7 +151,7 @@ async function fetchProviderData(
       AbortSignal.timeout(timeoutMs),
     );
     if (data) {
-      cache.set(cacheKey, data);
+      cache.set(cacheKey, data, ttlMs);
       // ageMs=0 on a brand-new fetch — the renderer suppresses the
       // suffix on fresh ticks (stale=false gate).
       return { kind: "fresh", data, ageMs: 0 };
@@ -220,27 +221,26 @@ async function main(): Promise<void> {
     tokens.cost.totalApiDurationMs != null
   ) {
     const prev = peekPrevTick(tokens.sessionId, tokens.cwd);
-    const deltaApiMs = tokens.cost.totalApiDurationMs - (prev?.apiMs ?? 0);
-    if (deltaApiMs > 0) {
-      const sample: TokenSample = {
-        at: Date.now(),
-        // v0.8.0+ — field names align with the module family they
-        // feed into. See TokenSample comment in types.ts.
-        totalIn: tokens.totals.input,
-        totalOut: tokens.totals.output,
-        in: tokens.current.input ?? 0,
-        out: tokens.current.output ?? 0,
-        cacheCreation: tokens.current.cacheCreation ?? 0,
-        cacheIn: tokens.current.cacheRead ?? 0,
-        model: tokens.modelDisplayName ?? undefined,
-        totalApiMs: tokens.cost.totalApiDurationMs,
-        // Per-tick increment vs the previous append. Already gated
-        // by deltaApiMs > 0 above, so this is always > 0 here.
-        // Field renamed from `deltaApiMs` → `apiMs` for v0.8.0+;
-        // see the new m_apiMs module that reads it.
-        apiMs: deltaApiMs,
-      };
-      appendSample(tokens.cwd, tokens.sessionId, sample);
+    const decision = resolveApiMsSample({
+      at: Date.now(),
+      totalIn: tokens.totals.input,
+      totalOut: tokens.totals.output,
+      current: {
+        input: tokens.current.input,
+        output: tokens.current.output,
+        cacheRead: tokens.current.cacheRead,
+        cacheCreation: tokens.current.cacheCreation,
+      },
+      modelDisplayName: tokens.modelDisplayName,
+      totalApiMs: tokens.cost.totalApiDurationMs,
+      prev: prev ? { apiMs: prev.apiMs } : null,
+      sessionId: tokens.sessionId,
+    });
+    if (decision.kind === "write") {
+      appendSample(tokens.cwd, tokens.sessionId, decision.sample);
+    } else if (decision.kind === "warn") {
+      process.stderr.write(`topgauge-cc: ${decision.message}\n`);
+      diagnostics.append("warning", "apiMs-stuck", decision.message, Date.now(), tokens.cwd);
     }
   }
 
