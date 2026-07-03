@@ -1230,7 +1230,7 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
         const cleaned: string[] = [];
         for (const item of value) {
           if (typeof item !== "string") continue;
-          if (item === "m_template" || item.startsWith("m_template:")) {
+          if (item === "m_template" || item.startsWith("m_template|")) {
             warn(
               `lineTemplates.${name}: m_template is only allowed inside ` +
               `statuslineTemplate; dropping "${item}"`,

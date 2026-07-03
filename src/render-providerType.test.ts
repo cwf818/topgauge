@@ -155,33 +155,33 @@ describe("MODULES path: per-provider type filter", () => {
 });
 
 describe("inline-args path: per-provider type filter", () => {
-  it("m_window5h:color:red drops on balance ctx", () => {
+  it("m_window5h|color|red drops on balance ctx", () => {
     const planLines = renderTemplate(
-      ["m_window5h:color:red"],
+      ["m_window5h|color|red"],
       ctxFor("plan"),
     );
     assert.equal(planLines.length, 1);
     assert.ok(planLines[0]!.includes("30%"));
     const balanceLines = renderTemplate(
-      ["m_window5h:color:red"],
+      ["m_window5h|color|red"],
       ctxFor("balance"),
     );
     assert.deepEqual(balanceLines, []);
   });
 
-  it("m_balance:color:darkGreen drops on plan ctx", () => {
+  it("m_balance|color|darkGreen drops on plan ctx", () => {
     // Use a real color shortcut (darkGreen is one of the 7 valid
     // shortcuts — see LABEL_COLOR_SHORTCUTS in render.ts). "green"
     // alone is rejected by resolveColor → parse fail → not the
     // path we want to exercise here.
     const balanceLines = renderTemplate(
-      ["m_balance:color:darkGreen"],
+      ["m_balance|color|darkGreen"],
       ctxFor("balance"),
     );
     assert.equal(balanceLines.length, 1);
     assert.ok(balanceLines[0]!.includes("$25"));
     const planLines = renderTemplate(
-      ["m_balance:color:darkGreen"],
+      ["m_balance|color|darkGreen"],
       ctxFor("plan"),
     );
     assert.deepEqual(planLines, []);
@@ -193,9 +193,9 @@ describe("inline-args path: per-provider type filter", () => {
   });
 
   it("provider-agnostic inline form (m_version:color:red) renders on ALL ctxs", () => {
-    const plan = renderTemplate(["m_version:color:red"], ctxFor("plan"));
-    const balance = renderTemplate(["m_version:color:red"], ctxFor("balance"));
-    const unknown = renderTemplate(["m_version:color:red"], ctxFor("unknown"));
+    const plan = renderTemplate(["m_version|color|red"], ctxFor("plan"));
+    const balance = renderTemplate(["m_version|color|red"], ctxFor("balance"));
+    const unknown = renderTemplate(["m_version|color|red"], ctxFor("unknown"));
     assert.equal(plan.length, 1);
     assert.equal(balance.length, 1);
     assert.equal(unknown.length, 1);

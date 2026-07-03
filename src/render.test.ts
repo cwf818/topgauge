@@ -783,7 +783,7 @@ describe("m_window5h/7d — stale coloring (v0.6.0+)", () => {
     // Documented v0.3.3+ behavior — explicit :color: always wins.
     // v0.6.0+: stale does NOT silently override the user's color.
     __resetForTest({
-      statuslineTemplate:["m_window5h:color:" + ORANGE],
+      statuslineTemplate:["m_window5h|color|" + ORANGE],
       timeFormat: { minUnit: "s", maxUnitCount: 4 },
     });
     try {
@@ -1020,7 +1020,7 @@ describe("m_countdown5h/7d — stale AND past-due renders '(n/a🕒 5h)' in STAL
     // the color is overridden.
     const nowMs = Date.parse("2026-06-24T12:00:00Z");
     __resetForTest({
-      statuslineTemplate: ["m_countdown5h:color:" + RED],
+      statuslineTemplate: ["m_countdown5h|color|" + RED],
       timeFormat: { minUnit: "m", maxUnitCount: 2 },
     });
     try {

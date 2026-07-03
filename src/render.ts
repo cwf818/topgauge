@@ -239,8 +239,8 @@ function formatOneChunk(
   // we post-process its output here: rebuild the colored bar chunks
   // directly with STALE_COLOR wrapping. The plain (uncolored) side
   // of the bar stays plain — we only override the side that would
-  // have been band-colored. Inline :color: overrides still win
-  // (see formatOneChunkColored and the INLINE_RENDERERS no-:color:
+  // have been band-colored. Inline :color| overrides still win
+  // (see formatOneChunkColored and the INLINE_RENDERERS no-:color|
   // branch path below).
   stale: boolean = false,
 ): string {
@@ -279,7 +279,7 @@ function formatOneChunk(
 // v0.3.3+ variant: same layout, but the colored side of the bar AND
 // the percentage are wrapped in `override` instead of the band-based
 // color. The plain (uncolored) side of the bar stays plain. Used by
-// the inline-args path when the user supplied a `:color:<c>` override
+// the inline-args path when the user supplied a `|color|<c>` override
 // on m_window5h / m_window7d — the user's color REPLACES the natural
 // band-based color (no "ignore on conflict" carve-out; the override
 // always wins). Returns the same string shape as `formatOneChunk`.
@@ -524,7 +524,7 @@ export function formatStaleSuffix(
   const emoji = healthy ? cfg().stale.ageEmoji.healthy : cfg().stale.ageEmoji.broken;
   const label = `${formatRemainingMs(ageMs)} ago`;
   // v0.3.3+: `override` replaces the default color when supplied
-  // (used by the inline-args m_age:color:… path; override always
+  // (used by the inline-args m_age|color|… path; override always
   // wins regardless of broken/fresh).
   // v0.6.0+: split the default into two — STALE_COLOR (gray) for the
   // informational 🔗 annotation on fresh ticks, BROKEN_COLOR (red)
@@ -1443,7 +1443,7 @@ function computeTickDelta(
 // deltaIn / deltaOut >= 0); idle and regression ticks don't.
 // Renders "--" when no valid tick has accumulated yet (sumApi
 // is still 0 after this tick — i.e. nothing usable came in).
-// Color defaults to STALE_COLOR; the inline :color: path
+// Color defaults to STALE_COLOR; the inline :color| path
 // overrides it.
 //
 // Side effects: fires BOTH the prevTick write (so the next
@@ -1722,7 +1722,7 @@ const MODULES: Record<string, Module> = {
     { type: "balance" as const },
   ),
   // Stale-age annotation. v6.x: when ageMs is missing, emit
-  // "age:n/a" placeholder (was: drop). The :nulldrop:true inline
+  // "age:n/a" placeholder (was: drop). The :nulldrop|true inline
   // override still drops for users wanting v0.3.x semantics.
   m_age: (c) => {
     if (c.ageMs == null) return placeholderBare("m_age", c);
@@ -1870,10 +1870,10 @@ const MODULES: Record<string, Module> = {
   // v0.4.0+ — per-API-call input speed. Reads the previous-tick
   // snapshot from cache (keyed by sessionId) and computes
   // delta(current.input) / delta(cost.totalApiDurationMs) * 1000.
-  // The bare form (and `:color:scale`) applies the 5-band scale
+  // The bare form (and `:color|scale`) applies the 5-band scale
   // color via speedScaleColor: faster = greener, slower = redder;
-  // the `:color:<shortcut|SGR>` form overrides with a single color
-  // (e.g. `:color:red`). computeTickSpeed handles the cached /
+  // the `:color|<shortcut|SGR>` form overrides with a single color
+  // (e.g. `:color|red`). computeTickSpeed handles the cached /
   // idle case by switching to STALE_COLOR regardless of the
   // caller's color — gray signals "inactive: this measurement is
   // from a previous API call, not this tick".
@@ -1950,8 +1950,8 @@ const MODULES: Record<string, Module> = {
   m_accCacheHitRate: (c) => accHitRateBody(c),
   // v0.8.0+ — sum/avg advanced statistics. 5 plain sums (in/out/
   // cached/total/apiMs) + 3 ratios (cacheHitRate + tokenInSpeed +
-  // tokenOutSpeed). All default to ":model:active" + ":window:5h"
-  // + ":align:true" — the inline form `m_sumTokenIn:window:7d` etc
+  // tokenOutSpeed). All default to "|model|active" + "|window|5h"
+  // + "|align|true" — the inline form `m_sumTokenIn|window|7d` etc
   // overrides. See parseWindowScope + fetchSumAggregate for the
   // resolution path; results are cached in state/cache.json under
   // the "stat:<model>:<window>:<align>" key (window ∈ {"5h","7d",
@@ -2013,7 +2013,7 @@ const MODULES: Record<string, Module> = {
     return `${labelFor("out")}${formatSpeed(tps)}`;
   },
   // v0.8.x — total count of API calls (rows with apiMs > 0) in the
-  // window. Honors :model:, :window:, :align: like the other
+  // window. Honors :model|, :window|, :align| like the other
   // m_sum* modules. Despite the family being "sum" (cross-tick
   // aggregate), the value is a COUNT, not a token — kept under the
   // m_sum prefix because the rendering path is the same
@@ -2545,9 +2545,9 @@ export function __resetUnknownModuleWarnForTest(): void {
 //
 // Three token forms now take colon-delimited parameters:
 //
-//   s_<n>[:color:<c>]
-//   m_label:<string>[:color:<c>]
-//   m_modeLabel[:color:<c>]
+//   s_<n>[:color|<c>]
+//   m_label:<string>[:color|<c>]
+//   m_modeLabel[:color|<c>]
 //
 // General grammar: <prefix>(:<param>:<value>)*. Even segment count is
 // required after the prefix; odd counts drop the token. Every
@@ -2582,7 +2582,7 @@ const NAMED_PALETTE: Record<string, string> = {
 // gauge / cache-hit) keep their existing color logic and are NOT in
 // this map. The dispatcher / INLINE_RENDERERS use this as a fallback
 // when `params.color` is empty — so users always see SOME color on
-// bare-form modules, and `:color:<c>` overrides as before.
+// bare-form modules, and `|color|<c>` overrides as before.
 const DEFAULT_COLORS: Record<string, string> = {
   // String-class identifiers / metadata
   m_session: NAMED_PALETTE.purple,
@@ -2642,8 +2642,8 @@ const LABEL_COLOR_SHORTCUTS: Record<string, string> = (() => {
     red: c.red,
     stale: c.stale,
     brightBlack: "\x1b[90m",
-    // v6.x — additional named shortcuts exposed via `:color:<name>`
-    // (e.g. `:color:cyan` on a string module). Identical to the
+    // v6.x — additional named shortcuts exposed via `:color|<name>`
+    // (e.g. `:color|cyan` on a string module). Identical to the
     // entries in NAMED_PALETTE; duplicated here so resolveColor can
     // look them up without scanning NAMED_PALETTE separately.
     cyan: NAMED_PALETTE.cyan,
@@ -2667,7 +2667,7 @@ const LABEL_COLOR_SHORTCUTS: Record<string, string> = (() => {
 // string. They're handled at a higher level by `applyColor` below.
 // This resolver only validates shortcut-as-SGR and raw-SGR strings.
 // v0.4.0+ — sentinel string returned by resolveColor when the
-// user writes `:color:scale`. The speed-module renderers
+// user writes `:color|scale`. The speed-module renderers
 // (m_tokenInSpeed / m_tokenOutSpeed, both bare default and
 // inline) detect this token and replace it with the per-band
 // scale color via speedScaleColor(). For all other modules
@@ -2801,7 +2801,7 @@ type InlineSchema = {
   named: Record<string, ParamResolver>;
 };
 
-// v0.3.3+: every existing module accepts an optional `:color:<c>`
+// v0.3.3+: every existing module accepts an optional `|color|<c>`
 // override via inline-args. The named param is `color` for all of
 // them — same shortcut table and raw-SGR rules as `m_label`.
 //
@@ -2821,7 +2821,7 @@ const COLOR_PARAM = {
 
 // v0.4.0+ — per-module null-drop override. Accepts "true" or "false"
 // verbatim; anything else is a parse-fail and the inline token is
-// dropped (same as :color:<garbage>). Semantics:
+// dropped (same as :color|<garbage>). Semantics:
 //
 //   nulldrop omitted / nulldrop:false  → DEFAULT. Force a stable
 //     placeholder when the data is missing — the module ALWAYS
@@ -2841,7 +2841,7 @@ const COLOR_PARAM = {
 // existing inline template that lists a module whose value is
 // sometimes null (the slot is now always
 // visible). Users who want the old drop behavior add
-// `:nulldrop:true` to those tokens.
+// `:nulldrop|true` to those tokens.
 //
 // Placeholder shape per module (see PLACEHOLDERS in render.ts
 // for the dispatch):
@@ -2863,7 +2863,7 @@ const NULDROP_PARAM = {
 // v0.8.0+ — three-layer accumulator scope selector (used by
 // m_acc*). Accepts "session" (default), "project", or "model".
 // Anything else is a parse-fail and the inline token is dropped
-// (same as :color:<garbage>). The model scope is a no-op when the
+// (same as :color|<garbage>). The model scope is a no-op when the
 // live TokenSnapshot has no modelDisplayName (the placeholder
 // path fires); project scope reads the project-wide slot, which
 // is null until at least one tick has accumulated into it.
@@ -2876,17 +2876,17 @@ const SCOPE_PARAM = {
 
 // v0.8.0+ — sum/avg module inline args.
 //
-// `:model:<active|name|all>` — narrow the jsonl scan to one model
+// `:model|<active|name|all>` — narrow the jsonl scan to one model
 //   identity, "active" (the model currently displayed in m_model),
 //   or "all" (every row). Default is "active". The literal "all"
 //   skips per-row model filtering entirely.
 //
-// `:window:<dhms|all>` — the time window to scan. Accepts any
+// `:window|<dhms|all>` — the time window to scan. Accepts any
 //   `<digits><unit>` chain parseable by parseDhms (e.g. "5h",
 //   "7d", "1h30m", "2d12h"), plus the special "all" sentinel
 //   (no time filter, scan the entire jsonl). Default is "5h".
 //
-// `:align:<true|false>` — when true AND window ∈ {5h, 7d} AND
+// `:align|<true|false>` — when true AND window ∈ {5h, 7d} AND
 //   ctx.fiveHour/weekly has resetStartAt+resetDurationMs, use the
 //   plan-aligned window [resetStartAt, resetStartAt + duration]
 //   instead of the wall-clock [now - windowMs, now]. The
@@ -2917,7 +2917,7 @@ const ALIGN_PARAM = {
 // v0.4.0+ — per-module display-mode override (scoped to the bar
 // computation for the window modules). Accepts "used" or
 // "remaining" verbatim; anything else is a parse-fail and the
-// inline token is dropped (same as :color:<garbage>). Resolution is
+// inline token is dropped (same as :color|<garbage>). Resolution is
 // deliberately narrow — the module-level `display` config field
 // (RESOLVED via resolveDisplayMode) stays the default for the bare
 // `m_window5h` form. Inline display wins when present, so users can
@@ -2936,13 +2936,13 @@ const DISPLAY_PARAM = {
 // placeholder wraps its body in `${STALE_COLOR}…${RESET}` so a missing
 // gauge / number reads as "dim gray, no data" — visually distinct
 // from a real value (which is colored by the band palette or wrapped
-// in the user's :color: override). The :color: inline override still
+// in the user's :color| override). The :color| inline override still
 // wins when present (it REPLACES the placeholder's STALE_COLOR wrap,
 // matching the existing "user override always wins" rule).
 
 // pure-number placeholder body: "<prefix>n/a" — PLAIN text. The
 // STALE_COLOR wrap is applied by the INLINE_RENDERER (via
-// wrapPlain / formatOneChunkColored) so a `:color:<c>` inline
+// wrapPlain / formatOneChunkColored) so a `|color|<c>` inline
 // override REPLACES the default STALE_COLOR, matching the
 // existing "user color always wins" rule for every other module.
 // The prefix matches the module's normal inline label (e.g.
@@ -2970,7 +2970,7 @@ function placeholderDashesUnit(
 
 // gauge placeholder body: returns PLAIN text (no SGR). The
 // INLINE_RENDERER handles the SGR wrap via wrapPlain (so a
-// `:color:<c>` override can REPLACE the default STALE_COLOR just
+// `|color|<c>` override can REPLACE the default STALE_COLOR just
 // like every other module). The placeholder shape is a 0-value
 // bar — "used" mode shows an empty bar with "0%"; "remaining"
 // mode shows a full bar with "100%". The synthetic pct=0 keeps
@@ -3116,7 +3116,7 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   // v6.x: previously drop-by-design modules (no age info / no
   // version / no reset data / no balance). Now also follow the
   // placeholder rule — they occupy their slot so adjacent
-  // separators don't shift. :nulldrop:true remains the opt-out.
+  // separators don't shift. :nulldrop|true remains the opt-out.
   m_age: placeholderNA("age:"),
   m_version: placeholderNA("v:"),
   m_countdown5h: placeholderDashesUnit("5h:--"),
@@ -3125,7 +3125,7 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
 };
 
 // Render a placeholder body unless the user has explicitly opted
-// out via `:nulldrop:true`, OR the module has no registered
+// out via `:nulldrop|true`, OR the module has no registered
 // placeholder shape. The default is FORCED placeholder (every
 // inline-listed module keeps its slot even when data is null).
 // Returns null when the user opted out, so the caller's drop path
@@ -3147,7 +3147,7 @@ function placeholderOrNull(
 }
 
 // Render a placeholder (when active) wrapped in the user's
-// `:color:<c>` override, or STALE_COLOR by default. Returns null
+// `|color|<c>` override, or STALE_COLOR by default. Returns null
 // when the user opted out of the placeholder (`nulldrop:true`)
 // OR the module has no registered placeholder shape — the caller's
 // null-fall-through path takes over (drop, same as bare MODULES
@@ -3254,12 +3254,16 @@ const QUOTE_FREQ_PARAM = {
 // ("alias:space", "alias:dot", …) and numeric forms stay as a
 // plain number. The s_ renderer and the bare-form fast path
 // both decode this.
+// v0.7.1+ — `pipe` joins the alias table. Mirrors the new inline-args
+// separator (see parseInlineArgs). Pure render output, NOT the
+// inline-args delimiter itself.
 const NAMED_SEPARATORS: ReadonlyMap<string, string> = new Map([
   ["space",   " "],
   ["dot",     "·"],
   ["newline", "\n"],
   ["tab",     "\t"],
   ["colon",   ":"],
+  ["pipe",    "|"],
 ]);
 
 const SEP_ALIAS_PREFIX = "alias:";
@@ -3321,7 +3325,7 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
     // pair). Otherwise the token is malformed.
     named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named },
   },
-  // v0.3.3+ — every existing module also accepts an optional :color:
+  // v0.3.3+ — every existing module also accepts an optional :color|
   // override. Schema is empty (`{}`) when the module takes no implicit
   // param; the renderer just reads params.color and applies it.
   m_window5h: { named: { ...COLOR_PARAM.named, ...DISPLAY_PARAM.named, ...NULDROP_PARAM.named } },
@@ -3344,8 +3348,8 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_totalTokenOut: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_totalTokenWithCacheIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   // v0.8.0+ — m_acc* family accepts :scope:<session|project|model>
-  // (default session for the bare form) and the standard :color:
-  // override + :nulldrop: opt-out.
+  // (default session for the bare form) and the standard :color|
+  // override + :nulldrop| opt-out.
   m_accTokenIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
   m_accTokenOut: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
   m_accTokenCachedIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
@@ -3353,8 +3357,8 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_accApiMs: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
   m_accCacheHitRate: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
   // v0.8.0+ — sum/avg advanced statistics. All 8 accept the same
-  // 5 inline args: :model:<active|name|all>, :window:<dhms|all>,
-  // :align:<true|false>, :color:<c>, :nulldrop:<b>. The WINDOW
+  // 5 inline args: :model|<active|name|all>, :window|<dhms|all>,
+  // :align|<true|false>, :color|<c>, :nulldrop|<b>. The WINDOW
   // resolver rejects malformed dhms strings at parse time →
   // badarg → dispatcher warn + drop. Same for the MODEL/ALIGN
   // schemas.
@@ -3367,8 +3371,8 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_avgTokenInSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
   m_avgTokenOutSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
   m_sumApiCalls: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
-  // v0.3.6+ — quote module. Accepts `:freq:<numeric-time>` and
-  // `:color:<sgr|shortcut|rainbow|rand-rainbow|hue>`. The freq
+  // v0.3.6+ — quote module. Accepts `:freq|<numeric-time>` and
+  // `:color|<sgr|shortcut|rainbow|rand-rainbow|hue>`. The freq
   // grammar is the single-unit time format `<digits><unit>` (bare
   // unit letter = 1<unit>) — see QUOTE_FREQ_PARAM. Default freq
   // (`h` = 1h) is applied at the RENDERER level when params.freq
@@ -3381,7 +3385,7 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
     },
   },
   // v0.4.0+ — session-info / metadata modules. All take only the
-  // optional :color: override (mirror the m_token* pattern).
+  // optional :color| override (mirror the m_token* pattern).
   m_session: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_model: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_effort: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
@@ -3394,7 +3398,7 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_sessionApiDuration: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   // v0.8.0+ — per-turn API-ms delta. Same inline-args grammar as
   // m_sessionDuration (color + nulldrop). The dispatcher accepts
-  // both `:color:` and `:nulldrop:` overrides via this schema.
+  // both `:color|` and `:nulldrop|` overrides via this schema.
   m_apiMs: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_linesAdded: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_linesRemoved: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
@@ -3408,13 +3412,13 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_windowContext: { named: { ...COLOR_PARAM.named, ...DISPLAY_PARAM.named, ...NULDROP_PARAM.named } },
   // v0.4.0+ — sub-template reference. First argument is the key
   // into cfg().lineTemplates (the user's reusable-fragment
-  // registry). Optional `:mode:<plan|balance>` filter (default
+  // registry). Optional `:mode|<plan|balance>` filter (default
   // "plan"): when the current provider's mode key does not match,
   // the chunk drops so adjacent separators are skipped. We do
-  // NOT accept `:color:` here — propagating a color across an
+  // NOT accept `:color|` here — propagating a color across an
   // expanded template requires a more invasive design (the
   // expansion's internal modules would need to inherit or be
-  // re-styled). Users wanting per-chunk color put `:color:` on
+  // re-styled). Users wanting per-chunk color put `:color|` on
   // the inner modules inside their lineTemplates entry.
   m_template: {
     implicit: {
@@ -3431,7 +3435,7 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
 
 // NOTE: the `mode:` named arg on `m_template` keeps the OLD name for
 // back-compat with existing config.json files that reference
-// `m_template:plan:mode:plan`. Internally the renderer now uses
+// `m_template:plan:mode|plan`. Internally the renderer now uses
 // `ctx.providerType` (a TYPE discriminator, not a mode), but the
 // inline-arg syntax is unchanged. The param value still parses
 // "plan" / "balance" (the renderer-side filter only matches the
@@ -3447,11 +3451,11 @@ function wrapPlain(body: string, color: string | undefined): string {
   return color ? `${color}${body}${RESET}` : body;
 }
 
-// v6.x — wrap a plain-text body with either the user's `:color:<c>`
+// v6.x — wrap a plain-text body with either the user's `|color|<c>`
 // override or the module's hardcoded DEFAULT_COLORS entry. Used by
 // every non-numeric m_* INLINE_RENDERER so bare-form parity holds:
 // bare `m_session` (no params) tints to purple, and inline
-// `m_session:color:green` overrides to green — exactly as the user
+// `m_session|color|green` overrides to green — exactly as the user
 // would expect.
 function wrapPlainDefault(
   modKey: string,
@@ -3464,10 +3468,10 @@ function wrapPlainDefault(
 
 // v0.4.x — parallel to MODULES' per-module `type` tag. Each entry
 // here mirrors its INLINE_RENDERERS counterpart's provider scope:
-// the inline form `m_window5h:color:…` is also plan-only; `m_balance:…`
+// the inline form `m_window5h|color|…` is also plan-only; `m_balance:…`
 // is balance-only. The bare-module dispatcher at line ~3220 enforces
 // the same filter via `MODULES[name].type`; this map keeps the
-// inline path symmetric so a `m_window5h:color:red` in a balance
+// inline path symmetric so a `m_window5h|color|red` in a balance
 // provider's template drops the same way the bare form does.
 //
 // Untagged entries (key absent from this map) are provider-agnostic;
@@ -3519,7 +3523,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (color) return formatOneChunkColored(ctx.fiveHour, mode, color);
     // No override → reproduce the bare-module output. v0.6.0+: pass
     // ctx.stale so the percent tail wraps in STALE_COLOR instead of
-    // the band-based color on stale ticks. :color: override above
+    // the band-based color on stale ticks. :color| override above
     // always wins (documented v0.3.3 semantics — the user's color
     // wins even when stale so explicit coloring stays sticky).
     return formatOneChunk(ctx.fiveHour, mode, cfg().bar.width, ctx.stale);
@@ -3536,7 +3540,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // Bare MODULES already does this; inline now matches.
     if (!ctx.fiveHour) return placeholderWithColor("m_countdown5h", params, ctx);
     // v0.7.x: stale AND past-due → "(n/a<arrow> 5h)" wrapped in
-    // STALE_COLOR. An explicit :color: still wins (no override).
+    // STALE_COLOR. An explicit :color| still wins (no override).
     if (isStaleAndPastDue(ctx.fiveHour, ctx.stale, ctx.nowMs)) {
       const userColor = params.color as string | undefined;
       const color = userColor ?? STALE_COLOR;
@@ -3619,7 +3623,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   },
   // v0.8.0+ — per-turn hit rate (see MODULES entry for the
   // formula and rename rationale). The inline form takes an
-  // optional `:color:` override; the bare form is the canonical
+  // optional `:color|` override; the bare form is the canonical
   // per-turn hit rate. The session-aggregate formula moved to
   // m_accCacheHitRate.
   m_cacheHitRate: (params, ctx) => {
@@ -3654,11 +3658,11 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
       ? `${color}${prefix}${label}${RESET}`
       : `${color}${prefix}${label} (${pct.toFixed(cachePctPrecision())}%)${RESET}`;
   },
-  // v0.4.0+ — :color:scale (or no :color: at all) → 5-band
+  // v0.4.0+ — :color|scale (or no :color| at all) → 5-band
   // scale color on the active tick, STALE_COLOR on the
-  // cached/inactive tick. :color:<shortcut|SGR> → that exact
+  // cached/inactive tick. :color|<shortcut|SGR> → that exact
   // color on the active tick, STALE_COLOR on the cached
-  // tick (per the user's "inactive 不受 :color: 影响"
+  // tick (per the user's "inactive 不受 :color| 影响"
   // decision — gray is the canonical "stale" signal).
   m_tokenInSpeed: (params, ctx) => {
     const probe = computeTickSpeed(ctx, "in", STALE_COLOR);
@@ -3734,7 +3738,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   },
   // v0.8.0+ — sum/avg inline renderers. Same body shape as the
   // bare-form MODULES entries; the inline path passes params so
-  // :model:/:window:/:align: take effect. A parse failure on the
+  // :model|/:window|/:align| take effect. A parse failure on the
   // inline args has already dropped the token at the schema
   // resolver, so parseWindowScope here is the runtime fallback
   // for unexpected shapes (null → INLINE_BADARG path).
@@ -3811,7 +3815,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // already shape-validated the raw string; we now parse it
     // into a QuoteFreq {count, unit, ms} object that quoteIndex
     // and pickQuote need. params.freq is undefined when the
-    // token is just `m_quote` or `m_quote:color:red` (no freq
+    // token is just `m_quote` or `m_quote|color|red` (no freq
     // segment). On a malformed-but-shape-valid string we
     // INLINE_BADARG here; in practice parseFreq rejects the
     // same set the resolver does.
@@ -3825,7 +3829,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     return applyColor(text, color, seed);
   },
   // v0.4.0+ — session-info / metadata inline renderers. All mirror
-  // their MODULES counterparts but accept an optional :color: override.
+  // their MODULES counterparts but accept an optional :color| override.
   m_session: (params, ctx) => {
     const s = ctx.tokens?.sessionName;
     if (s == null) return placeholderWithColor("m_session", params, ctx);
@@ -3883,7 +3887,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   },
   // v0.8.0+ — per-turn API-ms delta (mirror of MODULES path with
   // inline-args color support). Bare-form default color comes
-  // from DEFAULT_COLORS.m_apiMs; the inline `:color:` override
+  // from DEFAULT_COLORS.m_apiMs; the inline `:color|` override
   // takes precedence here.
   m_apiMs: (params, ctx) => {
     const t = ctx.tokens;
@@ -3933,8 +3937,8 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   // v0.4.x — project-wide count of valid API calls (sumApiCount
   // in tickStatus). Reads the same project-wide slot the
   // accumulator writes to. Renders "calls:N"; renders "calls:0"
-  // (plain, or in the `:color:<c>` SGR) when the slot is
-  // uninitialized. (`:nulldrop:` is a no-op here — the function
+  // (plain, or in the `|color|<c>` SGR) when the slot is
+  // uninitialized. (`:nulldrop|` is a no-op here — the function
   // never returns null, same as m_tokenIn / m_tokenOut via
   // computeTickDelta.)
   m_apiCalls: (params, ctx) => {
@@ -3967,7 +3971,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const mode = (params.display as DisplayMode | undefined) ?? ctx.mode;
     const color = params.color as string | undefined;
     if (color) return formatOneChunkColored(ctx.contextWindow, mode, color);
-    // v0.6.0+: stale-aware — see m_window5h/7d path. :color: above
+    // v0.6.0+: stale-aware — see m_window5h/7d path. :color| above
     // always wins, so explicit user color stays sticky even on stale.
     return formatOneChunk(ctx.contextWindow, mode, cfg().bar.width, ctx.stale);
   },
@@ -3990,7 +3994,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     }
     const want = (params.mode as "plan" | "balance" | undefined) ?? "plan";
     // v0.4.x — the inline-arg name `mode` is preserved for back-compat
-    // with existing config.json files (e.g. `m_template:plan:mode:plan`).
+    // with existing config.json files (e.g. `m_template:plan:mode|plan`).
     // The comparison target is now ctx.providerType. "unknown" never
     // matches an inline `mode:plan|balance` arg, so unknown providers
     // silently drop m_template references — same behavior as before.
@@ -4026,8 +4030,17 @@ function inlineTokenSessionLabel(ctx: RenderContext): string | null {
   return `session:${formatCompactToken(inT + outT + cache)}`;
 }
 
-// Parse the colon-delimited remainder after a token prefix into a
-// `{ param: value }` object. Pure; no side effects.
+// v0.7.1+ — Parse the PIPE-delimited remainder after a token prefix
+// into a `{ param: value }` object. Pure; no side effects.
+//
+// Why `|` instead of `:`: `:` is heavily used in label text (e.g.
+// `Usage:`, `In:`, `api:5s`, `5h:--`) and in time-format units
+// (`api:1m30s`). Adopting it as the inline-args delimiter forced
+// every module's value-position to forbid `:` characters in
+// strings like color names / model names / window values. `|`
+// has zero collision with rendered output, so the grammar
+// becomes unambiguous: the FIRST `|` separates the prefix from
+// the args list, and subsequent `|` separate the args themselves.
 //
 // Layout:
 //   - If the schema has an `implicit` param, the FIRST segment is its
@@ -4049,7 +4062,7 @@ function parseInlineArgs(
     // param" → null. Empty remainder without an implicit is fine.
     return schema.implicit ? null : {};
   }
-  const parts = remainder.split(":");
+  const parts = remainder.split("|");
 
   let out: Record<string, ResolvedValue> = {};
   let startIdx = 0;
@@ -4120,24 +4133,24 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
     const tok = template[i];
     if (tok == null) continue;
     let piece: string | null = null;
-    // v0.3.3+ — inline-args tokens (s_<n>:…, m_label:…, m_modeLabel:…,
-    // and every other m_<name>:…). Only fire when the token contains
-    // ":" so the bare forms (s_0, m_modeLabel, m_window5h, …) keep
+    // v0.3.3+ — inline-args tokens (s_<n>|…, m_label|…, m_modeLabel|…,
+    // and every other m_<name>|…). Only fire when the token contains
+    // "|" so the bare forms (s_0, m_modeLabel, m_window5h, …) keep
     // routing through MODULES as before.
-    if (tok.includes(":")) {
+    if (tok.includes("|")) {
       // v0.4.x — provider-type filter for inline-args tokens. We
-      // extract the prefix (everything before the first ":") and
+      // extract the prefix (everything before the first "|") and
       // consult INLINE_TYPE_FILTERS. When the prefix carries a tag
       // and it doesn't match ctx.providerType, we silently drop
       // the whole token WITHOUT entering the long prefix chain
       // below. This keeps the per-prefix `type` tag symmetrical
-      // with MODULES' `type` field so a `m_window5h:color:red` in a
+      // with MODULES' `type` field so a `m_window5h|color:red` in a
       // balance provider's template drops identically to its bare
       // form.
       //
-      // Special case: s_<n>:… is a separator, not a module, so we
+      // Special case: s_<n>|… is a separator, not a module, so we
       // skip the type check (separators are provider-agnostic).
-      // m_label:… and m_template:… are also provider-agnostic by
+      // m_label|… and m_template|… are also provider-agnostic by
       // design; their prefix is absent from INLINE_TYPE_FILTERS so
       // the lookup is a no-op. Missing-key (unknown prefix) is also
       // a no-op — the long chain below will produce inline=undefined
@@ -4146,9 +4159,12 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
       // Renamed from the v0.4.x-beta `INLINE_MODE_FILTERS` /
       // `ctx.providerModeKey` to avoid collision with the
       // display-mode field on RenderContext.
-      const colonAt = tok.indexOf(":");
-      const inlinePrefix = colonAt > 0 && tok.startsWith("m_")
-        ? tok.slice(0, colonAt)
+      //
+      // v0.7.1+ — inline-args separator is `|`, not `:`. See
+      // parseInlineArgs for the rationale.
+      const pipeAt = tok.indexOf("|");
+      const inlinePrefix = pipeAt > 0 && tok.startsWith("m_")
+        ? tok.slice(0, pipeAt)
         : "";
       if (inlinePrefix) {
         const need = INLINE_TYPE_FILTERS[inlinePrefix];
@@ -4159,118 +4175,118 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
       // The prefix → key/skipLen table. Keep them in sync with the
       // INLINE_SCHEMAS / INLINE_RENDERERS entries above. A typo here
       // means the token silently routes through MODULES (which won't
-      // match the literal colon-bearing string) and falls through
+      // match the literal pipe-bearing string) and falls through
       // to the unknown-module warn.
       let inline: InlineResult | undefined;
       if (tok.startsWith("s_")) {
         // s_<n>:… → skip "s_" (length 2), remainder starts at the index.
         inline = expandInlineToken(tok, "s_", 2, ctx);
-      } else if (tok.startsWith("m_label:")) {
-        // m_label:<args> → skip "m_label:" (length 8), remainder starts
+      } else if (tok.startsWith("m_label|")) {
+        // m_label|<args> → skip "m_|" (length 8), remainder starts
         // at the string value.
         inline = expandInlineToken(tok, "m_label", 8, ctx);
-      } else if (tok.startsWith("m_modeLabel:")) {
-        // m_modeLabel:<args> → skip "m_modeLabel:" (length 12).
+      } else if (tok.startsWith("m_modeLabel|")) {
+        // m_modeLabel|<args> → skip "m_|" (length 12).
         inline = expandInlineToken(tok, "m_modeLabel", 12, ctx);
-      } else if (tok.startsWith("m_window5h:")) {
-        // m_window5h:color:<c> → skip "m_window5h:" (length 11).
+      } else if (tok.startsWith("m_window5h|")) {
+        // m_window5h|color|<c> → skip "m_window5h|" (length 11).
         inline = expandInlineToken(tok, "m_window5h", 11, ctx);
-      } else if (tok.startsWith("m_window7d:")) {
+      } else if (tok.startsWith("m_window7d|")) {
         inline = expandInlineToken(tok, "m_window7d", 11, ctx);
-      } else if (tok.startsWith("m_countdown5h:")) {
+      } else if (tok.startsWith("m_countdown5h|")) {
         inline = expandInlineToken(tok, "m_countdown5h", 14, ctx);
-      } else if (tok.startsWith("m_countdown7d:")) {
+      } else if (tok.startsWith("m_countdown7d|")) {
         inline = expandInlineToken(tok, "m_countdown7d", 14, ctx);
-      } else if (tok.startsWith("m_balance:")) {
+      } else if (tok.startsWith("m_balance|")) {
         inline = expandInlineToken(tok, "m_balance", 10, ctx);
-      } else if (tok.startsWith("m_age:")) {
+      } else if (tok.startsWith("m_age|")) {
         inline = expandInlineToken(tok, "m_age", 6, ctx);
-      } else if (tok.startsWith("m_version:")) {
+      } else if (tok.startsWith("m_version|")) {
         inline = expandInlineToken(tok, "m_version", 10, ctx);
-      } else if (tok.startsWith("m_tokenIn:")) {
+      } else if (tok.startsWith("m_tokenIn|")) {
         inline = expandInlineToken(tok, "m_tokenIn", 10, ctx);
-      } else if (tok.startsWith("m_tokenOut:")) {
+      } else if (tok.startsWith("m_tokenOut|")) {
         inline = expandInlineToken(tok, "m_tokenOut", 11, ctx);
-      } else if (tok.startsWith("m_tokenInTotal:")) {
+      } else if (tok.startsWith("m_tokenInTotal|")) {
         // Longer prefix must come BEFORE m_tokenIn: would match first;
-        // m_tokenIn: would shadow m_tokenInTotal:color:… if ordered
+        // m_tokenIn: would shadow m_tokenInTotal|color|… if ordered
         // the other way. Same rationale for m_tokenTotalOut vs
         // m_tokenOut.
         inline = expandInlineToken(tok, "m_tokenInTotal", 15, ctx);
-      } else if (tok.startsWith("m_tokenTotalOut:")) {
+      } else if (tok.startsWith("m_tokenTotalOut|")) {
         // m_tokenTotalOut: (16 chars) must come BEFORE m_tokenTotal:
         // (13 chars) so the longer literal wins — otherwise
-        // `m_tokenTotalOut:color:red` would match the m_tokenTotal:
-        // branch with remainder "Out:color:red" and parse-fail.
+        // `m_tokenTotalOut|color|red` would match the m_tokenTotal:
+        // branch with remainder "Out|color|red" and parse-fail.
         inline = expandInlineToken(tok, "m_tokenTotalOut", 16, ctx);
-      } else if (tok.startsWith("m_apiCalls:")) {
-        // m_apiCalls:color:<c> / :nulldrop:… → skip "m_apiCalls:"
+      } else if (tok.startsWith("m_apiCalls|")) {
+        // m_apiCalls|color|<c> / |nulldrop|… → skip "m_apiCalls|"
         // (length 11).
         inline = expandInlineToken(tok, "m_apiCalls", 11, ctx);
-      } else if (tok.startsWith("m_tokenTotalIn:")) {
+      } else if (tok.startsWith("m_tokenTotalIn|")) {
         // m_tokenTotalIn: → skip prefix+colon (15 chars). Listed
         // BEFORE m_tokenTotal: which would otherwise shadow it
         // (m_tokenTotal: is a 13-char prefix; m_tokenTotalIn: starts
         // with the same 13 chars).
         inline = expandInlineToken(tok, "m_tokenTotalIn", 15, ctx);
-      } else if (tok.startsWith("m_tokenTotal:")) {
+      } else if (tok.startsWith("m_tokenTotal|")) {
         inline = expandInlineToken(tok, "m_tokenTotal", 13, ctx);
-      } else if (tok.startsWith("m_tokenSession:")) {
+      } else if (tok.startsWith("m_tokenSession|")) {
         inline = expandInlineToken(tok, "m_tokenSession", 15, ctx);
-      } else if (tok.startsWith("m_contextSize:")) {
+      } else if (tok.startsWith("m_contextSize|")) {
         inline = expandInlineToken(tok, "m_contextSize", 14, ctx);
-      } else if (tok.startsWith("m_cacheHitRate:")) {
+      } else if (tok.startsWith("m_cacheHitRate|")) {
         inline = expandInlineToken(tok, "m_cacheHitRate", 15, ctx);
-      } else if (tok.startsWith("m_tokenCachedIn:")) {
+      } else if (tok.startsWith("m_tokenCachedIn|")) {
         inline = expandInlineToken(tok, "m_tokenCachedIn", 16, ctx);
-      } else if (tok.startsWith("m_tokenInSpeed:")) {
+      } else if (tok.startsWith("m_tokenInSpeed|")) {
         inline = expandInlineToken(tok, "m_tokenInSpeed", 15, ctx);
-      } else if (tok.startsWith("m_tokenOutSpeed:")) {
+      } else if (tok.startsWith("m_tokenOutSpeed|")) {
         inline = expandInlineToken(tok, "m_tokenOutSpeed", 16, ctx);
-      } else if (tok.startsWith("m_accTokenCachedIn:")) {
+      } else if (tok.startsWith("m_accTokenCachedIn|")) {
         // Longer prefix listed first defensively (18 chars) — siblings
         // m_accTokenIn (12), m_accTokenOut (13), m_accTokenTotalIn
         // (16) share the "m_accToken" stem but differ at index 13/14/15.
         inline = expandInlineToken(tok, "m_accTokenCachedIn", 19, ctx);
-      } else if (tok.startsWith("m_accTokenTotalIn:")) {
+      } else if (tok.startsWith("m_accTokenTotalIn|")) {
         // m_accTokenTotalIn → skip prefix+colon (17 chars). Listed
         // before m_accTokenIn / m_accTokenOut to avoid prefix-shadow.
         inline = expandInlineToken(tok, "m_accTokenTotalIn", 17, ctx);
-      } else if (tok.startsWith("m_accTokenOut:")) {
+      } else if (tok.startsWith("m_accTokenOut|")) {
         // m_accTokenOut → skip 14 chars.
         inline = expandInlineToken(tok, "m_accTokenOut", 14, ctx);
-      } else if (tok.startsWith("m_accTokenIn:")) {
+      } else if (tok.startsWith("m_accTokenIn|")) {
         // m_accTokenIn → skip 13 chars.
         inline = expandInlineToken(tok, "m_accTokenIn", 13, ctx);
-      } else if (tok.startsWith("m_accApiMs:")) {
+      } else if (tok.startsWith("m_accApiMs|")) {
         inline = expandInlineToken(tok, "m_accApiMs", 10, ctx);
-      } else if (tok.startsWith("m_accCacheHitRate:")) {
+      } else if (tok.startsWith("m_accCacheHitRate|")) {
         // m_accCacheHitRate → skip prefix+colon (17 chars).
         inline = expandInlineToken(tok, "m_accCacheHitRate", 17, ctx);
-      } else if (tok.startsWith("m_sumTokenCachedIn:")) {
+      } else if (tok.startsWith("m_sumTokenCachedIn|")) {
         // Longer prefix listed first (19 chars); siblings
         // m_sumTokenIn (12) / m_sumTokenOut (13) / m_sumTokenTotalIn
         // (17) / m_sumApiMs (10) differ at later positions.
         inline = expandInlineToken(tok, "m_sumTokenCachedIn", 19, ctx);
-      } else if (tok.startsWith("m_sumTokenTotalIn:")) {
+      } else if (tok.startsWith("m_sumTokenTotalIn|")) {
         inline = expandInlineToken(tok, "m_sumTokenTotalIn", 18, ctx);
-      } else if (tok.startsWith("m_sumTokenOut:")) {
+      } else if (tok.startsWith("m_sumTokenOut|")) {
         inline = expandInlineToken(tok, "m_sumTokenOut", 14, ctx);
-      } else if (tok.startsWith("m_sumTokenIn:")) {
+      } else if (tok.startsWith("m_sumTokenIn|")) {
         inline = expandInlineToken(tok, "m_sumTokenIn", 13, ctx);
-      } else if (tok.startsWith("m_sumApiMs:")) {
+      } else if (tok.startsWith("m_sumApiMs|")) {
         inline = expandInlineToken(tok, "m_sumApiMs", 11, ctx);
-      } else if (tok.startsWith("m_avgCacheHitRate:")) {
+      } else if (tok.startsWith("m_avgCacheHitRate|")) {
         inline = expandInlineToken(tok, "m_avgCacheHitRate", 18, ctx);
-      } else if (tok.startsWith("m_avgTokenOutSpeed:")) {
+      } else if (tok.startsWith("m_avgTokenOutSpeed|")) {
         // Longer prefix listed first (19 chars) to avoid
         // shadowing m_avgTokenInSpeed: (18 chars).
         inline = expandInlineToken(tok, "m_avgTokenOutSpeed", 19, ctx);
-      } else if (tok.startsWith("m_sumApiCalls:")) {
+      } else if (tok.startsWith("m_sumApiCalls|")) {
         inline = expandInlineToken(tok, "m_sumApiCalls", 14, ctx);
-      } else if (tok.startsWith("m_avgTokenInSpeed:")) {
+      } else if (tok.startsWith("m_avgTokenInSpeed|")) {
         inline = expandInlineToken(tok, "m_avgTokenInSpeed", 18, ctx);
-      } else if (tok.startsWith("m_totalTokenWithCacheIn:")) {
+      } else if (tok.startsWith("m_totalTokenWithCacheIn|")) {
         // Longer prefix listed first defensively — no actual
         // shadowing because the only other m_totalToken* prefixes
         // have different chars at index 17 (W vs I / O).
@@ -4280,43 +4296,43 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
           25,
           ctx,
         );
-      } else if (tok.startsWith("m_totalTokenIn:")) {
+      } else if (tok.startsWith("m_totalTokenIn|")) {
         // m_totalTokenIn: → skip the 15-char prefix INCLUDING the
         // trailing colon, so the remainder starts at the value.
         inline = expandInlineToken(tok, "m_totalTokenIn", 15, ctx);
-      } else if (tok.startsWith("m_totalTokenOut:")) {
+      } else if (tok.startsWith("m_totalTokenOut|")) {
         inline = expandInlineToken(tok, "m_totalTokenOut", 16, ctx);
-      } else if (tok.startsWith("m_quote:")) {
-        // m_quote:freq:<…>:color:<…> → skip "m_quote:" (length 8).
+      } else if (tok.startsWith("m_quote|")) {
+        // m_quote|freq|<…>|color|<…> → skip "m_quote|" (length 8).
         inline = expandInlineToken(tok, "m_quote", 8, ctx);
-      } else if (tok.startsWith("m_session:")) {
+      } else if (tok.startsWith("m_session|")) {
         inline = expandInlineToken(tok, "m_session", 10, ctx);
-      } else if (tok.startsWith("m_model:")) {
+      } else if (tok.startsWith("m_model|")) {
         inline = expandInlineToken(tok, "m_model", 8, ctx);
-      } else if (tok.startsWith("m_effort:")) {
+      } else if (tok.startsWith("m_effort|")) {
         inline = expandInlineToken(tok, "m_effort", 9, ctx);
-      } else if (tok.startsWith("m_repo:")) {
+      } else if (tok.startsWith("m_repo|")) {
         inline = expandInlineToken(tok, "m_repo", 7, ctx);
-      } else if (tok.startsWith("m_branch:")) {
-        // m_branch:color:<c> → skip "m_branch:" (length 9).
+      } else if (tok.startsWith("m_branch|")) {
+        // m_branch|color|<c> → skip "m_|" (length 9).
         inline = expandInlineToken(tok, "m_branch", 9, ctx);
-      } else if (tok.startsWith("m_gitStatus:")) {
-        // m_gitStatus:color:<c> → skip "m_gitStatus:" (length 12).
+      } else if (tok.startsWith("m_gitStatus|")) {
+        // m_gitStatus|color|<c> → skip "m_|" (length 12).
         inline = expandInlineToken(tok, "m_gitStatus", 12, ctx);
-      } else if (tok.startsWith("m_ccVersion:")) {
-        // m_ccVersion:color:<c> → skip "m_ccVersion:" (length 12).
+      } else if (tok.startsWith("m_ccVersion|")) {
+        // m_ccVersion|color|<c> → skip "m_|" (length 12).
         inline = expandInlineToken(tok, "m_ccVersion", 12, ctx);
-      } else if (tok.startsWith("m_ccversion:")) {
+      } else if (tok.startsWith("m_ccversion|")) {
         // Deprecated alias — same dispatch as m_ccVersion: above.
         // Pre-rename configs may still use the lowercase form.
         inline = expandInlineToken(tok, "m_ccversion", 12, ctx);
-      } else if (tok.startsWith("m_sessionApiDuration:")) {
+      } else if (tok.startsWith("m_sessionApiDuration|")) {
         // Longer prefix must come BEFORE m_sessionDuration: for the
         // same prefix-shadowing reason as the m_tokenIn family.
         inline = expandInlineToken(tok, "m_sessionApiDuration", 21, ctx);
-      } else if (tok.startsWith("m_sessionDuration:")) {
+      } else if (tok.startsWith("m_sessionDuration|")) {
         inline = expandInlineToken(tok, "m_sessionDuration", 18, ctx);
-      } else if (tok.startsWith("m_apiMs:")) {
+      } else if (tok.startsWith("m_apiMs|")) {
         // v0.8.0+ — per-turn API-ms delta. No prefix-shadowing
         // concern: m_apiMs (8) and m_accApiMs (11) share the
         // "m_a" prefix but diverge at position 3 ("piMs" vs
@@ -4324,26 +4340,26 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         // Placed adjacent to m_sessionDuration for cohesion
         // (both are dhms time-format modules).
         inline = expandInlineToken(tok, "m_apiMs", 8, ctx);
-      } else if (tok.startsWith("m_linesAdded:")) {
+      } else if (tok.startsWith("m_linesAdded|")) {
         inline = expandInlineToken(tok, "m_linesAdded", 13, ctx);
-      } else if (tok.startsWith("m_linesRemoved:")) {
-        // m_linesRemoved:color:<c> → skip "m_linesRemoved:" (length 15).
+      } else if (tok.startsWith("m_linesRemoved|")) {
+        // m_linesRemoved|color|<c> → skip "m_|" (length 15).
         inline = expandInlineToken(tok, "m_linesRemoved", 15, ctx);
-      } else if (tok.startsWith("m_contextWindowsSize:")) {
+      } else if (tok.startsWith("m_contextWindowsSize|")) {
         // m_contextWindowsSize → skip prefix+colon (21 chars).
         inline = expandInlineToken(tok, "m_contextWindowsSize", 21, ctx);
-      } else if (tok.startsWith("m_contextUsedPercent:")) {
+      } else if (tok.startsWith("m_contextUsedPercent|")) {
         inline = expandInlineToken(tok, "m_contextUsedPercent", 21, ctx);
-      } else if (tok.startsWith("m_contextRemainingPercent:")) {
+      } else if (tok.startsWith("m_contextRemainingPercent|")) {
         inline = expandInlineToken(tok, "m_contextRemainingPercent", 25, ctx);
-      } else if (tok.startsWith("m_windowContext:")) {
+      } else if (tok.startsWith("m_windowContext|")) {
         inline = expandInlineToken(tok, "m_windowContext", 16, ctx);
-      } else if (tok.startsWith("m_template:")) {
-        // m_template:<key>[:mode:<plan|balance>][:nulldrop:<bool>]
-        // → skip "m_template:" (length 11).
+      } else if (tok.startsWith("m_template|")) {
+        // m_template|<key>[|mode|<plan|balance>][|nulldrop|<bool>]
+        // → skip "m_template|" (length 11).
         inline = expandInlineToken(tok, "m_template", 11, ctx);
       }
-      // Parse failure (bad :color:, unknown param, odd segment count)
+      // Parse failure (bad |color|, unknown param, odd segment count)
       // → warn + drop. Renderer returning null for valid args (e.g.
       // m_tokenOut when stdin lacks total_output_tokens) is NOT a
       // parse failure — silently skip the chunk, same as the bare
@@ -4355,14 +4371,14 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
       }
       piece = inline?.kind === "ok" ? inline.value : null;
     } else if (tok.startsWith("s_")) {
-      // Bare s_<…>: legacy fast path. Two forms accepted:
+      // Bare s_<…>|: legacy fast path. Two forms accepted:
       //   s_<digit>+ → array index (out-of-range = warn + drop)
       //   s_<name>   → built-in alias (s_space, s_dot, s_newline,
-      //                 s_tab, s_colon), renders the literal value
-      //                 independent of cfg().separators.
-      // Inline-args (with optional color:) handles the
-      // `s_<…>:color:<c>` form via the new path above; this branch
-      // only fires for the no-colon shorthand.
+      //                 s_tab, s_colon, s_pipe), renders the literal
+      //                 value independent of cfg().separators.
+      // Inline-args (with optional color|) handles the
+      // `s_<…>|color|<c>` form via the new path above; this branch
+      // only fires for the no-pipe shorthand.
       const suffix = tok.slice(2);
       const alias = NAMED_SEPARATORS.get(suffix);
       if (alias !== undefined) {

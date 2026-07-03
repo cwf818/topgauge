@@ -568,7 +568,7 @@ describe("loadConfig — lineTemplates + statuslineTemplate (v0.4.0+)", () => {
   it("lineTemplates strips nested m_template tokens (nesting protection)", async () => {
     writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
       lineTemplates: {
-        foo: ["m_modeLabel", "m_template:plan", "m_template", "s_0", "m_balance"],
+        foo: ["m_modeLabel", "m_template|plan", "m_template", "s_0", "m_balance"],
       },
     }));
     const cfg = await loadConfig();

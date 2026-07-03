@@ -208,7 +208,7 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(strip(out), "out:155");
   });
 
-  it("m_tokenIn: first tick (no prev) → assumes prev.apiMs=0, renders current.input directly", () => {
+  it("m_tokenIn| first tick (no prev) → assumes prev.apiMs=0, renders current.input directly", () => {
     // v0.4.0+ (revised 2026-06-29): when no previous tick exists
     // we DO NOT bail to "in:0". The renderer assumes the prior
     // baseline was at zero (prev.apiMs=0) and the first tick
@@ -226,7 +226,7 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(cached!.in, 38);
   });
 
-  it("m_tokenIn: no API call between ticks (deltaApi=0) → renders 'in:0'", () => {
+  it("m_tokenIn| no API call between ticks (deltaApi=0) → renders 'in|0'", () => {
     // Pre-seed prev with the SAME totalApiDurationMs as current.
     // deltaApi=0 → no API call → hasDelta=false → "in:0".
     setPrevTick("sess-test", { apiMs: 60_000, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
@@ -234,7 +234,7 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(strip(out), "in:0");
   });
 
-  it("m_tokenIn: sessionId changes → prev cache miss → assumes prev=0 for new session", () => {
+  it("m_tokenIn| sessionId changes → prev cache miss → assumes prev=0 for new session", () => {
     // Pre-seed prev under a different sessionId. The new tick's
     // sessionId misses the cache → treated as a first tick for
     // the new session → prev.apiMs defaults to 0 → deltaApi =
@@ -250,7 +250,7 @@ describe("renderTemplate — m_token* modules", () => {
     assert.ok(oldCached, "old session's cache entry should not be wiped");
   });
 
-  it("m_tokenIn: second tick with real API call → emits this turn's delta directly", () => {
+  it("m_tokenIn| second tick with real API call → emits this turn's delta directly", () => {
     // v0.4.0+ (revised 2026-06-29): current_usage.input_tokens IS
     // the per-turn delta — it reports THIS turn's contribution,
     // not a running total. We do NOT subtract prev; we just
@@ -272,7 +272,7 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(strip(out), "in:200");
   });
 
-  it("m_tokenIn: per-turn delta contract — current.input IS the per-turn delta, no subtraction", () => {
+  it("m_tokenIn| per-turn delta contract — current.input IS the per-turn delta, no subtraction", () => {
     // Pins the new contract: even when prev.in is non-zero, the
     // module reports current.input verbatim (no
     // current.input - prev.in subtraction). The previous
@@ -294,7 +294,7 @@ describe("renderTemplate — m_token* modules", () => {
 
   // ----- m_tokenInSpeed / m_tokenOutSpeed (delta-based speed) -----
 
-  it("m_tokenInSpeed: delta of current.input / delta of cost.totalApiDurationMs", () => {
+  it("m_tokenInSpeed| delta of current.input / delta of cost.totalApiDurationMs", () => {
     setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
     const out = renderTemplate(["m_tokenInSpeed"], ctxFor(fakeSnapshot())).join("\n");
     // delta_in = 38, delta_api = 60_000 → 38/60000*1000 = 0.633 → "0.6 t/s".
@@ -303,7 +303,7 @@ describe("renderTemplate — m_token* modules", () => {
     assert.ok(out.includes(RED), `expected RED band in: ${JSON.stringify(out)}`);
   });
 
-  it("m_tokenOutSpeed: delta of current.output / delta of cost.totalApiDurationMs", () => {
+  it("m_tokenOutSpeed| delta of current.output / delta of cost.totalApiDurationMs", () => {
     setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
     const out = renderTemplate(["m_tokenOutSpeed"], ctxFor(fakeSnapshot())).join("\n");
     // delta_out = 155, delta_api = 60_000 → 155/60000*1000 = 2.583 → "2.6 t/s".
@@ -311,7 +311,7 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(strip(out), "out:2.6 t/s");
   });
 
-  it("m_tokenInSpeed: first tick (no prev) → assumes prev.apiMs=0, computes real speed", () => {
+  it("m_tokenInSpeed| first tick (no prev) → assumes prev.apiMs=0, computes real speed", () => {
     // v0.4.0+ (revised 2026-06-29): no prev → assume prev.apiMs=0,
     // deltaApi = 60_000 - 0 = 60_000 > 0 → hasDelta=true → render
     // current.input / deltaApi * 1000. So the first tick is NOT a
@@ -326,7 +326,7 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(cached!.in, 38);
   });
 
-  it("m_tokenInSpeed: no API call between ticks (deltaApi=0) → 'in:0.0 t/s' (v6.x idle=0)", () => {
+  it("m_tokenInSpeed| no API call between ticks (deltaApi=0) → 'in|0.0 t/s' (v6.x idle=0)", () => {
     // v6.x — idle tick now renders the truthful 0.0 t/s rate rather
     // than "-- t/s". The "no data" sentinel is reserved for the
     // snapshot-missing case (test elsewhere uses ctxFor(null)).
@@ -335,7 +335,7 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(strip(out), "in:0.0 t/s");
   });
 
-  it("m_tokenInSpeed: sessionId changes → prev cache miss → assumes prev=0", () => {
+  it("m_tokenInSpeed| sessionId changes → prev cache miss → assumes prev=0", () => {
     // Pre-seed prev under a different sessionId. The new tick's
     // sessionId misses the cache → treat as first tick for the
     // new session → prev.apiMs=0 → deltaApi=60_000 > 0 →
@@ -346,7 +346,7 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(strip(out), "in:0.6 t/s");
   });
 
-  it("m_tokenInSpeed: thinking-only turn (deltaApi>0, current.input=0) → '0.0 t/s'", () => {
+  it("m_tokenInSpeed| thinking-only turn (deltaApi>0, current.input=0) → '0.0 t/s'", () => {
     // v0.4.0+ (revised): a turn with deltaApi>0 and current.input=0
     // (a thinking-only turn that produced no input tokens) is
     // valid — the rate is genuinely 0.0 t/s, not "-- t/s". This
@@ -366,7 +366,7 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(strip(out), "in:0.0 t/s");
   });
 
-  it("m_tokenInSpeed: second tick with real API call → emits real speed", () => {
+  it("m_tokenInSpeed| second tick with real API call → emits real speed", () => {
     renderTemplate(["m_tokenInSpeed"], ctxFor(fakeSnapshot()));
     const next = fakeSnapshot({
       current: { input: 200, output: 250, cacheCreation: 0, cacheRead: 163441 },
@@ -384,7 +384,7 @@ describe("renderTemplate — m_token* modules", () => {
   //   with m_tokenInAvg / m_tokenOutAvg). All valid-API-call ticks
   //   contribute; idle / regression / missing-sessionId do not.
 
-  it("m_totalTokenIn: first tick (no avg cache) → assumes prev=0, contributes this turn's delta", () => {
+  it("m_totalTokenIn| first tick (no avg cache) → assumes prev=0, contributes this turn's delta", () => {
     // v0.4.0+ (revised 2026-06-29): first tick assumes prev=0,
     // deltaApi=60_000>0 → hasDelta=true → accumulate
     // current.input=38 → sumIn=38 → "in:38" (no more "in:0"
@@ -399,7 +399,7 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(avg!.accIn, 38);
   });
 
-  it("m_totalTokenIn: after one valid tick → 'in:N' (single-tick contribution)", () => {
+  it("m_totalTokenIn| after one valid tick → 'in|N' (single-tick contribution)", () => {
     // Seed prev so the first tick has a delta. fakeSnapshot has
     // current.input=38 and prev in=0 → sumIn=38.
     setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
@@ -413,7 +413,7 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(avg!.accIn, 38);
   });
 
-  it("m_totalTokenIn: second tick accumulates, reads cumulative sum", () => {
+  it("m_totalTokenIn| second tick accumulates, reads cumulative sum", () => {
     setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
     renderTemplate(["m_totalTokenIn"], ctxFor(fakeSnapshot()));
     // Second tick: current.input=200 (this turn's delta, no
@@ -430,7 +430,7 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(strip(out), "in:238");
   });
 
-  it("m_totalTokenIn: idle tick (deltaApi=0) does NOT accumulate", () => {
+  it("m_totalTokenIn| idle tick (deltaApi=0) does NOT accumulate", () => {
     setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
     renderTemplate(["m_totalTokenIn"], ctxFor(fakeSnapshot()));
     // Idle: pre-seed prev with the SAME totalApiDurationMs as
@@ -442,7 +442,7 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(avg!.accIn, 38, "idle tick must not change sumIn");
   });
 
-  it("m_totalTokenOut: first tick (no avg cache) → assumes prev=0, contributes this turn's delta", () => {
+  it("m_totalTokenOut| first tick (no avg cache) → assumes prev=0, contributes this turn's delta", () => {
     // v0.4.0+ (revised 2026-06-29): first tick contributes
     // current.output=155 → sumOut=155 → "out:155" (no more
     // "out:0" sentinel on first tick).
@@ -453,7 +453,7 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(strip(out), "out:155");
   });
 
-  it("m_totalTokenOut: after one valid tick → 'out:N'", () => {
+  it("m_totalTokenOut| after one valid tick → 'out|N'", () => {
     setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
     const out = renderTemplate(
       ["m_totalTokenOut"],
@@ -463,7 +463,7 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(strip(out), "out:155");
   });
 
-  it("m_totalTokenOut: second tick accumulates", () => {
+  it("m_totalTokenOut| second tick accumulates", () => {
     setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
     renderTemplate(["m_totalTokenOut"], ctxFor(fakeSnapshot()));
     // Second tick: current.output=250 (this turn's delta).
@@ -479,7 +479,7 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(strip(out), "out:405");
   });
 
-  it("m_totalTokenWithCacheIn: first tick → assumes prev=0, contributes this turn's cache_read", () => {
+  it("m_totalTokenWithCacheIn| first tick → assumes prev=0, contributes this turn's cache_read", () => {
     // v0.4.0+ (revised 2026-06-29): first tick contributes
     // current.cacheRead=163441 → sumCache=163441 →
     // "cache:163.4k" (no more "cache:0" sentinel on first tick).
@@ -490,7 +490,7 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(strip(out), "cache:163.4k");
   });
 
-  it("m_totalTokenWithCacheIn: missing stdin field → 'cache:--'", () => {
+  it("m_totalTokenWithCacheIn| missing stdin field → 'cache|--'", () => {
     // fakeSnapshot().current.cacheRead is populated; override it
     // to null to simulate stdin lacking cache_read_input_tokens.
     const out = renderTemplate(
@@ -500,7 +500,7 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(strip(out), "cache:--");
   });
 
-  it("m_totalTokenWithCacheIn: after one valid tick → 'cache:N' (compact format)", () => {
+  it("m_totalTokenWithCacheIn| after one valid tick → 'cache|N' (compact format)", () => {
     setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
     const out = renderTemplate(
       ["m_totalTokenWithCacheIn"],
@@ -514,7 +514,7 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(avg!.accCached, 163441);
   });
 
-  it("m_totalTokenWithCacheIn: second tick accumulates cache_read deltas", () => {
+  it("m_totalTokenWithCacheIn| second tick accumulates cache_read deltas", () => {
     setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
     renderTemplate(
       ["m_totalTokenWithCacheIn"],
@@ -547,10 +547,10 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(strip(out), "in:n/a out:n/a cache:n/a");
   });
 
-  it("m_totalTokenIn:color:brightGreen wraps the chunk in brightGreen", () => {
+  it("m_totalTokenIn|color|brightGreen wraps the chunk in brightGreen", () => {
     setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
     const out = renderTemplate(
-      ["m_totalTokenIn:color:brightGreen"],
+      ["m_totalTokenIn|color|brightGreen"],
       ctxFor(fakeSnapshot()),
     );
     const joined = out.join("\n");
@@ -622,7 +622,7 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(strip(out), "in:0.0 t/s");
   });
 
-  it("m_cacheHitRate: per-turn cacheRead / totals.input = 100.0% (v0.8.0 per-turn formula)", () => {
+  it("m_cacheHitRate| per-turn cacheRead / totals.input = 100.0% (v0.8.0 per-turn formula)", () => {
     // v0.8.0+ formula: current.cacheRead / totals.input. With the
     // fakeSnapshot (totals.input=163479, current.cacheRead=163441),
     // the rate is 163441/163479 = 99.978% → toFixed(1) rounds to
@@ -634,7 +634,7 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(strip(out), "hit:100.0%");
   });
 
-  it("m_cacheHitRate: 0 cache reads / 38 totals.input = 0.0% (v0.8.0 per-turn formula)", () => {
+  it("m_cacheHitRate| 0 cache reads / 38 totals.input = 0.0% (v0.8.0 per-turn formula)", () => {
     // v0.8.0+ — when current.cacheRead=0 and totals.input=38, the
     // per-turn rate is 0/38 = 0.0% (NOT a null/drop).
     const out = renderTemplate(
@@ -702,7 +702,7 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
     __resetPrevTickForTest("any-session");
   });
 
-  it("m_apiMs: first tick (prev=0, current=90_000) → 'api:1m'", () => {
+  it("m_apiMs| first tick (prev=0, current=90_000) → 'api|1m'", () => {
     // Per the per-turn-delta contract, first tick assumes
     // prior baseline = 0 → delta = 90_000ms → "1m" under the
     // default minUnit='m'.
@@ -723,7 +723,7 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
     assert.equal(strip(out), "api:1m");
   });
 
-  it("m_apiMs: delta=90_000 (prev=0, current=90_000) renders as 'api:1m' under default minUnit='m'", () => {
+  it("m_apiMs| delta=90_000 (prev=0, current=90_000) renders as 'api|1m' under default minUnit='m'", () => {
     // Same delta as the first-tick test, but verifies the
     // prev-tick cache is read on subsequent ticks too.
     setPrevTick(
@@ -743,7 +743,7 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
     assert.equal(strip(out), "api:1m");
   });
 
-  it("m_apiMs: sub-minute delta (40s) renders '<1m' under default minUnit='m'", () => {
+  it("m_apiMs| sub-minute delta (40s) renders '<1m' under default minUnit='m'", () => {
     // Default cfg().timeFormat.minUnit is 'm' → sub-minute deltas
     // collapse to '<1m'. The user can opt into second precision
     // via timeFormat.minUnit: 's' in config.json.
@@ -767,7 +767,7 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
     assert.equal(strip(out), "api:<1m");
   });
 
-  it("m_apiMs: sub-minute delta (40s) renders '40s' under minUnit='s' override", () => {
+  it("m_apiMs| sub-minute delta (40s) renders '40s' under minUnit='s' override", () => {
     // The user-facing knob: timeFormat.minUnit: 's' enables
     // second precision for sub-minute deltas. The format
     // pipeline honors cfg().timeFormat.minUnit — same as
@@ -792,7 +792,7 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
     assert.equal(strip(out), "api:40s");
   });
 
-  it("m_apiMs: idle tick (current == prev → deltaApi=0) → placeholder 'api:--'", () => {
+  it("m_apiMs| idle tick (current == prev → deltaApi=0) → placeholder 'api|--'", () => {
     setPrevTick(
       "sess-apims-idle",
       { apiMs: 30_000, in: 0, out: 0, cacheRead: 0 },
@@ -811,13 +811,13 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
     assert.ok(out.includes(STALE), `expected STALE wrap on: ${JSON.stringify(out)}`);
   });
 
-  it("m_apiMs: no stdin (tokens=null) → placeholder 'api:--'", () => {
+  it("m_apiMs| no stdin (tokens=null) → placeholder 'api|--'", () => {
     const out = renderTemplate(["m_apiMs"], ctxFor(null)).join("\n");
     assert.equal(strip(out), "api:--");
     assert.ok(out.includes(STALE), `expected STALE wrap on: ${JSON.stringify(out)}`);
   });
 
-  it("m_apiMs: totalApiDurationMs=null on an otherwise-present snapshot → placeholder 'api:--'", () => {
+  it("m_apiMs| totalApiDurationMs=null on an otherwise-present snapshot → placeholder 'api|--'", () => {
     // totalApiDurationMs is OPTIONAL in TokenSnapshot.cost. When
     // null but other fields are present, computeAndCacheTickDelta
     // bails to hasDelta=false → placeholder fires.
@@ -833,14 +833,14 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
     assert.equal(strip(out), "api:--");
   });
 
-  it("m_apiMs: inline :color:brightGreen wraps the chunk in the green SGR", () => {
+  it("m_apiMs| inline |color|brightGreen wraps the chunk in the green SGR", () => {
     setPrevTick(
       "sess-apims-color",
       { apiMs: 0, in: 0, out: 0, cacheRead: 0 },
       "D:\\test",
     );
     const out = renderTemplate(
-      ["m_apiMs:color:brightGreen"],
+      ["m_apiMs|color|brightGreen"],
       ctxFor(
         fakeSnapshot({
           sessionId: "sess-apims-color",
@@ -852,7 +852,7 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
     assert.ok(out.includes(GREEN), `expected GREEN wrap on: ${JSON.stringify(out)}`);
   });
 
-  it("m_apiMs: inline :nulldrop:true is a no-op (function never returns null)", () => {
+  it("m_apiMs| inline |nulldrop|true is a no-op (function never returns null)", () => {
     // The m_apiMs renderer always returns either "api:1m" or
     // "api:--" placeholder (via wrapPlainDefault /
     // placeholderWithColor, which wrap in STALE_COLOR). Therefore
@@ -865,7 +865,7 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
       "D:\\test",
     );
     const out = renderTemplate(
-      ["m_apiMs:nulldrop:true"],
+      ["m_apiMs|nulldrop|true"],
       ctxFor(
         fakeSnapshot({
           sessionId: "sess-apims-nulldrop",
@@ -876,7 +876,7 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
     assert.equal(strip(out), "api:1m");
   });
 
-  it("m_apiMs: writeBack fires setPrevTick so the NEXT tick has a fresh baseline", () => {
+  it("m_apiMs| writeBack fires setPrevTick so the NEXT tick has a fresh baseline", () => {
     // When m_apiMs is rendered ALONE (no other per-turn module),
     // it's the only consumer of computeAndCacheTickDelta. The
     // renderer must still fire setPrevTick so the NEXT tick can
@@ -912,7 +912,7 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
     assert.equal(strip(out2), "api:1m");
   });
 
-  it("m_apiMs: default tint is brown (matches the time-format family)", () => {
+  it("m_apiMs| default tint is brown (matches the time-format family)", () => {
     setPrevTick(
       "sess-apims-brown",
       { apiMs: 0, in: 0, out: 0, cacheRead: 0 },
@@ -966,27 +966,27 @@ describe("renderTemplate — newline separator (v0.4.0+ multi-line layout)", () 
 
 // ----- v0.4.0+ session-info / metadata modules -----
 describe("renderTemplate — v0.4.0+ session-info modules", () => {
-  it("m_session: bare 'strip-diagnostics-display'", () => {
+  it("m_session| bare 'strip-diagnostics-display'", () => {
     const out = renderTemplate(["m_session"], ctxFor(fakeSnapshot())).join("\n");
     assert.equal(strip(out), "strip-diagnostics-display");
   });
 
-  it("m_model: bare 'MiniMax-M3'", () => {
+  it("m_model| bare 'MiniMax-M3'", () => {
     const out = renderTemplate(["m_model"], ctxFor(fakeSnapshot())).join("\n");
     assert.equal(strip(out), "MiniMax-M3");
   });
 
-  it("m_effort: bare 'high'", () => {
+  it("m_effort| bare 'high'", () => {
     const out = renderTemplate(["m_effort"], ctxFor(fakeSnapshot())).join("\n");
     assert.equal(strip(out), "high");
   });
 
-  it("m_repo: 'github.com/cwf818/topgauge-cc'", () => {
+  it("m_repo| 'github.com/cwf818/topgauge-cc'", () => {
     const out = renderTemplate(["m_repo"], ctxFor(fakeSnapshot())).join("\n");
     assert.equal(strip(out), "github.com/cwf818/topgauge-cc");
   });
 
-  it("m_branch: emits 'branch:n/a' when cwd is not a git repo (v6.x placeholder)", () => {
+  it("m_branch| emits 'branch|n/a' when cwd is not a git repo (v6.x placeholder)", () => {
     // v6.x — bare m_branch now renders a "branch:n/a" placeholder
     // instead of dropping, matching the inline path's behavior.
     const out = renderTemplate(["m_branch"], ctxFor(fakeSnapshot())).join("\n");
@@ -994,7 +994,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     assert.ok(out.includes(STALE), `expected STALE wrap on: ${JSON.stringify(out)}`);
   });
 
-  it("m_branch: emits 'branch:n/a' when cwd is missing entirely (v6.x placeholder)", () => {
+  it("m_branch| emits 'branch|n/a' when cwd is missing entirely (v6.x placeholder)", () => {
     // v6.x — bare form now renders the placeholder, matching the
     // inline :nulldrop:false path.
     const out = renderTemplate(
@@ -1004,7 +1004,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     assert.equal(strip(out), "branch:n/a");
   });
 
-  it("m_branch: renders the current branch when cwd is a real repo", () => {
+  it("m_branch| renders the current branch when cwd is a real repo", () => {
     // process.cwd() is the repo root when tests run, so readGitInfo
     // returns the actual branch (e.g. "main"). The 60s cache may
     // already hold a stale value from another test, but the cache
@@ -1018,30 +1018,30 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     assert.ok(!out.startsWith(" "), `m_branch should not be padded: ${JSON.stringify(out)}`);
   });
 
-  it("m_branch:color:brightGreen wraps the branch in brightGreen", () => {
+  it("m_branch|color|brightGreen wraps the branch in brightGreen", () => {
     const out = renderTemplate(
-      ["m_branch:color:brightGreen"],
+      ["m_branch|color|brightGreen"],
       ctxFor(fakeSnapshot({ cwd: process.cwd() })),
     ).join("\n");
     assert.ok(out.includes("\x1b[38;5;41m"), `got: ${JSON.stringify(out)}`);
   });
 
-  it("m_branch:nulldrop:false renders 'branch:n/a' when not in a git repo", () => {
+  it("m_branch|nulldrop|false renders 'branch|n/a' when not in a git repo", () => {
     // inline :nulldrop:false forces the placeholder instead of
     // dropping the slot (consistent with m_repo :nulldrop:false).
     const out = renderTemplate(
-      ["m_branch:nulldrop:false"],
+      ["m_branch|nulldrop|false"],
       ctxFor(fakeSnapshot()), // cwd="D:\\test", not a git repo
     ).join("\n");
     assert.equal(strip(out), "branch:n/a");
   });
 
-  it("m_gitStatus: emits 'git:n/a' when cwd is not a git repo (v6.x placeholder)", () => {
+  it("m_gitStatus| emits 'git|n/a' when cwd is not a git repo (v6.x placeholder)", () => {
     const out = renderTemplate(["m_gitStatus"], ctxFor(fakeSnapshot())).join("\n");
     assert.equal(strip(out), "git:n/a");
   });
 
-  it("m_gitStatus: emits 'git:n/a' when cwd is missing (v6.x placeholder)", () => {
+  it("m_gitStatus| emits 'git|n/a' when cwd is missing (v6.x placeholder)", () => {
     const out = renderTemplate(
       ["m_gitStatus"],
       ctxFor(fakeSnapshot({ cwd: null })),
@@ -1049,7 +1049,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     assert.equal(strip(out), "git:n/a");
   });
 
-  it("m_gitStatus: renders 'clean' on a fresh repo, 'dirty' after a write", () => {
+  it("m_gitStatus| renders 'clean' on a fresh repo, 'dirty' after a write", () => {
     // Build a temp git repo so readGitInfo returns { branch, dirty }.
     // Skipped when git isn't on PATH (CI without git).
     let repoDir: string | undefined;
@@ -1087,23 +1087,23 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     }
   });
 
-  it("m_gitStatus:color:red wraps the indicator in red", () => {
+  it("m_gitStatus|color|red wraps the indicator in red", () => {
     const out = renderTemplate(
-      ["m_gitStatus:color:red"],
+      ["m_gitStatus|color|red"],
       ctxFor(fakeSnapshot({ cwd: process.cwd() })),
     ).join("\n");
     assert.ok(out.includes("\x1b[38;5;196m"), `got: ${JSON.stringify(out)}`);
   });
 
-  it("m_gitStatus:nulldrop:false renders 'git:n/a' when not in a git repo", () => {
+  it("m_gitStatus|nulldrop|false renders 'git|n/a' when not in a git repo", () => {
     const out = renderTemplate(
-      ["m_gitStatus:nulldrop:false"],
+      ["m_gitStatus|nulldrop|false"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
     assert.equal(strip(out), "git:n/a");
   });
 
-  it("m_repo: drops null components", () => {
+  it("m_repo| drops null components", () => {
     const out = renderTemplate(
       ["m_repo"],
       ctxFor(fakeSnapshot({ repo: { host: "github.com", owner: null, name: "x" } })),
@@ -1111,7 +1111,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     assert.equal(strip(out), "github.com/x");
   });
 
-  it("m_repo: emits 'n/a' when no component is available (v6.x placeholder)", () => {
+  it("m_repo| emits 'n/a' when no component is available (v6.x placeholder)", () => {
     // v6.x — bare form now emits the placeholder instead of dropping.
     const out = renderTemplate(
       ["m_repo"],
@@ -1120,17 +1120,17 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     assert.equal(strip(out), "n/a");
   });
 
-  it("m_ccVersion: bare '2.1.191'", () => {
+  it("m_ccVersion| bare '2.1.191'", () => {
     const out = renderTemplate(["m_ccVersion"], ctxFor(fakeSnapshot())).join("\n");
     assert.equal(strip(out), "2.1.191");
   });
 
-  it("m_sessionDuration: dhms format of total_duration_ms (600_000ms = 10m)", () => {
+  it("m_sessionDuration| dhms format of total_duration_ms (600_000ms = 10m)", () => {
     const out = renderTemplate(["m_sessionDuration"], ctxFor(fakeSnapshot())).join("\n");
     assert.equal(strip(out), "10m");
   });
 
-  it("m_sessionApiDuration: emits '--' when totalApiDurationMs is null (v6.x placeholder)", () => {
+  it("m_sessionApiDuration| emits '--' when totalApiDurationMs is null (v6.x placeholder)", () => {
     const out = renderTemplate(
       ["m_sessionApiDuration"],
       ctxFor(fakeSnapshot({ cost: { totalDurationMs: 600_000, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null } })),
@@ -1138,17 +1138,17 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     assert.equal(strip(out), "--");
   });
 
-  it("m_linesAdded: '+ 3965'", () => {
+  it("m_linesAdded| '+ 3965'", () => {
     const out = renderTemplate(["m_linesAdded"], ctxFor(fakeSnapshot())).join("\n");
     assert.equal(strip(out), "+ 3965");
   });
 
-  it("m_linesRemoved: '- 967'", () => {
+  it("m_linesRemoved| '- 967'", () => {
     const out = renderTemplate(["m_linesRemoved"], ctxFor(fakeSnapshot())).join("\n");
     assert.equal(strip(out), "- 967");
   });
 
-  it("m_linesAdded: 0 renders as '+ 0' (zero is information, not absence)", () => {
+  it("m_linesAdded| 0 renders as '+ 0' (zero is information, not absence)", () => {
     const out = renderTemplate(
       ["m_linesAdded"],
       ctxFor(
@@ -1158,12 +1158,12 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     assert.equal(strip(out), "+ 0");
   });
 
-  it("m_tokenInTotal: 'in:163.5k' (cumulative, the old m_tokenIn behavior)", () => {
+  it("m_tokenInTotal| 'in|163.5k' (cumulative, the old m_tokenIn behavior)", () => {
     const out = renderTemplate(["m_tokenInTotal"], ctxFor(fakeSnapshot())).join("\n");
     assert.equal(strip(out), "in:163.5k");
   });
 
-  it("m_tokenTotalOut: 'out:155' (cumulative)", () => {
+  it("m_tokenTotalOut| 'out|155' (cumulative)", () => {
     const out = renderTemplate(["m_tokenTotalOut"], ctxFor(fakeSnapshot())).join("\n");
     assert.equal(strip(out), "out:155");
   });
@@ -1173,14 +1173,14 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
   // labelTotalIn prefix instead of labelIn — both default to
   // "in:" / "total:" respectively, but a user override on either
   // axis diverges them.
-  it("m_tokenTotalIn: 'total:163.5k' (cumulative, labelTotalIn axis)", () => {
+  it("m_tokenTotalIn| 'total|163.5k' (cumulative, labelTotalIn axis)", () => {
     const out = renderTemplate(["m_tokenTotalIn"], ctxFor(fakeSnapshot())).join("\n");
     assert.equal(strip(out), "total:163.5k");
   });
 
-  it("m_tokenTotalIn:nulldrop:false renders 'total:n/a' placeholder on null totals.input", () => {
+  it("m_tokenTotalIn|nulldrop|false renders 'total|n/a' placeholder on null totals.input", () => {
     const out = renderTemplate(
-      ["m_tokenTotalIn:nulldrop:false"],
+      ["m_tokenTotalIn|nulldrop|false"],
       ctxFor(fakeSnapshot({ totals: { input: null, output: null } })),
     ).join("\n");
     assert.equal(strip(out), "total:n/a");
@@ -1192,7 +1192,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
   // ticked in this cwd. Supports :color: and :nulldrop: like other
   // text-style modules. Renders "calls:N"; placeholder is "calls:n/a".
 
-  it("m_apiCalls: renders 'calls:0' when no project-wide tickStatus slot exists", () => {
+  it("m_apiCalls| renders 'calls|0' when no project-wide tickStatus slot exists", () => {
     // Fresh cwd, no prior write → tickStatus slot is null → counter
     // is uninitialized → render "calls:0" (the natural zero state,
     // matching the m_tokenIn/m_tokenOut "in:0"/"out:0" pattern).
@@ -1204,7 +1204,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     assert.equal(strip(out), "calls:0");
   });
 
-  it("m_apiCalls: renders 'calls:N' from project-wide sumApiCount", () => {
+  it("m_apiCalls| renders 'calls|N' from project-wide sumApiCount", () => {
     // Seed the project-wide slot with sumApiCount=7.
     setAvg(
       "sess-1",
@@ -1248,7 +1248,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     assert.equal(strip(out), "calls:2");
   });
 
-  it("m_apiCalls: no valid tick has landed yet → bare form renders 'calls:0' (no slot exists)", () => {
+  it("m_apiCalls| no valid tick has landed yet → bare form renders 'calls|0' (no slot exists)", () => {
     // The project-wide tickStatus slot is only WRITTEN by setAvg
     // when at least one delta is non-zero (or sumApiCount
     // increments). A "zero deltas" tick passes through setAvg's
@@ -1284,21 +1284,21 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     assert.equal(strip(out), "calls:0");
   });
 
-  it("m_apiCalls:nulldrop:false with no slot → 'calls:0' (no STALE wrap)", () => {
+  it("m_apiCalls|nulldrop|false with no slot → 'calls|0' (no STALE wrap)", () => {
     // Inline form no longer falls back to the placeholder when the
     // data path returns null — "calls:0" is the natural zero state.
     // Same shape as m_tokenInTotal:nulldrop:false (which renders
     // "in:0"). The placeholderNA("calls:") registration is left in
     // place but is unreachable for m_apiCalls.
     const out = renderTemplate(
-      ["m_apiCalls:nulldrop:false"],
+      ["m_apiCalls|nulldrop|false"],
       ctxFor(fakeSnapshot({ cwd: "D:\\no-project-state-yet" })),
     ).join("\n");
     assert.equal(strip(out), "calls:0");
     assert.ok(!out.includes(STALE), `expected no STALE wrap on: ${JSON.stringify(out)}`);
   });
 
-  it("m_apiCalls:nulldrop:false with no slot yet → 'calls:0'", () => {
+  it("m_apiCalls|nulldrop|false with no slot yet → 'calls|0'", () => {
     // A "zero deltas" tick never created the project-wide slot
     // (setAvg's gate skipped the write). The inline form now
     // renders "calls:0" (the natural zero state) rather than
@@ -1322,13 +1322,13 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
       },
     );
     const out = renderTemplate(
-      ["m_apiCalls:nulldrop:false"],
+      ["m_apiCalls|nulldrop|false"],
       ctxFor(fakeSnapshot({ sessionId: "sess-zero" })),
     ).join("\n");
     assert.equal(strip(out), "calls:0");
   });
 
-  it("m_apiCalls:nulldrop:true is a no-op (function never returns null)", () => {
+  it("m_apiCalls|nulldrop|true is a no-op (function never returns null)", () => {
     // The inline m_apiCalls renderer never returns null — it always
     // returns "calls:0" or "calls:N". Therefore `:nulldrop:true` has
     // no effect (the dispatcher can only short-circuit on a null
@@ -1337,13 +1337,13 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     // behavior so a future refactor that re-introduces a null
     // branch will surface the question explicitly.
     const out = renderTemplate(
-      ["m_apiCalls:nulldrop:true"],
+      ["m_apiCalls|nulldrop|true"],
       ctxFor(fakeSnapshot({ cwd: "D:\\no-project-state-yet" })),
     ).join("\n");
     assert.equal(strip(out), "calls:0");
   });
 
-  it("m_apiCalls:color:brightGreen wraps the chunk in brightGreen", () => {
+  it("m_apiCalls|color|brightGreen wraps the chunk in brightGreen", () => {
     setAvg(
       "sess-colored",
       { accIn: 0, accOut: 0, accApi: 0, accCached: 0, accApiCount: 0 },
@@ -1362,7 +1362,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
       },
     );
     const out = renderTemplate(
-      ["m_apiCalls:color:brightGreen"],
+      ["m_apiCalls|color|brightGreen"],
       ctxFor(fakeSnapshot({ sessionId: "sess-colored" })),
     );
     const joined = out.join("\n");
@@ -1373,20 +1373,20 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     );
   });
 
-  it("m_apiCalls:color:red override applies SGR to 'calls:0' (no STALE wrap)", () => {
+  it("m_apiCalls|color|red override applies SGR to 'calls|0' (no STALE wrap)", () => {
     // Inline :color: wins over the natural zero (no STALE_COLOR is
     // applied because "calls:0" is not stale data — it's the
     // counter's zero state).
     const RED_SGR = "\x1b[38;5;196m";
     const out = renderTemplate(
-      ["m_apiCalls:nulldrop:false:color:red"],
+      ["m_apiCalls|nulldrop|false|color|red"],
       ctxFor(fakeSnapshot({ cwd: "D:\\no-project-state-yet" })),
     ).join("\n");
     assert.equal(strip(out), "calls:0");
     assert.ok(out.includes(RED_SGR), `expected RED in: ${JSON.stringify(out)}`);
   });
 
-  it("m_apiCalls: bare form renders 'calls:0' on null (MODULES path)", () => {
+  it("m_apiCalls| bare form renders 'calls|0' on null (MODULES path)", () => {
     // Bare m_apiCalls (no colon) goes through the MODULES dispatcher
     // and now renders "calls:0" on null — same "render the natural
     // zero" semantics as m_tokenInTotal.
@@ -1397,18 +1397,18 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     assert.equal(strip(out), "calls:0");
   });
 
-  it("m_apiCalls:inline m_apiCalls: (trailing colon) renders 'calls:0'", () => {
+  it("m_apiCalls|inline m_apiCalls| (trailing colon) renders 'calls|0'", () => {
     // Trailing-colon form has empty remainder → nulldrop undefined
     // → the inline form renders "calls:0" (the natural zero),
     // matching the bare form.
     const out = renderTemplate(
-      ["m_apiCalls:"],
+      ["m_apiCalls|"],
       ctxFor(fakeSnapshot({ cwd: "D:\\no-project-state-yet" })),
     ).join("\n");
     assert.equal(strip(out), "calls:0");
   });
 
-  it("m_apiCalls: count survives a sessionId change (project-wide scope)", () => {
+  it("m_apiCalls| count survives a sessionId change (project-wide scope)", () => {
     // The project-wide tickStatus slot is keyed only by cwd, not
     // sessionId. Switching the sessionId on the next render does
     // NOT reset the count. This is the v0.4.x simplification vs
@@ -1438,7 +1438,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     assert.equal(strip(out), "calls:1");
   });
 
-  it("m_contextSize: 'size:163.5k' (cumulative occupancy from totals.input)", () => {
+  it("m_contextSize| 'size|163.5k' (cumulative occupancy from totals.input)", () => {
     // v0.8.0+ — m_contextSize source is total_input_tokens. The
     // fakeSnapshot has totals.input=163479 → "size:163.5k". The
     // capacity is the separate m_contextWindowsSize module.
@@ -1446,7 +1446,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     assert.equal(strip(out), "size:163.5k");
   });
 
-  it("m_contextWindowsSize: 'size:200.0k' (capacity from context_window.size)", () => {
+  it("m_contextWindowsSize| 'size|200.0k' (capacity from context_window.size)", () => {
     // v0.8.0+ — the new module for the capacity (upper bound),
     // sourced from context_window.size. The typo `Widows` is
     // preserved per user direction.
@@ -1454,25 +1454,25 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     assert.equal(strip(out), "size:200.0k");
   });
 
-  it("m_contextUsedPercent: 'used:63%' (key-prefixed percentage)", () => {
+  it("m_contextUsedPercent| 'used|63%' (key-prefixed percentage)", () => {
     const out = renderTemplate(["m_contextUsedPercent"], ctxFor(fakeSnapshot())).join("\n");
     assert.equal(strip(out), "used:63%");
   });
 
-  it("m_contextRemainingPercent: 'remain:37%' (sibling of m_contextUsedPercent)", () => {
+  it("m_contextRemainingPercent| 'remain|37%' (sibling of m_contextUsedPercent)", () => {
     // v0.8.0+ — new module. fakeSnapshot has remainingPct=37.
     const out = renderTemplate(["m_contextRemainingPercent"], ctxFor(fakeSnapshot())).join("\n");
     assert.equal(strip(out), "remain:37%");
   });
 
-  it("m_windowContext: bar + 5-band-colored percentage (63% lands in orange band)", () => {
+  it("m_windowContext| bar + 5-band-colored percentage (63% lands in orange band)", () => {
     const out = renderTemplate(["m_windowContext"], ctxFor(fakeSnapshot())).join("\n");
     const stripped = strip(out);
     assert.match(stripped, /^[▓░]+ 63%$/);
     assert.ok(out.includes(ORANGE), `expected ORANGE in: ${JSON.stringify(out)}`);
   });
 
-  it("m_windowContext: emits gray '░░░░░░░░ 0%' gauge when contextWindow.usedPct is null (v6.x placeholder)", () => {
+  it("m_windowContext| emits gray '░░░░░░░░ 0%' gauge when contextWindow.usedPct is null (v6.x placeholder)", () => {
     // v6.x — bare m_windowContext now follows the placeholder rule.
     // The gauge placeholder shape is "░░░░░░░░ 0%" (used mode) or
     // "▓▓▓▓▓▓▓▓ 100%" (remaining mode). Defaults to "used" → empty
@@ -1492,7 +1492,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
   // that hides the module is `usedPct == null` (stdin didn't carry the
   // field at all). These four cases pin that contract so a future
   // refactor can't regress to a `!value`/truthy guard.
-  it("m_windowContext: usedPct=0 renders '░░░░░░░░ 0%' (NOT hidden)", () => {
+  it("m_windowContext| usedPct=0 renders '░░░░░░░░ 0%' (NOT hidden)", () => {
     const out = renderTemplate(
       ["m_windowContext"],
       ctxFor(fakeSnapshot({ contextWindow: { size: 200000, usedPct: 0, remainingPct: 100 } })),
@@ -1500,25 +1500,25 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     assert.equal(strip(out), "░░░░░░░░ 0%");
   });
 
-  it("m_windowContext:display:remaining with usedPct=0 renders full-bar 100% (NOT hidden)", () => {
+  it("m_windowContext|display|remaining with usedPct=0 renders full-bar 100% (NOT hidden)", () => {
     const out = renderTemplate(
-      ["m_windowContext:display:remaining"],
+      ["m_windowContext|display|remaining"],
       ctxFor(fakeSnapshot({ contextWindow: { size: 200000, usedPct: 0, remainingPct: 100 } })),
     ).join("\n");
     assert.equal(strip(out), "▓▓▓▓▓▓▓▓ 100%");
   });
 
-  it("m_windowContext:color:red at usedPct=0 still emits the 0% chunk with override SGR", () => {
+  it("m_windowContext|color|red at usedPct=0 still emits the 0% chunk with override SGR", () => {
     const RED_SGR = "\x1b[38;5;196m";
     const out = renderTemplate(
-      ["m_windowContext:color:red"],
+      ["m_windowContext|color|red"],
       ctxFor(fakeSnapshot({ contextWindow: { size: 200000, usedPct: 0, remainingPct: 100 } })),
     ).join("\n");
     assert.equal(strip(out), "░░░░░░░░ 0%");
     assert.ok(out.includes(RED_SGR), `expected RED SGR in: ${JSON.stringify(out)}`);
   });
 
-  it("m_contextUsedPercent: usedPct=0 renders 'used:0%' (NOT hidden)", () => {
+  it("m_contextUsedPercent| usedPct=0 renders 'used|0%' (NOT hidden)", () => {
     const out = renderTemplate(
       ["m_contextUsedPercent"],
       ctxFor(fakeSnapshot({ contextWindow: { size: 200000, usedPct: 0, remainingPct: 100 } })),
@@ -1529,7 +1529,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
   it("inline :color: override applies SGR to plain modules (m_session:color:red)", () => {
     const RED_SGR = "\x1b[38;5;196m";
     const out = renderTemplate(
-      ["m_session:color:red"],
+      ["m_session|color|red"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
     assert.equal(strip(out), "strip-diagnostics-display");
@@ -1539,7 +1539,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
   it("inline :color: override applies SGR to m_windowContext (formatOneChunkColored)", () => {
     const RED_SGR = "\x1b[38;5;196m";
     const out = renderTemplate(
-      ["m_windowContext:color:red"],
+      ["m_windowContext|color|red"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
     const stripped = strip(out);
@@ -1604,24 +1604,24 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
 describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
   // ----- pure-number family -----
 
-  it("m_contextSize:nulldrop:false with no tokens renders 'size:n/a' (placeholder)", () => {
+  it("m_contextSize|nulldrop|false with no tokens renders 'size|n/a' (placeholder)", () => {
     // v0.8.0+ — m_contextSize was renamed to m_contextSize (semantic now
     // cumulative occupancy, sourced from totals.input). The
     // placeholder still reads "size:n/a".
     const out = renderTemplate(
-      ["m_contextSize:nulldrop:false"],
+      ["m_contextSize|nulldrop|false"],
       ctxFor(null),
     ).join("\n");
     assert.equal(strip(out), "size:n/a");
     assert.ok(out.includes(STALE), `expected STALE wrap on: ${JSON.stringify(out)}`);
   });
 
-  it("m_contextSize:nulldrop:false with zero totals.input renders 'size:0' (v6.x zero rule)", () => {
+  it("m_contextSize|nulldrop|false with zero totals.input renders 'size|0' (v6.x zero rule)", () => {
     // v6.x — zero is now rendered as "size:0" (a real value, not
     // a placeholder). The placeholder path is reserved for the
     // snapshot-missing case (test elsewhere).
     const out = renderTemplate(
-      ["m_contextSize:nulldrop:false"],
+      ["m_contextSize|nulldrop|false"],
       ctxFor(
         fakeSnapshot({
           totals: { input: 0, output: 0 },
@@ -1641,18 +1641,18 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     assert.ok(out.includes(STALE), `expected STALE wrap on: ${JSON.stringify(out)}`);
   });
 
-  it("m_contextSize:nulldrop:true behaves like bare (drops on null)", () => {
+  it("m_contextSize|nulldrop|true behaves like bare (drops on null)", () => {
     // Explicit nulldrop:true → preserve original drop behavior.
-    const out = renderTemplate(["m_contextSize:nulldrop:true"], ctxFor(null));
+    const out = renderTemplate(["m_contextSize|nulldrop|true"], ctxFor(null));
     assert.deepEqual(out, []);
   });
 
-  it("m_tokenCachedIn:nulldrop:false with cacheRead=0 renders 'cache:0 (0.0%)' (v6.x zero rule)", () => {
+  it("m_tokenCachedIn|nulldrop|false with cacheRead=0 renders 'cache|0 (0.0%)' (v6.x zero rule)", () => {
     // v6.x — cacheRead=0 is now rendered as "cache:0 (0.0%)" — a
     // real zero, not the placeholder. The placeholder path is
     // reserved for cacheRead=null (field not shipped by stdin).
     const out = renderTemplate(
-      ["m_tokenCachedIn:nulldrop:false"],
+      ["m_tokenCachedIn|nulldrop|false"],
       ctxFor(
         fakeSnapshot({
           current: { input: 38, output: 155, cacheCreation: 0, cacheRead: 0 },
@@ -1662,11 +1662,11 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     assert.equal(strip(out), "cache:0 (0.0%)");
   });
 
-  it("m_tokenCachedIn:nulldrop:false with cacheRead=null renders 'cache:n/a' (placeholder)", () => {
+  it("m_tokenCachedIn|nulldrop|false with cacheRead=null renders 'cache|n/a' (placeholder)", () => {
     // The placeholder path is reserved for the missing-field case
     // (cacheRead=null on a present snapshot).
     const out = renderTemplate(
-      ["m_tokenCachedIn:nulldrop:false"],
+      ["m_tokenCachedIn|nulldrop|false"],
       ctxFor(
         fakeSnapshot({
           current: { input: 38, output: 155, cacheCreation: 0, cacheRead: null },
@@ -1691,12 +1691,12 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     assert.equal(strip(out), "cache:0 (0.0%)");
   });
 
-  it("m_cacheHitRate:nulldrop:false: 0 cache / 38 totals.input = 0.0% (v0.8.0 per-turn formula)", () => {
+  it("m_cacheHitRate|nulldrop|false| 0 cache / 38 totals.input = 0.0% (v0.8.0 per-turn formula)", () => {
     // v0.8.0+ formula is current.cacheRead / totals.input. When
     // cacheRead=0 and totals.input=38, the rate is 0/38 = 0.0% —
     // a truthful zero, NOT a placeholder drop.
     const out = renderTemplate(
-      ["m_cacheHitRate:nulldrop:false"],
+      ["m_cacheHitRate|nulldrop|false"],
       ctxFor(
         fakeSnapshot({
           totals: { input: 38, output: 155 },
@@ -1707,13 +1707,13 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     assert.equal(strip(out), "hit:0.0%");
   });
 
-  it("m_contextWindowsSize:nulldrop:false renders 'size:n/a' when context_window.size is null", () => {
+  it("m_contextWindowsSize|nulldrop|false renders 'size|n/a' when context_window.size is null", () => {
     // v0.8.0+ — m_contextSize was renamed to m_contextWindowsSize
     // (capacity, sourced from context_window.size). The new
     // m_contextSize (cumulative occupancy) is tested separately
     // above.
     const out = renderTemplate(
-      ["m_contextWindowsSize:nulldrop:false"],
+      ["m_contextWindowsSize|nulldrop|false"],
       ctxFor(
         fakeSnapshot({ contextWindow: { size: null, usedPct: null, remainingPct: null } }),
       ),
@@ -1721,9 +1721,9 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     assert.equal(strip(out), "size:n/a");
   });
 
-  it("m_contextUsedPercent:nulldrop:false renders 'used:n/a%' when usedPct is null", () => {
+  it("m_contextUsedPercent|nulldrop|false renders 'used|n/a%' when usedPct is null", () => {
     const out = renderTemplate(
-      ["m_contextUsedPercent:nulldrop:false"],
+      ["m_contextUsedPercent|nulldrop|false"],
       ctxFor(
         fakeSnapshot({ contextWindow: { size: 200000, usedPct: null, remainingPct: null } }),
       ),
@@ -1731,9 +1731,9 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     assert.equal(strip(out), "used:n/a%");
   });
 
-  it("m_tokenInTotal:nulldrop:false renders 'in:n/a' when totals.input is null", () => {
+  it("m_tokenInTotal|nulldrop|false renders 'in|n/a' when totals.input is null", () => {
     const out = renderTemplate(
-      ["m_tokenInTotal:nulldrop:false"],
+      ["m_tokenInTotal|nulldrop|false"],
       ctxFor(
         fakeSnapshot({ totals: { input: null, output: null } }),
       ),
@@ -1741,9 +1741,9 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     assert.equal(strip(out), "in:n/a");
   });
 
-  it("m_tokenTotalOut:nulldrop:false renders 'out:n/a' when totals.output is null", () => {
+  it("m_tokenTotalOut|nulldrop|false renders 'out|n/a' when totals.output is null", () => {
     const out = renderTemplate(
-      ["m_tokenTotalOut:nulldrop:false"],
+      ["m_tokenTotalOut|nulldrop|false"],
       ctxFor(
         fakeSnapshot({ totals: { input: null, output: null } }),
       ),
@@ -1753,9 +1753,9 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
 
   // ----- number+unit family -----
 
-  it("m_sessionDuration:nulldrop:false renders '--' (number+unit placeholder, no unit)", () => {
+  it("m_sessionDuration|nulldrop|false renders '--' (number+unit placeholder, no unit)", () => {
     const out = renderTemplate(
-      ["m_sessionDuration:nulldrop:false"],
+      ["m_sessionDuration|nulldrop|false"],
       ctxFor(
         fakeSnapshot({ cost: { totalDurationMs: null, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null } }),
       ),
@@ -1763,9 +1763,9 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     assert.equal(strip(out), "--");
   });
 
-  it("m_linesAdded:nulldrop:false renders '+ --' (signed placeholder)", () => {
+  it("m_linesAdded|nulldrop|false renders '+ --' (signed placeholder)", () => {
     const out = renderTemplate(
-      ["m_linesAdded:nulldrop:false"],
+      ["m_linesAdded|nulldrop|false"],
       ctxFor(
         fakeSnapshot({ cost: { totalDurationMs: 600_000, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null } }),
       ),
@@ -1773,9 +1773,9 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     assert.equal(strip(out), "+ --");
   });
 
-  it("m_linesRemoved:nulldrop:false renders '- --' (signed placeholder)", () => {
+  it("m_linesRemoved|nulldrop|false renders '- --' (signed placeholder)", () => {
     const out = renderTemplate(
-      ["m_linesRemoved:nulldrop:false"],
+      ["m_linesRemoved|nulldrop|false"],
       ctxFor(
         fakeSnapshot({ cost: { totalDurationMs: 600_000, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null } }),
       ),
@@ -1786,9 +1786,9 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
 
   // ----- gauge family -----
 
-  it("m_windowContext:nulldrop:false renders '░░░░░░░░ 0%' (gauge placeholder, used mode)", () => {
+  it("m_windowContext|nulldrop|false renders '░░░░░░░░ 0%' (gauge placeholder, used mode)", () => {
     const out = renderTemplate(
-      ["m_windowContext:nulldrop:false"],
+      ["m_windowContext|nulldrop|false"],
       ctxFor(
         fakeSnapshot({ contextWindow: { size: 200000, usedPct: null, remainingPct: null } }),
       ),
@@ -1797,9 +1797,9 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     assert.ok(out.includes(STALE), `expected STALE wrap on: ${JSON.stringify(out)}`);
   });
 
-  it("m_windowContext:nulldrop:false in remaining mode renders '▓▓▓▓▓▓▓▓ 100%'", () => {
+  it("m_windowContext|nulldrop|false in remaining mode renders '▓▓▓▓▓▓▓▓ 100%'", () => {
     const out = renderTemplate(
-      ["m_windowContext:nulldrop:false:display:remaining"],
+      ["m_windowContext|nulldrop|false|display|remaining"],
       ctxFor(
         fakeSnapshot({ contextWindow: { size: 200000, usedPct: null, remainingPct: null } }),
       ),
@@ -1807,10 +1807,10 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     assert.equal(strip(out), "▓▓▓▓▓▓▓▓ 100%");
   });
 
-  it("m_windowContext:nulldrop:false:color:red overrides STALE wrap with user color", () => {
+  it("m_windowContext|nulldrop|false|color|red overrides STALE wrap with user color", () => {
     const RED_SGR = "\x1b[38;5;196m";
     const out = renderTemplate(
-      ["m_windowContext:nulldrop:false:color:red"],
+      ["m_windowContext|nulldrop|false|color|red"],
       ctxFor(
         fakeSnapshot({ contextWindow: { size: 200000, usedPct: null, remainingPct: null } }),
       ),
@@ -1831,18 +1831,18 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     assert.equal(strip(out), "░░░░░░░░ 0%");
   });
 
-  it("m_window5h:nulldrop:false renders gray '░░░░░░░░ 0%' when fiveHour is null", () => {
+  it("m_window5h|nulldrop|false renders gray '░░░░░░░░ 0%' when fiveHour is null", () => {
     // fiveHour is null → placeholder fires.
     const out = renderTemplate(
-      ["m_window5h:nulldrop:false"],
+      ["m_window5h|nulldrop|false"],
       ctxFor(null, null, null),
     ).join("\n");
     assert.equal(strip(out), "░░░░░░░░ 0%");
   });
 
-  it("m_window7d:nulldrop:false renders gray '░░░░░░░░ 0%' when weekly is null", () => {
+  it("m_window7d|nulldrop|false renders gray '░░░░░░░░ 0%' when weekly is null", () => {
     const out = renderTemplate(
-      ["m_window7d:nulldrop:false"],
+      ["m_window7d|nulldrop|false"],
       ctxFor(null, null, null),
     ).join("\n");
     assert.equal(strip(out), "░░░░░░░░ 0%");
@@ -1850,41 +1850,41 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
 
   // ----- bare-string family -----
 
-  it("m_session:nulldrop:false renders 'n/a' when sessionName is null", () => {
+  it("m_session|nulldrop|false renders 'n/a' when sessionName is null", () => {
     const out = renderTemplate(
-      ["m_session:nulldrop:false"],
+      ["m_session|nulldrop|false"],
       ctxFor(fakeSnapshot({ sessionName: null })),
     ).join("\n");
     assert.equal(strip(out), "n/a");
   });
 
-  it("m_model:nulldrop:false renders 'n/a' when modelDisplayName is null", () => {
+  it("m_model|nulldrop|false renders 'n/a' when modelDisplayName is null", () => {
     const out = renderTemplate(
-      ["m_model:nulldrop:false"],
+      ["m_model|nulldrop|false"],
       ctxFor(fakeSnapshot({ modelDisplayName: null })),
     ).join("\n");
     assert.equal(strip(out), "n/a");
   });
 
-  it("m_effort:nulldrop:false renders 'n/a' when effort is null", () => {
+  it("m_effort|nulldrop|false renders 'n/a' when effort is null", () => {
     const out = renderTemplate(
-      ["m_effort:nulldrop:false"],
+      ["m_effort|nulldrop|false"],
       ctxFor(fakeSnapshot({ effort: null })),
     ).join("\n");
     assert.equal(strip(out), "n/a");
   });
 
-  it("m_repo:nulldrop:false renders 'n/a' when all components are null", () => {
+  it("m_repo|nulldrop|false renders 'n/a' when all components are null", () => {
     const out = renderTemplate(
-      ["m_repo:nulldrop:false"],
+      ["m_repo|nulldrop|false"],
       ctxFor(fakeSnapshot({ repo: { host: null, owner: null, name: null } })),
     ).join("\n");
     assert.equal(strip(out), "n/a");
   });
 
-  it("m_ccVersion:nulldrop:false renders 'n/a' when ccversion is null", () => {
+  it("m_ccVersion|nulldrop|false renders 'n/a' when ccversion is null", () => {
     const out = renderTemplate(
-      ["m_ccVersion:nulldrop:false"],
+      ["m_ccVersion|nulldrop|false"],
       ctxFor(fakeSnapshot({ ccversion: null })),
     ).join("\n");
     assert.equal(strip(out), "n/a");
@@ -1892,22 +1892,22 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
 
   // ----- separator-skip semantics preserved -----
 
-  it("m_contextSize:nulldrop:false forces the slot; adjacent s_0 separators are preserved (v6.x)", () => {
+  it("m_contextSize|nulldrop|false forces the slot; adjacent s_0 separators are preserved (v6.x)", () => {
     // v6.x — tokens=null now triggers "n/a" placeholders for the
     // per-API-call family too (m_tokenIn / m_tokenOut). The
     // placeholder keeps the slot occupied, so surrounding s_0
     // separators stay (matching the inline nulldrop:false contract).
     const out = renderTemplate(
-      ["m_tokenIn", "s_space", "m_contextSize:nulldrop:false", "s_space", "m_tokenOut"],
+      ["m_tokenIn", "s_space", "m_contextSize|nulldrop|false", "s_space", "m_tokenOut"],
       ctxFor(null),
     ).join("\n");
     assert.equal(strip(out), "in:n/a size:n/a out:n/a");
   });
 
-  it("m_contextSize:nulldrop:false composed with :color: applies color to the placeholder", () => {
+  it("m_contextSize|nulldrop|false composed with |color| applies color to the placeholder", () => {
     const RED_SGR = "\x1b[38;5;196m";
     const out = renderTemplate(
-      ["m_contextSize:nulldrop:false:color:red"],
+      ["m_contextSize|nulldrop|false|color|red"],
       ctxFor(null),
     ).join("\n");
     assert.equal(strip(out), "size:n/a");
@@ -1916,14 +1916,14 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
 
   // ----- parse-fail path -----
 
-  it("m_contextSize:nulldrop:invalid_value (not true/false) is a parse-fail — token drops + warn", () => {
+  it("m_contextSize|nulldrop|invalid_value (not true/false) is a parse-fail — token drops + warn", () => {
     // Resolver returns null for any value other than 'true'/'false',
     // so parseInlineArgs returns null → badarg → warn + drop.
     // We don't assert the stderr line here (the warn is fired
     // once per process), but we do assert the chunk is gone.
     __resetUnknownModuleWarnForTest();
     const out = renderTemplate(
-      ["m_contextSize:nulldrop:maybe"],
+      ["m_contextSize|nulldrop|maybe"],
       ctxFor(null),
     );
     assert.deepEqual(out, []);
@@ -1955,21 +1955,21 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
   it("inline m_contextSize: (trailing colon, no args) defaults to placeholder — renders 'size:n/a'", () => {
     // The trailing-colon form `m_contextSize:` has empty remainder →
     // params={} → nulldrop undefined → placeholder fires.
-    const out = renderTemplate(["m_contextSize:"], ctxFor(null)).join("\n");
+    const out = renderTemplate(["m_contextSize|"], ctxFor(null)).join("\n");
     assert.equal(strip(out), "size:n/a");
     assert.ok(out.includes(STALE), `expected STALE wrap on: ${JSON.stringify(out)}`);
   });
 
   it("inline m_contextSize:nulldrop:false (explicit) renders placeholder 'size:n/a'", () => {
     // Equivalent to the no-arg form `m_contextSize:` after the flip.
-    const out = renderTemplate(["m_contextSize:nulldrop:false"], ctxFor(null)).join("\n");
+    const out = renderTemplate(["m_contextSize|nulldrop|false"], ctxFor(null)).join("\n");
     assert.equal(strip(out), "size:n/a");
   });
 
-  it("m_contextSize:nulldrop:true opts OUT of placeholder — drops on null", () => {
+  it("m_contextSize|nulldrop|true opts OUT of placeholder — drops on null", () => {
     // `:nulldrop:true` is the escape hatch for users who want the
     // v0.3.x drop-on-null semantics on an inline token.
-    const out = renderTemplate(["m_contextSize:nulldrop:true"], ctxFor(null));
+    const out = renderTemplate(["m_contextSize|nulldrop|true"], ctxFor(null));
     assert.deepEqual(out, []);
   });
 
@@ -1987,7 +1987,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
 
   it("inline m_windowContext: defaults to placeholder gray bar '░░░░░░░░ 0%'", () => {
     const out = renderTemplate(
-      ["m_windowContext:"],
+      ["m_windowContext|"],
       ctxFor(
         fakeSnapshot({ contextWindow: { size: 200000, usedPct: null, remainingPct: null } }),
       ),
@@ -1995,9 +1995,9 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     assert.equal(strip(out), "░░░░░░░░ 0%");
   });
 
-  it("m_windowContext:nulldrop:true drops on null (preserves v0.3.x drop behavior)", () => {
+  it("m_windowContext|nulldrop|true drops on null (preserves v0.3.x drop behavior)", () => {
     const out = renderTemplate(
-      ["m_windowContext:nulldrop:true"],
+      ["m_windowContext|nulldrop|true"],
       ctxFor(
         fakeSnapshot({ contextWindow: { size: 200000, usedPct: null, remainingPct: null } }),
       ),
@@ -2006,18 +2006,18 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
   });
 
   it("inline m_session: defaults to placeholder 'n/a' on null sessionName", () => {
-    const out = renderTemplate(["m_session:"], ctxFor(fakeSnapshot({ sessionName: null }))).join("\n");
+    const out = renderTemplate(["m_session|"], ctxFor(fakeSnapshot({ sessionName: null }))).join("\n");
     assert.equal(strip(out), "n/a");
   });
 
-  it("m_session:nulldrop:true drops on null sessionName", () => {
-    const out = renderTemplate(["m_session:nulldrop:true"], ctxFor(fakeSnapshot({ sessionName: null })));
+  it("m_session|nulldrop|true drops on null sessionName", () => {
+    const out = renderTemplate(["m_session|nulldrop|true"], ctxFor(fakeSnapshot({ sessionName: null })));
     assert.deepEqual(out, []);
   });
 
   it("inline m_linesAdded: defaults to placeholder '+ --'", () => {
     const out = renderTemplate(
-      ["m_linesAdded:"],
+      ["m_linesAdded|"],
       ctxFor(
         fakeSnapshot({ cost: { totalDurationMs: 600_000, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null } }),
       ),
@@ -2025,9 +2025,9 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     assert.equal(strip(out), "+ --");
   });
 
-  it("m_linesAdded:nulldrop:true drops on null totalLinesAdded", () => {
+  it("m_linesAdded|nulldrop|true drops on null totalLinesAdded", () => {
     const out = renderTemplate(
-      ["m_linesAdded:nulldrop:true"],
+      ["m_linesAdded|nulldrop|true"],
       ctxFor(
         fakeSnapshot({ cost: { totalDurationMs: 600_000, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null } }),
       ),
@@ -2053,7 +2053,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     // null. The nulldrop:true opt-out still drops m_contextSize, leaving
     // orphan s_space separators between the placeholders.
     const out = renderTemplate(
-      ["m_tokenIn", "s_space", "m_contextSize:nulldrop:true", "s_space", "m_tokenOut"],
+      ["m_tokenIn", "s_space", "m_contextSize|nulldrop|true", "s_space", "m_tokenOut"],
       ctxFor(null),
     ).join("\n");
     assert.match(strip(out), /^in:n\/a\s+out:n\/a$/);
@@ -2081,7 +2081,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
 describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.4.0+)", () => {
   // ----- 5-band scale coloring on active ticks -----
 
-  it("m_tokenInSpeed: 0.6 t/s → red (slowest band, < 50)", () => {
+  it("m_tokenInSpeed| 0.6 t/s → red (slowest band, < 50)", () => {
     // current.input=38, deltaApi=60_000 → 0.633 t/s; 0.6 < 50
     // → red.
     setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
@@ -2091,7 +2091,7 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     assert.ok(!out.includes(STALE), `did not expect STALE in: ${JSON.stringify(out)}`);
   });
 
-  it("m_tokenInSpeed: 50 t/s → orange (bands[0] boundary)", () => {
+  it("m_tokenInSpeed| 50 t/s → orange (bands[0] boundary)", () => {
     // current.input=3000, deltaApi=60_000 → 50 t/s; 50 >= bands[0]=50
     // → palette[3] = orange.
     setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
@@ -2103,7 +2103,7 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     assert.ok(out.includes(ORANGE), `expected ORANGE in: ${JSON.stringify(out)}`);
   });
 
-  it("m_tokenInSpeed: 400 t/s → bright green (fastest band, >= 400)", () => {
+  it("m_tokenInSpeed| 400 t/s → bright green (fastest band, >= 400)", () => {
     // current.input=24000, deltaApi=60_000 → 400 t/s;
     // 400 >= bands[3]=400 → bright green.
     setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
@@ -2115,7 +2115,7 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     assert.ok(out.includes(GREEN), `expected GREEN in: ${JSON.stringify(out)}`);
   });
 
-  it("m_tokenOutSpeed: 80 t/s → bright green (fastest out band)", () => {
+  it("m_tokenOutSpeed| 80 t/s → bright green (fastest out band)", () => {
     // current.output=4800, deltaApi=60_000 → 80 t/s;
     // 80 >= bands[3]=80 → bright green.
     setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
@@ -2127,7 +2127,7 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     assert.ok(out.includes(GREEN), `expected GREEN in: ${JSON.stringify(out)}`);
   });
 
-  it("m_tokenOutSpeed: 30 t/s → yellow (20 ≤ 30 < 40)", () => {
+  it("m_tokenOutSpeed| 30 t/s → yellow (20 ≤ 30 < 40)", () => {
     setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
     const snap = fakeSnapshot({
       current: { input: 1800, output: 1800, cacheCreation: 0, cacheRead: 0 },
@@ -2137,7 +2137,7 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     assert.ok(out.includes(YELLOW), `expected YELLOW in: ${JSON.stringify(out)}`);
   });
 
-  it("m_tokenInSpeed:color:scale is equivalent to bare (scale is the default)", () => {
+  it("m_tokenInSpeed|color|scale is equivalent to bare (scale is the default)", () => {
     // Explicit `:color:scale` and bare `m_tokenInSpeed` produce
     // the same color choice. The bare form defaults to scale
     // because scale is the canonical visualization for speed.
@@ -2148,7 +2148,7 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
       ctxFor(fakeSnapshot({ sessionId: "sess-bare" })),
     ).join("\n");
     const scaled = renderTemplate(
-      ["m_tokenInSpeed:color:scale"],
+      ["m_tokenInSpeed|color|scale"],
       ctxFor(fakeSnapshot({ sessionId: "sess-scaled" })),
     ).join("\n");
     // Both should land in the same band (red, 0.6 t/s).
@@ -2156,10 +2156,10 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     assert.ok(bare.includes(RED) && scaled.includes(RED), `bare=${JSON.stringify(bare)} scaled=${JSON.stringify(scaled)}`);
   });
 
-  it("m_tokenInSpeed:color:red overrides scale on active ticks", () => {
+  it("m_tokenInSpeed|color|red overrides scale on active ticks", () => {
     setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
     const out = renderTemplate(
-      ["m_tokenInSpeed:color:red"],
+      ["m_tokenInSpeed|color|red"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
     // 0.6 t/s would normally be red via scale; with explicit
@@ -2169,13 +2169,13 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     assert.ok(out.includes(RED));
   });
 
-  it("m_tokenInSpeed:color:brightGreen on a slow turn still renders green", () => {
+  it("m_tokenInSpeed|color|brightGreen on a slow turn still renders green", () => {
     // 0.6 t/s would be red via scale; the user's `:color:brightGreen`
     // override wins. This is the "if user explicitly asked, ignore
     // the natural scheme in favor of theirs" rule.
     setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
     const out = renderTemplate(
-      ["m_tokenInSpeed:color:brightGreen"],
+      ["m_tokenInSpeed|color|brightGreen"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
     assert.equal(strip(out), "in:0.6 t/s");
@@ -2184,7 +2184,7 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
 
   // ----- cached (inactive) tick behavior -----
 
-  it("m_tokenInSpeed: idle tick with cached tps → STALE_COLOR, not -- t/s", () => {
+  it("m_tokenInSpeed| idle tick with cached tps → STALE_COLOR, not -- t/s", () => {
     // First tick: active, writes 38/60000*1000 = 0.633 → cache
     // holds 0.633. Second tick: deltaApi=0 (same totalApiDurationMs
     // as cached) → falls back to cached value with STALE_COLOR.
@@ -2198,7 +2198,7 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     assert.ok(out.includes(STALE), `expected STALE (cached) in: ${JSON.stringify(out)}`);
   });
 
-  it("m_tokenInSpeed: idle tick with NO cached tps → 'in:0.0 t/s' (v6.x idle=0)", () => {
+  it("m_tokenInSpeed| idle tick with NO cached tps → 'in|0.0 t/s' (v6.x idle=0)", () => {
     // v6.x — idle tick now renders the truthful 0.0 t/s rate.
     // The missing-data sentinel is reserved for the snapshot-missing
     // case (handled via ctxFor(null) elsewhere).
@@ -2207,7 +2207,7 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     assert.equal(strip(out), "in:0.0 t/s");
   });
 
-  it("m_tokenInSpeed: idle tick → STALE_COLOR even with :color:red override", () => {
+  it("m_tokenInSpeed| idle tick → STALE_COLOR even with |color|red override", () => {
     // Per the user's "inactive 不受 :color: 影响" decision:
     // cached/inactive ticks ALWAYS use STALE_COLOR regardless of
     // the user's color override. Gray is the canonical "this is a
@@ -2215,11 +2215,11 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     // "inactive" affordance.
     setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
     // Prime the cache with an active tick.
-    renderTemplate(["m_tokenInSpeed:color:red"], ctxFor(fakeSnapshot()));
+    renderTemplate(["m_tokenInSpeed|color|red"], ctxFor(fakeSnapshot()));
     // Idle tick: same totalApiDurationMs.
     setPrevTick("sess-test", { apiMs: 60_000, in: 38, out: 155, cacheRead: 0 }, "D:\\test");
     const out = renderTemplate(
-      ["m_tokenInSpeed:color:red"],
+      ["m_tokenInSpeed|color|red"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
     assert.equal(strip(out), "in:0.6 t/s");
@@ -2235,7 +2235,7 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     );
   });
 
-  it("m_tokenInSpeed: cache is project-wide (no session dimension)", () => {
+  it("m_tokenInSpeed| cache is project-wide (no session dimension)", () => {
     // v0.4.x — the lastActive:in slot is now a single project-wide
     // entry (no sessionId dimension) with a 60s TTL. Session changes
     // do NOT isolate the cache: sess-B sees sess-A's cached tps.
@@ -2255,7 +2255,7 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     assert.ok(out.includes(STALE), `expected STALE on idle cross-session tick in: ${JSON.stringify(out)}`);
   });
 
-  it("m_tokenInSpeed: idle tick does NOT overwrite the cache", () => {
+  it("m_tokenInSpeed| idle tick does NOT overwrite the cache", () => {
     // Prime with 0.6 t/s.
     setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "D:\\test");
     renderTemplate(["m_tokenInSpeed"], ctxFor(fakeSnapshot()));
@@ -2288,22 +2288,22 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
 describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
   beforeEach(() => __resetForTest());
 
-  it("m_template:foo with ctx.providerType='plan' expands the registered fragment", () => {
+  it("m_template|foo with ctx.providerType='plan' expands the registered fragment", () => {
     __resetForTest({
       lineTemplates: { foo: ["m_window5h"] },
     });
-    const out = renderTemplate(["m_template:foo"], ctxFor(null, { pct: 42 }));
+    const out = renderTemplate(["m_template|foo"], ctxFor(null, { pct: 42 }));
     // m_window5h at 42% should land in band 1 (orange) per the
     // default band thresholds. Strip ANSI for stability.
     assert.match(out.map(strip).join("\n"), /42%/);
   });
 
-  it("m_template:foo with ctx.providerType='balance' wants mode:plan → drops", () => {
+  it("m_template|foo with ctx.providerType='balance' wants mode|plan → drops", () => {
     __resetForTest({
       lineTemplates: { foo: ["m_window5h"] },
     });
     const out = renderTemplate(
-      ["m_template:foo:mode:plan"],
+      ["m_template|foo|mode|plan"],
       ctxFor(null, null, null, "balance"),
     );
     // Dropped because providerType=balance but mode wants plan.
@@ -2312,18 +2312,18 @@ describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
     assert.deepEqual(out, []);
   });
 
-  it("m_template:foo with ctx.providerType='plan' wants mode:plan → renders", () => {
+  it("m_template|foo with ctx.providerType='plan' wants mode|plan → renders", () => {
     __resetForTest({
       lineTemplates: { foo: ["m_window5h"] },
     });
     const out = renderTemplate(
-      ["m_template:foo:mode:plan"],
+      ["m_template|foo|mode|plan"],
       ctxFor(null, { pct: 42 }, null, "plan"),
     );
     assert.match(out.map(strip).join("\n"), /42%/);
   });
 
-  it("m_template:nonexistent (missing key) warns and drops", () => {
+  it("m_template|nonexistent (missing key) warns and drops", () => {
     let captured = "";
     const err = process.stderr as unknown as { write: (chunk: string) => boolean };
     const original = err.write;
@@ -2332,7 +2332,7 @@ describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
       return true;
     };
     try {
-      const out = renderTemplate(["m_template:nonexistent"], ctxFor(null));
+      const out = renderTemplate(["m_template|nonexistent"], ctxFor(null));
       assert.deepEqual(out, []);
       assert.match(captured, /lineTemplates\["nonexistent"\] is undefined/);
     } finally {
@@ -2453,15 +2453,15 @@ describe("renderTemplate — named separator aliases (v0.4.x)", () => {
 
   // ----- Inline-args form (`:color:<c>` / `:nulldrop:<b>`) -----
 
-  it("s_space:color:brightGreen wraps the space in the brightGreen SGR", () => {
-    const out = renderTemplate(["s_space:color:brightGreen"], ctxFor(null));
+  it("s_space|color|brightGreen wraps the space in the brightGreen SGR", () => {
+    const out = renderTemplate(["s_space|color|brightGreen"], ctxFor(null));
     assert.equal(out.length, 1);
     assert.equal(strip(out[0]), " ");
     assert.ok(out[0].includes(GREEN), `expected GREEN in: ${JSON.stringify(out[0])}`);
   });
 
-  it("s_dot:color:red wraps the dot in the red SGR", () => {
-    const out = renderTemplate(["s_dot:color:red"], ctxFor(null));
+  it("s_dot|color|red wraps the dot in the red SGR", () => {
+    const out = renderTemplate(["s_dot|color|red"], ctxFor(null));
     assert.equal(out.length, 1);
     assert.equal(strip(out[0]), "·");
     assert.ok(out[0].includes(RED), `expected RED in: ${JSON.stringify(out[0])}`);
@@ -2508,7 +2508,7 @@ describe("renderTemplate — named separator aliases (v0.4.x)", () => {
     assert.deepEqual(out, []);
   });
 
-  it("s_dot:color:bogus_color (bad inline arg) warns + drops", () => {
+  it("s_dot|color|bogus_color (bad inline arg) warns + drops", () => {
     // Inline-args form: the resolver succeeds (s_dot IS a known
     // alias), but the `:color:bogus_color` arg fails the color
     // validator → badarg → warn + drop. The whole s_dot chunk
@@ -2517,7 +2517,7 @@ describe("renderTemplate — named separator aliases (v0.4.x)", () => {
     // spaces, the dot chunk dropped).
     __resetUnknownModuleWarnForTest();
     const out = renderTemplate(
-      ["s_space", "s_dot:color:bogus_color", "s_space"],
+      ["s_space", "s_dot|color|bogus_color", "s_space"],
       ctxFor(null),
     );
     assert.deepEqual(out.map(strip), ["  "]);
@@ -2561,7 +2561,7 @@ describe("renderTemplate — named separator aliases (v0.4.x)", () => {
 // renders the placeholder when data is missing — matching the
 // v6.x bare-vs-inline parity rule.
 describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)", () => {
-  it("m_accTokenIn: bare form with no session slot → 'in:n/a' placeholder", () => {
+  it("m_accTokenIn| bare form with no session slot → 'in|n/a' placeholder", () => {
     // No setAvg called → peekAvg returns null → placeholder fires.
     const out = renderTemplate(
       ["m_accTokenIn"],
@@ -2571,7 +2571,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     assert.ok(out.includes(STALE), `expected STALE wrap on: ${JSON.stringify(out)}`);
   });
 
-  it("m_accTokenIn: session scope reads accIn from per-session slot", () => {
+  it("m_accTokenIn| session scope reads accIn from per-session slot", () => {
     // Set the session slot directly via setAvg (full deltas so
     // the gate passes).
     setAvg(
@@ -2601,7 +2601,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     assert.equal(strip(out), "in:42.0k");
   });
 
-  it("m_accTokenOut: session scope reads accOut from per-session slot", () => {
+  it("m_accTokenOut| session scope reads accOut from per-session slot", () => {
     setAvg(
       "sess-acc-out",
       { accIn: 0, accOut: 1234, accApi: 0, accCached: 0, accApiCount: 1 },
@@ -2629,7 +2629,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     assert.equal(strip(out), "out:1.2k");
   });
 
-  it("m_accTokenCachedIn: session scope reads accCached from per-session slot", () => {
+  it("m_accTokenCachedIn| session scope reads accCached from per-session slot", () => {
     setAvg(
       "sess-acc-cached",
       { accIn: 0, accOut: 0, accApi: 0, accCached: 163441, accApiCount: 1 },
@@ -2657,7 +2657,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     assert.equal(strip(out), "cache:163.4k");
   });
 
-  it("m_accTokenTotalIn: derived field accIn + accCached → 'total:163.5k' (0+163441+38 total)", () => {
+  it("m_accTokenTotalIn| derived field accIn + accCached → 'total|163.5k' (0+163441+38 total)", () => {
     // Real shape: with both accIn=38 and accCached=163441, total is 163479.
     setAvg(
       "sess-acc-total",
@@ -2686,7 +2686,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     assert.equal(strip(out), "total:163.5k");
   });
 
-  it("m_accApiMs: session scope reads accApi from per-session slot", () => {
+  it("m_accApiMs| session scope reads accApi from per-session slot", () => {
     setAvg(
       "sess-acc-api",
       { accIn: 0, accOut: 0, accApi: 60_000, accCached: 0, accApiCount: 1 },
@@ -2713,7 +2713,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     assert.equal(strip(out), "acc:60.0k");
   });
 
-  it("m_accCacheHitRate: session scope formula accCached / (accCached + accIn) = 99.978%", () => {
+  it("m_accCacheHitRate| session scope formula accCached / (accCached + accIn) = 99.978%", () => {
     // 163441 / (163441 + 38) * 100 = 99.97799… → toFixed(1) → "100.0%".
     setAvg(
       "sess-acc-hit",
@@ -2739,7 +2739,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     assert.equal(strip(out), "acc:100.0%");
   });
 
-  it("m_accCacheHitRate: zero denominator → 'acc:0.0%' (no placeholder drop)", () => {
+  it("m_accCacheHitRate| zero denominator → 'acc|0.0%' (no placeholder drop)", () => {
     // All-zero slot → no input and no cache → 0/0. Per the v6.x
     // zero-value rule, render "acc:0.0%" rather than "acc:n/a%".
     setAvg(
@@ -2766,7 +2766,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     assert.equal(strip(out), "acc:0.0%");
   });
 
-  it("m_accCacheHitRate: missing slot → 'acc:n/a%' placeholder", () => {
+  it("m_accCacheHitRate| missing slot → 'acc|n/a%' placeholder", () => {
     // No setAvg called for this sessionId → peekAvg returns null
     // → placeholder path fires.
     const out = renderTemplate(
@@ -2777,7 +2777,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     assert.ok(out.includes(STALE), `expected STALE wrap on: ${JSON.stringify(out)}`);
   });
 
-  it("m_accTokenIn:scope:project reads the project-wide slot (cross-session)", () => {
+  it("m_accTokenIn|scope|project reads the project-wide slot (cross-session)", () => {
     // Seed the project-wide slot directly via setAvg (setAvg bumps
     // all 3 layers — the project slot is keyed by cwd only).
     setAvg(
@@ -2818,14 +2818,14 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     // sess-Z is null, but the project slot has both prior deltas
     // accumulated (100 + 150 = 250).
     const out = renderTemplate(
-      ["m_accTokenIn:scope:project"],
+      ["m_accTokenIn|scope|project"],
       ctxFor(fakeSnapshot({ sessionId: "sess-Z", cwd: "D:\\project-scope-test" })),
     ).join("\n");
     // v0.8.0+ labels.* — m_accTokenIn renders under labelIn.
     assert.equal(strip(out), "in:250");
   });
 
-  it("m_accTokenIn:scope:model reads the per-model slot (cross-session, single model)", () => {
+  it("m_accTokenIn|scope|model reads the per-model slot (cross-session, single model)", () => {
     // Two sessions under the same model + cwd. The model slot
     // accumulates both deltas (100 + 150 = 250), independent of
     // sessionId.
@@ -2866,7 +2866,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     // Render with model="MiniMax-M3" — model slot is keyed by
     // model+cwd. Should read 250.
     const out = renderTemplate(
-      ["m_accTokenIn:scope:model"],
+      ["m_accTokenIn|scope|model"],
       ctxFor(
         fakeSnapshot({
           sessionId: "sess-M3",
@@ -2879,50 +2879,50 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     assert.equal(strip(out), "in:250");
   });
 
-  it("m_accTokenIn:scope:model with no modelDisplayName on snapshot → 'in:n/a'", () => {
+  it("m_accTokenIn|scope|model with no modelDisplayName on snapshot → 'in|n/a'", () => {
     // peekAcc's model branch returns null when ctx.tokens has no
     // modelDisplayName (cannot resolve the model slot key).
     const out = renderTemplate(
-      ["m_accTokenIn:scope:model"],
+      ["m_accTokenIn|scope|model"],
       ctxFor(fakeSnapshot({ sessionId: "sess-no-model", modelDisplayName: null })),
     ).join("\n");
     // v0.8.0+ labels.* — placeholder reads labelIn.
     assert.equal(strip(out), "in:n/a");
   });
 
-  it("m_accTokenIn:scope:session (explicit) on a fresh snapshot → 'in:n/a' placeholder", () => {
+  it("m_accTokenIn|scope|session (explicit) on a fresh snapshot → 'in|n/a' placeholder", () => {
     // No setAvg called → per-session slot missing → placeholder.
     const out = renderTemplate(
-      ["m_accTokenIn:scope:session"],
+      ["m_accTokenIn|scope|session"],
       ctxFor(fakeSnapshot({ sessionId: "sess-scope-fresh" })),
     ).join("\n");
     // v0.8.0+ labels.* — placeholder reads labelIn.
     assert.equal(strip(out), "in:n/a");
   });
 
-  it("m_accTokenIn:scope:invalid (not session/project/model) is a parse-fail — drops", () => {
+  it("m_accTokenIn|scope|invalid (not session/project/model) is a parse-fail — drops", () => {
     // The SCOPE_PARAM resolver only accepts the three literal
     // values; "invalid" is rejected → parseInlineArgs returns
     // null → badarg → dispatcher warn + drop.
     __resetUnknownModuleWarnForTest();
     const out = renderTemplate(
-      ["m_accTokenIn:scope:invalid"],
+      ["m_accTokenIn|scope|invalid"],
       ctxFor(fakeSnapshot({ sessionId: "sess-bad-scope" })),
     );
     assert.deepEqual(out, []);
   });
 
-  it("m_accTokenIn:nulldrop:false (default for inline) renders placeholder on missing slot", () => {
+  it("m_accTokenIn|nulldrop|false (default for inline) renders placeholder on missing slot", () => {
     // Inline default is placeholder — same shape as bare form.
     const out = renderTemplate(
-      ["m_accTokenIn:nulldrop:false"],
+      ["m_accTokenIn|nulldrop|false"],
       ctxFor(fakeSnapshot({ sessionId: "sess-no-data" })),
     ).join("\n");
     // v0.8.0+ labels.* — placeholder reads labelIn.
     assert.equal(strip(out), "in:n/a");
   });
 
-  it("m_accTokenIn:nulldrop:true is a no-op (function never returns null)", () => {
+  it("m_accTokenIn|nulldrop|true is a no-op (function never returns null)", () => {
     // The m_accTokenIn renderer never returns null — it always
     // returns either "in:N" or "in:n/a" placeholder (via
     // wrapPlainDefault → STALE_COLOR wrap). Therefore
@@ -2930,14 +2930,14 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     // short-circuit on a null return). Same shape as m_apiCalls
     // and m_tokenInTotal which share this property.
     const out = renderTemplate(
-      ["m_accTokenIn:nulldrop:true"],
+      ["m_accTokenIn|nulldrop|true"],
       ctxFor(fakeSnapshot({ sessionId: "sess-no-data" })),
     ).join("\n");
     // v0.8.0+ labels.* — placeholder reads labelIn.
     assert.equal(strip(out), "in:n/a");
   });
 
-  it("m_accTokenIn:color:brightGreen wraps the chunk in brightGreen", () => {
+  it("m_accTokenIn|color|brightGreen wraps the chunk in brightGreen", () => {
     setAvg(
       "sess-acc-colored",
       { accIn: 12345, accOut: 0, accApi: 0, accCached: 0, accApiCount: 1 },
@@ -2956,7 +2956,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       },
     );
     const out = renderTemplate(
-      ["m_accTokenIn:color:brightGreen"],
+      ["m_accTokenIn|color|brightGreen"],
       ctxFor(fakeSnapshot({ sessionId: "sess-acc-colored" })),
     ).join("\n");
     // formatCompactToken(12345) = "12.3k" → "in:12.3k" (v0.8.0+
@@ -2965,7 +2965,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     assert.ok(out.includes(GREEN), `expected GREEN wrap on: ${JSON.stringify(out)}`);
   });
 
-  it("m_accTokenIn: composed with multiple acc modules and separators", () => {
+  it("m_accTokenIn| composed with multiple acc modules and separators", () => {
     // Seed the session slot with a mix of fields.
     setAvg(
       "sess-multi",
@@ -3037,13 +3037,13 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     // placeholder.
     setStateRoot(() => join(_tmpDir, "sum-empty"));
     const out = renderTemplate(
-      ["m_sumTokenIn:nulldrop:false"],
+      ["m_sumTokenIn|nulldrop|false"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
     assert.equal(strip(out), "in:n/a");
   });
 
-  it("m_sumTokenIn:window:invalid_value (parse-fail) → drops with warn", () => {
+  it("m_sumTokenIn|window|invalid_value (parse-fail) → drops with warn", () => {
     // The WINDOW_PARAM resolver rejects malformed dhms at the
     // schema layer → parseInlineArgs returns null → dispatcher
     // warn + drop. We assert the chunk is gone; the warn is
@@ -3051,29 +3051,29 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     setStateRoot(() => join(_tmpDir, "sum-bad-window"));
     __resetUnknownModuleWarnForTest();
     const out = renderTemplate(
-      ["m_sumTokenIn:window:xyz"],
+      ["m_sumTokenIn|window|xyz"],
       ctxFor(fakeSnapshot()),
     );
     assert.deepEqual(out, []);
   });
 
-  it("m_sumTokenIn:model:nonexistent-model (no matching rows) → 'in:n/a' placeholder", () => {
+  it("m_sumTokenIn|model|nonexistent-model (no matching rows) → 'in|n/a' placeholder", () => {
     // An unknown model name is treated as a literal filter — no
     // matching rows → empty aggregate → inline form renders
     // placeholder (bare form would drop).
     setStateRoot(() => join(_tmpDir, "sum-no-model-match"));
     const out = renderTemplate(
-      ["m_sumTokenIn:model:nonexistent-model"],
+      ["m_sumTokenIn|model|nonexistent-model"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
     assert.equal(strip(out), "in:n/a");
   });
 
-  it("m_sumTokenIn:align:invalid (not true/false) is a parse-fail → drops", () => {
+  it("m_sumTokenIn|align|invalid (not true/false) is a parse-fail → drops", () => {
     setStateRoot(() => join(_tmpDir, "sum-bad-align"));
     __resetUnknownModuleWarnForTest();
     const out = renderTemplate(
-      ["m_sumTokenIn:align:maybe"],
+      ["m_sumTokenIn|align|maybe"],
       ctxFor(fakeSnapshot()),
     );
     assert.deepEqual(out, []);
@@ -3113,7 +3113,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     assert.equal(strip(out), "in:600");
   });
 
-  it("m_sumTokenIn:window:1d1h is rejected — v0.8.x only accepts 5h/7d/all as window keys", () => {
+  it("m_sumTokenIn|window|1d1h is rejected — v0.8.x only accepts 5h/7d/all as window keys", () => {
     // v0.8.x: free-form dhms like "1d1h" no longer map to a cache
     // key segment (would explode the key space). parseWindowScope
     // returns null and the module drops (renders empty).
@@ -3133,7 +3133,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
       "utf8",
     );
     const out = renderTemplate(
-      ["m_sumTokenIn:window:1d1h"],
+      ["m_sumTokenIn|window|1d1h"],
       ctxFor(
         fakeSnapshot({
           sessionId: sess,
@@ -3145,7 +3145,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     assert.equal(out, "");
   });
 
-  it("m_sumTokenIn:window:7d excludes rows older than 7d (canonical window)", () => {
+  it("m_sumTokenIn|window|7d excludes rows older than 7d (canonical window)", () => {
     // v0.8.x: the canonical 7d window must drop rows whose `at`
     // is more than 7 days old, even if the jsonl file itself is
     // freshly written. This is the row-level sinceMs filter
@@ -3173,7 +3173,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
       "utf8",
     );
     const out = renderTemplate(
-      ["m_sumTokenIn:window:7d"],
+      ["m_sumTokenIn|window|7d"],
       {
         ...ctxFor(
           fakeSnapshot({
@@ -3234,7 +3234,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     assert.equal(out, "");
   });
 
-  it("m_avgTokenInSpeed: sum(in) / sum(apiMs) * 1000 in t/s", () => {
+  it("m_avgTokenInSpeed| sum(in) / sum(apiMs) * 1000 in t/s", () => {
     const stateRootDir = join(_tmpDir, "sum-fixture-speed");
     setStateRoot(() => stateRootDir);
     const projHash = "d--sum-s";
@@ -3331,7 +3331,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     assert.equal(strip(out), "calls:2");
   });
 
-  it("m_sumApiCalls: no rows in window → drops (renders empty)", () => {
+  it("m_sumApiCalls| no rows in window → drops (renders empty)", () => {
     // Isolate stateRoot to a fresh tmp subdir so we don't pick up
     // the user's real on-disk samples (289+ rows in production).
     const stateRootDir = join(_tmpDir, "avg-fixture-apicalls-empty");
@@ -3349,7 +3349,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     assert.equal(out, "");
   });
 
-  it("m_sumApiCalls: inline args (:window:7d, :model:all) are honored", () => {
+  it("m_sumApiCalls| inline args (|window|7d, |model|all) are honored", () => {
     const stateRootDir = join(_tmpDir, "sum-fixture-apicalls-inline");
     setStateRoot(() => stateRootDir);
     const projHash = "d--ci";
@@ -3367,7 +3367,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
       "utf8",
     );
     const out = renderTemplate(
-      ["m_sumApiCalls:model:all:window:7d"],
+      ["m_sumApiCalls|model|all|window|7d"],
       ctxFor(
         fakeSnapshot({
           sessionId: sess,
@@ -3427,7 +3427,7 @@ describe("renderTemplate — v0.8.0+ labels.* config customization", () => {
       // Force nulldrop:false so the placeholder renders (bare
       // form defaults to drop-on-null).
       const c = renderTemplate(
-        ["m_sumTokenTotalIn:nulldrop:false"],
+        ["m_sumTokenTotalIn|nulldrop|false"],
         ctxFor(fakeSnapshot({ sessionId: "label-test", cwd: "D:\\label-test" })),
       ).join("\n");
       assert.match(strip(a), /^Total:/);
