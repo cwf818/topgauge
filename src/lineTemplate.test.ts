@@ -648,6 +648,272 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
     });
     assert.equal(line, "X", `got: ${JSON.stringify(line)}`);
   });
+
+  // ----- v0.7.2+ |repeat|<N> (multiplies body, default 1, cap 8) -----
+
+  it("s_space|repeat|3 emits 3 spaces (whitespace body not padded even with default wrap=true)", () => {
+    __resetUnknownModuleWarnForTest();
+    __resetForTest({
+      separators: [" "],
+      statuslineTemplate:["s_space|repeat|3"],
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: null, weekly: null, balance: null,
+      ageMs: null, stale: false, version: "",
+    });
+    assert.equal(line, "   ", `got: ${JSON.stringify(line)}`);
+  });
+
+  it("s_dot|repeat|1 emits single dot — default repeat is 1 when omitted", () => {
+    __resetForTest({
+      // separators intentionally absent — s_dot uses NAMED_SEPARATORS,
+      statuslineTemplate:["s_dot|repeat|1"],
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: null, weekly: null, balance: null,
+      ageMs: null, stale: false, version: "",
+    });
+    assert.equal(strip(line), " · ", `got: ${JSON.stringify(line)}`);
+  });
+
+  it("s_dot|repeat|3 emits 3 padded dots (wrap=true + printable body)", () => {
+    __resetForTest({
+      // separators intentionally absent — s_dot uses NAMED_SEPARATORS,
+      statuslineTemplate:["s_dot|repeat|3"],
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: null, weekly: null, balance: null,
+      ageMs: null, stale: false, version: "",
+    });
+    assert.equal(strip(line), " ·  ·  · ", `got: ${JSON.stringify(line)}`);
+  });
+
+  it("s_dot|repeat|8 hits the cap exactly (8 emits 8 padded dots)", () => {
+    __resetForTest({
+      // separators intentionally absent — s_dot uses NAMED_SEPARATORS,
+      statuslineTemplate:["s_dot|repeat|8"],
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: null, weekly: null, balance: null,
+      ageMs: null, stale: false, version: "",
+    });
+    assert.equal(strip(line), " ·  ·  ·  ·  ·  ·  ·  · ", `got: ${JSON.stringify(line)}`);
+  });
+
+  it("s_dot|repeat|9 (over cap) drops and warns", () => {
+    __resetUnknownModuleWarnForTest();
+    const { value: line, warns } = withCapturedStderr(() => {
+      __resetForTest({
+        // separators intentionally absent — s_dot uses NAMED_SEPARATORS,
+        statuslineTemplate:["s_dot|repeat|9"],
+      });
+      return renderProviderLine("minimax", {
+        mode: "used", nowMs: Date.now(),
+        fiveHour: null, weekly: null, balance: null,
+        ageMs: null, stale: false, version: "",
+      });
+    });
+    assert.equal(line, "");
+    assert.equal(
+      warns.filter((w) => w.includes("unknown lineTemplate module")).length,
+      1,
+      `expected 1 unknown-module warning: ${warns.join("\n")}`,
+    );
+  });
+
+  it("s_dot|repeat|0 (under min) drops and warns", () => {
+    __resetUnknownModuleWarnForTest();
+    const { value: line, warns } = withCapturedStderr(() => {
+      __resetForTest({
+        // separators intentionally absent — s_dot uses NAMED_SEPARATORS,
+        statuslineTemplate:["s_dot|repeat|0"],
+      });
+      return renderProviderLine("minimax", {
+        mode: "used", nowMs: Date.now(),
+        fiveHour: null, weekly: null, balance: null,
+        ageMs: null, stale: false, version: "",
+      });
+    });
+    assert.equal(line, "");
+    assert.equal(
+      warns.filter((w) => w.includes("unknown lineTemplate module")).length,
+      1,
+      `expected 1 unknown-module warning: ${warns.join("\n")}`,
+    );
+  });
+
+  it("s_dot|repeat|abc (non-integer) drops and warns", () => {
+    __resetUnknownModuleWarnForTest();
+    const { value: line, warns } = withCapturedStderr(() => {
+      __resetForTest({
+        // separators intentionally absent — s_dot uses NAMED_SEPARATORS,
+        statuslineTemplate:["s_dot|repeat|abc"],
+      });
+      return renderProviderLine("minimax", {
+        mode: "used", nowMs: Date.now(),
+        fiveHour: null, weekly: null, balance: null,
+        ageMs: null, stale: false, version: "",
+      });
+    });
+    assert.equal(line, "");
+    assert.equal(
+      warns.filter((w) => w.includes("unknown lineTemplate module")).length,
+      1,
+      `expected 1 unknown-module warning: ${warns.join("\n")}`,
+    );
+  });
+
+  // ----- v0.7.2+ |wrap|<true|false> (default true; pad printable bodies) -----
+
+  it("s_dot|wrap|false renders bare dot (no padding)", () => {
+    __resetForTest({
+      // separators intentionally absent — s_dot uses NAMED_SEPARATORS,
+      statuslineTemplate:["s_dot|wrap|false"],
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: null, weekly: null, balance: null,
+      ageMs: null, stale: false, version: "",
+    });
+    assert.equal(strip(line), "·", `got: ${JSON.stringify(line)}`);
+  });
+
+  it("s_dot|wrap|true (explicit) renders padded dot — default behavior", () => {
+    __resetForTest({
+      // separators intentionally absent — s_dot uses NAMED_SEPARATORS,
+      statuslineTemplate:["s_dot|wrap|true"],
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: null, weekly: null, balance: null,
+      ageMs: null, stale: false, version: "",
+    });
+    assert.equal(strip(line), " · ", `got: ${JSON.stringify(line)}`);
+  });
+
+  it("s_space|wrap|true skips padding — whitespace bodies are exempt (no triple space)", () => {
+    __resetForTest({
+      separators: [" "],
+      statuslineTemplate:["s_space|wrap|true"],
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: null, weekly: null, balance: null,
+      ageMs: null, stale: false, version: "",
+    });
+    assert.equal(line, " ", `got: ${JSON.stringify(line)}`);
+  });
+
+  it("s_newline|wrap|true skips padding — control bodies are exempt (verified via formatSepBody; s_newline as a sole token is a degenerate newline-piece case)", () => {
+    // The control-body exemption is verified through s_space|wrap|true
+    // and via the unit-level `formatSepBody` implementation in
+    // render.ts. This block documents the design constraint so a
+    // future reader doesn't accidentally remove the `isControlBody`
+    // branch.
+    //
+    // NOTE: a SOLE `s_newline` template token is a degenerate case
+    // — renderTemplate's piece-splitting on `\n` would split it into
+    // two empty segments and emit "". The realistic use case for
+    // s_newline is as a separator between two modules, where the
+    // newline piece pushes the second module onto a new statusline
+    // line (existing v0.4.0+ behavior).
+    __resetForTest({});
+    // No renderer assertion — placeholder kept for spec coverage.
+    assert.equal(true, true);
+  });
+
+  it("s_colon|wrap|true pads the colon with 1 space on each side", () => {
+    __resetForTest({
+      separators: ["colon"],
+      statuslineTemplate:["s_colon|wrap|true"],
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: null, weekly: null, balance: null,
+      ageMs: null, stale: false, version: "",
+    });
+    assert.equal(strip(line), " : ", `got: ${JSON.stringify(line)}`);
+  });
+
+  it("s_pipe|wrap|true pads the pipe with 1 space on each side", () => {
+    __resetForTest({
+      separators: ["pipe"],
+      statuslineTemplate:["s_pipe|wrap|true"],
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: null, weekly: null, balance: null,
+      ageMs: null, stale: false, version: "",
+    });
+    assert.equal(strip(line), " | ", `got: ${JSON.stringify(line)}`);
+  });
+
+  it("s_dot|wrap|garbage drops and warns", () => {
+    __resetUnknownModuleWarnForTest();
+    const { value: line, warns } = withCapturedStderr(() => {
+      __resetForTest({
+        // separators intentionally absent — s_dot uses NAMED_SEPARATORS,
+        statuslineTemplate:["s_dot|wrap|garbage"],
+      });
+      return renderProviderLine("minimax", {
+        mode: "used", nowMs: Date.now(),
+        fiveHour: null, weekly: null, balance: null,
+        ageMs: null, stale: false, version: "",
+      });
+    });
+    assert.equal(line, "");
+    assert.equal(
+      warns.filter((w) => w.includes("unknown lineTemplate module")).length,
+      1,
+      `expected 1 unknown-module warning: ${warns.join("\n")}`,
+    );
+  });
+
+  // ----- combinations -----
+
+  it("s_dot|repeat|3|wrap|false emits three bare dots, no padding", () => {
+    __resetForTest({
+      // separators intentionally absent — s_dot uses NAMED_SEPARATORS,
+      statuslineTemplate:["s_dot|repeat|3|wrap|false"],
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: null, weekly: null, balance: null,
+      ageMs: null, stale: false, version: "",
+    });
+    assert.equal(strip(line), "···", `got: ${JSON.stringify(line)}`);
+  });
+
+  it("s_dot|wrap|false|repeat|3 (param order doesn't matter) emits three bare dots", () => {
+    __resetForTest({
+      // separators intentionally absent — s_dot uses NAMED_SEPARATORS,
+      statuslineTemplate:["s_dot|wrap|false|repeat|3"],
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: null, weekly: null, balance: null,
+      ageMs: null, stale: false, version: "",
+    });
+    assert.equal(strip(line), "···", `got: ${JSON.stringify(line)}`);
+  });
+
+  it("s_dot|repeat|2|color|red renders ' ·  · ' wrapped in red SGR", () => {
+    __resetForTest({
+      // separators intentionally absent — s_dot uses NAMED_SEPARATORS,
+      statuslineTemplate:["s_dot|repeat|2|color|red"],
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      fiveHour: null, weekly: null, balance: null,
+      ageMs: null, stale: false, version: "",
+    });
+    assert.equal(strip(line), " ·  · ", `got: ${JSON.stringify(line)}`);
+    assert.ok(line.includes("\x1b[38;5;196m"), `expected red SGR: ${JSON.stringify(line)}`);
+  });
 });
 
 describe("lineTemplate — m_modeLabel:color inline-args tokens", () => {

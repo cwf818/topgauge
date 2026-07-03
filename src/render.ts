@@ -2860,6 +2860,72 @@ const NULDROP_PARAM = {
   },
 } as const;
 
+// v0.7.2+ — separator `repeat` parameter. Multiplies the rendered
+// body N times so a single token can emit e.g. 3 spaces (`s_space|
+// repeat|3` → `"   "`). Capped at 8 to keep a runaway config from
+// blowing up the statusline width. Default 1 when omitted. Out-of-
+// range (non-integer, < 1, or > 8) is a badarg → warn + drop.
+const SEP_REPEAT_MAX = 8;
+const REPEAT_PARAM = {
+  named: {
+    repeat: (raw: string): ResolvedValue | null => {
+      if (!/^[0-9]+$/.test(raw)) return null;
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < 1 || n > SEP_REPEAT_MAX) return null;
+      return raw;
+    },
+  },
+} as const;
+
+// v0.7.2+ — separator `wrap` parameter. Default `true`. When true,
+// bodies that are NOT whitespace/control get padded with one
+// space on each side (so `s_dot|wrap|true` renders ` · ` instead
+// of just `·`). Bodies that are pure whitespace/control
+// (`s_space`, `s_tab`, `s_newline`, and any array entry that's
+// a single ASCII whitespace or NUL/STP/etc.) are returned
+// as-is regardless — wrapping would either create multi-space
+// runs (with `s_space`) or push the next module onto a new line
+// twice (`s_newline`).
+const WRAP_PARAM = {
+  named: {
+    wrap: (raw: string): ResolvedValue | null =>
+      raw === "true" || raw === "false" ? raw : null,
+  },
+} as const;
+
+// Classify a separator body as "whitespace/control" (no padding
+// even under wrap=true) or "printable" (pad with 1 space on each
+// side). Pure: only inspects the body's own characters. Used by
+// the s_ renderer's wrap step.
+function isControlBody(body: string): boolean {
+  if (body === "") return true;
+  for (let i = 0; i < body.length; i++) {
+    const code = body.charCodeAt(i);
+    // ASCII whitespace (tab=9, LF=10, CR=13, space=32, VT=11, FF=12)
+    // and any C0 control char (< 32) or DEL (127) is "control" for
+    // wrap purposes. Anything else (regular printable, multi-byte
+    // UTF-8 like `·`, anything else) is "printable" and pads.
+    if (code < 33) return true;
+    if (code === 127) return true;
+  }
+  return false;
+}
+
+// Pure: format a separator body with the parsed repeat count and
+// the wrap flag. Repeat=0 is rejected upstream by the resolver
+// (returns null), so this layer can assume n >= 1. wrap=true
+// + non-control body pads with 1 space on each side; wrap=false
+// returns body as-is.
+function formatSepBody(body: string, repeat: string, wrap: string): string {
+  const n = Number(repeat);
+  const inner = wrap === "true" && !isControlBody(body)
+    ? ` ${body} `
+    : body;
+  let out = "";
+  for (let i = 0; i < n; i++) out += inner;
+  return out;
+}
+
 // v0.8.0+ — three-layer accumulator scope selector (used by
 // m_acc*). Accepts "session" (default), "project", or "model".
 // Anything else is a parse-fail and the inline token is dropped
@@ -3305,15 +3371,29 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
     // v0.4.x — the implicit param of an `s_…` token accepts BOTH
     // a numeric index (`s_0`, `s_1`, …, looked up in
     // cfg().separators[i]) and a named alias (`s_space`, `s_dot`,
-    // `s_newline`, `s_tab`, `s_colon`, resolved to a built-in
-    // literal character independent of the array). Unknown
-    // numeric or non-numeric suffixes return null → the caller
-    // warns + drops the token.
+    // `s_newline`, `s_tab`, `s_colon`, `s_pipe`, resolved to a
+    // built-in literal character independent of the array).
+    // Unknown numeric or non-numeric suffixes return null → the
+    // caller warns + drops the token.
+    //
+    // v0.7.2+ — added `|repeat|<1..8>` and `|wrap|<true|false>`
+    // named params for inline separators. repeat multiplies the
+    // body (1 default, max 8 — see REPEAT_PARAM). wrap=true pads
+    // printable bodies with 1 space on each side so e.g.
+    // `s_dot|wrap|true` renders " · " instead of "·"; whitespace
+    // bodies (`s_space`, `s_tab`, `s_newline`, and any array entry
+    // matching isControlBody) skip the padding. See
+    // [[repeat-and-wrap-on-separator]].
     implicit: {
       name: "index",
       resolver: resolveSepRef,
     },
-    named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named },
+    named: {
+      ...COLOR_PARAM.named,
+      ...NULDROP_PARAM.named,
+      ...REPEAT_PARAM.named,
+      ...WRAP_PARAM.named,
+    },
   },
   m_label: {
     implicit: { name: "string", resolver: (raw) => raw },
@@ -3499,7 +3579,14 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // (out-of-range). Inline-args path through here.
     const body = resolveSepBody(params.index);
     if (body === INLINE_BADARG) return INLINE_BADARG;
-    return wrapPlain(body, params.color as string | undefined);
+    // v0.7.2+ — repeat N times (validated by REPEAT_PARAM resolver
+    // upstream; default "1"), then optionally pad with 1 space on
+    // each side when wrap=true and the body is non-control. See
+    // formatSepBody.
+    const repeat = (params.repeat as string | undefined) ?? "1";
+    const wrap = (params.wrap as string | undefined) ?? "true";
+    const shape = formatSepBody(body, repeat, wrap);
+    return wrapPlain(shape, params.color as string | undefined);
   },
   m_label: (params, _ctx) => {
     const s = params.string as string;
