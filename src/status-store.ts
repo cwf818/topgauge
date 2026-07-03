@@ -17,11 +17,18 @@
 //     "value": {
 //       "in":          2468,       // this turn's input tokens (per-turn delta)
 //       "out":          248,       // this turn's output tokens
-//       "cacheRead":   33403,      // this turn's cache-read tokens
+//       "cachedIn":    33403,      // this turn's cache-read tokens (was cacheRead)
+//       "totalIn":   248910,       // session-cumulative context_window.total_input_tokens
 //       "accIn":        3093,      // accumulated in       across API calls
 //       "accOut":        475,      // accumulated out      across API calls
-//       "accCached":   66182,      // accumulated cacheRead across API calls
-//       "accApiMs":   132311,      // accumulated cost.total_api_duration_ms
+//       "accCached":   66182,      // accumulated cachedIn across API calls
+//       "accTotalIn":248910,       // per-tick-delta-accumulator of totalIn
+//                                   // (= accIn + accCached, modulo cache eviction)
+//       "totalApiMs":  132311,     // session-cumulative cost.total_api_duration_ms
+//                                   // (was accApiMs in v0.7.x — the delta-accumulator
+//                                   //  is dropped; the on-disk field now mirrors the
+//                                   //  std cost field's monotonic value, matching the
+//                                   //  v0.8.0 TokenSample.totalApiMs convention)
 //       "accApiCount":    17,      // accumulated API-call count
 //     }
 //   }
@@ -73,7 +80,16 @@ import { projectHash } from "./token-store.ts";
 export type TickStatusValue = {
   in: number;
   out: number;
-  cacheRead: number;
+  // v0.8.0+ rename: `cacheRead` → `cachedIn`. Same semantic
+  // (per-turn cache_read_input_tokens); renamed to match the
+  // TokenSample convention (see c44072e) so the per-tick snapshot
+  // reads identically to a TokenSample row.
+  cachedIn: number;
+  // v0.8.0+ — NEW. Session-cumulative input tokens. Source:
+  // `context_window.total_input_tokens` from the stdin JSON.
+  // Mirrors TokenSample.totalIn (which also reads from the same
+  // field). Monotonic-non-decreasing within a session.
+  totalIn: number;
   // v0.8.0+ — acc* prefix replaces v0.4.x sum* prefix. Same
   // semantic (accumulated across API calls), renamed for
   // consistency with the new m_acc* module family. Old on-disk
@@ -81,7 +97,21 @@ export type TickStatusValue = {
   accIn: number;
   accOut: number;
   accCached: number;
-  accApiMs: number;
+  // v0.8.0+ — NEW. Per-tick-delta-accumulator of totalIn. Init=0;
+  // each turn += (current.totalIn - prev.totalIn). Numerically
+  // equals accIn + accCached + accCacheCreation (where applicable),
+  // modulo cache eviction. After N turns it converges on
+  // `totalIn - totalIn_at_turn_0`.
+  accTotalIn: number;
+  // v0.8.0+ — REPLACES `accApiMs`. New semantic: session-cumulative
+  // `cost.total_api_duration_ms` (read directly from stdin each
+  // tick). Drops the v0.7.x per-tick-delta-accumulator behavior —
+  // that aggregate is no longer stored in the per-tick status
+  // snapshot. Name matches the v0.8.0 TokenSample.totalApiMs
+  // convention (c44072e). m_apiMs / m_accApiMs continue to read
+  // from the in-memory prev-tick baseline in api-ms.ts; the
+  // on-disk field is the audit/inspect-friendly cumulative value.
+  totalApiMs: number;
   accApiCount: number;
 };
 
@@ -190,11 +220,13 @@ function loadFromDisk(cwd: string): Store {
         value: {
           in: typeof v.in === "number" ? v.in : 0,
           out: typeof v.out === "number" ? v.out : 0,
-          cacheRead: typeof v.cacheRead === "number" ? v.cacheRead : 0,
+          cachedIn: typeof v.cachedIn === "number" ? v.cachedIn : 0,
+          totalIn: typeof v.totalIn === "number" ? v.totalIn : 0,
           accIn: typeof v.accIn === "number" ? v.accIn : 0,
           accOut: typeof v.accOut === "number" ? v.accOut : 0,
           accCached: typeof v.accCached === "number" ? v.accCached : 0,
-          accApiMs: typeof v.accApiMs === "number" ? v.accApiMs : 0,
+          accTotalIn: typeof v.accTotalIn === "number" ? v.accTotalIn : 0,
+          totalApiMs: typeof v.totalApiMs === "number" ? v.totalApiMs : 0,
           accApiCount: typeof v.accApiCount === "number" ? v.accApiCount : 0,
         },
         kind: "tickStatus",
@@ -230,11 +262,13 @@ export function emptyTickStatus(): TickStatusValue {
   return {
     in: 0,
     out: 0,
-    cacheRead: 0,
+    cachedIn: 0,
+    totalIn: 0,
     accIn: 0,
     accOut: 0,
     accCached: 0,
-    accApiMs: 0,
+    accTotalIn: 0,
+    totalApiMs: 0,
     accApiCount: 0,
   };
 }

@@ -765,28 +765,30 @@ type Module = ((ctx: RenderContext) => string | null) & {
 // (`tickStatus:<modelDisplayName>`).
 //
 // `tickStatus:<sessionId>` doubles as BOTH the prev-tick baseline
-// (the `sumApiMs` field carries the running API-duration total,
-// but the `in`/`out`/`cacheRead` fields hold the LAST tick's
-// per-turn values) AND the running accumulator (sumIn/sumOut/
-// sumCache/sumApiMs/sumApiCount). One slot replaces the old
-// `tickSpeed:<sid>` + `tickAvg:<sid>` pair — same per-render
-// semantics, simpler schema, project-isolated.
+// (the `totalApiMs` field carries the session-cumulative
+// cost.total_api_duration_ms, but the `in`/`out`/`cachedIn` fields
+// hold the LAST tick's per-turn values) AND the running
+// accumulator (accIn/accOut/accCached/accTotalIn/accApiCount). One
+// slot replaces the old `tickSpeed:<sid>` + `tickAvg:<sid>` pair —
+// same per-render semantics, simpler schema, project-isolated.
 //
 // Stored shape (one entry per sessionId, under status.json):
 //   {
-//     "in":         2468,   // last tick's input tokens (this turn's delta)
-//     "out":         248,   // last tick's output tokens
-//     "cacheRead": 33403,   // last tick's cache-read tokens
-//     "sumIn":       3093,  // accumulated in  across API calls
-//     "sumOut":       475,  // accumulated out
-//     "sumCache":   66182,  // accumulated cache_read
-//     "sumApiMs":  132311,  // accumulated total_api_duration_ms
-//     "sumApiCount":   17,  // accumulated API-call count
+//     "in":          2468,   // last tick's input tokens (this turn's delta)
+//     "out":          248,   // last tick's output tokens
+//     "cachedIn":   33403,   // last tick's cache-read tokens (was cacheRead)
+//     "totalIn":   248910,   // session-cumulative context_window.total_input_tokens
+//     "sumIn":       3093,   // accumulated in  across API calls
+//     "sumOut":       475,   // accumulated out
+//     "sumCache":   66182,   // accumulated cache_read
+//     "sumApiMs":  132311,   // was sumApiMs; field renamed to totalApiMs in v0.8.0+
+//                              // — see setAvg / peekAvg for the new alias map
+//     "sumApiCount":   17,   // accumulated API-call count
 //   }
 //
-// sumApiCount contract (revised per user direction):
+// accApiCount contract (revised per user direction):
 //   On a tick where deltaApiMs > 0 AND input_tokens > 0 (a real
-//   API call that produced input tokens), sumApiCount += 1. The
+//   API call that produced input tokens), accApiCount += 1. The
 //   gate is AND, not OR — a tick with deltaApiMs > 0 but
 //   input_tokens == 0 (e.g. a thinking-only turn that produced no
 //   input) does NOT count. This matches the user's intent of
@@ -801,19 +803,30 @@ type Module = ((ctx: RenderContext) => string | null) & {
 // The `apiMs` field is kept on this projection type because the
 // per-render delta math (computeAndCacheTickDelta) reads it as a
 // baseline and test fixtures pre-seed it directly. The canonical
-// on-disk field is `sumApiMs` — peekPrevTick maps between them.
+// on-disk field is `totalApiMs` — peekPrevTick maps between them.
+//
+// v0.8.0+ — added `totalIn` so deltaTotalIn can compute
+// (currentTotalsInput - prevTotalIn). Stored on disk as
+// tickStatus.value.totalIn.
 export type PrevTickSnapshot = {
   apiMs: number;
   in: number;
   out: number;
   cacheRead: number;
+  totalIn: number;
 };
 
 // Public: looks up the previous tick for a given session. Reads
 // the unified `tickStatus:<sid>` slot from status.json and
-// returns the prev-tick-shaped projection (apiMs = accApiMs).
+// returns the prev-tick-shaped projection (apiMs = totalApiMs).
 // Returns null on miss (no prior tick). The caller is responsible
 // for the post-call `setPrevTick` to keep the cache fresh.
+//
+// v0.8.0+ — the prev-tick apiMs baseline is now read from
+// `totalApiMs` (session-cumulative cost.totalApiDurationMs). Since
+// the field is monotonic, the per-tick delta is just
+// (current.totalApiMs - prev.totalApiMs) — same arithmetic as
+// before, different field name.
 export function peekPrevTick(
   sessionId: string,
   cwd?: string | null,
@@ -822,10 +835,11 @@ export function peekPrevTick(
   const v = statusStore.readTickStatus(cwd, `tickStatus:${sessionId}`);
   if (!v) return null;
   return {
-    apiMs: v.accApiMs,
+    apiMs: v.totalApiMs,
     in: v.in,
     out: v.out,
-    cacheRead: v.cacheRead,
+    cacheRead: v.cachedIn,
+    totalIn: v.totalIn,
   };
 }
 
@@ -849,8 +863,9 @@ export function setPrevTick(
   const next: statusStore.TickStatusValue = existing ?? statusStore.emptyTickStatus();
   next.in = snap.in;
   next.out = snap.out;
-  next.cacheRead = snap.cacheRead;
-  next.accApiMs = snap.apiMs;
+  next.cachedIn = snap.cacheRead;
+  next.totalApiMs = snap.apiMs;
+  next.totalIn = snap.totalIn;
   statusStore.writeTickStatus(cwd, `tickStatus:${sessionId}`, next);
 }
 
@@ -929,15 +944,24 @@ export function __resetPrevTickForTest(
 // modules that this accumulates. Old callers that referenced
 // `sumIn` / `sumOut` etc. need to migrate; see [[token-modules-redesign-v0-8-0]].
 //
-// Note: `accApi` here is the API-duration accumulator expressed as
-// an alias of `accApiMs` so the AvgSnapshot shape stays
-// caller-friendly (callers don't need to remember the `Ms` suffix).
+// Note: `accApi` here is an alias of `totalApiMs` (session-cumulative
+// cost.totalApiDurationMs as of the last tick). The `Ms` suffix is
+// dropped in the AvgSnapshot field name to keep callers free of
+// unit-suffix noise — the convention is "all values are ms", since
+// this snapshot already mixes accIn (token count) and accApi (ms).
 export type AvgSnapshot = {
   accIn: number;
   accOut: number;
   accApi: number;
   accCached: number;
   accApiCount: number;
+  // v0.8.0+ — NEW. Per-tick-delta-accumulator of `totalIn`. Mirrors
+  // the existing acc* delta-accumulator pattern (init=0, += delta
+  // per turn). After N turns converges on `totalIn - totalIn_at_turn_0`.
+  accTotalIn: number;
+  // v0.8.0+ — NEW. Latest session-cumulative `context_window.total_input_tokens`,
+  // stamped from stdin each tick. Mirrors the on-disk `totalIn` field.
+  totalIn: number;
 };
 
 export function peekAvg(
@@ -950,9 +974,11 @@ export function peekAvg(
   return {
     accIn: v.accIn,
     accOut: v.accOut,
-    accApi: v.accApiMs,
+    accApi: v.totalApiMs,
     accCached: v.accCached,
     accApiCount: v.accApiCount,
+    accTotalIn: v.accTotalIn,
+    totalIn: v.totalIn,
   };
 }
 
@@ -984,9 +1010,11 @@ function peekAcc(
     return {
       accIn: v.accIn,
       accOut: v.accOut,
-      accApi: v.accApiMs,
+      accApi: v.totalApiMs,
       accCached: v.accCached,
       accApiCount: v.accApiCount,
+      accTotalIn: v.accTotalIn,
+      totalIn: v.totalIn,
     };
   }
   // scope === "model"
@@ -997,9 +1025,11 @@ function peekAcc(
   return {
     accIn: v.accIn,
     accOut: v.accOut,
-    accApi: v.accApiMs,
+    accApi: v.totalApiMs,
     accCached: v.accCached,
     accApiCount: v.accApiCount,
+    accTotalIn: v.accTotalIn,
+    totalIn: v.totalIn,
   };
 }
 
@@ -1019,17 +1049,21 @@ function peekAcc(
 // v0.8.0+ — field rename (sum* → acc*) on both the `AvgSnapshot`
 // argument shape and the `TickStatusValue` on-disk schema.
 // See [[token-modules-redesign-v0-8-0]]. `snap` field meanings:
-//   snap.accIn     = session-cumulative current.input   (replaces sumIn)
-//   snap.accOut    = session-cumulative current.output  (replaces sumOut)
-//   snap.accApi    = session-cumulative cost.totalApiDurationMs
-//                    (replaces sumApi — the on-disk field is accApiMs)
-//   snap.accCached = session-cumulative current.cacheRead
-//                    (replaces sumCache)
+//   snap.accIn      = session-cumulative current.input   (replaces sumIn)
+//   snap.accOut     = session-cumulative current.output  (replaces sumOut)
+//   snap.accApi     = session-cumulative cost.totalApiDurationMs
+//                     (replaces sumApi — the on-disk field is totalApiMs)
+//   snap.accCached  = session-cumulative current.cacheRead
+//                     (replaces sumCache)
 //   snap.accApiCount = session-cumulative count of API calls
-//                    (replaces sumApiCount)
+//                     (replaces sumApiCount)
+//   snap.accTotalIn = per-tick-delta-accumulator of totalIn
+//                     (NEW v0.8.0+; init=0, += per-tick delta)
+//   snap.totalIn    = session-cumulative context_window.total_input_tokens
+//                     (NEW v0.8.0+; mirrors the on-disk totalIn field)
 //
 // Caller passes the delta math (computeAndCacheTickDelta already
-// produced it). Per-tick `in`/`out`/`cacheRead` fields are also
+// produced it). Per-tick `in`/`out`/`cachedIn` fields are also
 // stamped with the latest values so peekPrevTick's projection
 // returns current state immediately (no extra write needed).
 //
@@ -1050,6 +1084,8 @@ export function setAvg(
     currentOut?: number;
     currentCacheRead?: number;
     currentApiMs?: number;
+    currentTotalIn?: number;
+    deltaTotalIn?: number;
     // Per-tick deltas to ADD into the project-wide and per-provider
     // aggregate accumulators. When omitted (legacy callers), the
     // aggregate slots are not bumped — backward compatible with the
@@ -1071,9 +1107,11 @@ export function setAvg(
   const next: statusStore.TickStatusValue = existing ?? statusStore.emptyTickStatus();
   next.accIn = snap.accIn;
   next.accOut = snap.accOut;
-  next.accApiMs = snap.accApi;
+  next.totalApiMs = snap.accApi;
   next.accCached = snap.accCached;
   next.accApiCount = snap.accApiCount;
+  next.accTotalIn = snap.accTotalIn;
+  if (snap.totalIn) next.totalIn = snap.totalIn;
   // Also stamp the per-tick fields so peekPrevTick reads a
   // consistent baseline without needing a separate setPrevTick
   // call. Caller passes current values; fall back to whatever
@@ -1081,8 +1119,9 @@ export function setAvg(
   // existing partial-write semantics).
   if (extras?.currentIn != null) next.in = extras.currentIn;
   if (extras?.currentOut != null) next.out = extras.currentOut;
-  if (extras?.currentCacheRead != null) next.cacheRead = extras.currentCacheRead;
-  if (extras?.currentApiMs != null) next.accApiMs = extras.currentApiMs;
+  if (extras?.currentCacheRead != null) next.cachedIn = extras.currentCacheRead;
+  if (extras?.currentApiMs != null) next.totalApiMs = extras.currentApiMs;
+  if (extras?.currentTotalIn != null) next.totalIn = extras.currentTotalIn;
   statusStore.writeTickStatus(cwd, `tickStatus:${sessionId}`, next);
 
   // Project-wide aggregate — ACCUMULATE per-tick deltas so two
@@ -1093,18 +1132,20 @@ export function setAvg(
     extras?.deltaIn ||
     extras?.deltaOut ||
     extras?.deltaCache ||
-    extras?.deltaApiMs
+    extras?.deltaApiMs ||
+    extras?.deltaTotalIn
   ) {
     const agg = statusStore.readTickStatus(cwd, "tickStatus") ??
       statusStore.emptyTickStatus();
     if (extras?.deltaIn) agg.accIn += extras.deltaIn;
     if (extras?.deltaOut) agg.accOut += extras.deltaOut;
     if (extras?.deltaCache) agg.accCached += extras.deltaCache;
-    if (extras?.deltaApiMs) agg.accApiMs += extras.deltaApiMs;
+    if (extras?.deltaApiMs) agg.totalApiMs += extras.deltaApiMs;
+    if (extras?.deltaTotalIn) agg.accTotalIn += extras.deltaTotalIn;
     if (incrementCount > 0) agg.accApiCount += incrementCount;
     if (extras?.currentIn != null) agg.in = extras.currentIn;
     if (extras?.currentOut != null) agg.out = extras.currentOut;
-    if (extras?.currentCacheRead != null) agg.cacheRead = extras.currentCacheRead;
+    if (extras?.currentCacheRead != null) agg.cachedIn = extras.currentCacheRead;
     statusStore.writeTickStatus(cwd, "tickStatus", agg);
   }
 
@@ -1120,11 +1161,12 @@ export function setAvg(
     if (extras?.deltaIn) prov.accIn += extras.deltaIn;
     if (extras?.deltaOut) prov.accOut += extras.deltaOut;
     if (extras?.deltaCache) prov.accCached += extras.deltaCache;
-    if (extras?.deltaApiMs) prov.accApiMs += extras.deltaApiMs;
+    if (extras?.deltaApiMs) prov.totalApiMs += extras.deltaApiMs;
+    if (extras?.deltaTotalIn) prov.accTotalIn += extras.deltaTotalIn;
     if (incrementCount > 0) prov.accApiCount += incrementCount;
     if (extras?.currentIn != null) prov.in = extras.currentIn;
     if (extras?.currentOut != null) prov.out = extras.currentOut;
-    if (extras?.currentCacheRead != null) prov.cacheRead = extras.currentCacheRead;
+    if (extras?.currentCacheRead != null) prov.cachedIn = extras.currentCacheRead;
     statusStore.writeTickStatus(cwd, `tickStatus:${model}`, prov);
   }
 }
@@ -1158,6 +1200,15 @@ type TickDeltaResult = {
   // when either side of the subtraction is null (stdin lacked the
   // field — see computeAndCacheTickDelta).
   deltaCacheRead: number;
+  // v0.8.0+: delta of context_window.total_input_tokens across the
+  // last tick. Mirrors the v0.4.x deltaCacheRead shape — both feed
+  // per-tick-delta-accumulator fields (accTotalIn, accCached).
+  // Source: t.totals.input; on first tick assumes prev=0.
+  deltaTotalIn: number;
+  // v0.8.0+: latest session-cumulative context_window.total_input_tokens
+  // (snapshot, not delta). Source: t.totals.input. Stored on
+  // tickStatus.value.totalIn.
+  currentTotalIn: number | null;
   writeBack: PrevTickSnapshot | null;
 };
 const _tickDeltaMemo = new WeakMap<RenderContext, TickDeltaResult>();
@@ -1215,7 +1266,8 @@ function computeAndCacheTickDelta(ctx: RenderContext): TickDeltaResult {
   if (!t || !t.sessionId) {
     result = {
       hasDelta: false, deltaIn: 0, deltaOut: 0, deltaApi: 0,
-      deltaCacheRead: 0, writeBack: null,
+      deltaCacheRead: 0, deltaTotalIn: 0, currentTotalIn: null,
+      writeBack: null,
     };
     _tickDeltaMemo.set(ctx, result);
     return result;
@@ -1224,10 +1276,15 @@ function computeAndCacheTickDelta(ctx: RenderContext): TickDeltaResult {
   const currentIn = t.current.input;
   const currentOut = t.current.output;
   const currentCacheRead = t.current.cacheRead;
+  // v0.8.0+ — `totals.input` IS the v0.8.0 `totalIn` (source:
+  // context_window.total_input_tokens). May be null on stdin that
+  // lacks the field; in that case deltaTotalIn=0 and currentTotalIn=null.
+  const currentTotalIn = t.totals?.input ?? null;
   if (currentApi == null || currentIn == null || currentOut == null) {
     result = {
       hasDelta: false, deltaIn: 0, deltaOut: 0, deltaApi: 0,
-      deltaCacheRead: 0, writeBack: null,
+      deltaCacheRead: 0, deltaTotalIn: 0, currentTotalIn,
+      writeBack: null,
     };
     _tickDeltaMemo.set(ctx, result);
     return result;
@@ -1245,6 +1302,7 @@ function computeAndCacheTickDelta(ctx: RenderContext): TickDeltaResult {
     in: currentIn,
     out: currentOut,
     cacheRead: currentCacheRead ?? 0,
+    totalIn: currentTotalIn ?? 0,
   };
   // v0.4.0+ (revised 2026-06-29): when no previous tick exists
   // (first tick of a session, or a cache miss after a session
@@ -1278,9 +1336,19 @@ function computeAndCacheTickDelta(ctx: RenderContext): TickDeltaResult {
   const deltaIn = currentIn;
   const deltaOut = currentOut;
   const deltaCacheRead = currentCacheRead ?? 0;
+  // v0.8.0+ — deltaTotalIn is a TRUE subtraction (totals.input is
+  // session-cumulative, NOT a per-turn delta). Same first-tick
+  // convention: prev=0, so the first tick contributes the full
+  // currentTotalIn. May be negative only if totals.input regressed
+  // (cache eviction / model reset) — in that case clamp to 0 to
+  // match the per-turn-delta contract (deltas are non-negative).
+  const deltaTotalIn = currentTotalIn != null
+    ? Math.max(0, currentTotalIn - (prev?.totalIn ?? 0))
+    : 0;
   const hasDelta = deltaApi > 0;
   result = {
-    hasDelta, deltaIn, deltaOut, deltaApi, deltaCacheRead, writeBack,
+    hasDelta, deltaIn, deltaOut, deltaApi, deltaCacheRead,
+    deltaTotalIn, currentTotalIn, writeBack,
   };
   _tickDeltaMemo.set(ctx, result);
   return result;
@@ -1523,6 +1591,8 @@ function computeTickTotals(
       accApi: (prev?.accApi ?? 0) + r.deltaApi,
       accCached: (prev?.accCached ?? 0) + r.deltaCacheRead,
       accApiCount: (prev?.accApiCount ?? 0) + (r.deltaApi > 0 ? 1 : 0),
+      accTotalIn: (prev?.accTotalIn ?? 0) + r.deltaTotalIn,
+      totalIn: r.currentTotalIn ?? (prev?.totalIn ?? 0),
     };
     // v0.4.x — see sumApiCount contract in computeTickAvg above.
     const deltaApiCount =
@@ -1534,10 +1604,12 @@ function computeTickTotals(
       currentOut: t.current.output ?? undefined,
       currentCacheRead: t.current.cacheRead ?? undefined,
       currentApiMs: t.cost.totalApiDurationMs ?? undefined,
+      currentTotalIn: r.currentTotalIn ?? undefined,
       deltaIn: r.deltaIn,
       deltaOut: r.deltaOut,
       deltaCache: r.deltaCacheRead,
       deltaApiMs: r.deltaApi,
+      deltaTotalIn: r.deltaTotalIn,
     });
   }
   const avg = peekAvg(t.sessionId, t.cwd);

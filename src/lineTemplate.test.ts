@@ -1401,7 +1401,7 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
     });
     // The cache needs to be primed for sess-speed. We import
     // the helper from render.ts so the test is self-contained.
-    setPrevTick("sess-speed", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "C:\\fake");
+    setPrevTick("sess-speed", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "C:\\fake");
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
       fiveHour: null, weekly: null, balance: null,
@@ -1458,7 +1458,7 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
     __resetForTest({
       statuslineTemplate:["m_tokenIn|color|brightGreen"],
     });
-    setPrevTick("sess-tok-in", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "C:\\fake");
+    setPrevTick("sess-tok-in", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "C:\\fake");
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
       fiveHour: null, weekly: null, balance: null,
@@ -1481,7 +1481,7 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
     __resetForTest({
       statuslineTemplate:["m_tokenIn"],
     });
-    setPrevTick("sess-tok-in-bare", { apiMs: 0, in: 0, out: 0, cacheRead: 0 }, "C:\\fake");
+    setPrevTick("sess-tok-in-bare", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "C:\\fake");
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
       fiveHour: null, weekly: null, balance: null,

@@ -3,23 +3,26 @@
 // Extracted from src/index.ts so the policy is unit-testable without
 // piping real stdin / spawning statusLine. Decision table:
 //
-//   prev=null + (totalIn>0 || totalOut>0)  → FALLBACK.
+//   prev=null OR prev.apiMs=0  + (totalIn>0 || totalOut>0)  → FALLBACK.
 //     No trustworthy baseline. Writing apiMs = totalApiMs (which is
 //     session-cumulative) would attribute the entire history to one
 //     tick. Use ceil(out / 50) * 1000 instead. Stamp prevApiMs=null.
+//     (prev.apiMs=0 is treated as null: a real-zero prev baseline
+//     and a missing one are indistinguishable in this decision —
+//     both mean "I have no history to subtract against".)
 //
-//   prev=null + totalIn==0 + totalOut==0   → SKIP.
+//   prev=null OR prev.apiMs=0  + totalIn==0 + totalOut==0   → SKIP.
 //     No activity to record.
 //
-//   prev!=null + deltaApiMs > 0            → WRITE apiMs = delta.
+//   prev!=null (apiMs>0) + deltaApiMs > 0            → WRITE apiMs = delta.
 //     Real per-tick API advance. Stamp prevApiMs = prev.apiMs.
 //
-//   prev!=null + deltaApiMs == 0 + tokens advanced → WARN.
+//   prev!=null (apiMs>0) + deltaApiMs == 0 + tokens advanced → WARN.
 //     Cost data didn't advance despite token activity. Anomaly.
 //
-//   prev!=null + deltaApiMs == 0 + idle    → SKIP.
+//   prev!=null (apiMs>0) + deltaApiMs == 0 + idle    → SKIP.
 //
-//   prev!=null + deltaApiMs < 0            → SKIP.
+//   prev!=null (apiMs>0) + deltaApiMs < 0            → SKIP.
 //     Clock skew or upstream bug. Never write a negative apiMs.
 
 import type { TokenSample } from "./types.ts";
@@ -48,12 +51,26 @@ export type ApiMsInputs = {
 };
 
 export function resolveApiMsSample(inp: ApiMsInputs): ApiMsDecision {
-  // First-tick (no prev baseline) — always fallback when there's
-  // any token activity, regardless of totalApiMs. We do NOT trust
-  // totalApiMs as a per-tick delta because it's session-cumulative
-  // and would inflate the first row's apiMs to the entire session
-  // total, polluting subsequent deltaApiMs calculations.
-  if (inp.prev == null) {
+  // First-tick (no prev baseline, OR a zero-valued prev baseline)
+  // — always fallback when there's any token activity, regardless
+  // of totalApiMs. We do NOT trust totalApiMs as a per-tick delta
+  // because it's session-cumulative and would inflate the first
+  // row's apiMs to the entire session total, polluting subsequent
+  // deltaApiMs calculations. The `prev.apiMs == 0` case is folded
+  // in here because a "real-zero prev" and a "missing prev" are
+  // observationally identical for this decision (both mean "no
+  // history to subtract against") — see user's 2026-07-03 log:
+  //   {"prevApiMs": 0, "apiMs": 13158865, ...}  // whole-session
+  //     attributed to one tick because prev.apiMs was 0
+  // "No real history" baseline: prev row missing OR its apiMs is 0.
+  // Both are observationally identical for the delta decision — see
+  // 2026-07-03 user log where a row with prevApiMs=0 caused
+  // apiMs=13158865 (the entire session-cumulative) to be written
+  // as a per-tick value. A `prev` const + non-null assertion lets
+  // TS narrow the rest of the function (mirroring the original
+  // `if (inp.prev == null)` shape).
+  const prev = inp.prev;
+  if (prev == null || prev.apiMs === 0) {
     const out = inp.current.output ?? 0;
     const totalInGt = inp.totalIn > 0;
     const totalOutGt = inp.totalOut > 0;
@@ -79,8 +96,8 @@ export function resolveApiMsSample(inp: ApiMsInputs): ApiMsDecision {
     };
   }
 
-  // prev != null — normal case.
-  const deltaApiMs = inp.totalApiMs - inp.prev.apiMs;
+  // prev != null AND prev.apiMs > 0 — normal case.
+  const deltaApiMs = inp.totalApiMs - prev.apiMs;
 
   if (deltaApiMs > 0) {
     return {
@@ -96,7 +113,7 @@ export function resolveApiMsSample(inp: ApiMsInputs): ApiMsDecision {
         model: inp.modelDisplayName ?? undefined,
         totalApiMs: inp.totalApiMs,
         apiMs: deltaApiMs,
-        prevApiMs: inp.prev.apiMs,
+        prevApiMs: prev.apiMs,
       },
     };
   }
