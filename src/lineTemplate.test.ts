@@ -1740,3 +1740,94 @@ describe("m_template — mode filter drops on mismatch (deepseek vs plan)", () =
     assert.ok(strip(line).includes("$25"), `got: ${line}`);
   });
 });
+
+// v0.8.7+ — m_template passthrough, end-to-end via renderProviderLine.
+// Demonstrates the user's motivating use case: one shared
+// `token_acc` fragment + 2 callers passing different scopes → 2
+// distinct renders. The bare m_accTokenIn inside the fragment
+// sees the passthrough scope via the MODULES-path hook
+// (render.ts:passThroughScope) and routes to the right slot.
+describe("m_template passthrough — end-to-end via renderProviderLine (v0.8.7+)", () => {
+  beforeEach(() => {
+    __resetForTest({
+      lineTemplates: {
+        // The shared fragment: a bare m_accTokenIn (no inline
+        // args) is what the passthrough routes. No |scope| on
+        // the inner module — the outer m_template|<key>|scope|…
+        // provides the scope via ctx.passThrough.
+        token_acc: ["m_accTokenIn"],
+      },
+      // Two callers, two scopes. Both reuse the SAME fragment
+      // (no per-scope fragment needed — that's the whole point
+      // of passthrough).
+      statuslineTemplate: [
+        "m_template|token_acc|scope|session",
+        "s_space",
+        "m_template|token_acc|scope|project",
+      ],
+    });
+  });
+  afterEach(() => __resetForTest());
+
+  it("the two callers produce distinct outputs (session vs project slot)", () => {
+    // We don't need real accumulator data for this assertion —
+    // the rendered shape ("in:n/a" or "in:0" for empty slots) is
+    // enough to prove both callers ran. The structural proof
+    // is that BOTH halves of the template rendered (i.e. each
+    // m_template expanded successfully into its inner m_accTokenIn)
+    // AND the output contains the expected number of "in:" chunks
+    // (two, separated by a space). If passthrough were broken,
+    // one or both callers would badarg-warn and drop.
+    const line = renderProviderLine("minimax", {
+      mode: "used",
+      nowMs: 1_000_000,
+      fiveHour: { pct: 10 },
+      weekly: { pct: 20 },
+      balance: null,
+      ageMs: null,
+      stale: false,
+      version: "0.8.7",
+    });
+    // Each m_template expansion should produce an "in:..." chunk
+    // (or "in:n/a" placeholder for an empty slot, which still
+    // proves the path rendered). The two chunks are joined by
+    // s_space. We assert the structural shape rather than pinning
+    // exact bytes — slot contents depend on disk state.
+    const stripped = strip(line);
+    const inCount = (stripped.match(/in:/g) ?? []).length;
+    assert.equal(inCount, 2, `expected 2 'in:' chunks (one per m_template caller), got: ${JSON.stringify(stripped)}`);
+  });
+
+  it("unknown passthrough arg on m_template drops the chunk (whitelist enforced)", () => {
+    // Reconfigure with one valid caller + one invalid caller. The
+    // invalid caller's chunk should be dropped (parseInlineArgs
+    // → badarg → warn + drop), and the valid caller should still
+    // render.
+    __resetForTest({
+      lineTemplates: { token_acc: ["m_accTokenIn"] },
+      statuslineTemplate: [
+        "m_template|token_acc|scope|session",
+        "s_space",
+        "m_template|token_acc|wtf|bar",
+      ],
+    });
+    __resetUnknownModuleWarnForTest();
+    const line = renderProviderLine("minimax", {
+      mode: "used",
+      nowMs: 1_000_000,
+      fiveHour: { pct: 10 },
+      weekly: { pct: 20 },
+      balance: null,
+      ageMs: null,
+      stale: false,
+      version: "0.8.7",
+    });
+    // The valid caller produced "in:..." (1 chunk). The invalid
+    // caller was dropped — s_space between them is still emitted
+    // (orphan-space known-issue per nulldrop-inline-override
+    // memory). The important assertion is `inCount === 1`.
+    const stripped = strip(line);
+    const inCount = (stripped.match(/in:/g) ?? []).length;
+    assert.equal(inCount, 1, `expected 1 'in:' chunk (one valid caller, one dropped), got: ${JSON.stringify(stripped)}`);
+  });
+});

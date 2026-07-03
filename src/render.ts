@@ -707,6 +707,7 @@ type RenderContext = {
   // renderProviderLine from providerTypeFor. `"plan"` for
   // TOKEN_PLAN providers, `"balance"` for BALANCE providers, and
   // `"unknown"` when ANTHROPIC_BASE_URL doesn't match any
+  // supported provider.
   // configured provider (the entry-tolerant dispatch path).
   // Used by per-module `type` filters and by m_modeLabel's label
   // routing. Renamed from the v0.4.x-beta `providerModeKey` to
@@ -725,6 +726,17 @@ type RenderContext = {
   // the top-level token list and missed m_age nested inside
   // lineTemplates.* fragments.
   ageEmittedRef?: { value: boolean };
+  // v0.8.7+ — passthrough args from an outer `m_template|<key>|...`
+  // expansion. Populated by the m_template renderer with its own
+  // parsed `params` (minus the `key` and `mode` intrinsics) before
+  // recursing into `renderTemplate(inner, ctx)`. Downstream
+  // `INLINE_RENDERER`s read `ctx.passThrough?.[<name>]` as a
+  // fallback when their local `params[<name>]` is undefined — so an
+  // inner module's own explicit arg always wins. See
+  // `passThroughOr()` below. The field is created fresh per
+  // m_template invocation; nested m_template is impossible because
+  // config.ts strips them at load time.
+  passThrough?: Record<string, ResolvedValue>;
 };
 
 // v0.4.x — modules may declare a `type` filter so they only render
@@ -2254,25 +2266,31 @@ const MODULES: Record<string, Module> = {
   // project). The inline form `m_acc*:scope:<session|project|model>`
   // overrides; the inline path is wired in INLINE_RENDERERS below
   // and uses the same accBody / accHitRateBody helpers.
-  m_accTokenIn: (c) => accBody(c, "in"),
-  m_accTokenOut: (c) => accBody(c, "out"),
-  m_accTokenCachedIn: (c) => accBody(c, "cached"),
-  m_accTokenTotalIn: (c) => accBody(c, "total"),
-  m_accApiMs: (c) => accBody(c, "apiMs"),
+  // v0.8.7+ — when a `scope` is on `ctx.passThrough` (i.e. an outer
+  // m_template forwarded it), the bare form honors it the same way
+  // the inline form does, so `m_template|<key>|scope|project` can
+  // route a bare `m_accTokenIn` (no inline args) to the project
+  // scope. Inner-explicit-wins: when the inner token is the inline
+  // form `m_accTokenIn|scope|...`, that arg beats the passthrough.
+  m_accTokenIn: (c) => accBody(c, "in", passThroughScope(c)),
+  m_accTokenOut: (c) => accBody(c, "out", passThroughScope(c)),
+  m_accTokenCachedIn: (c) => accBody(c, "cached", passThroughScope(c)),
+  m_accTokenTotalIn: (c) => accBody(c, "total", passThroughScope(c)),
+  m_accApiMs: (c) => accBody(c, "apiMs", passThroughScope(c)),
   // v0.8.x — m_accApiCalls mirrors m_apiCalls (`calls:N`) but reads
   // the chosen scope's accApiCount slot from status.json. Default
   // scope is ccsession (per-process, resets only on totalApiMs
   // regression). Inline `m_accApiCalls|scope|project` etc. to widen
   // or narrow. value=0 still renders as `calls:0` (the value-zero
   // rule — count:0 is real data, not a placeholder).
-  m_accApiCalls: (c) => accBody(c, "apiCalls"),
+  m_accApiCalls: (c) => accBody(c, "apiCalls", passThroughScope(c)),
   // m_accTokenHitRate — session-aggregate formula
   // (accCached / (accCached + accIn) * 100), the v0.4.x semantic
   // that m_tokenHitRate (per-turn) replaced. Coloring uses the
   // cacheHitColor palette. v0.8.x — renamed from m_accCacheHitRate
   // to align the namespace with m_tokenHitRate (per-turn) and
   // m_sumTokenHitRate (cross-project).
-  m_accTokenHitRate: (c) => accHitRateBody(c),
+  m_accTokenHitRate: (c) => accHitRateBody(c, passThroughScope(c)),
   // v0.8.0+ — sum/avg advanced statistics. 5 plain sums (in/out/
   // cached/total/apiMs) + 3 ratios (tokenHitRate + tokenInSpeed +
   // tokenOutSpeed). All default to "|model|active" + "|window|5h"
@@ -2283,31 +2301,31 @@ const MODULES: Record<string, Module> = {
   // "all"}) with TTL=300s. sinceMs is derived but not part of the
   // key, capping the cache at 12 entries.
   m_sumTokenIn: (c) => {
-    const filter = parseWindowScope(c, {});
+    const filter = parseWindowScope(c, c.passThrough ?? {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
     return agg.rows === 0 ? null : `${labelFor("in")}${formatCompactToken(agg.sumIn)}`;
   },
   m_sumTokenOut: (c) => {
-    const filter = parseWindowScope(c, {});
+    const filter = parseWindowScope(c, c.passThrough ?? {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
     return agg.rows === 0 ? null : `${labelFor("out")}${formatCompactToken(agg.sumOut)}`;
   },
   m_sumTokenCachedIn: (c) => {
-    const filter = parseWindowScope(c, {});
+    const filter = parseWindowScope(c, c.passThrough ?? {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
     return agg.rows === 0 ? null : `${labelFor("cacheIn")}${formatCompactToken(agg.sumCached)}`;
   },
   m_sumTokenTotalIn: (c) => {
-    const filter = parseWindowScope(c, {});
+    const filter = parseWindowScope(c, c.passThrough ?? {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
     return agg.rows === 0 ? null : `${labelFor("totalIn")}${formatCompactToken(agg.sumTotalIn)}`;
   },
   m_sumApiMs: (c) => {
-    const filter = parseWindowScope(c, {});
+    const filter = parseWindowScope(c, c.passThrough ?? {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
     return agg.rows === 0 ? null : `api:${formatRemainingMs(agg.sumApiMs)}`;
@@ -2321,7 +2339,7 @@ const MODULES: Record<string, Module> = {
   // m_avg* names are REMOVED with no alias (consistent with the
   // v0.8.0 major-bump).
   m_sumTokenHitRate: (c) => {
-    const filter = parseWindowScope(c, {});
+    const filter = parseWindowScope(c, c.passThrough ?? {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
     const denom = agg.sumIn + agg.sumCached;
@@ -2330,7 +2348,7 @@ const MODULES: Record<string, Module> = {
     return `${cacheHitColor(pct)}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;
   },
   m_sumTokenInSpeed: (c) => {
-    const filter = parseWindowScope(c, {});
+    const filter = parseWindowScope(c, c.passThrough ?? {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
     if (agg.sumApiMs === 0) return null;
@@ -2338,7 +2356,7 @@ const MODULES: Record<string, Module> = {
     return `${labelFor("in")}${formatSpeed(tps)}`;
   },
   m_sumTokenOutSpeed: (c) => {
-    const filter = parseWindowScope(c, {});
+    const filter = parseWindowScope(c, c.passThrough ?? {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
     if (agg.sumApiMs === 0) return null;
@@ -2352,7 +2370,7 @@ const MODULES: Record<string, Module> = {
   // m_sum prefix because the rendering path is the same
   // (windowed cross-project JSONL scan → single cached aggregate).
   m_sumApiCalls: (c) => {
-    const filter = parseWindowScope(c, {});
+    const filter = parseWindowScope(c, c.passThrough ?? {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
     return agg.calls === 0 ? null : `calls:${agg.calls}`;
@@ -3872,8 +3890,24 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
         typeof raw === "string" && raw !== "" ? raw : null,
     },
     named: {
+      // Intrinsic — providerType filter. NOT forwarded via
+      // passThrough (it's a m_template-local concern, not an
+      // arg value to push to inner modules).
       mode: (raw) => (raw === "plan" || raw === "balance" ? raw : null),
+      // v0.8.7+ — passthrough whitelist. Each of these named
+      // params is accepted on `m_template` and forwarded to the
+      // inner module list as a fallback when the inner module's
+      // own `params[<name>]` is undefined. Unknown args still
+      // fail loud (parseInlineArgs → badarg → warn + drop), so
+      // typos are not silently accepted. The whitelist mirrors
+      // the param atoms that the `m_acc*` / `m_sum*` /
+      // `m_template` consumers actually read.
       ...NULDROP_PARAM.named,
+      ...COLOR_PARAM.named,
+      ...SCOPE_PARAM.named,
+      ...MODEL_PARAM.named,
+      ...WINDOW_PARAM.named,
+      ...ALIGN_PARAM.named,
     },
   },
 };
@@ -3909,6 +3943,64 @@ function wrapPlainDefault(
 ): string {
   const color = paramsColor ?? DEFAULT_COLORS[modKey];
   return color ? `${color}${body}${RESET}` : body;
+}
+
+// v0.8.7+ — resolve an inline-arg value with passthrough fallback.
+// Resolution order: local `params[name]` (the inner module's own
+// explicit arg) > `ctx.passThrough?.[name]` (an outer m_template's
+// forwarded arg) > undefined (caller applies its own DEFAULT).
+// Used by the m_acc* and m_sum* renderers so that a single
+// `m_template|<key>|scope|model` caller can drive the inner
+// module's `scope` choice without the inner module having to
+// declare it. Inner-explicit-wins is the documented contract —
+// the user explicitly chose it over a passthrough-beats-explicit
+// alternative.
+function passThroughOr<T extends ResolvedValue>(
+  params: Record<string, ResolvedValue | undefined>,
+  ctx: RenderContext,
+  name: string,
+): T | undefined {
+  const local = params[name] as T | undefined;
+  if (local !== undefined) return local;
+  const pt = ctx.passThrough?.[name];
+  return pt === undefined ? undefined : (pt as T);
+}
+
+// v0.8.7+ — build a merged `params` view that fills in any missing
+// keys from `ctx.passThrough`. Used by renderers that hand `params`
+// wholesale to a helper (e.g. `parseWindowScope`), so the helper
+// can stay params-only and still see the outer m_template's
+// forwarded values. Returns a fresh object — the original
+// `params` is not mutated. Inner-explicit-wins is preserved
+// because the merge is a one-way fill: local keys are kept as-is
+// and only undefined slots take the passthrough value.
+function mergePassThrough(
+  params: Record<string, ResolvedValue | undefined>,
+  ctx: RenderContext,
+): Record<string, ResolvedValue | undefined> {
+  if (!ctx.passThrough) return params;
+  const out: Record<string, ResolvedValue | undefined> = { ...params };
+  for (const [k, v] of Object.entries(ctx.passThrough)) {
+    if (out[k] === undefined) out[k] = v;
+  }
+  return out;
+}
+
+// v0.8.7+ — extract a `scope` value from `ctx.passThrough` for
+// MODULES-bare-path renderers (which don't go through INLINE_RENDERERS
+// and therefore can't call `passThroughOr(params, ctx, "scope")`).
+// Returns undefined when passthrough is absent or the value isn't a
+// known scope — `accBody` then applies its own default (ccsession).
+// Centralized here so the bare path stays a one-liner at the call
+// site and validation logic lives in one place.
+function passThroughScope(
+  ctx: RenderContext,
+): "session" | "project" | "model" | "ccsession" | undefined {
+  const v = ctx.passThrough?.scope;
+  if (v === "session" || v === "project" || v === "model" || v === "ccsession") {
+    return v;
+  }
+  return undefined;
 }
 
 // v0.4.x — parallel to MODULES' per-module `type` tag. Each entry
@@ -4193,34 +4285,34 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   // scope→slot mapping is hidden inside peekAcc; renderers just
   // pass the resolved scope through.
   m_accTokenIn: (params, ctx) => {
-    const scope = (params.scope as "session" | "project" | "model" | "ccsession" | undefined) ?? "ccsession";
-    return wrapPlainDefault("m_accTokenIn", accBody(ctx, "in", scope), params.color as string | undefined);
+    const scope = passThroughOr<"session" | "project" | "model" | "ccsession">(params, ctx, "scope") ?? "ccsession";
+    return wrapPlainDefault("m_accTokenIn", accBody(ctx, "in", scope), passThroughOr<string>(params, ctx, "color"));
   },
   m_accTokenOut: (params, ctx) => {
-    const scope = (params.scope as "session" | "project" | "model" | "ccsession" | undefined) ?? "ccsession";
-    return wrapPlainDefault("m_accTokenOut", accBody(ctx, "out", scope), params.color as string | undefined);
+    const scope = passThroughOr<"session" | "project" | "model" | "ccsession">(params, ctx, "scope") ?? "ccsession";
+    return wrapPlainDefault("m_accTokenOut", accBody(ctx, "out", scope), passThroughOr<string>(params, ctx, "color"));
   },
   m_accTokenCachedIn: (params, ctx) => {
-    const scope = (params.scope as "session" | "project" | "model" | "ccsession" | undefined) ?? "ccsession";
-    return wrapPlainDefault("m_accTokenCachedIn", accBody(ctx, "cached", scope), params.color as string | undefined);
+    const scope = passThroughOr<"session" | "project" | "model" | "ccsession">(params, ctx, "scope") ?? "ccsession";
+    return wrapPlainDefault("m_accTokenCachedIn", accBody(ctx, "cached", scope), passThroughOr<string>(params, ctx, "color"));
   },
   m_accTokenTotalIn: (params, ctx) => {
-    const scope = (params.scope as "session" | "project" | "model" | "ccsession" | undefined) ?? "ccsession";
-    return wrapPlainDefault("m_accTokenTotalIn", accBody(ctx, "total", scope), params.color as string | undefined);
+    const scope = passThroughOr<"session" | "project" | "model" | "ccsession">(params, ctx, "scope") ?? "ccsession";
+    return wrapPlainDefault("m_accTokenTotalIn", accBody(ctx, "total", scope), passThroughOr<string>(params, ctx, "color"));
   },
   m_accApiMs: (params, ctx) => {
-    const scope = (params.scope as "session" | "project" | "model" | "ccsession" | undefined) ?? "ccsession";
-    return wrapPlainDefault("m_accApiMs", accBody(ctx, "apiMs", scope), params.color as string | undefined);
+    const scope = passThroughOr<"session" | "project" | "model" | "ccsession">(params, ctx, "scope") ?? "ccsession";
+    return wrapPlainDefault("m_accApiMs", accBody(ctx, "apiMs", scope), passThroughOr<string>(params, ctx, "color"));
   },
   m_accApiCalls: (params, ctx) => {
-    const scope = (params.scope as "session" | "project" | "model" | "ccsession" | undefined) ?? "ccsession";
-    return wrapPlainDefault("m_accApiCalls", accBody(ctx, "apiCalls", scope), params.color as string | undefined);
+    const scope = passThroughOr<"session" | "project" | "model" | "ccsession">(params, ctx, "scope") ?? "ccsession";
+    return wrapPlainDefault("m_accApiCalls", accBody(ctx, "apiCalls", scope), passThroughOr<string>(params, ctx, "color"));
   },
   // Hit rate is special: ccsession-scoped by default (per-process
   // lifetime). Pass :scope:session/:scope:project/:scope:model to
   // opt into a narrower or wider aggregate.
   m_accTokenHitRate: (params, ctx) => {
-    const scope = (params.scope as "session" | "project" | "model" | "ccsession" | undefined) ?? "ccsession";
+    const scope = passThroughOr<"session" | "project" | "model" | "ccsession">(params, ctx, "scope") ?? "ccsession";
     return accHitRateBody(ctx, scope);
   },
   // v0.8.0+ — sum/avg inline renderers. Same body shape as the
@@ -4230,42 +4322,48 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   // resolver, so parseWindowScope here is the runtime fallback
   // for unexpected shapes (null → INLINE_BADARG path).
   m_sumTokenIn: (params, ctx) => {
-    const filter = parseWindowScope(ctx, params);
+    const merged = mergePassThrough(params, ctx);
+    const filter = parseWindowScope(ctx, merged);
     if (!filter) return INLINE_BADARG;
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderWithColor("m_sumTokenIn", params, ctx);
-    return wrapPlain(`${labelFor("in")}${formatCompactToken(agg.sumIn)}`, params.color as string | undefined);
+    return wrapPlain(`${labelFor("in")}${formatCompactToken(agg.sumIn)}`, passThroughOr<string>(params, ctx, "color"));
   },
   m_sumTokenOut: (params, ctx) => {
-    const filter = parseWindowScope(ctx, params);
+    const merged = mergePassThrough(params, ctx);
+    const filter = parseWindowScope(ctx, merged);
     if (!filter) return INLINE_BADARG;
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderWithColor("m_sumTokenOut", params, ctx);
-    return wrapPlain(`${labelFor("out")}${formatCompactToken(agg.sumOut)}`, params.color as string | undefined);
+    return wrapPlain(`${labelFor("out")}${formatCompactToken(agg.sumOut)}`, passThroughOr<string>(params, ctx, "color"));
   },
   m_sumTokenCachedIn: (params, ctx) => {
-    const filter = parseWindowScope(ctx, params);
+    const merged = mergePassThrough(params, ctx);
+    const filter = parseWindowScope(ctx, merged);
     if (!filter) return INLINE_BADARG;
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderWithColor("m_sumTokenCachedIn", params, ctx);
-    return wrapPlain(`${labelFor("cacheIn")}${formatCompactToken(agg.sumCached)}`, params.color as string | undefined);
+    return wrapPlain(`${labelFor("cacheIn")}${formatCompactToken(agg.sumCached)}`, passThroughOr<string>(params, ctx, "color"));
   },
   m_sumTokenTotalIn: (params, ctx) => {
-    const filter = parseWindowScope(ctx, params);
+    const merged = mergePassThrough(params, ctx);
+    const filter = parseWindowScope(ctx, merged);
     if (!filter) return INLINE_BADARG;
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderWithColor("m_sumTokenTotalIn", params, ctx);
-    return wrapPlain(`${labelFor("totalIn")}${formatCompactToken(agg.sumTotalIn)}`, params.color as string | undefined);
+    return wrapPlain(`${labelFor("totalIn")}${formatCompactToken(agg.sumTotalIn)}`, passThroughOr<string>(params, ctx, "color"));
   },
   m_sumApiMs: (params, ctx) => {
-    const filter = parseWindowScope(ctx, params);
+    const merged = mergePassThrough(params, ctx);
+    const filter = parseWindowScope(ctx, merged);
     if (!filter) return INLINE_BADARG;
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderWithColor("m_sumApiMs", params, ctx);
-    return wrapPlain(`api:${formatRemainingMs(agg.sumApiMs)}`, params.color as string | undefined);
+    return wrapPlain(`api:${formatRemainingMs(agg.sumApiMs)}`, passThroughOr<string>(params, ctx, "color"));
   },
   m_sumTokenHitRate: (params, ctx) => {
-    const filter = parseWindowScope(ctx, params);
+    const merged = mergePassThrough(params, ctx);
+    const filter = parseWindowScope(ctx, merged);
     if (!filter) return INLINE_BADARG;
     const agg = fetchSumAggregate(filter);
     const denom = agg.sumIn + agg.sumCached;
@@ -4274,28 +4372,31 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     return `${cacheHitColor(pct)}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;
   },
   m_sumTokenInSpeed: (params, ctx) => {
-    const filter = parseWindowScope(ctx, params);
+    const merged = mergePassThrough(params, ctx);
+    const filter = parseWindowScope(ctx, merged);
     if (!filter) return INLINE_BADARG;
     const agg = fetchSumAggregate(filter);
     if (agg.sumApiMs === 0) return placeholderWithColor("m_sumTokenInSpeed", params, ctx);
     const tps = (agg.sumIn / agg.sumApiMs) * 1000;
-    return wrapPlain(`${labelFor("in")}${formatSpeed(tps)}`, params.color as string | undefined);
+    return wrapPlain(`${labelFor("in")}${formatSpeed(tps)}`, passThroughOr<string>(params, ctx, "color"));
   },
   m_sumTokenOutSpeed: (params, ctx) => {
-    const filter = parseWindowScope(ctx, params);
+    const merged = mergePassThrough(params, ctx);
+    const filter = parseWindowScope(ctx, merged);
     if (!filter) return INLINE_BADARG;
     const agg = fetchSumAggregate(filter);
     if (agg.sumApiMs === 0) return placeholderWithColor("m_sumTokenOutSpeed", params, ctx);
     const tps = (agg.sumOut / agg.sumApiMs) * 1000;
-    return wrapPlain(`${labelFor("out")}${formatSpeed(tps)}`, params.color as string | undefined);
+    return wrapPlain(`${labelFor("out")}${formatSpeed(tps)}`, passThroughOr<string>(params, ctx, "color"));
   },
   // v0.8.x — total count of API calls in window. See MODULES twin.
   m_sumApiCalls: (params, ctx) => {
-    const filter = parseWindowScope(ctx, params);
+    const merged = mergePassThrough(params, ctx);
+    const filter = parseWindowScope(ctx, merged);
     if (!filter) return INLINE_BADARG;
     const agg = fetchSumAggregate(filter);
     if (agg.calls === 0) return placeholderWithColor("m_sumApiCalls", params, ctx);
-    return wrapPlain(`calls:${agg.calls}`, params.color as string | undefined);
+    return wrapPlain(`calls:${agg.calls}`, passThroughOr<string>(params, ctx, "color"));
   },
   m_quote: (params, ctx) => {
     // Default freq = 1h (per-hour window). The schema resolver
@@ -4511,7 +4612,20 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // matches an inline `mode:plan|balance` arg, so unknown providers
     // silently drop m_template references — same behavior as before.
     if (ctx.providerType !== want) return null;
-    const lines = renderTemplate(inner.slice(), ctx);
+    // v0.8.7+ — passthrough: build a passThrough view from every
+    // param except the two intrinsics (`key` is the lookup target,
+    // `mode` is the providerType filter — both are m_template-local
+    // concerns, not values to push to inner modules). Nested
+    // m_template is impossible because config.ts strips them at
+    // load time, so we don't need to merge with a pre-existing
+    // passThrough on the outer context.
+    const passThrough: Record<string, ResolvedValue> = {};
+    for (const [k, v] of Object.entries(params)) {
+      if (k === "key" || k === "mode") continue;
+      passThrough[k] = v as ResolvedValue;
+    }
+    const innerCtx: RenderContext = { ...ctx, passThrough };
+    const lines = renderTemplate(inner.slice(), innerCtx);
     return lines.join("\n");
   },
 };
