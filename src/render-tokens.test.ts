@@ -2503,9 +2503,9 @@ describe("renderTemplate — named separator aliases (v0.4.x)", () => {
   });
 });
 
-// ----- v0.8.0+ acc modules (per-session / per-project / per-model) -----
+// ----- v0.8.0+ acc modules (per-session / per-project / per-model / per-ccsession) -----
 //
-// Six new modules expose the three-layer accumulator that setAvg
+// Six new modules expose the four-layer accumulator that setAvg
 // writes each tick:
 //   m_accTokenIn       — session-cumulative current.input
 //   m_accTokenOut      — session-cumulative current.output

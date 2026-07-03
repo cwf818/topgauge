@@ -1538,7 +1538,7 @@ function computeTickDelta(
 // module family (and its computeTickTotals helper) was REMOVED
 // in this version. The accumulator access for "session-cumulative
 // in/out/cache" now goes through the m_acc* family with
-// scope=session (the default). For example:
+// scope=ccsession (the default). For example:
 //   m_totalTokenIn          → m_accTokenIn
 //   m_totalTokenOut         → m_accTokenOut
 //   m_totalTokenWithCacheIn → m_accTokenCachedIn
@@ -1549,10 +1549,10 @@ function computeTickDelta(
 // v0.8.0+ — body factory for the m_acc* family. Renders the
 // chosen accumulator field at a chosen scope. Output shape:
 //
-//   scope=session (default) → "acc:N"
-//   scope=project           → "acc(total):N"
-//   scope=model             → "acc(<modelDisplayName>):N"
-//   scope=ccsession         → "acc(ccs):N"
+//   scope=ccsession (default) → "acc(ccs):N"
+//   scope=session             → "acc:N"
+//   scope=project             → "acc(total):N"
+//   scope=model               → "acc(<modelDisplayName>):N"
 //
 // Reads the four-layer accumulator via peekAcc. Placeholder when
 // the chosen slot has never been written (no prior tick, no model
@@ -1712,7 +1712,7 @@ function accBody(
   // (same memo as m_token*InSpeed etc., so the write is idempotent
   // across multiple m_acc* calls in the same render).
   accPrimer(ctx);
-  const useScope = scope ?? (ctx.tokens?.sessionId ? "session" : "project");
+  const useScope = scope ?? "ccsession";
   const v = peekAcc(useScope, ctx);
   if (!v) {
     // v0.8.x cwf-tickStatus-v2 — the accCached track only writes
@@ -1794,10 +1794,10 @@ function accHitRateBody(
   // lacks cache_read_input_tokens — render the placeholder
   // rather than fabricating a 0% hit rate.
   if (ctx.tokens?.current?.cacheRead === null) {
-    return placeholderAcc("hitRate", scope ?? "session", ctx);
+    return placeholderAcc("hitRate", scope ?? "ccsession", ctx);
   }
   accCachePrimer(ctx);
-  const useScope = scope ?? "session";
+  const useScope = scope ?? "ccsession";
   const v = peekAcc(useScope, ctx);
   if (!v) return placeholderAcc("hitRate", useScope, ctx);
   const denom = v.accCached + v.accIn;
@@ -2120,17 +2120,17 @@ const MODULES: Record<string, Module> = {
     return r.value;
   },
   // v0.8.x cwf-tickStatus-v2 — m_totalToken* / m_totalTokenWithCacheIn
-  // REMOVED. Use the m_acc* family with scope=session (default):
+  // REMOVED. Use the m_acc* family with scope=ccsession (default):
   //   m_totalTokenIn          → m_accTokenIn
   //   m_totalTokenOut         → m_accTokenOut
   //   m_totalTokenWithCacheIn → m_accTokenCachedIn
   // v0.8.0+ — six per-session/per-model/per-project accumulators
   // (m_accTokenIn / m_accTokenOut / m_accTokenCachedIn /
   // m_accTokenTotalIn / m_accApiMs / m_accCacheHitRate). They all
-  // read the three-layer accumulator (session / project / model) via
-  // peekAcc and render in the same shape:
+  // read the four-layer accumulator (ccsession / session / project /
+  // model) via peekAcc and render in the same shape:
   //
-  //   m_accTokenIn                 → "acc:163.5k"        (session default)
+  //   m_accTokenIn                 → "acc(ccs):163.5k"   (ccsession default)
   //   m_accTokenIn:scope:project   → "acc(total):42.3k"
   //   m_accTokenIn:scope:model     → "acc(MiniMax-M3):12.4k"
   //
@@ -3140,10 +3140,11 @@ function formatSepBody(body: string, repeat: string, wrap: string): string {
   return out;
 }
 
-// v0.8.0+ — three-layer accumulator scope selector (used by
-// m_acc*). Accepts "session" (default), "project", or "model".
-// Anything else is a parse-fail and the inline token is dropped
-// (same as :color|<garbage>). The model scope is a no-op when the
+// v0.8.0+ — four-layer accumulator scope selector (used by
+// m_acc*). Accepts "ccsession" (default), "session", "project",
+// or "model". Anything else is a parse-fail and the inline token
+// is dropped (same as :color|<garbage>). The model scope is a
+// no-op when the
 // live TokenSnapshot has no modelDisplayName (the placeholder
 // path fires); project scope reads the project-wide slot, which
 // is null until at least one tick has accumulated into it.
@@ -3310,7 +3311,7 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   m_tokenTotalOut: placeholderLabelOr("out"),
   m_apiCalls: placeholderNA("calls:"),
   // v0.8.x cwf-tickStatus-v2 — m_totalToken* / m_totalTokenWithCacheIn
-  // REMOVED. Use the m_acc* family with scope=session (default).
+  // REMOVED. Use the m_acc* family with scope=ccsession (default).
   // m_acc* — v0.8.0+ labels.*: the four token-axis acc modules
   // (m_accTokenIn/Out/CachedIn/TotalIn) share their prefix with
   // the per-turn siblings via labelFor. m_accApiMs and
@@ -3641,8 +3642,8 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_tokenOutSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   // v0.8.x cwf-tickStatus-v2 — m_totalToken* / m_totalTokenWithCacheIn
   // REMOVED. The m_acc* family replaces them.
-  // v0.8.0+ — m_acc* family accepts :scope:<session|project|model>
-  // (default session for the bare form) and the standard :color|
+  // v0.8.0+ — m_acc* family accepts :scope:<ccsession|session|project|model>
+  // (default ccsession for the bare form) and the standard :color|
   // override + :nulldrop| opt-out.
   m_accTokenIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
   m_accTokenOut: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
@@ -3996,10 +3997,12 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     return r.value;
   },
   // v0.8.x cwf-tickStatus-v2 — m_totalToken* / m_totalTokenWithCacheIn
-  // REMOVED. Use the m_acc* family (scope=session default).
+  // REMOVED. Use the m_acc* family (scope=ccsession default).
   // v0.8.0+ — 6 acc modules (m_accTokenIn / Out / CachedIn / TotalIn /
-  // ApiMs / CacheHitRate). Three-layer granularity via :scope:
-  //   session (default for non-hit-rate) — per-session accumulator
+  // ApiMs / CacheHitRate). Four-layer granularity via :scope:
+  //   ccsession (default) — per-claude-code-process (singleton; reset
+  //                        on cost.totalApiDurationMs regression)
+  //   session — per-session accumulator
   //   project — crosses session boundaries within the same cwd
   //   model — crosses session boundaries within the same model
   // All read from the v0.8.0 AccSnapshot slot populated by setAvg
@@ -4007,32 +4010,30 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   // scope→slot mapping is hidden inside peekAcc; renderers just
   // pass the resolved scope through.
   m_accTokenIn: (params, ctx) => {
-    const scope = (params.scope as "session" | "project" | "model" | undefined) ?? (ctx.tokens?.sessionId ? "session" : "project");
+    const scope = (params.scope as "session" | "project" | "model" | "ccsession" | undefined) ?? "ccsession";
     return wrapPlainDefault("m_accTokenIn", accBody(ctx, "in", scope), params.color as string | undefined);
   },
   m_accTokenOut: (params, ctx) => {
-    const scope = (params.scope as "session" | "project" | "model" | undefined) ?? (ctx.tokens?.sessionId ? "session" : "project");
+    const scope = (params.scope as "session" | "project" | "model" | "ccsession" | undefined) ?? "ccsession";
     return wrapPlainDefault("m_accTokenOut", accBody(ctx, "out", scope), params.color as string | undefined);
   },
   m_accTokenCachedIn: (params, ctx) => {
-    const scope = (params.scope as "session" | "project" | "model" | undefined) ?? (ctx.tokens?.sessionId ? "session" : "project");
+    const scope = (params.scope as "session" | "project" | "model" | "ccsession" | undefined) ?? "ccsession";
     return wrapPlainDefault("m_accTokenCachedIn", accBody(ctx, "cached", scope), params.color as string | undefined);
   },
   m_accTokenTotalIn: (params, ctx) => {
-    const scope = (params.scope as "session" | "project" | "model" | undefined) ?? (ctx.tokens?.sessionId ? "session" : "project");
+    const scope = (params.scope as "session" | "project" | "model" | "ccsession" | undefined) ?? "ccsession";
     return wrapPlainDefault("m_accTokenTotalIn", accBody(ctx, "total", scope), params.color as string | undefined);
   },
   m_accApiMs: (params, ctx) => {
-    const scope = (params.scope as "session" | "project" | "model" | undefined) ?? (ctx.tokens?.sessionId ? "session" : "project");
+    const scope = (params.scope as "session" | "project" | "model" | "ccsession" | undefined) ?? "ccsession";
     return wrapPlainDefault("m_accApiMs", accBody(ctx, "apiMs", scope), params.color as string | undefined);
   },
-  // Hit rate is special: always session-scoped by default (the
-  // "natural" granularity for a ratio is per-session, not per-
-  // project or per-model — those would mix conversations).
-  // Pass :scope:project or :scope:model to opt into the wider
-  // cross-session aggregate.
+  // Hit rate is special: ccsession-scoped by default (per-process
+  // lifetime). Pass :scope:session/:scope:project/:scope:model to
+  // opt into a narrower or wider aggregate.
   m_accCacheHitRate: (params, ctx) => {
-    const scope = (params.scope as "session" | "project" | "model" | undefined) ?? "session";
+    const scope = (params.scope as "session" | "project" | "model" | "ccsession" | undefined) ?? "ccsession";
     return accHitRateBody(ctx, scope);
   },
   // v0.8.0+ — sum/avg inline renderers. Same body shape as the
@@ -4552,20 +4553,21 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         // (16) share the "m_accToken" stem but differ at index 13/14/15.
         inline = expandInlineToken(tok, "m_accTokenCachedIn", 19, ctx);
       } else if (tok.startsWith("m_accTokenTotalIn|")) {
-        // m_accTokenTotalIn → skip prefix+colon (17 chars). Listed
+        // m_accTokenTotalIn → skip prefix+pipe (18 chars). Listed
         // before m_accTokenIn / m_accTokenOut to avoid prefix-shadow.
-        inline = expandInlineToken(tok, "m_accTokenTotalIn", 17, ctx);
+        inline = expandInlineToken(tok, "m_accTokenTotalIn", 18, ctx);
       } else if (tok.startsWith("m_accTokenOut|")) {
-        // m_accTokenOut → skip 14 chars.
+        // m_accTokenOut → skip prefix+pipe (14 chars).
         inline = expandInlineToken(tok, "m_accTokenOut", 14, ctx);
       } else if (tok.startsWith("m_accTokenIn|")) {
-        // m_accTokenIn → skip 13 chars.
+        // m_accTokenIn → skip prefix+pipe (13 chars).
         inline = expandInlineToken(tok, "m_accTokenIn", 13, ctx);
       } else if (tok.startsWith("m_accApiMs|")) {
-        inline = expandInlineToken(tok, "m_accApiMs", 10, ctx);
+        // m_accApiMs → skip prefix+pipe (11 chars).
+        inline = expandInlineToken(tok, "m_accApiMs", 11, ctx);
       } else if (tok.startsWith("m_accCacheHitRate|")) {
-        // m_accCacheHitRate → skip prefix+colon (17 chars).
-        inline = expandInlineToken(tok, "m_accCacheHitRate", 17, ctx);
+        // m_accCacheHitRate → skip prefix+pipe (18 chars).
+        inline = expandInlineToken(tok, "m_accCacheHitRate", 18, ctx);
       } else if (tok.startsWith("m_sumTokenCachedIn|")) {
         // Longer prefix listed first (19 chars); siblings
         // m_sumTokenIn (12) / m_sumTokenOut (13) / m_sumTokenTotalIn
