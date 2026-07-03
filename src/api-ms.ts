@@ -100,6 +100,19 @@ export function resolveApiMsSample(inp: ApiMsInputs): ApiMsDecision {
   const deltaApiMs = inp.totalApiMs - prev.apiMs;
 
   if (deltaApiMs > 0) {
+    // v0.8.2 — gate on token activity. The user's "三者都不等于0"
+    // contract: a valid apiMs row requires BOTH deltaApiMs>0
+    // (real cost advance) AND (totalIn>0 || totalOut>0) (real
+    // token activity). When the session-cumulative totals are
+    // both zero, the cost advance is suspicious — it can be
+    // model loading, infra warm-up, or a stuck-then-flush pattern
+    // that produces apiMs>0 without producing user-visible
+    // tokens. Writing such a row pollutes sum/avg aggregates the
+    // same way the v0.7.4 prev=0 case did. Mirror the
+    // prev==null branch's gate here.
+    if (inp.totalIn === 0 && inp.totalOut === 0) {
+      return { kind: "skip" };
+    }
     return {
       kind: "write",
       sample: {

@@ -261,3 +261,56 @@ describe("resolveApiMsSample — stuck-cost anomaly", () => {
     assert.equal(d.kind, "skip");
   });
 });
+
+describe("resolveApiMsSample — zero-token gate (v0.8.2)", () => {
+  // v0.8.2 contract: a valid apiMs row requires BOTH deltaApiMs>0
+  // (real cost advance) AND (totalIn>0 || totalOut>0) (real
+  // token activity). The gate applies in BOTH branches
+  // (prev==null fallback AND prev!=null normal case). User's
+  // 2026-07-03 log row had totalIn=0 && totalOut=0 with
+  // deltaApiMs=120266 — a stuck-then-flush pattern that
+  // produced cost advance without user-visible tokens.
+  it("deltaApiMs > 0 + totalIn=0 + totalOut=0 + prev!=null: skip (zero-token gate)", () => {
+    const d = resolveApiMsSample({
+      at: 1783058264113,
+      totalIn: 0,
+      totalOut: 0,
+      current: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+      totalApiMs: 11032103,
+      prev: { apiMs: 10911837 },
+    });
+    assert.equal(d.kind, "skip",
+      "v0.8.2 — token-activity gate skips writes where totalIn==0 && totalOut==0");
+  });
+
+  it("deltaApiMs > 0 + totalIn=0 + totalOut=0 + prev=null: skip (already enforced)", () => {
+    // The first-tick (prev==null) branch already had this gate
+    // before v0.8.2. Pin it explicitly so the symmetry is clear.
+    const d = resolveApiMsSample({
+      at: 1000,
+      totalIn: 0,
+      totalOut: 0,
+      current: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+      totalApiMs: 5_000,
+      prev: null,
+    });
+    assert.equal(d.kind, "skip");
+  });
+
+  it("deltaApiMs > 0 + totalIn>0: writes normally (token activity present)", () => {
+    // Sanity: the gate is `totalIn==0 && totalOut==0` → skip. A
+    // real token advance (totalIn>0) keeps the write path open.
+    const d = resolveApiMsSample({
+      at: 2000,
+      totalIn: 100,
+      totalOut: 0,
+      current: { input: 100, output: 0, cacheRead: 0, cacheCreation: 0 },
+      totalApiMs: 60_000,
+      prev: { apiMs: 30_000 },
+    });
+    assert.equal(d.kind, "write");
+    if (d.kind === "write") {
+      assert.equal(d.sample.apiMs, 30_000);
+    }
+  });
+});
