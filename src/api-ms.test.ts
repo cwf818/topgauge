@@ -183,8 +183,14 @@ describe("resolveApiMsSample — first-tick fallback", () => {
   });
 });
 
-describe("resolveApiMsSample — stuck-cost anomaly", () => {
-  it("deltaApiMs == 0 + prev!=null + all token fields 0 → skip silently", () => {
+describe("resolveApiMsSample — deltaApiMs == 0 (v0.8.6: always skip)", () => {
+  // v0.7.x used to emit a `warn` decision when deltaApiMs==0 AND
+  // some token field was > 0 ("stuck-cost anomaly"). v0.8.6 — the
+  // upstream cost counter is often slow to refresh by a tick or two,
+  // so the "warn" rows were routine noise rather than actionable
+  // anomalies. The decision collapses to `skip` regardless of
+  // whether tokens advanced; apiMs==0 contributes nothing to sums.
+  it("deltaApiMs == 0 + prev!=null + all token fields 0 → skip", () => {
     const d = resolveApiMsSample({
       at: 2000,
       totalIn: 100,
@@ -196,7 +202,7 @@ describe("resolveApiMsSample — stuck-cost anomaly", () => {
     assert.equal(d.kind, "skip");
   });
 
-  it("deltaApiMs == 0 + prev!=null + input>0 → warn (no row written)", () => {
+  it("deltaApiMs == 0 + prev!=null + input>0 → skip (was warn pre-v0.8.6)", () => {
     const d = resolveApiMsSample({
       at: 2000,
       totalIn: 150,
@@ -205,15 +211,10 @@ describe("resolveApiMsSample — stuck-cost anomaly", () => {
       totalApiMs: 60_000,
       prev: { apiMs: 60_000 },
     });
-    assert.equal(d.kind, "warn");
-    if (d.kind === "warn") {
-      assert.match(d.message, /deltaApiMs=0 with token activity/);
-      assert.match(d.message, /totalIn=150/);
-      assert.match(d.message, /in=50/);
-    }
+    assert.equal(d.kind, "skip");
   });
 
-  it("deltaApiMs == 0 + prev!=null + output>0 → warn", () => {
+  it("deltaApiMs == 0 + prev!=null + output>0 → skip", () => {
     const d = resolveApiMsSample({
       at: 2000,
       totalIn: 100,
@@ -222,22 +223,26 @@ describe("resolveApiMsSample — stuck-cost anomaly", () => {
       totalApiMs: 60_000,
       prev: { apiMs: 60_000 },
     });
-    assert.equal(d.kind, "warn");
+    assert.equal(d.kind, "skip");
   });
 
-  it("deltaApiMs == 0 + prev!=null + cacheRead>0 → warn", () => {
+  it("deltaApiMs == 0 + prev!=null + cacheRead>0 → skip (mirrors user's log)", () => {
+    // User's 2026-07-03 row: totalIn=151217 totalOut=0
+    // in=647 out=0 cacheRead=150570, totalApiMs=13553322,
+    // prev.apiMs=13553322 → deltaApiMs=0. Pre-v0.8.6 this wrote
+    // a `apiMs-stuck` warning. Now silently skipped.
     const d = resolveApiMsSample({
-      at: 2000,
-      totalIn: 200,
-      totalOut: 100,
-      current: { input: 0, output: 0, cacheRead: 100, cacheCreation: 0 },
-      totalApiMs: 60_000,
-      prev: { apiMs: 60_000 },
+      at: 1783070952837,
+      totalIn: 151217,
+      totalOut: 0,
+      current: { input: 647, output: 0, cacheRead: 150570, cacheCreation: 0 },
+      totalApiMs: 13553322,
+      prev: { apiMs: 13553322 },
     });
-    assert.equal(d.kind, "warn");
+    assert.equal(d.kind, "skip");
   });
 
-  it("deltaApiMs == 0 + prev!=null + cacheCreation>0 → warn", () => {
+  it("deltaApiMs == 0 + prev!=null + cacheCreation>0 → skip", () => {
     const d = resolveApiMsSample({
       at: 2000,
       totalIn: 200,
@@ -246,7 +251,7 @@ describe("resolveApiMsSample — stuck-cost anomaly", () => {
       totalApiMs: 60_000,
       prev: { apiMs: 60_000 },
     });
-    assert.equal(d.kind, "warn");
+    assert.equal(d.kind, "skip");
   });
 
   it("deltaApiMs < 0: skip silently (clock skew / upstream bug)", () => {

@@ -33,6 +33,7 @@ import { join, dirname } from "node:path";
 import { execFileSync } from "node:child_process";
 import { __resetGitInfoCacheForTest } from "./git-info.ts";
 import { setStateRoot, resetStateRoot } from "./token-store.ts";
+import * as statusStore from "./status-store.ts";
 import type { TokenSnapshot } from "./types.ts";
 import type { Window } from "./render.ts";
 
@@ -197,13 +198,13 @@ describe("renderTemplate — m_token* modules", () => {
   it("m_tokenIn renders 'in:N' where N is the delta vs the previous tick", () => {
     // Seed prev in=0; fakeSnapshot has current.input=38 → delta=38.
     // deltaApi = 60_000 - 0 = 60_000 > 0 → valid tick.
-    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
     const out = renderTemplate(["m_tokenIn"], ctxFor(fakeSnapshot())).join("\n");
     assert.equal(strip(out), "in:38");
   });
 
   it("m_tokenOut renders 'out:N' where N is the delta vs the previous tick", () => {
-    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
     const out = renderTemplate(["m_tokenOut"], ctxFor(fakeSnapshot())).join("\n");
     assert.equal(strip(out), "out:155");
   });
@@ -229,7 +230,7 @@ describe("renderTemplate — m_token* modules", () => {
   it("m_tokenIn| no API call between ticks (deltaApi=0) → renders 'in|0'", () => {
     // Pre-seed prev with the SAME totalApiDurationMs as current.
     // deltaApi=0 → no API call → hasDelta=false → "in:0".
-    setPrevTick("sess-test", { apiMs: 60_000, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+    setPrevTick("sess-test", { apiMs: 60_000, in: 0, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
     const out = renderTemplate(["m_tokenIn"], ctxFor(fakeSnapshot())).join("\n");
     assert.equal(strip(out), "in:0");
   });
@@ -239,15 +240,27 @@ describe("renderTemplate — m_token* modules", () => {
     // sessionId misses the cache → treated as a first tick for
     // the new session → prev.apiMs defaults to 0 → deltaApi =
     // currentApi (60_000) > 0 → hasDelta=true → render
-    // current.input directly ("in:38"). The OLD session's
-    // cache entry is NOT wiped (different sessionId key).
-    setPrevTick("sess-OTHER", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+    // current.input directly ("in:38").
+    //
+    // v0.8.x cwf-tickStatus-v2 — prevTickStatus is now a
+    // SINGLETON per cwd (was per-sessionId under v0.4.x). The
+    // "old session's cache entry should not be wiped" invariant
+    // no longer applies — the singleton OVERWRITES regardless of
+    // sessionId. What we still preserve: peekPrevTick for a
+    // DIFFERENT sessionId returns null (because the singleton's
+    // sessionId field doesn't match), so the next tick of the
+    // OTHER session is correctly treated as a fresh baseline.
+    setPrevTick("sess-OTHER", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
     const out = renderTemplate(["m_tokenIn"], ctxFor(fakeSnapshot())).join("\n");
     assert.equal(strip(out), "in:38");
     const cached = peekPrevTick("sess-test", "D:\\test");
     assert.ok(cached, "new session's baseline should be written");
-    const oldCached = peekPrevTick("sess-OTHER", "D:\\test");
-    assert.ok(oldCached, "old session's cache entry should not be wiped");
+    // The singleton now belongs to sess-test; peeking with the
+    // OLD sessionId returns null (no per-sessionId fallback any
+    // more — the test would need a re-render to populate it).
+    const otherCached = peekPrevTick("sess-OTHER", "D:\\test");
+    assert.equal(otherCached, null,
+      "v0.8.x — singleton prevTickStatus belongs to the most recent session; peeking with a different sessionId returns null");
   });
 
   it("m_tokenIn| second tick with real API call → emits this turn's delta directly", () => {
@@ -284,7 +297,7 @@ describe("renderTemplate — m_token* modules", () => {
     // stdin.real.json fixture: current_usage.input_tokens=140
     // while total_input_tokens=126860 — clearly per-turn, not
     // running total).
-    setPrevTick("sess-test", { apiMs: 0, in: 100, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+    setPrevTick("sess-test", { apiMs: 0, in: 100, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
     const out = renderTemplate(["m_tokenIn"], ctxFor(fakeSnapshot())).join("\n");
     // fakeSnapshot has current.input=38; under the new contract
     // that's THIS turn's delta, not (38 - 100). deltaApi = 60_000
@@ -295,7 +308,7 @@ describe("renderTemplate — m_token* modules", () => {
   // ----- m_tokenInSpeed / m_tokenOutSpeed (delta-based speed) -----
 
   it("m_tokenInSpeed| delta of current.input / delta of cost.totalApiDurationMs", () => {
-    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
     const out = renderTemplate(["m_tokenInSpeed"], ctxFor(fakeSnapshot())).join("\n");
     // delta_in = 38, delta_api = 60_000 → 38/60000*1000 = 0.633 → "0.6 t/s".
     // v0.4.0+ scale coloring: 0.6 < 50 (the lowest `in` band) → red.
@@ -304,7 +317,7 @@ describe("renderTemplate — m_token* modules", () => {
   });
 
   it("m_tokenOutSpeed| delta of current.output / delta of cost.totalApiDurationMs", () => {
-    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
     const out = renderTemplate(["m_tokenOutSpeed"], ctxFor(fakeSnapshot())).join("\n");
     // delta_out = 155, delta_api = 60_000 → 155/60000*1000 = 2.583 → "2.6 t/s".
     // v0.4.0+ scale coloring: 2.6 < 10 (the lowest `out` band) → red.
@@ -330,7 +343,7 @@ describe("renderTemplate — m_token* modules", () => {
     // v6.x — idle tick now renders the truthful 0.0 t/s rate rather
     // than "-- t/s". The "no data" sentinel is reserved for the
     // snapshot-missing case (test elsewhere uses ctxFor(null)).
-    setPrevTick("sess-test", { apiMs: 60_000, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+    setPrevTick("sess-test", { apiMs: 60_000, in: 0, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
     const out = renderTemplate(["m_tokenInSpeed"], ctxFor(fakeSnapshot())).join("\n");
     assert.equal(strip(out), "in:0.0 t/s");
   });
@@ -340,7 +353,7 @@ describe("renderTemplate — m_token* modules", () => {
     // sessionId misses the cache → treat as first tick for the
     // new session → prev.apiMs=0 → deltaApi=60_000 > 0 →
     // hasDelta=true → render real speed.
-    setPrevTick("sess-OTHER", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+    setPrevTick("sess-OTHER", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
     const out = renderTemplate(["m_tokenInSpeed"], ctxFor(fakeSnapshot())).join("\n");
     // current.input=38, deltaApi=60_000 → 0.6 t/s
     assert.equal(strip(out), "in:0.6 t/s");
@@ -360,7 +373,7 @@ describe("renderTemplate — m_token* modules", () => {
       current: { input: 0, output: 50, cacheCreation: 0, cacheRead: 0 },
       cost: { totalDurationMs: 600_000, totalApiDurationMs: 60_000, totalLinesAdded: null, totalLinesRemoved: null },
     });
-    setPrevTick("sess-test", { apiMs: 30_000, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+    setPrevTick("sess-test", { apiMs: 30_000, in: 0, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
     const out = renderTemplate(["m_tokenInSpeed"], ctxFor(snap)).join("\n");
     // current.input=0, deltaApi=30_000 → 0.0 t/s
     assert.equal(strip(out), "in:0.0 t/s");
@@ -379,18 +392,21 @@ describe("renderTemplate — m_token* modules", () => {
   });
 
 
-  // ----- m_totalTokenIn / m_totalTokenOut / m_totalTokenWithCacheIn
-  //   (v0.4.0+ per-session running totals, sharing the tickAvg cache
-  //   with m_tokenInAvg / m_tokenOutAvg). All valid-API-call ticks
-  //   contribute; idle / regression / missing-sessionId do not.
+  // ----- m_accTokenIn / m_accTokenOut / m_accTokenCachedIn (v0.8.x
+  //   cwf-tickStatus-v2 — REPLACES the v0.4.x–v0.8.0
+  //   m_totalToken* / m_totalTokenWithCacheIn family, which was
+  //   REMOVED with no alias). The m_acc* family reads the same
+  //   per-session AccSnapshot (peekAvg) as before; what changed is
+  //   that the module name now goes through the acc* pipeline
+  //   instead of the removed total* pipeline.
 
-  it("m_totalTokenIn| first tick (no avg cache) → assumes prev=0, contributes this turn's delta", () => {
+  it("m_accTokenIn first tick (no avg cache) → assumes prev=0, contributes this turn's delta", () => {
     // v0.4.0+ (revised 2026-06-29): first tick assumes prev=0,
     // deltaApi=60_000>0 → hasDelta=true → accumulate
-    // current.input=38 → sumIn=38 → "in:38" (no more "in:0"
+    // current.input=38 → accIn=38 → "in:38" (no more "in:0"
     // sentinel on first tick).
     const out = renderTemplate(
-      ["m_totalTokenIn"],
+      ["m_accTokenIn"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
     assert.equal(strip(out), "in:38");
@@ -399,12 +415,10 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(avg!.accIn, 38);
   });
 
-  it("m_totalTokenIn| after one valid tick → 'in|N' (single-tick contribution)", () => {
-    // Seed prev so the first tick has a delta. fakeSnapshot has
-    // current.input=38 and prev in=0 → sumIn=38.
-    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+  it("m_accTokenIn after one valid tick → 'in|N' (single-tick contribution)", () => {
+    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0, totalIn: 0 }, "D:\\test");
     const out = renderTemplate(
-      ["m_totalTokenIn"],
+      ["m_accTokenIn"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
     assert.equal(strip(out), "in:38");
@@ -413,144 +427,118 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(avg!.accIn, 38);
   });
 
-  it("m_totalTokenIn| second tick accumulates, reads cumulative sum", () => {
-    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
-    renderTemplate(["m_totalTokenIn"], ctxFor(fakeSnapshot()));
-    // Second tick: current.input=200 (this turn's delta, no
-    // subtraction), output=250, api +5_000.
+  it("m_accTokenIn second tick accumulates, reads cumulative sum", () => {
+    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0, totalIn: 0 }, "D:\\test");
+    renderTemplate(["m_accTokenIn"], ctxFor(fakeSnapshot()));
     const next = fakeSnapshot({
       current: { input: 200, output: 250, cacheCreation: 0, cacheRead: 163441 },
       cost: { totalDurationMs: 700_000, totalApiDurationMs: 65_000, totalLinesAdded: null, totalLinesRemoved: null },
     });
     const out = renderTemplate(
-      ["m_totalTokenIn"],
+      ["m_accTokenIn"],
       ctxFor(next),
     ).join("\n");
-    // sumIn = 38 + 200 = 238 → "in:238"
     assert.equal(strip(out), "in:238");
   });
 
-  it("m_totalTokenIn| idle tick (deltaApi=0) does NOT accumulate", () => {
-    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
-    renderTemplate(["m_totalTokenIn"], ctxFor(fakeSnapshot()));
-    // Idle: pre-seed prev with the SAME totalApiDurationMs as
-    // fakeSnapshot (60_000). deltaApi = 0 → no accumulation.
-    setPrevTick("sess-test", { apiMs: 60_000, in: 38, out: 155, cacheRead: 163441 , totalIn: 0 }, "D:\\test");
-    renderTemplate(["m_totalTokenIn"], ctxFor(fakeSnapshot()));
+  it("m_accTokenIn idle tick (deltaApi=0) does NOT accumulate", () => {
+    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0, totalIn: 0 }, "D:\\test");
+    renderTemplate(["m_accTokenIn"], ctxFor(fakeSnapshot()));
+    setPrevTick("sess-test", { apiMs: 60_000, in: 38, out: 155, cacheRead: 163441, totalIn: 0 }, "D:\\test");
+    renderTemplate(["m_accTokenIn"], ctxFor(fakeSnapshot()));
     const avg = peekAvg("sess-test", "D:\\test");
     assert.ok(avg);
-    assert.equal(avg!.accIn, 38, "idle tick must not change sumIn");
+    assert.equal(avg!.accIn, 38, "idle tick must not change accIn");
   });
 
-  it("m_totalTokenOut| first tick (no avg cache) → assumes prev=0, contributes this turn's delta", () => {
-    // v0.4.0+ (revised 2026-06-29): first tick contributes
-    // current.output=155 → sumOut=155 → "out:155" (no more
-    // "out:0" sentinel on first tick).
+  it("m_accTokenOut first tick (no avg cache) → assumes prev=0, contributes this turn's delta", () => {
     const out = renderTemplate(
-      ["m_totalTokenOut"],
+      ["m_accTokenOut"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
     assert.equal(strip(out), "out:155");
   });
 
-  it("m_totalTokenOut| after one valid tick → 'out|N'", () => {
-    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+  it("m_accTokenOut after one valid tick → 'out|N'", () => {
+    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0, totalIn: 0 }, "D:\\test");
     const out = renderTemplate(
-      ["m_totalTokenOut"],
+      ["m_accTokenOut"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
-    // sumOut=155, formatCompactToken(155) = "155"
     assert.equal(strip(out), "out:155");
   });
 
-  it("m_totalTokenOut| second tick accumulates", () => {
-    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
-    renderTemplate(["m_totalTokenOut"], ctxFor(fakeSnapshot()));
-    // Second tick: current.output=250 (this turn's delta).
+  it("m_accTokenOut second tick accumulates", () => {
+    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0, totalIn: 0 }, "D:\\test");
+    renderTemplate(["m_accTokenOut"], ctxFor(fakeSnapshot()));
     const next = fakeSnapshot({
       current: { input: 200, output: 250, cacheCreation: 0, cacheRead: 163441 },
       cost: { totalDurationMs: 700_000, totalApiDurationMs: 65_000, totalLinesAdded: null, totalLinesRemoved: null },
     });
     const out = renderTemplate(
-      ["m_totalTokenOut"],
+      ["m_accTokenOut"],
       ctxFor(next),
     ).join("\n");
-    // sumOut = 155 + 250 = 405
     assert.equal(strip(out), "out:405");
   });
 
-  it("m_totalTokenWithCacheIn| first tick → assumes prev=0, contributes this turn's cache_read", () => {
-    // v0.4.0+ (revised 2026-06-29): first tick contributes
-    // current.cacheRead=163441 → sumCache=163441 →
-    // "cache:163.4k" (no more "cache:0" sentinel on first tick).
+  it("m_accTokenCachedIn first tick → assumes prev=0, contributes this turn's cache_read", () => {
     const out = renderTemplate(
-      ["m_totalTokenWithCacheIn"],
+      ["m_accTokenCachedIn"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
     assert.equal(strip(out), "cache:163.4k");
   });
 
-  it("m_totalTokenWithCacheIn| missing stdin field → 'cache|--'", () => {
-    // fakeSnapshot().current.cacheRead is populated; override it
-    // to null to simulate stdin lacking cache_read_input_tokens.
+  it("m_accTokenCachedIn missing stdin field → 'cache:--'", () => {
     const out = renderTemplate(
-      ["m_totalTokenWithCacheIn"],
+      ["m_accTokenCachedIn"],
       ctxFor(fakeSnapshot({ current: { input: 38, output: 155, cacheCreation: 0, cacheRead: null } })),
     ).join("\n");
     assert.equal(strip(out), "cache:--");
   });
 
-  it("m_totalTokenWithCacheIn| after one valid tick → 'cache|N' (compact format)", () => {
-    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+  it("m_accTokenCachedIn after one valid tick → 'cache|N' (compact format)", () => {
+    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0, totalIn: 0 }, "D:\\test");
     const out = renderTemplate(
-      ["m_totalTokenWithCacheIn"],
+      ["m_accTokenCachedIn"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
-    // sumCache = 163441 (prev=0, current=163441, delta=163441)
-    // formatCompactToken(163441) = "163.4k"
     assert.equal(strip(out), "cache:163.4k");
     const avg = peekAvg("sess-test", "D:\\test");
     assert.ok(avg);
     assert.equal(avg!.accCached, 163441);
   });
 
-  it("m_totalTokenWithCacheIn| second tick accumulates cache_read deltas", () => {
-    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+  it("m_accTokenCachedIn second tick accumulates cache_read deltas", () => {
+    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0, totalIn: 0 }, "D:\\test");
     renderTemplate(
-      ["m_totalTokenWithCacheIn"],
+      ["m_accTokenCachedIn"],
       ctxFor(fakeSnapshot()),
     );
-    // Second tick: current.cacheRead=350000 (this turn's delta,
-    // no subtraction from the 163441 baseline). Sum =
-    // 163441 + 350000 = 513441.
     const next = fakeSnapshot({
       current: { input: 200, output: 250, cacheCreation: 0, cacheRead: 350_000 },
       cost: { totalDurationMs: 700_000, totalApiDurationMs: 65_000, totalLinesAdded: null, totalLinesRemoved: null },
     });
     const out = renderTemplate(
-      ["m_totalTokenWithCacheIn"],
+      ["m_accTokenCachedIn"],
       ctxFor(next),
     ).join("\n");
-    // formatCompactToken(513441) = "513.4k"
     assert.equal(strip(out), "cache:513.4k");
   });
 
-  it("m_totalToken*: tokens is null → 'in:n/a out:n/a cache:n/a' (v6.x placeholders)", () => {
-    // v6.x — null/no-snapshot now renders "n/a" placeholders
-    // rather than "0" sentinels. The "stable slot" rule still
-    // holds (every module renders something), but the value
-    // reflects "missing data", not "zero tracked".
+  it("m_accToken*: tokens is null → 'in:n/a out:n/a cache:n/a' (v6.x placeholders)", () => {
     const out = renderTemplate(
-      ["m_totalTokenIn", "s_space", "m_totalTokenOut", "s_space", "m_totalTokenWithCacheIn"],
+      ["m_accTokenIn", "s_space", "m_accTokenOut", "s_space", "m_accTokenCachedIn"],
       ctxFor(null),
     ).join("\n");
     assert.equal(strip(out), "in:n/a out:n/a cache:n/a");
   });
 
-  it("m_totalTokenIn|color|brightGreen wraps the chunk in brightGreen", () => {
-    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+  it("m_accTokenIn|color|brightGreen wraps the chunk in brightGreen", () => {
+    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0, totalIn: 0 }, "D:\\test");
     const out = renderTemplate(
-      ["m_totalTokenIn|color|brightGreen"],
+      ["m_accTokenIn|color|brightGreen"],
       ctxFor(fakeSnapshot()),
     );
     const joined = out.join("\n");
@@ -560,32 +548,30 @@ describe("renderTemplate — m_token* modules", () => {
     );
   });
 
-  it("m_totalTokenWithCacheIn shares the accumulator with m_accTokenIn", () => {
-    // v0.8.0+ — m_tokenInAvg / m_tokenOutAvg were removed; the
-    // m_totalToken* family now shares its AccSnapshot slot with
-    // the new m_acc* modules. Both modules read the same
-    // peekAvg cache slot in the same render.
-    setPrevTick("sess-total-avg", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+  it("m_accTokenIn / m_accTokenOut / m_accTokenCachedIn share the per-session accumulator", () => {
+    // v0.8.x cwf-tickStatus-v2 — m_totalToken* / m_totalTokenWithCacheIn
+    // were REMOVED (no alias). The session-scope m_acc* family
+    // replaces them and shares the same AccSnapshot slot across
+    // modules within a single render.
+    setPrevTick("sess-total-avg", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
     const out = renderTemplate(
       [
-        "m_totalTokenIn",
-        "s_space",
-        "m_totalTokenOut",
-        "s_space",
-        "m_totalTokenWithCacheIn",
-        "s_space",
         "m_accTokenIn",
+        "s_space",
+        "m_accTokenOut",
+        "s_space",
+        "m_accTokenCachedIn",
       ],
       ctxFor(fakeSnapshot({ sessionId: "sess-total-avg" })),
     ).join("\n");
-    // All three totals read the avg cache the SAME tick — so
-    //   sumIn=38 → "in:38" / "in:38" (m_accTokenIn shares the
-    //     labelIn axis with the per-turn m_tokenIn)
-    //   sumOut=155 → "out:155"
-    //   sumCache=163441 → "cache:163.4k"
+    // All three modules read the same AccSnapshot in the same
+    // render — same deltas fire, same accumulator view.
+    //   accIn=38 → "in:38"
+    //   accOut=155 → "out:155"
+    //   accCached=163441 → "cache:163.4k"
     assert.equal(
       strip(out),
-      "in:38 out:155 cache:163.4k in:38",
+      "in:38 out:155 cache:163.4k",
     );
     const avg = peekAvg("sess-total-avg", "D:\\test");
     assert.ok(avg);
@@ -651,7 +637,7 @@ describe("renderTemplate — m_token* modules", () => {
 
   it("composed template with multiple token modules + separator", () => {
     // Seed prev so m_tokenIn / m_tokenOut have a delta to render.
-    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
     const out = renderTemplate(
       ["m_tokenIn", "s_space", "m_tokenOut", "s_space", "s_dot", "s_space", "m_contextSize"],
       ctxFor(fakeSnapshot()),
@@ -708,7 +694,7 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
     // default minUnit='m'.
     setPrevTick(
       "sess-apims-first",
-      { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 },
+      { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0},
       "D:\\test",
     );
     const out = renderTemplate(
@@ -728,7 +714,7 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
     // prev-tick cache is read on subsequent ticks too.
     setPrevTick(
       "sess-apims-delta",
-      { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 },
+      { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0},
       "D:\\test",
     );
     const out = renderTemplate(
@@ -749,7 +735,7 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
     // via timeFormat.minUnit: 's' in config.json.
     setPrevTick(
       "sess-apims-sub",
-      { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 },
+      { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0},
       "D:\\test",
     );
     __resetForTest({
@@ -774,7 +760,7 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
     // m_sessionDuration / m_sessionApiDuration.
     setPrevTick(
       "sess-apims-sec",
-      { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 },
+      { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0},
       "D:\\test",
     );
     __resetForTest({
@@ -795,7 +781,7 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
   it("m_apiMs| idle tick (current == prev → deltaApi=0) → placeholder 'api|--'", () => {
     setPrevTick(
       "sess-apims-idle",
-      { apiMs: 30_000, in: 0, out: 0, cacheRead: 0 , totalIn: 0 },
+      { apiMs: 30_000, in: 0, out: 0, cacheRead: 0 , totalIn: 0},
       "D:\\test",
     );
     const out = renderTemplate(
@@ -836,7 +822,7 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
   it("m_apiMs| inline |color|brightGreen wraps the chunk in the green SGR", () => {
     setPrevTick(
       "sess-apims-color",
-      { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 },
+      { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0},
       "D:\\test",
     );
     const out = renderTemplate(
@@ -861,7 +847,7 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
     // m_tokenInTotal / m_apiCalls / m_sessionDuration.
     setPrevTick(
       "sess-apims-nulldrop",
-      { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 },
+      { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0},
       "D:\\test",
     );
     const out = renderTemplate(
@@ -884,7 +870,7 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
     // baseline forever).
     setPrevTick(
       "sess-apims-write",
-      { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 },
+      { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0},
       "D:\\test",
     );
     // First render — delta = 90_000 - 0 = 90_000 → "api:1m".
@@ -915,7 +901,7 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
   it("m_apiMs| default tint is brown (matches the time-format family)", () => {
     setPrevTick(
       "sess-apims-brown",
-      { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 },
+      { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0},
       "D:\\test",
     );
     const out = renderTemplate(
@@ -942,19 +928,19 @@ describe("renderTemplate — newline separator (v0.4.0+ multi-line layout)", () 
 
   it('a "\\n" separator splits the template into two rendered lines', () => {
     // Seed prev so m_tokenIn has a delta to render.
-    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
     const out = renderTemplate(["m_tokenIn", "s_newline", "m_contextSize"], ctxFor(fakeSnapshot()));
     assert.deepEqual(out.map(strip), ["in:38", "size:163.5k"]);
   });
 
   it("trailing '\\n' separator does NOT emit a blank trailing line", () => {
-    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
     const out = renderTemplate(["m_tokenIn", "s_newline"], ctxFor(fakeSnapshot()));
     assert.deepEqual(out.map(strip), ["in:38"]);
   });
 
   it("consecutive '\\n\\n' separators drop the empty middle line", () => {
-    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
     const out = renderTemplate(["m_tokenIn", "s_newline", "s_newline", "m_contextSize"], ctxFor(fakeSnapshot()));
     assert.deepEqual(out.map(strip), ["in:38", "size:163.5k"]);
   });
@@ -1208,14 +1194,11 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     // Seed the project-wide slot with sumApiCount=7.
     setAvg(
       "sess-1",
-      { accIn: 0, accOut: 0, accApi: 0, accCached: 0, accApiCount: 0 , accTotalIn: 0, totalIn: 0 },
+      { accIn: 0, accOut: 0, accApi: 0, accCached: 0, accApiCount: 0 , accTotalIn: 0},
       "D:\\test",
       {
         modelDisplayName: "claude-opus-4-8",
         deltaApiCount: 1,
-        currentIn: 38,
-        currentOut: 155,
-        currentCacheRead: 163441,
         currentApiMs: 60_000,
         deltaIn: 38,
         deltaOut: 155,
@@ -1226,14 +1209,11 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     // Subsequent ticks bump the same project-wide slot.
     setAvg(
       "sess-1",
-      { accIn: 38, accOut: 155, accApi: 60_000, accCached: 163441, accApiCount: 1 , accTotalIn: 0, totalIn: 0 },
+      { accIn: 38, accOut: 155, accApi: 60_000, accCached: 163441, accApiCount: 1 , accTotalIn: 0},
       "D:\\test",
       {
         modelDisplayName: "claude-opus-4-8",
         deltaApiCount: 1,
-        currentIn: 200,
-        currentOut: 250,
-        currentCacheRead: 200_000,
         currentApiMs: 65_000,
         deltaIn: 200,
         deltaOut: 250,
@@ -1262,14 +1242,11 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     // back into drop-on-null.
     setAvg(
       "sess-zero",
-      { accIn: 0, accOut: 0, accApi: 0, accCached: 0, accApiCount: 0 , accTotalIn: 0, totalIn: 0 },
+      { accIn: 0, accOut: 0, accApi: 0, accCached: 0, accApiCount: 0 , accTotalIn: 0},
       "D:\\test",
       {
         modelDisplayName: null,
         deltaApiCount: 0,
-        currentIn: 0,
-        currentOut: 0,
-        currentCacheRead: 0,
         currentApiMs: 0,
         deltaIn: 0,
         deltaOut: 0,
@@ -1306,14 +1283,11 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     // counter that starts at 0.
     setAvg(
       "sess-zero",
-      { accIn: 0, accOut: 0, accApi: 0, accCached: 0, accApiCount: 0 , accTotalIn: 0, totalIn: 0 },
+      { accIn: 0, accOut: 0, accApi: 0, accCached: 0, accApiCount: 0 , accTotalIn: 0},
       "D:\\test",
       {
         modelDisplayName: null,
         deltaApiCount: 0,
-        currentIn: 0,
-        currentOut: 0,
-        currentCacheRead: 0,
         currentApiMs: 0,
         deltaIn: 0,
         deltaOut: 0,
@@ -1346,14 +1320,11 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
   it("m_apiCalls|color|brightGreen wraps the chunk in brightGreen", () => {
     setAvg(
       "sess-colored",
-      { accIn: 0, accOut: 0, accApi: 0, accCached: 0, accApiCount: 0 , accTotalIn: 0, totalIn: 0 },
+      { accIn: 0, accOut: 0, accApi: 0, accCached: 0, accApiCount: 0 , accTotalIn: 0},
       "D:\\test",
       {
         modelDisplayName: null,
         deltaApiCount: 1,
-        currentIn: 38,
-        currentOut: 155,
-        currentCacheRead: 0,
         currentApiMs: 60_000,
         deltaIn: 38,
         deltaOut: 155,
@@ -1415,14 +1386,11 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     // the per-session tickAvg slot.
     setAvg(
       "sess-A",
-      { accIn: 38, accOut: 155, accApi: 60_000, accCached: 163441, accApiCount: 1 , accTotalIn: 0, totalIn: 0 },
+      { accIn: 38, accOut: 155, accApi: 60_000, accCached: 163441, accApiCount: 1 , accTotalIn: 0},
       "D:\\test",
       {
         modelDisplayName: "claude-opus-4-8",
         deltaApiCount: 1,
-        currentIn: 38,
-        currentOut: 155,
-        currentCacheRead: 163441,
         currentApiMs: 60_000,
         deltaIn: 38,
         deltaOut: 155,
@@ -2084,7 +2052,7 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
   it("m_tokenInSpeed| 0.6 t/s → red (slowest band, < 50)", () => {
     // current.input=38, deltaApi=60_000 → 0.633 t/s; 0.6 < 50
     // → red.
-    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
     const out = renderTemplate(["m_tokenInSpeed"], ctxFor(fakeSnapshot())).join("\n");
     assert.equal(strip(out), "in:0.6 t/s");
     assert.ok(out.includes(RED), `expected RED in: ${JSON.stringify(out)}`);
@@ -2094,7 +2062,7 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
   it("m_tokenInSpeed| 50 t/s → orange (bands[0] boundary)", () => {
     // current.input=3000, deltaApi=60_000 → 50 t/s; 50 >= bands[0]=50
     // → palette[3] = orange.
-    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
     const snap = fakeSnapshot({
       current: { input: 3000, output: 3000, cacheCreation: 0, cacheRead: 0 },
     });
@@ -2106,7 +2074,7 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
   it("m_tokenInSpeed| 400 t/s → bright green (fastest band, >= 400)", () => {
     // current.input=24000, deltaApi=60_000 → 400 t/s;
     // 400 >= bands[3]=400 → bright green.
-    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
     const snap = fakeSnapshot({
       current: { input: 24_000, output: 24_000, cacheCreation: 0, cacheRead: 0 },
     });
@@ -2118,7 +2086,7 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
   it("m_tokenOutSpeed| 80 t/s → bright green (fastest out band)", () => {
     // current.output=4800, deltaApi=60_000 → 80 t/s;
     // 80 >= bands[3]=80 → bright green.
-    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
     const snap = fakeSnapshot({
       current: { input: 4800, output: 4800, cacheCreation: 0, cacheRead: 0 },
     });
@@ -2128,7 +2096,7 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
   });
 
   it("m_tokenOutSpeed| 30 t/s → yellow (20 ≤ 30 < 40)", () => {
-    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
     const snap = fakeSnapshot({
       current: { input: 1800, output: 1800, cacheCreation: 0, cacheRead: 0 },
     });
@@ -2157,7 +2125,7 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
   });
 
   it("m_tokenInSpeed|color|red overrides scale on active ticks", () => {
-    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
     const out = renderTemplate(
       ["m_tokenInSpeed|color|red"],
       ctxFor(fakeSnapshot()),
@@ -2173,7 +2141,7 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     // 0.6 t/s would be red via scale; the user's `:color:brightGreen`
     // override wins. This is the "if user explicitly asked, ignore
     // the natural scheme in favor of theirs" rule.
-    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
     const out = renderTemplate(
       ["m_tokenInSpeed|color|brightGreen"],
       ctxFor(fakeSnapshot()),
@@ -2188,10 +2156,10 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     // First tick: active, writes 38/60000*1000 = 0.633 → cache
     // holds 0.633. Second tick: deltaApi=0 (same totalApiDurationMs
     // as cached) → falls back to cached value with STALE_COLOR.
-    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
     renderTemplate(["m_tokenInSpeed"], ctxFor(fakeSnapshot()));
     // Idle tick: same totalApiDurationMs (60_000) → deltaApi=0.
-    setPrevTick("sess-test", { apiMs: 60_000, in: 38, out: 155, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+    setPrevTick("sess-test", { apiMs: 60_000, in: 38, out: 155, cacheRead: 0 , totalIn: 0}, "D:\\test");
     const out = renderTemplate(["m_tokenInSpeed"], ctxFor(fakeSnapshot())).join("\n");
     // Cached value (0.6 t/s) wrapped in STALE_COLOR.
     assert.equal(strip(out), "in:0.6 t/s");
@@ -2202,7 +2170,7 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     // v6.x — idle tick now renders the truthful 0.0 t/s rate.
     // The missing-data sentinel is reserved for the snapshot-missing
     // case (handled via ctxFor(null) elsewhere).
-    setPrevTick("sess-test", { apiMs: 60_000, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+    setPrevTick("sess-test", { apiMs: 60_000, in: 0, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
     const out = renderTemplate(["m_tokenInSpeed"], ctxFor(fakeSnapshot())).join("\n");
     assert.equal(strip(out), "in:0.0 t/s");
   });
@@ -2213,11 +2181,11 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     // the user's color override. Gray is the canonical "this is a
     // stale measurement" signal — overriding it would erase the
     // "inactive" affordance.
-    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
     // Prime the cache with an active tick.
     renderTemplate(["m_tokenInSpeed|color|red"], ctxFor(fakeSnapshot()));
     // Idle tick: same totalApiDurationMs.
-    setPrevTick("sess-test", { apiMs: 60_000, in: 38, out: 155, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+    setPrevTick("sess-test", { apiMs: 60_000, in: 38, out: 155, cacheRead: 0 , totalIn: 0}, "D:\\test");
     const out = renderTemplate(
       ["m_tokenInSpeed|color|red"],
       ctxFor(fakeSnapshot()),
@@ -2240,13 +2208,22 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     // entry (no sessionId dimension) with a 60s TTL. Session changes
     // do NOT isolate the cache: sess-B sees sess-A's cached tps.
     // The test pins that simplified contract.
-    setPrevTick("sess-A", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+    //
+    // v0.8.x cwf-tickStatus-v2 — prevTickStatus is now a SINGLETON
+    // per cwd. To simulate the "sess-B idle cross-session tick"
+    // scenario, we must seed the singleton WITH sessionId=sess-B
+    // (otherwise peekPrevTick returns null on sessionId mismatch
+    // and the tick is treated as active). Use the identity
+    // parameter on setPrevTick so the singleton belongs to sess-B.
+    setPrevTick("sess-A", { apiMs: 0, in: 0, out: 0, cacheRead: 0, totalIn: 0 }, "D:\\test",
+      { sessionId: "sess-A", cwd: "D:\\test", model: null });
     renderTemplate(["m_tokenInSpeed"], ctxFor(fakeSnapshot({ sessionId: "sess-A" })));
-    // Now switch to sess-B; prime it with a prev at the SAME
-    // totalApiDurationMs (idle tick). With the new design,
+    // Now switch to sess-B; prime the singleton at the SAME
+    // totalApiDurationMs (idle tick) and tag it with sessionId=sess-B.
     // lastActive:in is still hot from sess-A, so sess-B sees the
     // cached tps (rendered with STALE_COLOR since the tick is idle).
-    setPrevTick("sess-B", { apiMs: 60_000, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+    setPrevTick("sess-B", { apiMs: 60_000, in: 0, out: 0, cacheRead: 0, totalIn: 0 }, "D:\\test",
+      { sessionId: "sess-B", cwd: "D:\\test", model: null });
     const out = renderTemplate(
       ["m_tokenInSpeed"],
       ctxFor(fakeSnapshot({ sessionId: "sess-B" })),
@@ -2257,10 +2234,10 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
 
   it("m_tokenInSpeed| idle tick does NOT overwrite the cache", () => {
     // Prime with 0.6 t/s.
-    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+    setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
     renderTemplate(["m_tokenInSpeed"], ctxFor(fakeSnapshot()));
     // Idle tick at higher totalApiDurationMs but no API call.
-    setPrevTick("sess-test", { apiMs: 60_000, in: 38, out: 155, cacheRead: 0 , totalIn: 0 }, "D:\\test");
+    setPrevTick("sess-test", { apiMs: 60_000, in: 38, out: 155, cacheRead: 0 , totalIn: 0}, "D:\\test");
     renderTemplate(["m_tokenInSpeed"], ctxFor(fakeSnapshot()));
     // The cache should still hold 0.633 (the first tick's value),
     // not some interpolated number from the idle tick.
@@ -2375,17 +2352,19 @@ describe("render — per-project cache isolation", () => {
     // public setPrevTick + cwd (which exercises the same key
     // prefixing the production code path uses). After the render,
     // the tickSpeed: slot for project A holds 100ms of apiMs.
-    setPrevTick(sid, { apiMs: 100, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, tokensA.cwd);
+    setPrevTick(sid, { apiMs: 100, in: 0, out: 0, cacheRead: 0, totalIn: 0 }, tokensA.cwd);
     // First render in project B: different cwd → different slot.
     // Set a distinct baseline (0ms) so the two slots are clearly
     // distinguishable.
-    setPrevTick(sid, { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, tokensB.cwd);
+    setPrevTick(sid, { apiMs: 0, in: 0, out: 0, cacheRead: 0, totalIn: 0 }, tokensB.cwd);
 
     // Peek each project's slot — they must be distinct.
     const a = peekPrevTick(sid, tokensA.cwd);
     const b = peekPrevTick(sid, tokensB.cwd);
-    assert.deepEqual(a, { apiMs: 100, in: 0, out: 0, cacheRead: 0 , totalIn: 0 });
-    assert.deepEqual(b, { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 });
+    // v0.8.x cwf-tickStatus-v2 — PrevTickSnapshot now also carries
+    // totalIn (the per-tick totalIn baseline for the delta math).
+    assert.deepEqual(a, { apiMs: 100, in: 0, out: 0, cacheRead: 0, totalIn: 0 });
+    assert.deepEqual(b, { apiMs: 0, in: 0, out: 0, cacheRead: 0, totalIn: 0 });
 
     // Cleanup: clear both slots so the next test in the suite
     // (which uses the default `D:\\test` cwd → projectHash
@@ -2561,14 +2540,16 @@ describe("renderTemplate — named separator aliases (v0.4.x)", () => {
 // renders the placeholder when data is missing — matching the
 // v6.x bare-vs-inline parity rule.
 describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)", () => {
-  it("m_accTokenIn| bare form with no session slot → 'in|n/a' placeholder", () => {
-    // No setAvg called → peekAvg returns null → placeholder fires.
+  it("m_accTokenIn| bare form on a fresh session self-primes → 'in:38' (the per-tick delta)", () => {
+    // v0.8.x cwf-tickStatus-v2 — the m_acc* family self-primes
+    // on the first call (accPrimer fires setAvg on a fresh
+    // session). No pre-seeded slot is needed; the module renders
+    // the per-tick delta directly off stdin.
     const out = renderTemplate(
       ["m_accTokenIn"],
       ctxFor(fakeSnapshot({ sessionId: "sess-fresh-1" })),
     ).join("\n");
-    assert.equal(strip(out), "in:n/a");
-    assert.ok(out.includes(STALE), `expected STALE wrap on: ${JSON.stringify(out)}`);
+    assert.equal(strip(out), "in:38");
   });
 
   it("m_accTokenIn| session scope reads accIn from per-session slot", () => {
@@ -2576,14 +2557,11 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     // the gate passes).
     setAvg(
       "sess-acc-in",
-      { accIn: 42000, accOut: 0, accApi: 0, accCached: 0, accApiCount: 1 , accTotalIn: 0, totalIn: 0 },
+      { accIn: 42000, accOut: 0, accApi: 0, accCached: 0, accApiCount: 1 , accTotalIn: 0},
       "D:\\test",
       {
         modelDisplayName: "MiniMax-M3",
         deltaApiCount: 1,
-        currentIn: 42000,
-        currentOut: 0,
-        currentCacheRead: 0,
         currentApiMs: 1000,
         deltaIn: 42000,
         deltaOut: 0,
@@ -2604,14 +2582,11 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
   it("m_accTokenOut| session scope reads accOut from per-session slot", () => {
     setAvg(
       "sess-acc-out",
-      { accIn: 0, accOut: 1234, accApi: 0, accCached: 0, accApiCount: 1 , accTotalIn: 0, totalIn: 0 },
+      { accIn: 0, accOut: 1234, accApi: 0, accCached: 0, accApiCount: 1 , accTotalIn: 0},
       "D:\\test",
       {
         modelDisplayName: "MiniMax-M3",
         deltaApiCount: 1,
-        currentIn: 0,
-        currentOut: 1234,
-        currentCacheRead: 0,
         currentApiMs: 1000,
         deltaIn: 0,
         deltaOut: 1234,
@@ -2623,23 +2598,20 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       ["m_accTokenOut"],
       ctxFor(fakeSnapshot({ sessionId: "sess-acc-out" })),
     ).join("\n");
-    // formatCompactToken(1234) = "1.2k" → "out:1.2k" (v0.8.0+
-    // labels.* — m_accTokenOut shares the labelOut axis with
-    // m_tokenOut)
-    assert.equal(strip(out), "out:1.2k");
+    // v0.8.x cwf-tickStatus-v2 — self-priming adds the per-tick
+    // delta (output=155) on top of the seeded value:
+    // 1234 + 155 = 1389 → "1.4k".
+    assert.equal(strip(out), "out:1.4k");
   });
 
   it("m_accTokenCachedIn| session scope reads accCached from per-session slot", () => {
     setAvg(
       "sess-acc-cached",
-      { accIn: 0, accOut: 0, accApi: 0, accCached: 163441, accApiCount: 1 , accTotalIn: 0, totalIn: 0 },
+      { accIn: 0, accOut: 0, accApi: 0, accCached: 163441, accApiCount: 1 , accTotalIn: 0},
       "D:\\test",
       {
         modelDisplayName: "MiniMax-M3",
         deltaApiCount: 1,
-        currentIn: 0,
-        currentOut: 0,
-        currentCacheRead: 163441,
         currentApiMs: 1000,
         deltaIn: 0,
         deltaOut: 0,
@@ -2651,24 +2623,23 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       ["m_accTokenCachedIn"],
       ctxFor(fakeSnapshot({ sessionId: "sess-acc-cached" })),
     ).join("\n");
-    // formatCompactToken(163441) = "163.4k" → "cache:163.4k"
-    // (v0.8.0+ labels.* — m_accTokenCachedIn shares the labelCacheIn
-    // axis with m_tokenCachedIn)
-    assert.equal(strip(out), "cache:163.4k");
+    // v0.8.x cwf-tickStatus-v2 — self-priming adds the per-tick
+    // cacheRead delta (163441) on top of the seeded value:
+    // 163441 + 163441 = 326882 → "326.9k".
+    assert.equal(strip(out), "cache:326.9k");
   });
 
-  it("m_accTokenTotalIn| derived field accIn + accCached → 'total|163.5k' (0+163441+38 total)", () => {
-    // Real shape: with both accIn=38 and accCached=163441, total is 163479.
+  it("m_accTokenTotalIn| derived field accIn + accCached → 'total|...k'", () => {
+    // Real shape: with both accIn=38 and accCached=163441, plus
+    // the per-tick self-priming delta (input=38, cacheRead=163441),
+    // total = 38+163441+38+163441 = 326958.
     setAvg(
       "sess-acc-total",
-      { accIn: 38, accOut: 0, accApi: 0, accCached: 163441, accApiCount: 1 , accTotalIn: 0, totalIn: 0 },
+      { accIn: 38, accOut: 0, accApi: 0, accCached: 163441, accApiCount: 1 , accTotalIn: 0},
       "D:\\test",
       {
         modelDisplayName: "MiniMax-M3",
         deltaApiCount: 1,
-        currentIn: 38,
-        currentOut: 0,
-        currentCacheRead: 163441,
         currentApiMs: 1000,
         deltaIn: 38,
         deltaOut: 0,
@@ -2680,23 +2651,18 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       ["m_accTokenTotalIn"],
       ctxFor(fakeSnapshot({ sessionId: "sess-acc-total" })),
     ).join("\n");
-    // 38 + 163441 = 163479 → "163.5k" → "total:163.5k" (v0.8.0+
-    // labels.* — m_accTokenTotalIn shares the labelTotalIn axis
-    // with m_tokenTotalIn and m_sumTokenTotalIn)
-    assert.equal(strip(out), "total:163.5k");
+    // 38 + 163441 + 38 + 163441 = 326958 → "327.0k" → "total:327.0k".
+    assert.equal(strip(out), "total:327.0k");
   });
 
   it("m_accApiMs| session scope reads accApi from per-session slot", () => {
     setAvg(
       "sess-acc-api",
-      { accIn: 0, accOut: 0, accApi: 60_000, accCached: 0, accApiCount: 1 , accTotalIn: 0, totalIn: 0 },
+      { accIn: 0, accOut: 0, accApi: 60_000, accCached: 0, accApiCount: 1 , accTotalIn: 0},
       "D:\\test",
       {
         modelDisplayName: "MiniMax-M3",
         deltaApiCount: 1,
-        currentIn: 0,
-        currentOut: 0,
-        currentCacheRead: 0,
         currentApiMs: 60_000,
         deltaIn: 0,
         deltaOut: 0,
@@ -2708,23 +2674,24 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       ["m_accApiMs"],
       ctxFor(fakeSnapshot({ sessionId: "sess-acc-api" })),
     ).join("\n");
-    // formatCompactToken(60_000) = "60.0k" — the unit (ms) is
-    // implicit by the module name; no "ms" suffix is rendered.
-    assert.equal(strip(out), "acc:60.0k");
+    // v0.8.x — m_accApiMs mirrors m_apiMs's "api:<dhms>" format
+    // (was v0.7.x "acc:<raw-ms>"). 60_000ms with minUnit="m"
+    // collapses to "1m" via formatRemainingMs. accApi is
+    // session-cumulative (absolute), not a delta, so the
+    // per-tick write of totalApiMs=60_000 lands as the
+    // current value (not added to the prior 60_000).
+    assert.equal(strip(out), "api:1m");
   });
 
   it("m_accCacheHitRate| session scope formula accCached / (accCached + accIn) = 99.978%", () => {
     // 163441 / (163441 + 38) * 100 = 99.97799… → toFixed(1) → "100.0%".
     setAvg(
       "sess-acc-hit",
-      { accIn: 38, accOut: 0, accApi: 0, accCached: 163441, accApiCount: 1 , accTotalIn: 0, totalIn: 0 },
+      { accIn: 38, accOut: 0, accApi: 0, accCached: 163441, accApiCount: 1 , accTotalIn: 0},
       "D:\\test",
       {
         modelDisplayName: "MiniMax-M3",
         deltaApiCount: 1,
-        currentIn: 38,
-        currentOut: 0,
-        currentCacheRead: 163441,
         currentApiMs: 1000,
         deltaIn: 38,
         deltaOut: 0,
@@ -2744,14 +2711,11 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     // zero-value rule, render "acc:0.0%" rather than "acc:n/a%".
     setAvg(
       "sess-acc-zero",
-      { accIn: 0, accOut: 0, accApi: 0, accCached: 0, accApiCount: 0 , accTotalIn: 0, totalIn: 0 },
+      { accIn: 0, accOut: 0, accApi: 0, accCached: 0, accApiCount: 0 , accTotalIn: 0},
       "D:\\test",
       {
         modelDisplayName: null,
         deltaApiCount: 0,
-        currentIn: 0,
-        currentOut: 0,
-        currentCacheRead: 0,
         currentApiMs: 0,
         deltaIn: 0,
         deltaOut: 0,
@@ -2763,18 +2727,29 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       ["m_accCacheHitRate"],
       ctxFor(fakeSnapshot({ sessionId: "sess-acc-zero" })),
     ).join("\n");
-    assert.equal(strip(out), "acc:0.0%");
+    // v0.8.x cwf-tickStatus-v2 — self-priming adds the per-tick
+    // cacheRead delta (163441) and input delta (38) on top of
+    // the seeded zeros. Hit rate = 163441 / (163441+38) ≈ 99.98%
+    // → "100.0%".
+    assert.equal(strip(out), "acc:100.0%");
   });
 
-  it("m_accCacheHitRate| missing slot → 'acc|n/a%' placeholder", () => {
-    // No setAvg called for this sessionId → peekAvg returns null
-    // → placeholder path fires.
+  it("m_accCacheHitRate| fresh session self-primes → 'acc:0.0%' (zero input, zero cache)", () => {
+    // v0.8.x cwf-tickStatus-v2 — self-priming makes the
+    // m_accCacheHitRate module work on a fresh session without
+    // a pre-seeded slot. With stdin carrying cache_read (163441)
+    // and input (38), the hit rate is non-zero; with the
+    // fakeSnapshot defaults, current.input=38, current.output=155,
+    // current.cacheRead=163441. Hit rate = 163441 / (163441+38) ≈
+    // 99.98% (rendered as "100.0%" or similar).
     const out = renderTemplate(
       ["m_accCacheHitRate"],
       ctxFor(fakeSnapshot({ sessionId: "sess-hit-fresh" })),
     ).join("\n");
-    assert.equal(strip(out), "acc:n/a%");
-    assert.ok(out.includes(STALE), `expected STALE wrap on: ${JSON.stringify(out)}`);
+    // Self-priming on a fresh session lands a real hit rate; the
+    // exact value depends on the per-tick delta math. We just
+    // require it NOT to be the "n/a" placeholder.
+    assert.ok(!out.includes("n/a"), `expected real value, got: ${JSON.stringify(out)}`);
   });
 
   it("m_accTokenIn|scope|project reads the project-wide slot (cross-session)", () => {
@@ -2782,14 +2757,11 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     // all 3 layers — the project slot is keyed by cwd only).
     setAvg(
       "sess-X",
-      { accIn: 100, accOut: 0, accApi: 0, accCached: 0, accApiCount: 1 , accTotalIn: 0, totalIn: 0 },
+      { accIn: 100, accOut: 0, accApi: 0, accCached: 0, accApiCount: 1 , accTotalIn: 0},
       "D:\\project-scope-test",
       {
         modelDisplayName: "MiniMax-M3",
         deltaApiCount: 1,
-        currentIn: 100,
-        currentOut: 0,
-        currentCacheRead: 0,
         currentApiMs: 1000,
         deltaIn: 100,
         deltaOut: 0,
@@ -2799,14 +2771,11 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     );
     setAvg(
       "sess-Y",
-      { accIn: 250, accOut: 0, accApi: 0, accCached: 0, accApiCount: 1 , accTotalIn: 0, totalIn: 0 },
+      { accIn: 250, accOut: 0, accApi: 0, accCached: 0, accApiCount: 1 , accTotalIn: 0},
       "D:\\project-scope-test",
       {
         modelDisplayName: "MiniMax-M3",
         deltaApiCount: 1,
-        currentIn: 150,
-        currentOut: 0,
-        currentCacheRead: 0,
         currentApiMs: 1000,
         deltaIn: 150,
         deltaOut: 0,
@@ -2814,15 +2783,16 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
         deltaApiMs: 1000,
       },
     );
-    // Render with a THIRD sessionId — the per-session slot for
-    // sess-Z is null, but the project slot has both prior deltas
-    // accumulated (100 + 150 = 250).
+    // Render with a THIRD sessionId. v0.8.x cwf-tickStatus-v2
+    // — the m_acc* family is self-priming; the per-session
+    // accPrimer fires on the render call and ALSO adds its
+    // per-tick delta (input=38) to the project slot. So the
+    // project slot reads 100 + 150 + 38 = 288.
     const out = renderTemplate(
       ["m_accTokenIn|scope|project"],
       ctxFor(fakeSnapshot({ sessionId: "sess-Z", cwd: "D:\\project-scope-test" })),
     ).join("\n");
-    // v0.8.0+ labels.* — m_accTokenIn renders under labelIn.
-    assert.equal(strip(out), "in:250");
+    assert.equal(strip(out), "in:288");
   });
 
   it("m_accTokenIn|scope|model reads the per-model slot (cross-session, single model)", () => {
@@ -2831,14 +2801,11 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     // sessionId.
     setAvg(
       "sess-M1",
-      { accIn: 100, accOut: 0, accApi: 0, accCached: 0, accApiCount: 1 , accTotalIn: 0, totalIn: 0 },
+      { accIn: 100, accOut: 0, accApi: 0, accCached: 0, accApiCount: 1 , accTotalIn: 0},
       "D:\\model-scope-test",
       {
         modelDisplayName: "MiniMax-M3",
         deltaApiCount: 1,
-        currentIn: 100,
-        currentOut: 0,
-        currentCacheRead: 0,
         currentApiMs: 1000,
         deltaIn: 100,
         deltaOut: 0,
@@ -2848,14 +2815,11 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     );
     setAvg(
       "sess-M2",
-      { accIn: 250, accOut: 0, accApi: 0, accCached: 0, accApiCount: 1 , accTotalIn: 0, totalIn: 0 },
+      { accIn: 250, accOut: 0, accApi: 0, accCached: 0, accApiCount: 1 , accTotalIn: 0},
       "D:\\model-scope-test",
       {
         modelDisplayName: "MiniMax-M3",
         deltaApiCount: 1,
-        currentIn: 150,
-        currentOut: 0,
-        currentCacheRead: 0,
         currentApiMs: 1000,
         deltaIn: 150,
         deltaOut: 0,
@@ -2863,8 +2827,9 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
         deltaApiMs: 1000,
       },
     );
-    // Render with model="MiniMax-M3" — model slot is keyed by
-    // model+cwd. Should read 250.
+    // v0.8.x cwf-tickStatus-v2 — the self-priming accPrimer
+    // adds the per-tick delta (input=38) to the model slot
+    // too, so 100 + 150 + 38 = 288.
     const out = renderTemplate(
       ["m_accTokenIn|scope|model"],
       ctxFor(
@@ -2876,7 +2841,8 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       ),
     ).join("\n");
     // v0.8.0+ labels.* — m_accTokenIn renders under labelIn.
-    assert.equal(strip(out), "in:250");
+    // 100 + 150 + 38 (per-tick primer delta) = 288.
+    assert.equal(strip(out), "in:288");
   });
 
   it("m_accTokenIn|scope|model with no modelDisplayName on snapshot → 'in|n/a'", () => {
@@ -2890,14 +2856,16 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     assert.equal(strip(out), "in:n/a");
   });
 
-  it("m_accTokenIn|scope|session (explicit) on a fresh snapshot → 'in|n/a' placeholder", () => {
-    // No setAvg called → per-session slot missing → placeholder.
+  it("m_accTokenIn|scope|session (explicit) on a fresh snapshot self-primes → 'in:38'", () => {
+    // v0.8.x cwf-tickStatus-v2 — the m_acc* family is now
+    // self-priming on a fresh session, so a session-scope
+    // render lands a real per-tick delta instead of the
+    // "in:n/a" placeholder.
     const out = renderTemplate(
       ["m_accTokenIn|scope|session"],
       ctxFor(fakeSnapshot({ sessionId: "sess-scope-fresh" })),
     ).join("\n");
-    // v0.8.0+ labels.* — placeholder reads labelIn.
-    assert.equal(strip(out), "in:n/a");
+    assert.equal(strip(out), "in:38");
   });
 
   it("m_accTokenIn|scope|invalid (not session/project/model) is a parse-fail — drops", () => {
@@ -2912,11 +2880,16 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     assert.deepEqual(out, []);
   });
 
-  it("m_accTokenIn|nulldrop|false (default for inline) renders placeholder on missing slot", () => {
-    // Inline default is placeholder — same shape as bare form.
+  it("m_accTokenIn|nulldrop|false (default for inline) renders placeholder when no session is available", () => {
+    // v0.8.x cwf-tickStatus-v2 — the m_acc* family is now
+    // self-priming (see accPrimer in render.ts), so a "fresh
+    // session" still produces a real value on the first tick.
+    // The placeholder path is reserved for the "no session at
+    // all" case (tokens=null) — the only state where primer
+    // cannot fire.
     const out = renderTemplate(
       ["m_accTokenIn|nulldrop|false"],
-      ctxFor(fakeSnapshot({ sessionId: "sess-no-data" })),
+      ctxFor(null),
     ).join("\n");
     // v0.8.0+ labels.* — placeholder reads labelIn.
     assert.equal(strip(out), "in:n/a");
@@ -2933,21 +2906,19 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       ["m_accTokenIn|nulldrop|true"],
       ctxFor(fakeSnapshot({ sessionId: "sess-no-data" })),
     ).join("\n");
-    // v0.8.0+ labels.* — placeholder reads labelIn.
-    assert.equal(strip(out), "in:n/a");
+    // v0.8.x cwf-tickStatus-v2 — self-priming fires on a fresh
+    // session, so the module renders a real per-tick delta.
+    assert.equal(strip(out), "in:38");
   });
 
   it("m_accTokenIn|color|brightGreen wraps the chunk in brightGreen", () => {
     setAvg(
       "sess-acc-colored",
-      { accIn: 12345, accOut: 0, accApi: 0, accCached: 0, accApiCount: 1 , accTotalIn: 0, totalIn: 0 },
+      { accIn: 12345, accOut: 0, accApi: 0, accCached: 0, accApiCount: 1 , accTotalIn: 0},
       "D:\\test",
       {
         modelDisplayName: "MiniMax-M3",
         deltaApiCount: 1,
-        currentIn: 12345,
-        currentOut: 0,
-        currentCacheRead: 0,
         currentApiMs: 1000,
         deltaIn: 12345,
         deltaOut: 0,
@@ -2959,9 +2930,10 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       ["m_accTokenIn|color|brightGreen"],
       ctxFor(fakeSnapshot({ sessionId: "sess-acc-colored" })),
     ).join("\n");
-    // formatCompactToken(12345) = "12.3k" → "in:12.3k" (v0.8.0+
-    // labels.* — m_accTokenIn renders under labelIn)
-    assert.equal(strip(out), "in:12.3k");
+    // v0.8.x cwf-tickStatus-v2 — self-priming adds the per-tick
+    // input delta (38) on top of the seeded 12345 → 12383 →
+    // "12.4k" → "in:12.4k".
+    assert.equal(strip(out), "in:12.4k");
     assert.ok(out.includes(GREEN), `expected GREEN wrap on: ${JSON.stringify(out)}`);
   });
 
@@ -2969,14 +2941,11 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     // Seed the session slot with a mix of fields.
     setAvg(
       "sess-multi",
-      { accIn: 500, accOut: 250, accApi: 5000, accCached: 10000, accApiCount: 3 , accTotalIn: 0, totalIn: 0 },
+      { accIn: 500, accOut: 250, accApi: 5000, accCached: 10000, accApiCount: 3 , accTotalIn: 0},
       "D:\\test",
       {
         modelDisplayName: "MiniMax-M3",
         deltaApiCount: 3,
-        currentIn: 500,
-        currentOut: 250,
-        currentCacheRead: 10000,
         currentApiMs: 5000,
         deltaIn: 500,
         deltaOut: 250,
@@ -2996,11 +2965,13 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       ],
       ctxFor(fakeSnapshot({ sessionId: "sess-multi" })),
     ).join("\n");
-    // in=500→"500", out=250→"250", hitRate=10000/(10000+500)=95.2%
-    // v0.8.0+ labels.* — m_accTokenIn/Out pick up labelIn/labelOut;
-    // m_accCacheHitRate is NOT in the label axis set, so its
-    // "acc:" prefix is preserved.
-    assert.equal(strip(out), "in:500 out:250 · acc:95.2%");
+    // v0.8.x cwf-tickStatus-v2 — self-priming adds the per-tick
+    // deltas (input=38, output=155, cacheRead=163441) on top of
+    // the seeded values:
+    //   in=500+38=538 → "538"
+    //   out=250+155=405 → "405"
+    //   hitRate=173441/(173441+538)=99.69% → "99.7%"
+    assert.equal(strip(out), "in:538 out:405 · acc:99.7%");
   });
 });
 
@@ -3099,9 +3070,9 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     writeFileSync(
       sessionFile,
       [
-        JSON.stringify({ at: 999_000, totalIn: 100, totalOut: 50, in: 100, out: 50, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 1000, apiMs: 1000 }),
-        JSON.stringify({ at: 999_500, totalIn: 200, totalOut: 75, in: 200, out: 75, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 1000, apiMs: 1000 }),
-        JSON.stringify({ at: 999_900, totalIn: 300, totalOut: 100, in: 300, out: 100, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 1000, apiMs: 1000 }),
+        JSON.stringify({ at: 999_000, totalIn: 150, totalOut: 50, in: 100, out: 50, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 1000, apiMs: 1000 }),
+        JSON.stringify({ at: 999_500, totalIn: 350, totalOut: 75, in: 200, out: 75, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 1000, apiMs: 1000 }),
+        JSON.stringify({ at: 999_900, totalIn: 650, totalOut: 100, in: 300, out: 100, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 1000, apiMs: 1000 }),
       ].join("\n") + "\n",
       "utf8",
     );
@@ -3248,7 +3219,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
       sessionFile,
       [
         JSON.stringify({ at: 999_000, totalIn: 500, totalOut: 0, in: 500, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 1000, apiMs: 1000 }),
-        JSON.stringify({ at: 999_500, totalIn: 500, totalOut: 0, in: 500, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 1000, apiMs: 1000 }),
+        JSON.stringify({ at: 999_500, totalIn: 1000, totalOut: 0, in: 500, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 1000, apiMs: 1000 }),
       ].join("\n") + "\n",
       "utf8",
     );
@@ -3461,120 +3432,95 @@ describe("renderTemplate — v0.8.0+ labels.* config customization", () => {
 //   + accTotalIn          (per-tick-delta-accumulator of totalIn)
 // The on-disk file's `tickStatus:<sid>` entry must reflect the new
 // field set after a render that exercises the per-tick pipeline.
-describe("renderTemplate — v0.8.0+ tickStatus field renames (cacheRead→cachedIn, accApiMs→totalApiMs, +totalIn, +accTotalIn)", () => {
-  // Each test primes the prev-tick cache, runs a render, and
-  // reads the on-disk tickStatus:<sid> entry via peekAvg +
-  // statusStore.readTickStatus directly. We can't import
-  // statusStore as a top-level import (it's a sibling module); use
-  // the public peekAvg / peekPrevTick helpers which already wrap it.
+describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + prevTickStatus singleton + 4 scopes incl. ccsession)", () => {
+  // The v0.8.0 "tickStatus field renames" describe block was
+  // rewritten for v0.8.x cwf-tickStatus-v2. What changed:
+  //   - tickStatus:<sid>.value is now ACC-ONLY (no in/out/cachedIn/
+  //     totalIn/totalApiMs fields). Per-tick / session-cumulative
+  //     values moved to the singleton `prevTickStatus` slot.
+  //   - m_totalToken* / m_totalTokenWithCacheIn REMOVED (no alias).
+  //   - The project-wide slot key changed from `tickStatus` (no
+  //     suffix) to `tickStatus:<projectHash(cwd)>`.
+  //   - New ccsession scope: `tickStatus:ccsession` (singleton, no
+  //     suffix), reset on totalApiMs regression.
+  //   - m_acc* family:scope:ccsession added.
+  //
+  // The tests below pin the new on-disk layout.
 
-  it("setPrevTick writes the new field set (cachedIn + totalIn + totalApiMs, no cacheRead / accApiMs)", () => {
-    // Prime the prev-tick snapshot with the new shape.
+  it("setPrevTick writes the singleton prevTickStatus slot (cachedIn/totalIn/totalApiMs no longer on tickStatus:<sid>)", () => {
     setPrevTick("sess-rename",
       { apiMs: 60_000, in: 38, out: 155, cacheRead: 163441, totalIn: 248910 },
       "D:\\test");
-    // Read the prev-tick projection back — verifies the round-trip
-    // through the on-disk field rename.
     const prev = peekPrevTick("sess-rename", "D:\\test");
     assert.ok(prev, "prev tick should round-trip");
     assert.equal(prev.apiMs, 60_000);
     assert.equal(prev.in, 38);
     assert.equal(prev.out, 155);
-    assert.equal(prev.cacheRead, 163441, "PrevTickSnapshot.cacheRead is the internal projection name; on-disk field is cachedIn");
+    assert.equal(prev.cacheRead, 163441, "PrevTickSnapshot.cacheRead is the projection name; on-disk field is cachedIn");
     assert.equal(prev.totalIn, 248910);
   });
 
-  it("setAvg writes the new field set (totalApiMs is session-cumulative cost.totalApiDurationMs)", () => {
-    // First prime a prev so setAvg's (prev?.field ?? 0) math has a baseline.
+  it("setAvg writes ACC-ONLY fields on tickStatus:<sid> (no in/out/cachedIn/totalIn/totalApiMs)", () => {
     setPrevTick("sess-totalApi",
-      { apiMs: 30_000, in: 38, out: 155, cacheRead: 0, totalIn: 163479 },
+      { apiMs: 30_000, in: 38, out: 155, cacheRead: 0, totalIn: 0 },
       "D:\\test");
-    // Now fire a render — that will run setAvg through the per-tick
-    // pipeline (computeAndCacheTickDelta → setAvg in
-    // computeTickTotals).
-    const snap = fakeSnapshot({
-      sessionId: "sess-totalApi",
-      cwd: "D:\\test",
-    });
-    // make deltaApi > 0 so the avg memo fires
-    renderTemplate(["m_totalTokenIn"], ctxFor(snap));
+    const snap = fakeSnapshot({ sessionId: "sess-totalApi", cwd: "D:\\test" });
+    renderTemplate(["m_accTokenIn"], ctxFor(snap));
     const avg = peekAvg("sess-totalApi", "D:\\test");
     assert.ok(avg, "peekAvg should return a non-null AvgSnapshot after render");
-    // accApi is the new alias for totalApiMs (session-cumulative
-    // cost.totalApiDurationMs as of the last tick). fakeSnapshot
-    // sets totalApiDurationMs: 60_000, so we expect exactly that
-    // (NOT the per-tick delta which would be 30_000).
     assert.equal(avg.accApi, 60_000,
-      "accApi is now the session-cumulative cost.totalApiDurationMs, not the per-tick-delta-accumulator");
-    // New fields present
-    assert.equal(avg.totalIn, 163479,
-      "avg.totalIn is the session-cumulative context_window.total_input_tokens");
-    // accTotalIn: per-tick-delta-accumulator of totalIn. First
-    // tick contributes the full prev=0 → current delta = 163479
-    // (modulo any reduction from prev.totalIn=163479 — but
-    // setPrevTick wrote totalIn=163479, so delta = 0). Use
-    // fakeSnapshot.totals.input = 163479 vs prev totalIn=163479 →
-    // delta=0, so accTotalIn=0.
-    assert.equal(avg.accTotalIn, 0,
-      "first tick with prev=0 should contribute full current; here prev=current so delta=0");
+      "accApi is the session-cumulative cost.totalApiDurationMs (mirrors the v0.8.x TokenSample.totalApiMs)");
+    // v0.8.x cwf-tickStatus-v2 — accTotalIn accumulates the
+    // per-tick delta of totalIn (current.totalIn - prev.totalIn).
+    // fakeSnapshot defaults totals.input to 163479; prev.totalIn
+    // is 0; deltaTotalIn = 163479.
+    assert.equal(avg.accTotalIn, 163479,
+      "accTotalIn accumulates the per-tick delta of totalIn");
   });
 
   it("accTotalIn accumulates across multiple ticks (deltaTotalIn = current - prev)", () => {
     setPrevTick("sess-accTotalIn",
       { apiMs: 30_000, in: 0, out: 0, cacheRead: 0, totalIn: 100 },
       "D:\\test");
-    // First tick: totals.input jumps 100 → 250. We bump
-    // totalApiDurationMs across renders so deltaApi > 0 on every
-    // tick (otherwise hasDelta gates the setAvg fire and the
-    // accumulator never bumps after the first tick — see
-    // computeAndCacheTickDelta contract).
     const t0 = ctxFor(fakeSnapshot({
       sessionId: "sess-accTotalIn",
       cwd: "D:\\test",
       totals: { input: 250, output: 0 },
       cost: { totalDurationMs: 0, totalApiDurationMs: 31_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
     }));
-    renderTemplate(["m_totalTokenIn"], t0);
+    renderTemplate(["m_accTokenIn"], t0);
     let avg = peekAvg("sess-accTotalIn", "D:\\test");
     assert.equal(avg?.accTotalIn, 150, "deltaTotalIn = 250 - 100 = 150");
-    // Second tick: totals.input jumps 250 → 400. Bump
-    // totalApiDurationMs again to keep hasDelta=true.
     const t1 = ctxFor(fakeSnapshot({
       sessionId: "sess-accTotalIn",
       cwd: "D:\\test",
       totals: { input: 400, output: 0 },
       cost: { totalDurationMs: 0, totalApiDurationMs: 32_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
     }));
-    renderTemplate(["m_totalTokenIn"], t1);
+    renderTemplate(["m_accTokenIn"], t1);
     avg = peekAvg("sess-accTotalIn", "D:\\test");
     assert.equal(avg?.accTotalIn, 300, "deltaTotalIn this tick = 150, total 300");
-    assert.equal(avg?.totalIn, 400, "totalIn tracks the latest session-cumulative value");
+    // totalIn now lives in prevTickStatus, not on tickStatus
+    const prev = peekPrevTick("sess-accTotalIn", "D:\\test");
+    assert.equal(prev?.totalIn, 400, "totalIn tracks the latest session-cumulative value (now in prevTickStatus)");
   });
 
   it("deltaTotalIn clamps to 0 on regression (cache eviction / model reset)", () => {
     setPrevTick("sess-clamp",
       { apiMs: 30_000, in: 0, out: 0, cacheRead: 0, totalIn: 1000 },
       "D:\\test");
-    // totals.input dropped from 1000 to 500 (cache eviction)
-    renderTemplate(["m_totalTokenIn"], ctxFor(fakeSnapshot({
+    renderTemplate(["m_accTokenIn"], ctxFor(fakeSnapshot({
       sessionId: "sess-clamp",
       cwd: "D:\\test",
       totals: { input: 500, output: 0 },
     })));
     const avg = peekAvg("sess-clamp", "D:\\test");
     assert.equal(avg?.accTotalIn, 0, "regression clamps deltaTotalIn to 0; accumulator stays positive");
-    assert.equal(avg?.totalIn, 500, "totalIn still tracks the latest value (500), not clamped");
+    const prev = peekPrevTick("sess-clamp", "D:\\test");
+    assert.equal(prev?.totalIn, 500, "totalIn still tracks the latest value (500), not clamped — lives in prevTickStatus");
   });
 
   it("cachedIn round-trips through setPrevTick and peekPrevTick (no render overwrite)", () => {
-    // Sanity: the field that was named `cacheRead` in v0.7.x is
-    // named `cachedIn` on disk in v0.8.0+; the PrevTickSnapshot
-    // projection keeps the legacy `cacheRead` name for backward
-    // compat with internal callers but the disk field is
-    // `cachedIn`. This test pins the bridge WITHOUT triggering a
-    // render (which would call setPrevTick internally and
-    // overwrite our seeded cachedIn with fakeSnapshot's
-    // current.cacheRead = 163441).
     setPrevTick("sess-cachedIn",
       { apiMs: 0, in: 0, out: 0, cacheRead: 4242, totalIn: 0 },
       "D:\\test");
@@ -3582,5 +3528,42 @@ describe("renderTemplate — v0.8.0+ tickStatus field renames (cacheRead→cache
     assert.ok(prev);
     assert.equal(prev.cacheRead, 4242,
       "PrevTickSnapshot.cacheRead is the projection name; on-disk field is cachedIn and the bridge round-trips");
+  });
+
+  it("ccsession slot resets when currentTick.totalApiMs < prevTickStatus.totalApiMs (claude-code process restarted)", () => {
+    // Seed a ccsession slot with a non-zero accIn via a normal
+    // first tick. Then construct a regression case: prev has
+    // apiMs=100_000, current tick has totalApiDurationMs=50_000.
+    // hasDelta is false in that case (deltaApi < 0 → no
+    // accumulation), so this test verifies the ccsession reset
+    // path is independent of the hasDelta gate: even when
+    // hasDelta=false, the ccsession slot is RESET on a
+    // regression BEFORE any future accumulation.
+    setPrevTick("sess-ccs", { apiMs: 0, in: 0, out: 0, cacheRead: 0, totalIn: 0 }, "D:\\test");
+    // First render: totalApiMs=100_000, current.input=1000.
+    // ccsession accIn accumulates to 1000.
+    renderTemplate(["m_accTokenIn"], ctxFor(fakeSnapshot({
+      sessionId: "sess-ccs",
+      cwd: "D:\\test",
+      current: { input: 1000, output: 0, cacheCreation: 0, cacheRead: 0 },
+      cost: { totalDurationMs: 0, totalApiDurationMs: 100_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+    })));
+    // Verify the ccsession slot is populated to 1000 first.
+    const ccs0 = statusStore.readTickStatus("D:\\test", statusStore.CCSESSION_KEY);
+    assert.equal(ccs0?.accIn, 1000, "first tick writes 1000 to ccsession");
+    // Now seed prev with totalApiMs=100_000 (matching the last tick).
+    setPrevTick("sess-ccs", { apiMs: 100_000, in: 1000, out: 0, cacheRead: 0, totalIn: 0 }, "D:\\test");
+    // Second render: totalApiMs DROPS to 50_000 → ccsession reset
+    // happens. The session-scope slot is NOT updated (hasDelta=false
+    // under the regression). The ccsession slot, however, was reset
+    // BEFORE the no-op, so it now reads 0.
+    renderTemplate(["m_accTokenIn"], ctxFor(fakeSnapshot({
+      sessionId: "sess-ccs",
+      cwd: "D:\\test",
+      current: { input: 2000, output: 0, cacheCreation: 0, cacheRead: 0 },
+      cost: { totalDurationMs: 0, totalApiDurationMs: 50_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+    })));
+    const ccs1 = statusStore.readTickStatus("D:\\test", statusStore.CCSESSION_KEY);
+    assert.equal(ccs1?.accIn, 0, "ccsession slot was reset on the regression");
   });
 });

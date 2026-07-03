@@ -1,50 +1,47 @@
 // Per-project tick-status state.
 //
-// v0.4.x — one JSON file per project at
-// `state/<projectHash(cwd)>/status.json`. Holds three flavors of
-// `tickStatus` records so the user can read either the project-wide
-// running total OR per-session / per-provider slices:
+// v0.8.x — cwf-tickStatus-v2. The on-disk schema in
+// `<projectHash>/status.json` now carries two top-level slot
+// families with clearly separated semantic roles:
 //
-//   tickStatus             (no suffix) — project-wide accumulator
-//   tickStatus:<sessionId>             — per-session accumulator
-//   tickStatus:<providerId>            — per-provider (model name) accumulator
+//   (A) tickStatus:<...>  — PURE ACCUMULATORS (the user's
+//       "tickStatus 只表示累计状态" rule). Four dimensions, all
+//       write-only through setAvg's atomic path in render.ts:
 //
-// v0.8.0+ — field rename (sum* → acc*). The on-disk schema in
-// `<projectHash>/status.json` now carries:
+//       tickStatus:<sessionId>   per-session (clear-bounded)
+//       tickStatus:<projectHash> per-project (cwd-bounded, no prefix)
+//       tickStatus:<model>       per-model (modelDisplayName)
+//       tickStatus:ccsession     per-claude-code-process (singleton,
+//                                no sessionId suffix; reset on
+//                                totalApiMs regression — see render.ts)
 //
-//   {
-//     "at":      1782808274334,   // wall-clock ms of the last update
-//     "value": {
-//       "in":          2468,       // this turn's input tokens (per-turn delta)
-//       "out":          248,       // this turn's output tokens
-//       "cachedIn":    33403,      // this turn's cache-read tokens (was cacheRead)
-//       "totalIn":   248910,       // session-cumulative context_window.total_input_tokens
-//       "accIn":        3093,      // accumulated in       across API calls
-//       "accOut":        475,      // accumulated out      across API calls
-//       "accCached":   66182,      // accumulated cachedIn across API calls
-//       "accTotalIn":248910,       // per-tick-delta-accumulator of totalIn
-//                                   // (= accIn + accCached, modulo cache eviction)
-//       "totalApiMs":  132311,     // session-cumulative cost.total_api_duration_ms
-//                                   // (was accApiMs in v0.7.x — the delta-accumulator
-//                                   //  is dropped; the on-disk field now mirrors the
-//                                   //  std cost field's monotonic value, matching the
-//                                   //  v0.8.0 TokenSample.totalApiMs convention)
-//       "accApiCount":    17,      // accumulated API-call count
-//     }
-//   }
+//       value shape (TickStatusValue):
+//         accIn        — accumulated current.input   across API calls
+//         accOut       — accumulated current.output  across API calls
+//         accCached    — accumulated current.cacheRead across API calls
+//         accTotalIn   — per-tick-delta-accumulator of totalIn
+//         accApiMs     — session-cumulative cost.totalApiDurationMs
+//                        at the last write (NOT a delta accumulator;
+//                        mirrors stdin's monotonic field)
+//         accApiCount  — accumulated API-call count
 //
-//   (sumIn/sumOut/sumCache/sumApiMs/sumApiCount — the v0.4.x names —
-//   are no longer read or written. On-disk upgrades load the file
-//   cleanly: unknown fields are dropped, missing fields default to
-//   0 via the typeof guard in loadFromDisk. No migration shim is
-//   needed; the new fields populate on the next write.)
+//   (B) prevTickStatus  — SINGLETON, NOT per-dimension. Holds the
+//       last tick's stdin snapshot. Pure std cache used by the
+//       writer to (i) compute the per-tick delta in/out/cachedIn/
+//       totalIn/totalApiMs and (ii) detect a ccsession reset (the
+//       user-defined rule: if current totalApiMs <
+//       prevTickStatus.totalApiMs, the Claude Code process
+//       restarted and the ccsession accumulator must be reset).
 //
-// Also stores the simplified `lastActive` slot (formerly
-// `tickSpeedDisplay:<direction>:<sessionId>`) with the same TTL
-// contract but no session dimension:
-//
-//   lastActive:in   { direction, tps, at }
-//   lastActive:out  { direction, tps, at }
+//       value shape (PrevTickStatusValue):
+//         in          — prev tick's current.input
+//         out         — prev tick's current.output
+//         cachedIn    — prev tick's current.cacheRead
+//         totalIn     — prev tick's session-cumulative totalIn
+//         totalApiMs  — prev tick's session-cumulative cost.totalApiDurationMs
+//         sessionId   — prev tick's stdin session_id (debug aid)
+//         cwd         — prev tick's stdin cwd
+//         model       — prev tick's stdin modelDisplayName
 //
 // Why a separate file (vs. cache.json)?
 //   - The legacy `state/cache.json` is the home for provider-specific
@@ -77,42 +74,29 @@ import {
 import { dirname, join } from "node:path";
 import { projectHash } from "./token-store.ts";
 
+// ----- Acc shape (per-dimension tickStatus value) -----
+//
+// Pure accumulator. No per-tick / per-session-cumulative fields —
+// those live in prevTickStatus.
 export type TickStatusValue = {
-  in: number;
-  out: number;
-  // v0.8.0+ rename: `cacheRead` → `cachedIn`. Same semantic
-  // (per-turn cache_read_input_tokens); renamed to match the
-  // TokenSample convention (see c44072e) so the per-tick snapshot
-  // reads identically to a TokenSample row.
-  cachedIn: number;
-  // v0.8.0+ — NEW. Session-cumulative input tokens. Source:
-  // `context_window.total_input_tokens` from the stdin JSON.
-  // Mirrors TokenSample.totalIn (which also reads from the same
-  // field). Monotonic-non-decreasing within a session.
-  totalIn: number;
-  // v0.8.0+ — acc* prefix replaces v0.4.x sum* prefix. Same
-  // semantic (accumulated across API calls), renamed for
-  // consistency with the new m_acc* module family. Old on-disk
-  // sum* fields are not read.
   accIn: number;
   accOut: number;
   accCached: number;
-  // v0.8.0+ — NEW. Per-tick-delta-accumulator of totalIn. Init=0;
-  // each turn += (current.totalIn - prev.totalIn). Numerically
-  // equals accIn + accCached + accCacheCreation (where applicable),
-  // modulo cache eviction. After N turns it converges on
-  // `totalIn - totalIn_at_turn_0`.
   accTotalIn: number;
-  // v0.8.0+ — REPLACES `accApiMs`. New semantic: session-cumulative
-  // `cost.total_api_duration_ms` (read directly from stdin each
-  // tick). Drops the v0.7.x per-tick-delta-accumulator behavior —
-  // that aggregate is no longer stored in the per-tick status
-  // snapshot. Name matches the v0.8.0 TokenSample.totalApiMs
-  // convention (c44072e). m_apiMs / m_accApiMs continue to read
-  // from the in-memory prev-tick baseline in api-ms.ts; the
-  // on-disk field is the audit/inspect-friendly cumulative value.
-  totalApiMs: number;
+  accApiMs: number;
   accApiCount: number;
+};
+
+// ----- Prev-tick std snapshot (singleton) -----
+export type PrevTickStatusValue = {
+  in: number;
+  out: number;
+  cachedIn: number;
+  totalIn: number;
+  totalApiMs: number;
+  sessionId: string | null;
+  cwd: string | null;
+  model: string | null;
 };
 
 export type LastActiveValue = {
@@ -120,11 +104,22 @@ export type LastActiveValue = {
   tps: number;
 };
 
-// Heterogeneous store: each key carries one of two typed payloads.
-// `TickStatusValue` keys are exactly `tickStatus` / `tickStatus:*`.
-// `LastActiveValue` keys are exactly `lastActive:in` / `lastActive:out`.
+// ----- Key taxonomy -----
+//
+// tickStatus:* — acc-only. The dimension is encoded in the suffix
+// (sid | hash | model) OR the bare `tickStatus:ccsession` for the
+// process-lifetime singleton. There is intentionally NO bare
+// `tickStatus` (no suffix) — that was the v0.8.0 project-wide
+// slot, now keyed by projectHash.
+//
+// lastActive:in / lastActive:out — per-direction tps cache, 60s TTL.
+
+export const CCSESSION_KEY = "tickStatus:ccsession";
+export const PREV_TICK_KEY = "prevTickStatus";
+
 type Entry =
   | { at: number; value: TickStatusValue; kind: "tickStatus" }
+  | { at: number; value: PrevTickStatusValue; kind: "prevTickStatus" }
   | { at: number; value: LastActiveValue; kind: "lastActive" };
 
 type Store = Record<string, Entry>;
@@ -213,7 +208,7 @@ function loadFromDisk(cwd: string): Store {
       };
       continue;
     }
-    if (key === "tickStatus" || key.startsWith("tickStatus:")) {
+    if (key === PREV_TICK_KEY) {
       const v = e.value as Record<string, unknown>;
       out[key] = {
         at: e.at,
@@ -222,11 +217,25 @@ function loadFromDisk(cwd: string): Store {
           out: typeof v.out === "number" ? v.out : 0,
           cachedIn: typeof v.cachedIn === "number" ? v.cachedIn : 0,
           totalIn: typeof v.totalIn === "number" ? v.totalIn : 0,
+          totalApiMs: typeof v.totalApiMs === "number" ? v.totalApiMs : 0,
+          sessionId: typeof v.sessionId === "string" ? v.sessionId : null,
+          cwd: typeof v.cwd === "string" ? v.cwd : null,
+          model: typeof v.model === "string" ? v.model : null,
+        },
+        kind: "prevTickStatus",
+      };
+      continue;
+    }
+    if (key === CCSESSION_KEY || key.startsWith("tickStatus:")) {
+      const v = e.value as Record<string, unknown>;
+      out[key] = {
+        at: e.at,
+        value: {
           accIn: typeof v.accIn === "number" ? v.accIn : 0,
           accOut: typeof v.accOut === "number" ? v.accOut : 0,
           accCached: typeof v.accCached === "number" ? v.accCached : 0,
           accTotalIn: typeof v.accTotalIn === "number" ? v.accTotalIn : 0,
-          totalApiMs: typeof v.totalApiMs === "number" ? v.totalApiMs : 0,
+          accApiMs: typeof v.accApiMs === "number" ? v.accApiMs : 0,
           accApiCount: typeof v.accApiCount === "number" ? v.accApiCount : 0,
         },
         kind: "tickStatus",
@@ -260,22 +269,30 @@ function flushToDisk(cwd: string, store: Store): void {
 // the read and write paths agree on the field set.
 export function emptyTickStatus(): TickStatusValue {
   return {
-    in: 0,
-    out: 0,
-    cachedIn: 0,
-    totalIn: 0,
     accIn: 0,
     accOut: 0,
     accCached: 0,
     accTotalIn: 0,
-    totalApiMs: 0,
+    accApiMs: 0,
     accApiCount: 0,
   };
 }
 
-// Read the current value of `key` for a given project cwd. Returns
-// null when the key has never been written. The in-memory cache is
-// loaded lazily on the first call per cwd.
+export function emptyPrevTickStatus(): PrevTickStatusValue {
+  return {
+    in: 0,
+    out: 0,
+    cachedIn: 0,
+    totalIn: 0,
+    totalApiMs: 0,
+    sessionId: null,
+    cwd: null,
+    model: null,
+  };
+}
+
+// ----- tickStatus (per-dimension acc) -----
+
 export function readTickStatus(
   cwd: string | null | undefined,
   key: string,
@@ -287,8 +304,6 @@ export function readTickStatus(
   return e.value;
 }
 
-// Write `value` under `key` for the given cwd. Replaces any prior
-// value at the same key. Synchronous; failures are swallowed.
 export function writeTickStatus(
   cwd: string | null | undefined,
   key: string,
@@ -297,6 +312,28 @@ export function writeTickStatus(
   if (!cwd) return;
   const store = loadFromDisk(cwd);
   store[key] = { at: Date.now(), value, kind: "tickStatus" };
+  flushToDisk(cwd, store);
+}
+
+// ----- prevTickStatus (singleton) -----
+
+export function readPrevTickStatus(
+  cwd: string | null | undefined,
+): PrevTickStatusValue | null {
+  if (!cwd) return null;
+  const store = loadFromDisk(cwd);
+  const e = store[PREV_TICK_KEY];
+  if (!e || e.kind !== "prevTickStatus") return null;
+  return e.value;
+}
+
+export function writePrevTickStatus(
+  cwd: string | null | undefined,
+  value: PrevTickStatusValue,
+): void {
+  if (!cwd) return;
+  const store = loadFromDisk(cwd);
+  store[PREV_TICK_KEY] = { at: Date.now(), value, kind: "prevTickStatus" };
   flushToDisk(cwd, store);
 }
 

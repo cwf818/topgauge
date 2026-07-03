@@ -238,10 +238,11 @@ async function main(): Promise<void> {
     });
     if (decision.kind === "write") {
       appendSample(tokens.cwd, tokens.sessionId, decision.sample);
-    } else if (decision.kind === "warn") {
-      process.stderr.write(`topgauge-cc: ${decision.message}\n`);
-      diagnostics.append("warning", "apiMs-stuck", decision.message, Date.now(), tokens.cwd);
     }
+    // v0.8.6 — dropped the `decision.kind === "warn"` branch that used
+    // to write the "deltaApiMs=0 with token activity" row into
+    // diagnostics.jsonl as source `apiMs-stuck`. The decision is now
+    // uniformly skip when there's nothing useful to write.
   }
 
   const baseUrl = process.env.ANTHROPIC_BASE_URL;

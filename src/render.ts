@@ -26,7 +26,7 @@ import {
   quoteIndex,
   type QuoteFreq,
 } from "./quotes.ts";
-import { readAllSamples } from "./token-store.ts";
+import { readAllSamples, projectHash } from "./token-store.ts";
 import { readGitInfo } from "./git-info.ts";
 import * as statusStore from "./status-store.ts";
 import * as cache from "./cache.ts";
@@ -758,56 +758,48 @@ type Module = ((ctx: RenderContext) => string | null) & {
   type?: "plan" | "balance" | "unknown";
 };
 
-// v0.4.x — per-tick state lives in `state/<projectHash>/status.json`
-// (managed by src/status-store.ts). Three flavors of `tickStatus`
-// records: a project-wide aggregate (no suffix), per-session
-// (`tickStatus:<sessionId>`), and per-provider
-// (`tickStatus:<modelDisplayName>`).
+// v0.8.x — cwf-tickStatus-v2. Per-tick state lives in
+// `state/<projectHash>/status.json` (managed by src/status-store.ts).
+// Two slot families with clearly separated roles:
 //
-// `tickStatus:<sessionId>` doubles as BOTH the prev-tick baseline
-// (the `totalApiMs` field carries the session-cumulative
-// cost.total_api_duration_ms, but the `in`/`out`/`cachedIn` fields
-// hold the LAST tick's per-turn values) AND the running
-// accumulator (accIn/accOut/accCached/accTotalIn/accApiCount). One
-// slot replaces the old `tickSpeed:<sid>` + `tickAvg:<sid>` pair —
-// same per-render semantics, simpler schema, project-isolated.
+//   (A) tickStatus:<...>  — PURE ACCUMULATORS (the user-defined
+//       rule: "tickStatus 只表示累计状态"). Four dimensions, all
+//       written by setAvg's atomic path:
 //
-// Stored shape (one entry per sessionId, under status.json):
-//   {
-//     "in":          2468,   // last tick's input tokens (this turn's delta)
-//     "out":          248,   // last tick's output tokens
-//     "cachedIn":   33403,   // last tick's cache-read tokens (was cacheRead)
-//     "totalIn":   248910,   // session-cumulative context_window.total_input_tokens
-//     "sumIn":       3093,   // accumulated in  across API calls
-//     "sumOut":       475,   // accumulated out
-//     "sumCache":   66182,   // accumulated cache_read
-//     "sumApiMs":  132311,   // was sumApiMs; field renamed to totalApiMs in v0.8.0+
-//                              // — see setAvg / peekAvg for the new alias map
-//     "sumApiCount":   17,   // accumulated API-call count
-//   }
+//         tickStatus:<sessionId>   per-session (clear-bounded)
+//         tickStatus:<projectHash> per-project (cwd-bounded, NO prefix)
+//         tickStatus:<model>       per-model (modelDisplayName)
+//         tickStatus:ccsession     per-claude-code-process (singleton,
+//                                  no sessionId suffix; reset on
+//                                  totalApiMs regression — see setAvg)
 //
-// accApiCount contract (revised per user direction):
+//       value shape (TickStatusValue, acc-only — no per-tick fields):
+//         accIn        — accumulated current.input
+//         accOut       — accumulated current.output
+//         accCached    — accumulated current.cacheRead
+//         accTotalIn   — per-tick-delta-accumulator of totalIn
+//         accApiMs     — session-cumulative cost.totalApiDurationMs
+//                        (mirrors stdin's monotonic field)
+//         accApiCount  — accumulated API-call count
+//
+//   (B) prevTickStatus  — SINGLETON, NOT per-dimension. Holds the
+//       last tick's stdin snapshot. Used by the writer to (i)
+//       compute the per-tick delta and (ii) detect a ccsession
+//       reset (current totalApiMs < prevTickStatus.totalApiMs
+//       means the Claude Code process restarted; the ccsession
+//       accumulator must reset before this tick's delta is added).
+//
+//       value shape (PrevTickStatusValue):
+//         in/out/cachedIn/totalIn/totalApiMs — previous tick's values
+//         sessionId/cwd/model                 — identity for debug
+//
+// accApiCount contract (unchanged from v0.8.0):
 //   On a tick where deltaApiMs > 0 AND input_tokens > 0 (a real
 //   API call that produced input tokens), accApiCount += 1. The
 //   gate is AND, not OR — a tick with deltaApiMs > 0 but
-//   input_tokens == 0 (e.g. a thinking-only turn that produced no
-//   input) does NOT count. This matches the user's intent of
-//   "count the actual user-visible API calls".
-//
-// Lifecycle: status-store.ts reads/writes the file lazily and
-// persists across per-tick child-process invocations, so a fresh
-// process can read the prior tick's `sumApiMs` to compute
-// deltaApiMs without any in-memory warm-up.
+//   input_tokens == 0 does NOT count.
 //
 // Exported for tests (so unit tests can pre-seed the cache).
-// The `apiMs` field is kept on this projection type because the
-// per-render delta math (computeAndCacheTickDelta) reads it as a
-// baseline and test fixtures pre-seed it directly. The canonical
-// on-disk field is `totalApiMs` — peekPrevTick maps between them.
-//
-// v0.8.0+ — added `totalIn` so deltaTotalIn can compute
-// (currentTotalsInput - prevTotalIn). Stored on disk as
-// tickStatus.value.totalIn.
 export type PrevTickSnapshot = {
   apiMs: number;
   in: number;
@@ -816,24 +808,31 @@ export type PrevTickSnapshot = {
   totalIn: number;
 };
 
-// Public: looks up the previous tick for a given session. Reads
-// the unified `tickStatus:<sid>` slot from status.json and
-// returns the prev-tick-shaped projection (apiMs = totalApiMs).
-// Returns null on miss (no prior tick). The caller is responsible
-// for the post-call `setPrevTick` to keep the cache fresh.
+// Public: looks up the previous tick's stdin snapshot. Reads the
+// global `prevTickStatus` slot from status.json. Returns null on
+// miss (no prior tick). The caller is responsible for the
+// post-call `setPrevTick` to keep the cache fresh.
 //
-// v0.8.0+ — the prev-tick apiMs baseline is now read from
-// `totalApiMs` (session-cumulative cost.totalApiDurationMs). Since
-// the field is monotonic, the per-tick delta is just
-// (current.totalApiMs - prev.totalApiMs) — same arithmetic as
-// before, different field name.
+// v0.8.x cwf-tickStatus-v2 — prev-tick storage moved out of
+// `tickStatus:<sid>` into a single `prevTickStatus` slot. Same
+// delta arithmetic (current.totalApiMs - prev.totalApiMs) but
+// the baseline is now dimension-agnostic.
 export function peekPrevTick(
   sessionId: string,
   cwd?: string | null,
 ): PrevTickSnapshot | null {
-  if (!sessionId) return null;
-  const v = statusStore.readTickStatus(cwd, `tickStatus:${sessionId}`);
+  const v = statusStore.readPrevTickStatus(cwd);
   if (!v) return null;
+  // v0.8.x cwf-tickStatus-v2 — the singleton prevTickStatus is
+  // shared across ALL sessions in the same cwd. To preserve the
+  // v0.4.x "first tick of a new session is a fresh delta" contract
+  // (deltaApi = current - 0 = current > 0, hasDelta=true), we MUST
+  // treat the singleton as null when its sessionId doesn't match
+  // the current sessionId. Otherwise a second renderTemplate call
+  // with a DIFFERENT sessionId (e.g. two distinct test snapshots
+  // back-to-back) would see the prior session's baseline, get
+  // deltaApi = 0, and incorrectly render as an idle/inactive tick.
+  if (v.sessionId !== null && v.sessionId !== sessionId) return null;
   return {
     apiMs: v.totalApiMs,
     in: v.in,
@@ -843,30 +842,29 @@ export function peekPrevTick(
   };
 }
 
-// Public: writes the current tick's snapshot for the next call to
-// read. The unified tickStatus shape on disk holds both the
-// per-tick snapshot AND the running totals; this helper updates
-// only the per-tick fields and preserves the accumulator fields
-// that already exist on disk.
-//
-// Implementation note: the canonical "full" write path is
-// `setTickStatusSnapshot` (called from computeAndCacheTickDelta),
-// which writes all fields atomically. This helper is kept for
-// test fixtures that only want to seed the prev-tick baseline.
+// Public: writes the current tick's snapshot into the global
+// `prevTickStatus` slot. Replaces the value wholesale — the new
+// shape is a flat PrevTickStatusValue (no longer embedded inside
+// the per-session tickStatus entry). Test fixtures seed
+// prev-tick baselines through this helper.
 export function setPrevTick(
-  sessionId: string,
+  _sessionId: string,
   snap: PrevTickSnapshot,
   cwd?: string | null,
+  identity?: { sessionId?: string | null; cwd?: string | null; model?: string | null },
 ): void {
-  if (!sessionId) return;
-  const existing = statusStore.readTickStatus(cwd, `tickStatus:${sessionId}`);
-  const next: statusStore.TickStatusValue = existing ?? statusStore.emptyTickStatus();
-  next.in = snap.in;
-  next.out = snap.out;
-  next.cachedIn = snap.cacheRead;
-  next.totalApiMs = snap.apiMs;
-  next.totalIn = snap.totalIn;
-  statusStore.writeTickStatus(cwd, `tickStatus:${sessionId}`, next);
+  void _sessionId;
+  const prev = statusStore.readPrevTickStatus(cwd) ?? statusStore.emptyPrevTickStatus();
+  statusStore.writePrevTickStatus(cwd, {
+    in: snap.in,
+    out: snap.out,
+    cachedIn: snap.cacheRead,
+    totalIn: snap.totalIn,
+    totalApiMs: snap.apiMs,
+    sessionId: identity?.sessionId ?? prev.sessionId,
+    cwd: identity?.cwd ?? prev.cwd,
+    model: identity?.model ?? prev.model,
+  });
 }
 
 // ----- lastActive (v0.4.x) --------------------------------------------
@@ -932,36 +930,25 @@ export function __resetPrevTickForTest(
   // setPrevTick(..., {apiMs:0, in:0, out:0, cacheRead:0}).
 }
 
-// Back-compat alias — the old tickAvg:<sessionId> slot is now part
-// of tickStatus:<sessionId>. Existing tests that read via
-// peekAvg(<sid>, <cwd>) keep working: returns the accumulator
-// subset of the tickStatus entry.
+// Reads the per-session accumulator from status.json. The
+// session-slot key is `tickStatus:<sessionId>` and the value
+// shape is the v0.8.x cwf-tickStatus-v2 TickStatusValue
+// (acc-only — per-tick / session-cumulative fields live in
+// prevTickStatus). Returns null when no prior accumulator write
+// exists for the session.
 //
-// v0.8.0+ — field rename: `sum*` → `acc*` to match the on-disk
-// schema in src/status-store.ts (TickStatusValue.acc*) and the
-// new `m_acc*` module family. The `acc*` prefix reads more naturally
-// for "accumulator" and lines up with the per-turn `m_token*`
-// modules that this accumulates. Old callers that referenced
-// `sumIn` / `sumOut` etc. need to migrate; see [[token-modules-redesign-v0-8-0]].
-//
-// Note: `accApi` here is an alias of `totalApiMs` (session-cumulative
-// cost.totalApiDurationMs as of the last tick). The `Ms` suffix is
-// dropped in the AvgSnapshot field name to keep callers free of
-// unit-suffix noise — the convention is "all values are ms", since
-// this snapshot already mixes accIn (token count) and accApi (ms).
+// `accApi` mirrors the v0.8.x TokenSample.totalApiMs convention —
+// the session-cumulative cost.totalApiDurationMs at the last
+// write. m_apiMs / m_apiMs-with-prev-fallback continues to read
+// the prev baseline from prevTickStatus; accApi here is the
+// "audit/inspect" value that grows monotonically.
 export type AvgSnapshot = {
   accIn: number;
   accOut: number;
   accApi: number;
   accCached: number;
   accApiCount: number;
-  // v0.8.0+ — NEW. Per-tick-delta-accumulator of `totalIn`. Mirrors
-  // the existing acc* delta-accumulator pattern (init=0, += delta
-  // per turn). After N turns converges on `totalIn - totalIn_at_turn_0`.
   accTotalIn: number;
-  // v0.8.0+ — NEW. Latest session-cumulative `context_window.total_input_tokens`,
-  // stamped from stdin each tick. Mirrors the on-disk `totalIn` field.
-  totalIn: number;
 };
 
 export function peekAvg(
@@ -974,28 +961,28 @@ export function peekAvg(
   return {
     accIn: v.accIn,
     accOut: v.accOut,
-    accApi: v.totalApiMs,
+    accApi: v.accApiMs,
     accCached: v.accCached,
     accApiCount: v.accApiCount,
     accTotalIn: v.accTotalIn,
-    totalIn: v.totalIn,
   };
 }
 
-// v0.8.0+ — read the three-layer accumulator at a chosen scope.
-// Used by the m_acc* module family (m_accTokenIn, m_accTokenOut,
-// m_accTokenCachedIn, m_accTokenTotalIn, m_accApiMs,
-// m_accCacheHitRate). The "session" scope is the per-session
-// absolute cumulative (the same as peekAvg above); "project" is
-// the project-wide DELTA-accumulated slot; "model" is the per-model
-// delta-accumulated slot (resolved via the live TokenSnapshot's
-// modelDisplayName — the same key the per-tick write uses).
+// v0.8.x cwf-tickStatus-v2 — read the four-layer accumulator at a
+// chosen scope. Used by the m_acc* module family. The four
+// scopes:
 //
-// Returns null when the slot has never been written (no prior
-// accumulator write), so the module can render a placeholder
-// rather than fabricating a "0".
+//   session  → tickStatus:<sessionId>          (clear-bounded)
+//   project  → tickStatus:<projectHash(cwd)>   (cwd-bounded; no prefix)
+//   model    → tickStatus:<modelDisplayName>   (per-model)
+//   ccsession→ tickStatus:ccsession            (claude-code-process;
+//                                              reset on totalApiMs
+//                                              regression — see setAvg)
+//
+// Returns null when the slot has never been written, so the
+// module can render a placeholder rather than fabricating a "0".
 function peekAcc(
-  scope: "session" | "project" | "model",
+  scope: "session" | "project" | "model" | "ccsession",
   ctx: RenderContext,
 ): AvgSnapshot | null {
   const t = ctx.tokens;
@@ -1004,75 +991,68 @@ function peekAcc(
     if (!t?.sessionId) return null;
     return peekAvg(t.sessionId, cwd);
   }
+  let key: string;
   if (scope === "project") {
-    const v = statusStore.readTickStatus(cwd, "tickStatus");
-    if (!v) return null;
-    return {
-      accIn: v.accIn,
-      accOut: v.accOut,
-      accApi: v.totalApiMs,
-      accCached: v.accCached,
-      accApiCount: v.accApiCount,
-      accTotalIn: v.accTotalIn,
-      totalIn: v.totalIn,
-    };
+    if (!cwd) return null;
+    key = `tickStatus:${projectHash(cwd)}`;
+  } else if (scope === "ccsession") {
+    key = statusStore.CCSESSION_KEY;
+  } else {
+    // scope === "model"
+    const model = t?.modelDisplayName;
+    if (!model) return null;
+    key = `tickStatus:${model}`;
   }
-  // scope === "model"
-  const model = t?.modelDisplayName;
-  if (!model) return null;
-  const v = statusStore.readTickStatus(cwd, `tickStatus:${model}`);
+  const v = statusStore.readTickStatus(cwd, key);
   if (!v) return null;
   return {
     accIn: v.accIn,
     accOut: v.accOut,
-    accApi: v.totalApiMs,
+    accApi: v.accApiMs,
     accCached: v.accCached,
     accApiCount: v.accApiCount,
     accTotalIn: v.accTotalIn,
-    totalIn: v.totalIn,
   };
 }
 
-// Canonical write path for the running accumulator. Reads the
+// Canonical write path for the four-layer accumulator. Reads the
 // current tickStatus:<sid> entry (or starts from zero), adds the
 // per-tick deltas, and writes the unified shape back — including
 // the new `accApiCount` field (see accApiCount contract above).
-// Also bumps the project-wide `tickStatus` and (when available)
+// Also bumps the project-wide `tickStatus:<projectHash>`, the
+// per-process `tickStatus:ccsession`, and (when available)
 // `tickStatus:<modelDisplayName>` entries with the SAME delta so
 // every scoping level reflects this tick.
 //
-// v0.4.x — replaces the old "setPrevTick + setAvg" pair. The
-// prev-tick baseline is updated together with the accumulator
-// fields so the next tick can read a consistent snapshot in one
-// disk read instead of stitching two slots together.
+// v0.8.x cwf-tickStatus-v2:
+//   - tickStatus:<sid>   : ABSOLUTE (snap.acc* used as-is)
+//   - tickStatus:<hash>  : DELTA-ACCUMULATE across sessions/ticks
+//   - tickStatus:ccsession: DELTA-ACCUMULATE, but with reset
+//                          detection (see ccsessionReset below)
+//   - tickStatus:<model> : DELTA-ACCUMULATE
 //
-// v0.8.0+ — field rename (sum* → acc*) on both the `AvgSnapshot`
-// argument shape and the `TickStatusValue` on-disk schema.
-// See [[token-modules-redesign-v0-8-0]]. `snap` field meanings:
-//   snap.accIn      = session-cumulative current.input   (replaces sumIn)
-//   snap.accOut     = session-cumulative current.output  (replaces sumOut)
+// `snap` field meanings (v0.8.x — no `totalIn`, the
+// session-cumulative totalIn lives in prevTickStatus now):
+//   snap.accIn      = session-cumulative current.input
+//   snap.accOut     = session-cumulative current.output
 //   snap.accApi     = session-cumulative cost.totalApiDurationMs
-//                     (replaces sumApi — the on-disk field is totalApiMs)
+//                     (mirrors the on-disk accApiMs field)
 //   snap.accCached  = session-cumulative current.cacheRead
-//                     (replaces sumCache)
 //   snap.accApiCount = session-cumulative count of API calls
-//                     (replaces sumApiCount)
 //   snap.accTotalIn = per-tick-delta-accumulator of totalIn
-//                     (NEW v0.8.0+; init=0, += per-tick delta)
-//   snap.totalIn    = session-cumulative context_window.total_input_tokens
-//                     (NEW v0.8.0+; mirrors the on-disk totalIn field)
 //
 // Caller passes the delta math (computeAndCacheTickDelta already
-// produced it). Per-tick `in`/`out`/`cachedIn` fields are also
-// stamped with the latest values so peekPrevTick's projection
-// returns current state immediately (no extra write needed).
+// produced it). Per-tick `in`/`out`/`cachedIn`/`totalIn`/
+// `totalApiMs` fields are NOT stored on tickStatus — they live
+// in the singleton `prevTickStatus` slot, which the caller
+// updates via setPrevTick BEFORE/AFTER calling setAvg.
 //
 // IMPORTANT: the per-session slot stores ABSOLUTE cumulative
 // values for that session (`accIn = session_prev_accIn + delta`).
-// The project-wide and per-provider slots store DELTAS ACCUMULATED
-// across ticks (`accIn += deltaIn`), so multiple sessions tick
-// into the same aggregate without overwriting each other. Per-tick
-// fields on the aggregates always hold the latest tick's value.
+// The project-wide / ccsession / per-provider slots store
+// DELTAS ACCUMULATED across ticks (`accIn += deltaIn`), so
+// multiple sessions tick into the same aggregate without
+// overwriting each other.
 export function setAvg(
   sessionId: string,
   snap: AvgSnapshot,
@@ -1080,20 +1060,16 @@ export function setAvg(
   extras?: {
     modelDisplayName?: string | null;
     deltaApiCount?: number;
-    currentIn?: number;
-    currentOut?: number;
-    currentCacheRead?: number;
     currentApiMs?: number;
-    currentTotalIn?: number;
-    deltaTotalIn?: number;
-    // Per-tick deltas to ADD into the project-wide and per-provider
-    // aggregate accumulators. When omitted (legacy callers), the
-    // aggregate slots are not bumped — backward compatible with the
-    // v0.3.x setAvg signature.
+    // Per-tick deltas to ADD into the project-wide / ccsession /
+    // per-provider aggregate accumulators. When omitted (legacy
+    // callers), the aggregate slots are not bumped — backward
+    // compatible with the v0.3.x setAvg signature.
     deltaIn?: number;
     deltaOut?: number;
     deltaCache?: number;
     deltaApiMs?: number;
+    deltaTotalIn?: number;
   },
 ): void {
   if (!sessionId) return;
@@ -1102,31 +1078,34 @@ export function setAvg(
   // extras.deltaApiCount is pre-computed by the caller (1 or 0)
   // to keep the gate logic colocated with the delta math.
   const incrementCount = extras?.deltaApiCount ?? 0;
-  // Per-session slot — ABSOLUTE cumulative values.
+
+  // Per-session slot — DELTA-ACCUMULATE for in/out/cached/
+  // totalIn/apiCount, but ABSOLUTE for accApiMs. The on-disk
+  // TickStatusValue is acc-only (v0.8.x cwf-tickStatus-v2):
+  // per-tick / session-cumulative input/output/cacheRead/totalIn/
+  // totalApiMs live in prevTickStatus. setAvg receives a
+  // per-tick `snap` and adds the deltas into the existing slot
+  // (or seeds it from zero on the first tick). accApiMs is the
+  // session-cumulative cost.totalApiDurationMs at the last
+  // write — it MIRRORS stdin's monotonic field rather than
+  // accumulating deltas, so we always write the absolute
+  // current value (and on a regression the ccsession reset
+  // logic zeroes the ccsession slot so the new process can
+  // re-seed from zero; the session-slot, which is per-current-
+  // session, never sees a regression within its own scope).
   const existing = statusStore.readTickStatus(cwd, `tickStatus:${sessionId}`);
   const next: statusStore.TickStatusValue = existing ?? statusStore.emptyTickStatus();
-  next.accIn = snap.accIn;
-  next.accOut = snap.accOut;
-  next.totalApiMs = snap.accApi;
-  next.accCached = snap.accCached;
-  next.accApiCount = snap.accApiCount;
-  next.accTotalIn = snap.accTotalIn;
-  if (snap.totalIn) next.totalIn = snap.totalIn;
-  // Also stamp the per-tick fields so peekPrevTick reads a
-  // consistent baseline without needing a separate setPrevTick
-  // call. Caller passes current values; fall back to whatever
-  // was already there when not provided (preserves the
-  // existing partial-write semantics).
-  if (extras?.currentIn != null) next.in = extras.currentIn;
-  if (extras?.currentOut != null) next.out = extras.currentOut;
-  if (extras?.currentCacheRead != null) next.cachedIn = extras.currentCacheRead;
-  if (extras?.currentApiMs != null) next.totalApiMs = extras.currentApiMs;
-  if (extras?.currentTotalIn != null) next.totalIn = extras.currentTotalIn;
+  next.accIn += snap.accIn;
+  next.accOut += snap.accOut;
+  next.accApiMs = snap.accApi;
+  next.accCached += snap.accCached;
+  next.accApiCount += snap.accApiCount;
+  next.accTotalIn += snap.accTotalIn;
   statusStore.writeTickStatus(cwd, `tickStatus:${sessionId}`, next);
 
-  // Project-wide aggregate — ACCUMULATE per-tick deltas so two
+  // Per-project aggregate — ACCUMULATE per-tick deltas so two
   // concurrent sessions both contribute without overwriting each
-  // other. Per-tick fields hold the latest value (most-recent-wins).
+  // other. Key is `tickStatus:<projectHash(cwd)>` (no prefix).
   if (
     incrementCount > 0 ||
     extras?.deltaIn ||
@@ -1135,18 +1114,53 @@ export function setAvg(
     extras?.deltaApiMs ||
     extras?.deltaTotalIn
   ) {
-    const agg = statusStore.readTickStatus(cwd, "tickStatus") ??
+    if (cwd) {
+      const projectKey = `tickStatus:${projectHash(cwd)}`;
+      const agg = statusStore.readTickStatus(cwd, projectKey) ??
+        statusStore.emptyTickStatus();
+      if (extras?.deltaIn) agg.accIn += extras.deltaIn;
+      if (extras?.deltaOut) agg.accOut += extras.deltaOut;
+      if (extras?.deltaCache) agg.accCached += extras.deltaCache;
+      if (extras?.currentApiMs != null) agg.accApiMs = extras.currentApiMs;
+      if (extras?.deltaTotalIn) agg.accTotalIn += extras.deltaTotalIn;
+      if (incrementCount > 0) agg.accApiCount += incrementCount;
+      statusStore.writeTickStatus(cwd, projectKey, agg);
+    }
+
+    // Per-claude-code-process (ccsession) aggregate. Same
+    // ACCUMULATE semantics as project. The ccsession reset on a
+    // cost.totalApiDurationMs regression is handled in
+    // accPrimer (see comment above the r.hasDelta early return)
+    // so the reset can fire even when this tick has no positive
+    // delta to accumulate. The slot is read+written below only
+    // when this tick has a positive contribution to land.
+  }
+  {
+    // ccsession accumulation (gated on hasDelta-like conditions;
+    // the slot is already reset to zero by accPrimer on a
+    // regression, so a positive-delta tick that follows lands
+    // its contribution on the clean baseline).
+    const ccs =
+      statusStore.readTickStatus(cwd, statusStore.CCSESSION_KEY) ??
       statusStore.emptyTickStatus();
-    if (extras?.deltaIn) agg.accIn += extras.deltaIn;
-    if (extras?.deltaOut) agg.accOut += extras.deltaOut;
-    if (extras?.deltaCache) agg.accCached += extras.deltaCache;
-    if (extras?.deltaApiMs) agg.totalApiMs += extras.deltaApiMs;
-    if (extras?.deltaTotalIn) agg.accTotalIn += extras.deltaTotalIn;
-    if (incrementCount > 0) agg.accApiCount += incrementCount;
-    if (extras?.currentIn != null) agg.in = extras.currentIn;
-    if (extras?.currentOut != null) agg.out = extras.currentOut;
-    if (extras?.currentCacheRead != null) agg.cachedIn = extras.currentCacheRead;
-    statusStore.writeTickStatus(cwd, "tickStatus", agg);
+    if (extras?.deltaIn) ccs.accIn += extras.deltaIn;
+    if (extras?.deltaOut) ccs.accOut += extras.deltaOut;
+    if (extras?.deltaCache) ccs.accCached += extras.deltaCache;
+    if (extras?.currentApiMs != null) ccs.accApiMs = extras.currentApiMs;
+    if (extras?.deltaTotalIn) ccs.accTotalIn += extras.deltaTotalIn;
+    if (incrementCount > 0) ccs.accApiCount += incrementCount;
+    // Only persist when at least one field changed; otherwise
+    // the read+write is a no-op disk touch on every tick.
+    if (
+      extras?.deltaIn ||
+      extras?.deltaOut ||
+      extras?.deltaCache ||
+      extras?.currentApiMs != null ||
+      extras?.deltaTotalIn ||
+      incrementCount > 0
+    ) {
+      statusStore.writeTickStatus(cwd, statusStore.CCSESSION_KEY, ccs);
+    }
   }
 
   // Per-provider slot (model display name). Optional — only
@@ -1161,12 +1175,9 @@ export function setAvg(
     if (extras?.deltaIn) prov.accIn += extras.deltaIn;
     if (extras?.deltaOut) prov.accOut += extras.deltaOut;
     if (extras?.deltaCache) prov.accCached += extras.deltaCache;
-    if (extras?.deltaApiMs) prov.totalApiMs += extras.deltaApiMs;
+    if (extras?.currentApiMs != null) prov.accApiMs = extras.currentApiMs;
     if (extras?.deltaTotalIn) prov.accTotalIn += extras.deltaTotalIn;
     if (incrementCount > 0) prov.accApiCount += incrementCount;
-    if (extras?.currentIn != null) prov.in = extras.currentIn;
-    if (extras?.currentOut != null) prov.out = extras.currentOut;
-    if (extras?.currentCacheRead != null) prov.cachedIn = extras.currentCacheRead;
     statusStore.writeTickStatus(cwd, `tickStatus:${model}`, prov);
   }
 }
@@ -1195,9 +1206,9 @@ type TickDeltaResult = {
   deltaOut: number;
   deltaApi: number;
   // v0.4.0+: delta of current_usage.cache_read_input_tokens
-  // across the last tick. Used by m_totalTokenWithCacheIn (not by
-  // the avg modules, which only need in/out/api). Defaults to 0
-  // when either side of the subtraction is null (stdin lacked the
+  // across the last tick. Feeds the per-tick-delta-accumulator
+  // field accCached (via the m_acc* family). Defaults to 0 when
+  // either side of the subtraction is null (stdin lacked the
   // field — see computeAndCacheTickDelta).
   deltaCacheRead: number;
   // v0.8.0+: delta of context_window.total_input_tokens across the
@@ -1212,13 +1223,15 @@ type TickDeltaResult = {
   writeBack: PrevTickSnapshot | null;
 };
 const _tickDeltaMemo = new WeakMap<RenderContext, TickDeltaResult>();
-// Memo for the setAvg accumulator write. Both computeTickAvg
-// AND computeTickTotals need to fire setAvg (each family must
-// work as the sole per-API-call module in a template). On a
-// render that has both — e.g. m_totalTokenIn + m_tokenInAvg —
-// they'd otherwise double-count the delta. Idempotent: first
-// caller wins; subsequent callers no-op.
+// Memo for the setAvg accumulator write. computeTickAvg fires
+// setAvg so the per-API-call family works as the sole per-API-
+// call module in a template. Idempotent: first caller wins;
+// subsequent callers no-op.
 const _tickAvgWriteMemo = new WeakMap<RenderContext, true>();
+// v0.8.x cwf-tickStatus-v2 — separate memo for the accCached-only
+// write fired by accCachePrimer. Keeps the "field not shipped"
+// contract on accCached independent of the main primer.
+const _tickCacheWriteMemo = new WeakMap<RenderContext, true>();
 
 // One source of truth for the per-API-call delta math. Lives at
 // the top of the per-tick pipeline so every v0.4.0+ per-API-call
@@ -1313,7 +1326,7 @@ function computeAndCacheTickDelta(ctx: RenderContext): TickDeltaResult {
   // contribution, and on the very first turn there is no
   // "previous" to compare against, so the safe assumption is
   // "we started from a clean slate". The first tick therefore
-  // accumulates into m_totalToken* (no "0" sentinel) and
+  // accumulates into the m_acc* family (no "0" sentinel) and
   // m_tokenIn / m_tokenOut / m_tokenInSpeed render real values
   // when total_api_duration_ms > 0.
   const prevApiMs = prev?.apiMs ?? 0;
@@ -1362,6 +1375,7 @@ function computeAndCacheTickDelta(ctx: RenderContext): TickDeltaResult {
 export function __resetTickDeltaMemoForTest(ctx: RenderContext): void {
   _tickDeltaMemo.delete(ctx);
   _tickAvgWriteMemo.delete(ctx);
+  _tickCacheWriteMemo.delete(ctx);
 }
 
 // Compute the per-API-call throughput for one of {in, out}. v0.4.0+
@@ -1520,151 +1534,247 @@ function computeTickDelta(
 // self-sufficient — putting m_tokenInAvg alone in a template
 // with no speed / raw-delta modules still works.
 
-// Per-session running totals: m_totalTokenIn / m_totalTokenOut /
-// m_totalTokenWithCacheIn. Reads the same tickAvg:<sessionId>
-// cache slot that computeTickAvg maintains — single source of
-// truth, no parallel cache key. When ONLY a totals module is in
-// the template (no avg / speed / delta modules), this helper
-// MUST also fire the setAvg write itself, because computeTickAvg
-// is the only place that does the read-modify-write on the
-// accumulator. Both modules trigger on the same hasDelta gate,
-// so the write is idempotent if both run.
-//
-// Render branches:
-//   - tokens null or !sessionId     → "{prefix}:0" (mirrors
-//                                      m_tokenIn / m_tokenOut
-//                                      for the no-snapshot case;
-//                                      the per-session cache is
-//                                      unreachable without a
-//                                      sessionId).
-//   - kind === "cache" && current
-//         .cacheRead == null        → "cache:--" (user-resolved
-//                                      honest signal — cache
-//                                      field wasn't carried by
-//                                      stdin; not the same as
-//                                      "no valid tick yet").
-//   - otherwise                     →
-//      "{prefix}:{formatCompactToken(sum)}". When peekAvg
-//      returns null (very first render, before any valid tick
-//      has landed) the slot is "{prefix}:0".
-function computeTickTotals(
-  ctx: RenderContext,
-  kind: "in" | "out" | "cache",
-): { value: string } {
-  const t = ctx.tokens;
-  const prefix = kind === "in" ? "in" : kind === "out" ? "out" : "cache";
-  // v6.x: snapshot missing → "n/a" placeholder (not "0"). Aligns
-  // with the rest of the per-API-call family: null is distinct
-  // from "accumulator empty".
-  if (!t || !t.sessionId) return { value: `${prefix}:n/a` };
-  // v6.x: cache field is the one place where a missing field on
-  // an otherwise-present snapshot still gets the legacy "--"
-  // (per user direction "细分 null vs zero"). stdin present but
-  // cache_read_input_tokens absent is a "field-not-shipped" signal,
-  // distinct from "accumulator is zero" or "no stdin at all".
-  if (kind === "cache" && t.current.cacheRead == null) {
-    return { value: `${prefix}:--` };
-  }
-  // Idempotent on the tick-delta memo: if computeTickAvg ran
-  // earlier in the same render, the memo is hot. If this totals
-  // module is the ONLY per-API-call module in the template, we
-  // are now the canonical primer and must fire the setAvg
-  // accumulator write ourselves — otherwise peekAvg below
-  // returns null on every tick and the module stays at "0"
-  // forever. We also must fire setPrevTick when one is owed —
-  // without it, the next tick re-derives deltaIn from the same
-  // prev=0 baseline, double-counting the entire input total
-  // instead of accumulating the per-tick delta. setAvg is gated
-  // on _tickAvgWriteMemo so a render containing both this totals
-  // module AND an avg module (or two totals modules) only
-  // accumulates once.
-  const r = computeAndCacheTickDelta(ctx);
-  if (r.writeBack && t.sessionId) {
-    setPrevTick(t.sessionId, r.writeBack, t.cwd);
-  }
-  if (r.hasDelta && !_tickAvgWriteMemo.get(ctx)) {
-    _tickAvgWriteMemo.set(ctx, true);
-    const prev = peekAvg(t.sessionId, t.cwd);
-    const next: AvgSnapshot = {
-      accIn: (prev?.accIn ?? 0) + r.deltaIn,
-      accOut: (prev?.accOut ?? 0) + r.deltaOut,
-      accApi: (prev?.accApi ?? 0) + r.deltaApi,
-      accCached: (prev?.accCached ?? 0) + r.deltaCacheRead,
-      accApiCount: (prev?.accApiCount ?? 0) + (r.deltaApi > 0 ? 1 : 0),
-      accTotalIn: (prev?.accTotalIn ?? 0) + r.deltaTotalIn,
-      totalIn: r.currentTotalIn ?? (prev?.totalIn ?? 0),
-    };
-    // v0.4.x — see sumApiCount contract in computeTickAvg above.
-    const deltaApiCount =
-      r.deltaApi > 0 && t.current.input != null && t.current.input > 0 ? 1 : 0;
-    setAvg(t.sessionId, next, t.cwd, {
-      modelDisplayName: t.modelDisplayName ?? null,
-      deltaApiCount,
-      currentIn: t.current.input ?? undefined,
-      currentOut: t.current.output ?? undefined,
-      currentCacheRead: t.current.cacheRead ?? undefined,
-      currentApiMs: t.cost.totalApiDurationMs ?? undefined,
-      currentTotalIn: r.currentTotalIn ?? undefined,
-      deltaIn: r.deltaIn,
-      deltaOut: r.deltaOut,
-      deltaCache: r.deltaCacheRead,
-      deltaApiMs: r.deltaApi,
-      deltaTotalIn: r.deltaTotalIn,
-    });
-  }
-  const avg = peekAvg(t.sessionId, t.cwd);
-  // v6.x: when avg is null (no valid tick has landed yet, or
-  // session changed) → render "0" (truthful zero, the accumulator
-  // is empty by definition). Previously returned "0" too; this
-  // path stays the same so the value-zero rule holds.
-  if (!avg) return { value: `${prefix}:0` };
-  const n = kind === "in" ? avg.accIn : kind === "out" ? avg.accOut : avg.accCached;
-  return { value: `${prefix}:${formatCompactToken(n)}` };
-}
+// v0.8.x cwf-tickStatus-v2 — the m_totalToken* / m_totalTokenWithCacheIn
+// module family (and its computeTickTotals helper) was REMOVED
+// in this version. The accumulator access for "session-cumulative
+// in/out/cache" now goes through the m_acc* family with
+// scope=session (the default). For example:
+//   m_totalTokenIn          → m_accTokenIn
+//   m_totalTokenOut         → m_accTokenOut
+//   m_totalTokenWithCacheIn → m_accTokenCachedIn
+// No alias is provided — the old names drop with the
+// v0.8.x cwf-tickStatus-v2 rename (consistent with the v0.8.0
+// removal of m_token5h / m_token7d / m_tokenInAvg / m_tokenOutAvg).
 
 // v0.8.0+ — body factory for the m_acc* family. Renders the
-// chosen accumulator field at the chosen scope. Output shape:
+// chosen accumulator field at a chosen scope. Output shape:
 //
 //   scope=session (default) → "acc:N"
 //   scope=project           → "acc(total):N"
 //   scope=model             → "acc(<modelDisplayName>):N"
+//   scope=ccsession         → "acc(ccs):N"
 //
-// Reads the three-layer accumulator via peekAcc. Placeholder when
+// Reads the four-layer accumulator via peekAcc. Placeholder when
 // the chosen slot has never been written (no prior tick, no model
 // for the model scope, no sessionId for the session scope). Zero
 // accumulator renders as "acc:0" (value-zero rule, never dropped).
+
+// v0.8.x cwf-tickStatus-v2 — the m_acc* family's "self-priming"
+// contract. When the m_acc* family is the ONLY per-API-call module
+// in the template (no m_token* / m_tokenInSpeed / m_tokenOutSpeed
+// sibling), the per-tick pipeline never fires setAvg on its own —
+// computeTickAvg gates on a m_token*InAvg call. Without primer
+// support, peekAcc returns null on the very first tick and the
+// m_acc* module stays at the "n/a" placeholder forever. Both
+// accBody and accHitRateBody invoke this helper at the top, so
+// placing m_accTokenIn alone in a template (or m_accCacheHitRate
+// alone) now works the same way m_totalTokenIn / m_totalTokenOut
+// used to.
+//
+// Primer gate: fires ONLY when the session-slot has never been
+// written (peekAvg returns null) AND this is a valid tick
+// (hasDelta=true). On every subsequent render, the primer
+// short-circuits — the slot is already populated, and another
+// setAvg call would double-count the delta (setAvg writes
+// ABSOLUTE values for the session slot, so a second pass with
+// `prev+delta` would re-add the same delta).
+//
+// The cache-field gate (`current.cacheRead === null` → skip
+// accCached) is the same contract the v0.4.x–v0.8.0
+// m_totalTokenWithCacheIn `cache:--` rendering honored — "field
+// not shipped" stays distinct from "accumulator is zero".
+function accPrimer(ctx: RenderContext): void {
+  if (_tickAvgWriteMemo.get(ctx)) return;
+  const t = ctx.tokens;
+  if (!t || !t.sessionId) return;
+  // v0.8.x — fire on every valid tick. setAvg now ACCUMULATES
+  // (session slot uses +=, not =) so the per-tick deltas land
+  // additively on top of any prior tick. _tickAvgWriteMemo
+  // dedupes within a single render (multiple m_acc* calls on the
+  // same ctx fire the primer exactly once).
+  // v0.8.x cwf-tickStatus-v2 — ccsession reset is OUTSIDE the
+  // hasDelta gate. A regression in cost.totalApiDurationMs
+  // (current < prev) means the Claude Code process restarted;
+  // the ccsession slot must be zeroed even when this tick
+  // itself has no positive delta to accumulate. The check MUST
+  // run BEFORE computeAndCacheTickDelta's writeBack (which
+  // overwrites prevTickStatus with the current snapshot).
+  if (t.cwd && t.cost.totalApiDurationMs != null) {
+    const prevPrev = statusStore.readPrevTickStatus(t.cwd);
+    if (
+      prevPrev != null &&
+      t.cost.totalApiDurationMs < prevPrev.totalApiMs
+    ) {
+      statusStore.writeTickStatus(t.cwd, statusStore.CCSESSION_KEY, statusStore.emptyTickStatus());
+    }
+  }
+  const r = computeAndCacheTickDelta(ctx);
+  if (r.writeBack) {
+    setPrevTick(t.sessionId, r.writeBack, t.cwd, {
+      sessionId: t.sessionId,
+      cwd: t.cwd,
+      model: t.modelDisplayName ?? null,
+    });
+  }
+  if (!r.hasDelta) return;
+  _tickAvgWriteMemo.set(ctx, true);
+  // v0.8.x cwf-tickStatus-v2 — accApi is the ABSOLUTE
+  // session-cumulative cost.totalApiDurationMs (mirrors the
+  // stdin field), not a delta. Pass the current absolute value
+  // so setAvg's `next.accApiMs = snap.accApi` writes the
+  // correct absolute.
+  const currentApi = t.cost.totalApiDurationMs ?? 0;
+  const next: AvgSnapshot = {
+    accIn: r.deltaIn,
+    accOut: r.deltaOut,
+    accApi: currentApi,
+    // accCached intentionally NOT touched here — see header
+    // "Primer gate" above. The m_accTokenCachedIn /
+    // m_accCacheHitRate bodies call accCachePrimer() to bump
+    // accCached on a separate code path.
+    accCached: 0,
+    accApiCount: r.deltaApi > 0 && t.current.input != null && t.current.input > 0 ? 1 : 0,
+    accTotalIn: r.deltaTotalIn,
+  };
+  setAvg(t.sessionId, next, t.cwd, {
+    modelDisplayName: t.modelDisplayName ?? null,
+    deltaApiCount: r.deltaApi > 0 && t.current.input != null && t.current.input > 0 ? 1 : 0,
+    currentApiMs: t.cost.totalApiDurationMs ?? undefined,
+    deltaIn: r.deltaIn,
+    deltaOut: r.deltaOut,
+    // deltaCache deliberately omitted: do NOT accumulate the
+    // missing-field 0 into accCached.
+    deltaApiMs: r.deltaApi,
+    deltaTotalIn: r.deltaTotalIn,
+  });
+}
+
+// Fire the cache-specific delta (accCached) on a separate code
+// path. The m_token* family does NOT bump accCached on its own
+// (it gates on a separate code path), so the m_accTokenCachedIn /
+// m_accCacheHitRate bodies call this helper to add the per-tick
+// delta. setAvg ACCUMULATES, so re-firing on a populated slot
+// is safe and correct — the cache delta is added to whatever
+// the slot already holds. _tickCacheWriteMemo dedupes within
+// a single render (multiple m_acc* calls on the same ctx fire
+// the primer exactly once).
+//
+// "Field not shipped" — when stdin lacks cache_read_input_tokens
+// entirely (current.cacheRead === null), the helper short-circuits
+// and accCached stays untouched. The m_acc* bodies surface this
+// state via the "cache:--" / "hit:n/a" placeholder.
+function accCachePrimer(ctx: RenderContext): void {
+  if (_tickCacheWriteMemo.get(ctx)) return;
+  const t = ctx.tokens;
+  if (!t || !t.sessionId) return;
+  if (t.current.cacheRead == null) return; // "field not shipped"
+  const r = computeAndCacheTickDelta(ctx);
+  if (!r.hasDelta) return;
+  _tickCacheWriteMemo.set(ctx, true);
+  // v0.8.x cwf-tickStatus-v2 — setAvg ACCUMULATES for the
+  // per-tick deltas but ABSOLUTE for accApi. accPrimer already
+  // wrote the per-tick deltas (including the absolute
+  // totalApiDurationMs) for this render, so we must:
+  //   - pass zero for accIn/accOut/accCached/accApiCount/accTotalIn
+  //     (accPrimer already accumulated these; we'd double-count
+  //     otherwise)
+  //   - pass the current absolute totalApiDurationMs for accApi
+  //     (setAvg's `next.accApiMs = snap.accApi` mirrors the
+  //     stdin monotonic field; passing 0 here would zero it out)
+  const currentApi = t.cost.totalApiDurationMs ?? 0;
+  const next: AvgSnapshot = {
+    accIn: 0,
+    accOut: 0,
+    accApi: currentApi,
+    accCached: r.deltaCacheRead,
+    accApiCount: 0,
+    accTotalIn: 0,
+  };
+  setAvg(t.sessionId, next, t.cwd, {
+    modelDisplayName: t.modelDisplayName ?? null,
+    currentApiMs: t.cost.totalApiDurationMs ?? undefined,
+    deltaCache: r.deltaCacheRead,
+  });
+}
+
 function accBody(
   ctx: RenderContext,
   field: "in" | "out" | "cached" | "total" | "apiMs",
-  scope?: "session" | "project" | "model",
+  scope?: "session" | "project" | "model" | "ccsession",
 ): string {
+  // v0.8.x cwf-tickStatus-v2 — self-priming. When the m_acc* family
+  // is the only per-API-call module in the template (no m_token* /
+  // m_tokenInSpeed / m_tokenOutSpeed), the only way for the
+  // session-scope accumulator to update THIS tick is for the m_acc*
+  // call to fire setAvg itself — otherwise peekAcc returns null on
+  // every fresh tick and the module stays at "n/a" forever. We
+  // delegate the per-tick delta math to computeAndCacheTickDelta
+  // (same memo as m_token*InSpeed etc., so the write is idempotent
+  // across multiple m_acc* calls in the same render).
+  accPrimer(ctx);
   const useScope = scope ?? (ctx.tokens?.sessionId ? "session" : "project");
   const v = peekAcc(useScope, ctx);
-  if (!v) return placeholderAcc(field, useScope, ctx);
+  if (!v) {
+    // v0.8.x cwf-tickStatus-v2 — the accCached track only writes
+    // when stdin carries the cache field. m_accTokenCachedIn /
+    // m_accTokenTotalIn / m_accCacheHitRate must still honor
+    // the "field not shipped" → "--" contract, so we don't fire
+    // accCachePrimer here on a missing slot — the placeholder
+    // shape is the only honest signal in that case.
+    return placeholderAcc(field, useScope, ctx);
+  }
+  // v0.8.x cwf-tickStatus-v2 — the "field not shipped" contract on
+  // the cache track (m_accTokenCachedIn / m_accTokenTotalIn /
+  // m_accCacheHitRate): when stdin lacks cache_read_input_tokens
+  // entirely, render the field-specific "--" placeholder rather
+  // than "0" / "total:0". Mirrors the v0.4.x m_totalTokenWith
+  // CacheIn behavior.
+  if (
+    (field === "cached" || field === "total") &&
+    ctx.tokens?.current?.cacheRead === null
+  ) {
+    return placeholderAcc(field, useScope, ctx);
+  }
+  // Fire the cache-track primer now that the slot exists, so
+  // accCached lands on disk and the next render's peekAcc sees
+  // it. Safe to call even when field === "in" (idempotent via
+  // _tickCacheWriteMemo; only writes when cacheRead != null).
+  accCachePrimer(ctx);
+  // Re-read after the cache primer (it may have bumped accCached).
+  const v2 = peekAcc(useScope, ctx) ?? v;
   let n: number;
   switch (field) {
-    case "in": n = v.accIn; break;
-    case "out": n = v.accOut; break;
-    case "cached": n = v.accCached; break;
-    case "apiMs": n = v.accApi; break;
-    case "total": n = v.accIn + v.accCached; break;
+    case "in": n = v2.accIn; break;
+    case "out": n = v2.accOut; break;
+    case "cached": n = v2.accCached; break;
+    case "apiMs": n = v2.accApi; break;
+    case "total": n = v2.accIn + v2.accCached; break;
   }
   // v0.8.0+ — acc* family prefixes use the same label axes as their
   // per-turn siblings. m_accTokenIn/Out/CachedIn/TotalIn share
   // labelIn / labelOut / labelCacheIn / labelTotalIn; m_accApiMs
-  // retains its hardcoded "acc:" prefix (the API-ms series is not a
-  // user-facing label axis). Defaults reproduce the v0.7.x literal
-  // "acc:" prefix for the in/out/cached/total fields via the
-  // corresponding label.* defaults.
+  // uses the hardcoded "api:" prefix (the API-ms series is not a
+  // user-facing label axis) and renders via formatRemainingMs so the
+  // accumulator matches m_apiMs's "api:1m" dhms shape rather than
+  // the v0.7.x raw-ms `acc:60.0k` literal. Honors the same
+  // timeFormat.minUnit / maxUnitCount knobs as the per-turn
+  // sibling. Defaults reproduce the v0.7.x literal "acc:" prefix
+  // for the in/out/cached/total fields via the corresponding
+  // label.* defaults.
   let prefix: string;
+  let body: string;
   switch (field) {
-    case "in": prefix = labelFor("in"); break;
-    case "out": prefix = labelFor("out"); break;
-    case "cached": prefix = labelFor("cacheIn"); break;
-    case "total": prefix = labelFor("totalIn"); break;
-    case "apiMs": prefix = "acc:"; break;
+    case "in": prefix = labelFor("in"); body = formatCompactToken(n); break;
+    case "out": prefix = labelFor("out"); body = formatCompactToken(n); break;
+    case "cached": prefix = labelFor("cacheIn"); body = formatCompactToken(n); break;
+    case "total": prefix = labelFor("totalIn"); body = formatCompactToken(n); break;
+    // v0.8.x — m_accApiMs now renders `api:<dhms>` to mirror m_apiMs.
+    // The accumulator value (accApi) is session-cumulative
+    // totalApiMs, so the formatted string grows monotonically as
+    // the session ages (e.g. "api:5m", "api:1h12m").
+    case "apiMs": prefix = "api:"; body = formatRemainingMs(n); break;
   }
-  return `${prefix}${formatCompactToken(n)}`;
+  return `${prefix}${body}`;
 }
 
 // m_accCacheHitRate — session-aggregate formula
@@ -1675,8 +1785,18 @@ function accBody(
 // been written.
 function accHitRateBody(
   ctx: RenderContext,
-  scope?: "session" | "project" | "model",
+  scope?: "session" | "project" | "model" | "ccsession",
 ): string {
+  // See accBody for the primer rationale.
+  accPrimer(ctx);
+  // v0.8.x cwf-tickStatus-v2 — "field not shipped" signal on
+  // the cache track. m_accCacheHitRate is undefined when stdin
+  // lacks cache_read_input_tokens — render the placeholder
+  // rather than fabricating a 0% hit rate.
+  if (ctx.tokens?.current?.cacheRead === null) {
+    return placeholderAcc("hitRate", scope ?? "session", ctx);
+  }
+  accCachePrimer(ctx);
   const useScope = scope ?? "session";
   const v = peekAcc(useScope, ctx);
   if (!v) return placeholderAcc("hitRate", useScope, ctx);
@@ -1695,13 +1815,13 @@ function accHitRateBody(
 // distinguishes scopes (e.g. "acc(total):n/a") has a hook.
 function placeholderAcc(
   field: "in" | "out" | "cached" | "total" | "apiMs" | "hitRate",
-  _scope: "session" | "project" | "model",
-  _ctx: RenderContext,
+  _scope: "session" | "project" | "model" | "ccsession",
+  ctx: RenderContext,
 ): string {
   // v0.8.0+ labels.* — the four token-axis fields read their
   // prefix from labelFor so the placeholder matches the user's
   // configured labelIn / labelOut / labelCacheIn / labelTotalIn.
-  // apiMs stays on the hardcoded "acc:" prefix (not part of the
+  // apiMs mirrors m_apiMs's "api:" prefix (not part of the
   // user-facing axis set); hitRate keeps its "acc:n/a%" shape so
   // the % glyph stays part of the placeholder identity.
   let prefix: string;
@@ -1710,10 +1830,27 @@ function placeholderAcc(
     case "out": prefix = labelFor("out"); break;
     case "cached": prefix = labelFor("cacheIn"); break;
     case "total": prefix = labelFor("totalIn"); break;
-    case "apiMs": prefix = "acc:"; break;
+    case "apiMs": prefix = "api:"; break;
     case "hitRate": prefix = "acc:"; break;
   }
-  const body = field === "hitRate" ? `${prefix}n/a%` : `${prefix}n/a`;
+  // v0.8.x cwf-tickStatus-v2 — "cached" and "total" use the
+  // "field not shipped" → "--" shape ONLY when the cache field
+  // is explicitly null on the snapshot (current.cacheRead ===
+  // null). When tokens is null entirely (no snapshot at all),
+  // the generic "n/a" shape is more honest — we don't know
+  // whether the field was shipped or not. hitRate keeps the %
+  // suffix.
+  const fieldNotShipped =
+    (field === "cached" || field === "total") &&
+    ctx.tokens?.current?.cacheRead === null;
+  let body: string;
+  if (fieldNotShipped) {
+    body = `${prefix}--`;
+  } else if (field === "hitRate") {
+    body = `${prefix}n/a%`;
+  } else {
+    body = `${prefix}n/a`;
+  }
   return `${STALE_COLOR}${body}${RESET}`;
 }
 
@@ -1830,7 +1967,9 @@ const MODULES: Record<string, Module> = {
   // / m_tokenSession.
   m_tokenIn: (c) => {
     const r = computeTickDelta(c, "in");
-    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack, c.tokens.cwd);
+    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack, c.tokens.cwd, {
+      sessionId: c.tokens.sessionId, cwd: c.tokens.cwd, model: c.tokens.modelDisplayName ?? null,
+    });
     return r.value;
   },
   // Per-API-call output tokens (see m_tokenIn for the gate
@@ -1838,7 +1977,9 @@ const MODULES: Record<string, Module> = {
   // turns all produce different "out:--" / "out:N" signals).
   m_tokenOut: (c) => {
     const r = computeTickDelta(c, "out");
-    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack, c.tokens.cwd);
+    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack, c.tokens.cwd, {
+      sessionId: c.tokens.sessionId, cwd: c.tokens.cwd, model: c.tokens.modelDisplayName ?? null,
+    });
     return r.value;
   },
   // Session cumulative in + out + cache (cache = ctx_creation + ctx_read
@@ -1960,7 +2101,9 @@ const MODULES: Record<string, Module> = {
       ? speedScaleColor("in", probe.tps ?? 0)
       : STALE_COLOR; // unused — computeTickSpeed forces STALE
     const r = computeTickSpeed(c, "in", color);
-    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack, c.tokens.cwd);
+    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack, c.tokens.cwd, {
+      sessionId: c.tokens.sessionId, cwd: c.tokens.cwd, model: c.tokens.modelDisplayName ?? null,
+    });
     return r.value;
   },
   // v0.4.0+ — per-API-call output speed (see m_tokenInSpeed for
@@ -1971,21 +2114,16 @@ const MODULES: Record<string, Module> = {
       ? speedScaleColor("out", probe.tps ?? 0)
       : STALE_COLOR;
     const r = computeTickSpeed(c, "out", color);
-    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack, c.tokens.cwd);
+    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack, c.tokens.cwd, {
+      sessionId: c.tokens.sessionId, cwd: c.tokens.cwd, model: c.tokens.modelDisplayName ?? null,
+    });
     return r.value;
   },
-  // v0.4.0+ — per-session running total of input tokens across
-  // valid-API-call ticks. Reads the same tickAvg cache slot that
-  // m_tokenInAvg maintains; when this module is alone in the
-  // template, computeTickTotals fires the accumulator write
-  // itself.
-  m_totalTokenIn: (c) => computeTickTotals(c, "in").value,
-  // v0.4.0+ — per-session running total of output tokens.
-  m_totalTokenOut: (c) => computeTickTotals(c, "out").value,
-  // v0.4.0+ — per-session running total of
-  // cache_read_input_tokens. Renders "cache:--" when stdin lacks
-  // the field (user-resolved honest "data unavailable" signal).
-  m_totalTokenWithCacheIn: (c) => computeTickTotals(c, "cache").value,
+  // v0.8.x cwf-tickStatus-v2 — m_totalToken* / m_totalTokenWithCacheIn
+  // REMOVED. Use the m_acc* family with scope=session (default):
+  //   m_totalTokenIn          → m_accTokenIn
+  //   m_totalTokenOut         → m_accTokenOut
+  //   m_totalTokenWithCacheIn → m_accTokenCachedIn
   // v0.8.0+ — six per-session/per-model/per-project accumulators
   // (m_accTokenIn / m_accTokenOut / m_accTokenCachedIn /
   // m_accTokenTotalIn / m_accApiMs / m_accCacheHitRate). They all
@@ -2183,7 +2321,9 @@ const MODULES: Record<string, Module> = {
     const t = c.tokens;
     if (!t || !t.sessionId) return placeholderBare("m_apiMs", c);
     const r = computeAndCacheTickDelta(c);
-    if (r.writeBack && t.sessionId) setPrevTick(t.sessionId, r.writeBack, t.cwd);
+    if (r.writeBack && t.sessionId) setPrevTick(t.sessionId, r.writeBack, t.cwd, {
+      sessionId: t.sessionId, cwd: t.cwd, model: t.modelDisplayName ?? null,
+    });
     if (!r.hasDelta) return placeholderBare("m_apiMs", c);
     return wrapPlainDefault("m_apiMs", `api:${formatRemainingMs(r.deltaApi)}`, undefined);
   },
@@ -2236,7 +2376,9 @@ const MODULES: Record<string, Module> = {
   m_apiCalls: (c) => {
     const cwd = c.tokens?.cwd;
     if (!cwd) return placeholderBare("m_apiCalls", c);
-    const v = statusStore.readTickStatus(cwd, "tickStatus");
+    // v0.8.x cwf-tickStatus-v2 — project-wide key is now
+    // `tickStatus:<projectHash(cwd)>` (no prefix-less `tickStatus`).
+    const v = statusStore.readTickStatus(cwd, `tickStatus:${projectHash(cwd)}`);
     if (!v) return wrapPlainDefault("m_apiCalls", "calls:0", undefined);
     return wrapPlainDefault("m_apiCalls", `calls:${v.accApiCount}`, undefined);
   },
@@ -3007,8 +3149,10 @@ function formatSepBody(body: string, repeat: string, wrap: string): string {
 // is null until at least one tick has accumulated into it.
 const SCOPE_PARAM = {
   named: {
+    // v0.8.x cwf-tickStatus-v2 — added "ccsession" scope to
+    // m_acc*:scope:|...| (per-claude-code-process singleton).
     scope: (raw: string): ResolvedValue | null =>
-      raw === "session" || raw === "project" || raw === "model" ? raw : null,
+      raw === "session" || raw === "project" || raw === "model" || raw === "ccsession" ? raw : null,
   },
 } as const;
 
@@ -3165,9 +3309,8 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   m_tokenInTotal: placeholderLabelOr("in"),
   m_tokenTotalOut: placeholderLabelOr("out"),
   m_apiCalls: placeholderNA("calls:"),
-  m_totalTokenIn: placeholderNA("in:"),
-  m_totalTokenOut: placeholderNA("out:"),
-  m_totalTokenWithCacheIn: placeholderNA("cache:"),
+  // v0.8.x cwf-tickStatus-v2 — m_totalToken* / m_totalTokenWithCacheIn
+  // REMOVED. Use the m_acc* family with scope=session (default).
   // m_acc* — v0.8.0+ labels.*: the four token-axis acc modules
   // (m_accTokenIn/Out/CachedIn/TotalIn) share their prefix with
   // the per-turn siblings via labelFor. m_accApiMs and
@@ -3182,7 +3325,7 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   m_accTokenOut: placeholderLabelOr("out"),
   m_accTokenCachedIn: placeholderLabelOr("cacheIn"),
   m_accTokenTotalIn: placeholderLabelOr("totalIn"),
-  m_accApiMs: placeholderNA("acc:"),
+  m_accApiMs: placeholderNA("api:"),
   // m_accCacheHitRate — the "hit:N%" shape needs a "%" suffix on
   // the placeholder too, matching m_cacheHitRate's
   // placeholderDashesUnit convention.
@@ -3496,9 +3639,8 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_tokenCachedIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_tokenInSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_tokenOutSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
-  m_totalTokenIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
-  m_totalTokenOut: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
-  m_totalTokenWithCacheIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  // v0.8.x cwf-tickStatus-v2 — m_totalToken* / m_totalTokenWithCacheIn
+  // REMOVED. The m_acc* family replaces them.
   // v0.8.0+ — m_acc* family accepts :scope:<session|project|model>
   // (default session for the bare form) and the standard :color|
   // override + :nulldrop| opt-out.
@@ -3752,12 +3894,16 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   },
   m_tokenIn: (params, ctx) => {
     const r = computeTickDelta(ctx, "in");
-    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack, ctx.tokens.cwd);
+    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack, ctx.tokens.cwd, {
+      sessionId: ctx.tokens.sessionId, cwd: ctx.tokens.cwd, model: ctx.tokens.modelDisplayName ?? null,
+    });
     return wrapPlain(r.value, params.color as string | undefined);
   },
   m_tokenOut: (params, ctx) => {
     const r = computeTickDelta(ctx, "out");
-    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack, ctx.tokens.cwd);
+    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack, ctx.tokens.cwd, {
+      sessionId: ctx.tokens.sessionId, cwd: ctx.tokens.cwd, model: ctx.tokens.modelDisplayName ?? null,
+    });
     return wrapPlain(r.value, params.color as string | undefined);
   },
   m_tokenTotal: (params, ctx) => {
@@ -3831,7 +3977,9 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
         ? speedScaleColor("in", probe.tps ?? 0)
         : (userColor ?? STALE_COLOR);
     const r = computeTickSpeed(ctx, "in", activeColor);
-    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack, ctx.tokens.cwd);
+    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack, ctx.tokens.cwd, {
+      sessionId: ctx.tokens.sessionId, cwd: ctx.tokens.cwd, model: ctx.tokens.modelDisplayName ?? null,
+    });
     return r.value;
   },
   m_tokenOutSpeed: (params, ctx) => {
@@ -3842,21 +3990,13 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
         ? speedScaleColor("out", probe.tps ?? 0)
         : (userColor ?? STALE_COLOR);
     const r = computeTickSpeed(ctx, "out", activeColor);
-    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack, ctx.tokens.cwd);
+    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack, ctx.tokens.cwd, {
+      sessionId: ctx.tokens.sessionId, cwd: ctx.tokens.cwd, model: ctx.tokens.modelDisplayName ?? null,
+    });
     return r.value;
   },
-  m_totalTokenIn: (params, ctx) => {
-    const body = computeTickTotals(ctx, "in").value;
-    return wrapPlain(body, params.color as string | undefined);
-  },
-  m_totalTokenOut: (params, ctx) => {
-    const body = computeTickTotals(ctx, "out").value;
-    return wrapPlain(body, params.color as string | undefined);
-  },
-  m_totalTokenWithCacheIn: (params, ctx) => {
-    const body = computeTickTotals(ctx, "cache").value;
-    return wrapPlain(body, params.color as string | undefined);
-  },
+  // v0.8.x cwf-tickStatus-v2 — m_totalToken* / m_totalTokenWithCacheIn
+  // REMOVED. Use the m_acc* family (scope=session default).
   // v0.8.0+ — 6 acc modules (m_accTokenIn / Out / CachedIn / TotalIn /
   // ApiMs / CacheHitRate). Three-layer granularity via :scope:
   //   session (default for non-hit-rate) — per-session accumulator
@@ -4052,7 +4192,9 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const t = ctx.tokens;
     if (!t || !t.sessionId) return placeholderWithColor("m_apiMs", params, ctx);
     const r = computeAndCacheTickDelta(ctx);
-    if (r.writeBack && t.sessionId) setPrevTick(t.sessionId, r.writeBack, t.cwd);
+    if (r.writeBack && t.sessionId) setPrevTick(t.sessionId, r.writeBack, t.cwd, {
+      sessionId: t.sessionId, cwd: t.cwd, model: t.modelDisplayName ?? null,
+    });
     if (!r.hasDelta) return placeholderWithColor("m_apiMs", params, ctx);
     return wrapPlainDefault("m_apiMs", `api:${formatRemainingMs(r.deltaApi)}`, params.color as string | undefined);
   },
@@ -4103,7 +4245,9 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   m_apiCalls: (params, ctx) => {
     const cwd = ctx.tokens?.cwd;
     if (!cwd) return wrapPlainDefault("m_apiCalls", "calls:0", params.color as string | undefined);
-    const v = statusStore.readTickStatus(cwd, "tickStatus");
+    // v0.8.x cwf-tickStatus-v2 — project-wide key now keyed by
+    // projectHash (no prefix-less `tickStatus`).
+    const v = statusStore.readTickStatus(cwd, `tickStatus:${projectHash(cwd)}`);
     if (!v) return wrapPlainDefault("m_apiCalls", "calls:0", params.color as string | undefined);
     return wrapPlainDefault("m_apiCalls", `calls:${v.accApiCount}`, params.color as string | undefined);
   },
@@ -4445,22 +4589,6 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         inline = expandInlineToken(tok, "m_sumApiCalls", 14, ctx);
       } else if (tok.startsWith("m_avgTokenInSpeed|")) {
         inline = expandInlineToken(tok, "m_avgTokenInSpeed", 18, ctx);
-      } else if (tok.startsWith("m_totalTokenWithCacheIn|")) {
-        // Longer prefix listed first defensively — no actual
-        // shadowing because the only other m_totalToken* prefixes
-        // have different chars at index 17 (W vs I / O).
-        inline = expandInlineToken(
-          tok,
-          "m_totalTokenWithCacheIn",
-          25,
-          ctx,
-        );
-      } else if (tok.startsWith("m_totalTokenIn|")) {
-        // m_totalTokenIn: → skip the 15-char prefix INCLUDING the
-        // trailing colon, so the remainder starts at the value.
-        inline = expandInlineToken(tok, "m_totalTokenIn", 15, ctx);
-      } else if (tok.startsWith("m_totalTokenOut|")) {
-        inline = expandInlineToken(tok, "m_totalTokenOut", 16, ctx);
       } else if (tok.startsWith("m_quote|")) {
         // m_quote|freq|<…>|color|<…> → skip "m_quote|" (length 8).
         inline = expandInlineToken(tok, "m_quote", 8, ctx);

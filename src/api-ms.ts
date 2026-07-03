@@ -17,10 +17,14 @@
 //   prev!=null (apiMs>0) + deltaApiMs > 0            → WRITE apiMs = delta.
 //     Real per-tick API advance. Stamp prevApiMs = prev.apiMs.
 //
-//   prev!=null (apiMs>0) + deltaApiMs == 0 + tokens advanced → WARN.
-//     Cost data didn't advance despite token activity. Anomaly.
-//
-//   prev!=null (apiMs>0) + deltaApiMs == 0 + idle    → SKIP.
+//   prev!=null (apiMs>0) + deltaApiMs == 0            → SKIP.
+//     Cost data didn't advance this tick. Either idle (no token
+//     activity either) or stuck-cost-anomaly (token activity but
+//     totalApiMs held). v0.8.6 — dropped the warn variant that used
+//     to fire here: in practice, the "stuck" cases were just the
+//     upstream cost counter being slow to refresh, not a real
+//     anomaly. The JSONL would have been polluted either way (since
+//     apiMs=0 isn't useful in sum/avg), so we just skip.
 //
 //   prev!=null (apiMs>0) + deltaApiMs < 0            → SKIP.
 //     Clock skew or upstream bug. Never write a negative apiMs.
@@ -29,8 +33,7 @@ import type { TokenSample } from "./types.ts";
 
 export type ApiMsDecision =
   | { kind: "write"; sample: TokenSample }
-  | { kind: "skip" }
-  | { kind: "warn"; message: string };
+  | { kind: "skip" };
 
 export type CurrentUsageLite = {
   input: number | null;
@@ -132,22 +135,11 @@ export function resolveApiMsSample(inp: ApiMsInputs): ApiMsDecision {
   }
 
   if (deltaApiMs === 0) {
-    // Anomaly check: did tokens advance even though cost didn't?
-    const cur = inp.current;
-    const tokenActivity =
-      (cur.input ?? 0) > 0 ||
-      (cur.output ?? 0) > 0 ||
-      (cur.cacheRead ?? 0) > 0 ||
-      (cur.cacheCreation ?? 0) > 0;
-    if (tokenActivity) {
-      const warnMsg =
-        `deltaApiMs=0 with token activity: sid=${inp.sessionId ?? "?"} ` +
-        `totalIn=${inp.totalIn} totalOut=${inp.totalOut} ` +
-        `in=${cur.input ?? 0} out=${cur.output ?? 0} ` +
-        `cacheRead=${cur.cacheRead ?? 0} cacheCreation=${cur.cacheCreation ?? 0} ` +
-        `totalApiMs=${inp.totalApiMs}`;
-      return { kind: "warn", message: warnMsg };
-    }
+    // v0.8.6 — collapsed the v0.7.x "warn when tokens advanced but
+    // cost didn't" branch into a plain skip. The delta is zero so
+    // there's nothing useful to write into the JSONL (apiMs=0
+    // doesn't contribute to sums, and the warn diagnostic polluted
+    // diagnostics.jsonl with routine upstream-freshness-lag rows).
     return { kind: "skip" };
   }
 
