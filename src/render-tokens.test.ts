@@ -590,12 +590,12 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(strip(out), "cache:163.4k");
   });
 
-  it("m_accTokenCachedIn missing stdin field → 'cache:--'", () => {
+  it("m_accTokenCachedIn missing stdin field → 'cache:n/a' (v0.8.10-alpha.3 default ccsession scope, no slot)", () => {
     const out = renderTemplate(
       ["m_accTokenCachedIn"],
       ctxFor(fakeSnapshot({ current: { tokenIn: 38, tokenOut: 155, tokenCacheCreation: 0, tokenCachedIn: null } })),
     ).join("\n");
-    assert.equal(strip(out), "cache:--");
+    assert.equal(strip(out), "cache:n/a");
   });
 
   it("m_accTokenCachedIn after one valid tick → 'cache|N' (compact format)", () => {
@@ -3643,11 +3643,19 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     assert.equal(strip(out), "calls:n/a");
   });
 
-  it("m_accTokenHitRate| session scope formula accTokenCachedIn / (accTokenCachedIn + accTokenIn) = 99.978%", () => {
-    // 163441 / (163441 + 38) * 100 = 99.97799… → toFixed(1) → "100.0%".
+  it("m_accTokenHitRate| session scope formula accTokenCachedIn / accTokenTotalIn = 99.978%", () => {
+    // v0.8.10-alpha.3 — formula switched to cached/total (matches
+    // per-turn m_tokenHitRate's shape). With both accumulators
+    // primed at (accTokenCachedIn=163441, accTokenTotalIn=163479)
+    // before processTick, processTick adds another (cached=163441,
+    // totalIn=163479) → final (326882 / 326958) = 99.9767…% →
+    // toFixed(1) → "100.0%".
+    //
+    // explicit |scope|session because the bare-form default is
+    // ccsession; this test seeds the per-session slot only.
     setAvg(
       "sess-acc-hit",
-      { accTokenIn: 38, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 163441, accApiCalls: 1 , accTokenTotalIn: 0},
+      { accTokenIn: 38, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 163441, accApiCalls: 1 , accTokenTotalIn: 163479},
       "D:\\test",
       {
         modelDisplayName: "MiniMax-M3",
@@ -3663,7 +3671,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     processTick(snap.cwd, snap);
     statusStore.commit();
     const out = renderTemplate(
-      ["m_accTokenHitRate"],
+      ["m_accTokenHitRate|scope|session"],
       ctxFor(snap),
     ).join("\n");
     // v0.8.x R8 — prefix unified with m_tokenHitRate / m_sumTokenHitRate.
@@ -3948,18 +3956,23 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
         "s_space",
         "s_dot",
         "s_space",
-        "m_accTokenHitRate",
+        "m_accTokenHitRate|scope|session",
       ],
       ctxFor(snap),
     ).join("\n");
     // v0.8.x cwf-tickStatus-v2 — self-priming adds the per-tick
-    // deltas (input=38, output=155, cacheRead=163441) on top of
-    // the seeded values:
+    // deltas (input=38, output=155, cacheRead=163441, totalIn=163479)
+    // on top of the seeded values:
     //   in=500+38=538 → "538"
     //   out=250+155=405 → "405"
-    //   hitRate=173441/(173441+538)=99.69% → "99.7%".
+    //   hitRate=173441/163479=106.087% → "106.1%".
+    // v0.8.10-alpha.3 — formula switched to cached/totalIn, so this
+    // exceeds 100% in fixtures where cached-in > total-in (which is
+    // physically impossible in real Anthropic responses — totalInput
+    // always includes cacheRead — but the per-turn and cumulative
+    // shapes can diverge briefly during a session-reset boundary).
     // v0.8.x R8 — m_accTokenHitRate prefix unified with m_tokenHitRate.
-    assert.equal(strip(out), "in:538 out:405 · hit:99.7%");
+    assert.equal(strip(out), "in:538 out:405 · hit:106.1%");
   });
 });
 

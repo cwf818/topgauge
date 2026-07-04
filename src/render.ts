@@ -1251,18 +1251,12 @@ function accBody(
     // shape is the only honest signal in that case.
     return placeholderAcc(field, useScope, ctx);
   }
-  // v0.8.x cwf-tickStatus-v2 — the "field not shipped" contract on
-  // the cache track (m_accTokenCachedIn / m_accTokenTotalIn /
-  // m_accTokenHitRate): when stdin lacks cache_read_input_tokens
-  // entirely, render the field-specific "--" placeholder rather
-  // than "0" / "total:0". Mirrors the v0.4.x m_totalTokenWith
-  // CacheIn behavior.
-  if (
-    (field === "cached" || field === "total") &&
-    ctx.tokens?.current?.tokenCachedIn === null
-  ) {
-    return placeholderAcc(field, useScope, ctx);
-  }
+  // v0.8.10-alpha.3 — removed the "field not shipped" cache guard.
+// cache_read_input_tokens absence on the current stdin does not
+// imply an empty slot at any scope (session / project / model /
+// ccsession all accumulate across ticks). Renderers that hit a
+// missing slot fall through to the existing `if (!v)` branch above
+// and produce `prefix:n/a` via placeholderAcc.
   // v1.0 — accCachePrimer is gone. The -processor already
   // wrote accTokenCachedIn (Stage 4b) when stdin shipped
   // cache_read_input_tokens. Re-read after Stage 4b in case the
@@ -1324,29 +1318,14 @@ function accBody(
 // re-bind the prefix. The scope distinction is still visible
 // via the surrounding context (m_acc* siblings use the same
 // default ccsession scope, m_tokenHitRate is per-turn).
-function accHitRateBody(
-  ctx: RenderContext,
-  scope?: "session" | "project" | "model" | "ccsession",
-): string {
-  // v1.0 — accPrimer is GONE. The -processor already mirrored
-  // current → acc at processTick time, so peekAcc(...) returns the
-  // post-mirror value. No mutation in render.
-  // v0.8.x cwf-tickStatus-v2 — "field not shipped" signal on
-  // the cache track. m_accTokenHitRate is undefined when stdin
-  // lacks cache_read_input_tokens — render the placeholder
-  // rather than fabricating a 0% hit rate.
-  if (ctx.tokens?.current?.tokenCachedIn === null) {
-    return placeholderAcc("hitRate", scope ?? "ccsession", ctx);
-  }
-  const useScope = scope ?? "ccsession";
-  const v = peekAcc(useScope, ctx);
-  if (!v) return placeholderAcc("hitRate", useScope, ctx);
-  const denom = v.accTokenCachedIn + v.accTokenIn;
-  if (denom === 0) return `${cacheHitColor(0)}hit:0.0%${RESET}`;
-  const pct = (v.accTokenCachedIn / denom) * 100;
-  const color = cacheHitColor(pct);
-  return `${color}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;
-}
+//
+// v0.8.10-alpha.3 — collapsed. The render pipeline no longer
+// computes the ratio (it was: accTokenCachedIn / (accTokenCachedIn
+// + accTokenIn) * 100). The data-processor now writes the
+// pre-computed ratio to TickStatusValue.accTokenHitRate at every
+// setAvg scope (session / project / model / ccsession) and the
+// module reads it straight. Zero-acc case maps to 0 (rendered as
+// "hit:0.0%"). Missing-slot case → placeholderAcc("hitRate", …).
 
 // m_acc* placeholder shape: "acc:n/a" for plain fields, "acc:n/a%"
 // for the hit-rate module. Used when the chosen scope has no
@@ -1377,20 +1356,13 @@ function placeholderAcc(
     case "apiCalls": prefix = "calls:"; break;
     case "hitRate": prefix = "hit:"; break;
   }
-  // v0.8.x cwf-tickStatus-v2 — "cached" and "total" use the
-  // "field not shipped" → "--" shape ONLY when the cache field
-  // is explicitly null on the snapshot (current.cacheRead ===
-  // null). When tokens is null entirely (no snapshot at all),
-  // the generic "n/a" shape is more honest — we don't know
-  // whether the field was shipped or not. hitRate keeps the %
-  // suffix.
-  const fieldNotShipped =
-    (field === "cached" || field === "total") &&
-    ctx.tokens?.current?.tokenCachedIn === null;
+  // v0.8.10-alpha.3 — placeholderAcc simplified: no fieldNotShipped
+// branch. cache_read absence on stdin no longer triggers the "--"
+// shape — the simpler rule is: missing slot → `prefixn/a` for plain
+// fields and `prefixn/a%` for hit-rate. Stale color wrapping is
+// preserved.
   let body: string;
-  if (fieldNotShipped) {
-    body = `${prefix}--`;
-  } else if (field === "hitRate") {
+  if (field === "hitRate") {
     body = `${prefix}n/a%`;
   } else {
     body = `${prefix}n/a`;
@@ -1726,7 +1698,8 @@ const MODULES: Record<string, Module> = {
   // (session if a sessionId exists in the live snapshot, else
   // project). The inline form `m_acc*:scope:<session|project|model>`
   // overrides; the inline path is wired in INLINE_RENDERERS below
-  // and uses the same accBody / accHitRateBody helpers.
+  // and uses the same accBody helper for raw fields plus a direct
+  // v.accTokenHitRate read for the hit-rate module.
   // v0.8.7+ — when a `scope` is on `ctx.passThrough` (i.e. an outer
   // m_template forwarded it), the bare form honors it the same way
   // the inline form does, so `m_template|<key>|scope|project` can
@@ -1751,7 +1724,16 @@ const MODULES: Record<string, Module> = {
   // cacheHitColor palette. v0.8.x — renamed from m_accCacheHitRate
   // to align the namespace with m_tokenHitRate (per-turn) and
   // m_sumTokenHitRate (cross-project).
-  m_accTokenHitRate: (c) => accHitRateBody(c, passThroughScope(c)),
+  // v0.8.10-alpha.3 — reads TickStatusValue.accTokenHitRate directly
+  // (data-processor pre-computes at setAvg time).
+  m_accTokenHitRate: (c) => {
+    const useScope = passThroughScope(c) ?? "ccsession";
+    const v = peekAcc(useScope, c);
+    if (!v) return placeholderAcc("hitRate", useScope, c);
+    const pct = v.accTokenHitRate;
+    const color = cacheHitColor(pct);
+    return `${color}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;
+  },
   // v0.8.0+ — sum/avg advanced statistics. 5 plain sums (in/out/
   // cached/total/apiMs) + 3 ratios (tokenHitRate + tokenInSpeed +
   // tokenOutSpeed). All default to "|model|active" + "|window|5h"
@@ -3698,9 +3680,14 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   // Hit rate is special: ccsession-scoped by default (per-process
   // lifetime). Pass :scope:session/:scope:project/:scope:model to
   // opt into a narrower or wider aggregate.
+  // v0.8.10-alpha.3 — reads TickStatusValue.accTokenHitRate directly.
   m_accTokenHitRate: (params, ctx) => {
     const scope = passThroughOr<"session" | "project" | "model" | "ccsession">(params, ctx, "scope") ?? "ccsession";
-    return accHitRateBody(ctx, scope);
+    const v = peekAcc(scope, ctx);
+    if (!v) return placeholderAcc("hitRate", scope, ctx);
+    const pct = v.accTokenHitRate;
+    const color = passThroughOr<string>(params, ctx, "color") ?? cacheHitColor(pct);
+    return `${color}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;
   },
   // v0.8.0+ — sum/avg inline renderers. Same body shape as the
   // bare-form MODULES entries; the inline path passes params so

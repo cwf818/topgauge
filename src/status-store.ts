@@ -47,6 +47,12 @@ export type TickStatusValue = {
   accTokenTotalIn: number;
   accApiMs: number;
   accApiCalls: number;
+  // v0.8.10-alpha.3 — derived ratio, computed at processTick write
+  // time and persisted alongside the raw accumulators. Render reads
+  // it straight (no recompute). Formula:
+  //   accTokenHitRate = accTokenCachedIn / accTokenTotalIn * 100
+  // Zero denominator (no totalIn accumulated this slot) → 0.
+  accTokenHitRate: number;
 };
 
 // v0.8.10-alpha.2 — PrevTickStatusValue is the "prev-snapshot" cursor:
@@ -106,6 +112,9 @@ export type AvgSnapshot = {
   accTokenCachedIn: number;
   accApiCalls: number;
   accTokenTotalIn: number;
+  // v0.8.10-alpha.3 — mirror of TickStatusValue.accTokenHitRate,
+  // pre-computed by the data-processor.
+  accTokenHitRate: number;
 };
 
 // v0.8.10-alpha.2 — internal per-tick snapshot for the data-processor.
@@ -341,20 +350,33 @@ function parseStore(raw: string): Store {
     }
     if (key === CCSESSION_KEY || key.startsWith("tickStatus:")) {
       const v = e.value as Record<string, unknown>;
+      const accTokenIn = typeof v.accTokenIn === "number" ? v.accTokenIn
+        : typeof v.accIn === "number" ? v.accIn : 0;
+      const accTokenCachedIn = typeof v.accTokenCachedIn === "number" ? v.accTokenCachedIn
+        : typeof v.accCached === "number" ? v.accCached : 0;
+      const accTokenTotalIn = typeof v.accTokenTotalIn === "number" ? v.accTokenTotalIn : 0;
+      // v0.8.10-alpha.3 — backfill accTokenHitRate for legacy rows
+      // that don't have it persisted. Compute from the parsed raw
+      // accumulators so a missing field gets a meaningful value
+      // on first read (the next processTick will overwrite with
+      // the fresh formula anyway). Zero-denominator → 0.
+      // Formula: accTokenCachedIn / accTokenTotalIn * 100
+      const accTokenHitRate = typeof v.accTokenHitRate === "number"
+        ? v.accTokenHitRate
+        : accTokenTotalIn > 0 ? (accTokenCachedIn / accTokenTotalIn) * 100 : 0;
       out[key] = {
         at: e.at,
         kind: "tickStatus",
         value: {
-          accTokenIn: typeof v.accTokenIn === "number" ? v.accTokenIn
-            : typeof v.accIn === "number" ? v.accIn : 0,
+          accTokenIn,
           accTokenOut: typeof v.accTokenOut === "number" ? v.accTokenOut
             : typeof v.accOut === "number" ? v.accOut : 0,
-          accTokenCachedIn: typeof v.accTokenCachedIn === "number" ? v.accTokenCachedIn
-            : typeof v.accCached === "number" ? v.accCached : 0,
-          accTokenTotalIn: typeof v.accTokenTotalIn === "number" ? v.accTokenTotalIn : 0,
+          accTokenCachedIn,
+          accTokenTotalIn,
           accApiMs: typeof v.accApiMs === "number" ? v.accApiMs : 0,
           accApiCalls: typeof v.accApiCalls === "number" ? v.accApiCalls
             : typeof v.accApiCount === "number" ? v.accApiCount : 0,
+          accTokenHitRate,
         },
       };
     }
@@ -427,6 +449,7 @@ export function emptyTickStatus(): TickStatusValue {
     accTokenTotalIn: 0,
     accApiMs: 0,
     accApiCalls: 0,
+    accTokenHitRate: 0,
   };
 }
 
@@ -1081,6 +1104,7 @@ export function peekAvg(
     accTokenCachedIn: v.accTokenCachedIn,
     accApiCalls: v.accApiCalls,
     accTokenTotalIn: v.accTokenTotalIn,
+    accTokenHitRate: v.accTokenHitRate,
   };
 }
 
@@ -1114,6 +1138,7 @@ export function readAccumulator(
     accTokenCachedIn: v.accTokenCachedIn,
     accApiCalls: v.accApiCalls,
     accTokenTotalIn: v.accTokenTotalIn,
+    accTokenHitRate: v.accTokenHitRate,
   };
 }
 
@@ -1239,6 +1264,13 @@ export function setAvg(
   sessionNext.accApiMs += snap.accApiMs;
   sessionNext.accTokenTotalIn += snap.accTokenTotalIn;
   sessionNext.accApiCalls += snap.accApiCalls;
+  // v0.8.10-alpha.3 — recompute accTokenHitRate from the post-add
+  // raw accumulators. Persisted to disk on next commit() so the
+  // render pipeline can read it straight without recomputing.
+  // Formula: accTokenCachedIn / accTokenTotalIn * 100
+  sessionNext.accTokenHitRate = sessionNext.accTokenTotalIn > 0
+    ? (sessionNext.accTokenCachedIn / sessionNext.accTokenTotalIn) * 100
+    : 0;
   mark(sessionKey, sessionNext);
 
   const bumpDeltaScope = (key: string) => {
@@ -1254,6 +1286,13 @@ export function setAvg(
     // accTokenIn / accTokenOut / accTokenCachedIn.
     next.accTokenTotalIn += deltaTokenTotalIn;
     next.accApiCalls += incrementCalls;
+    // v0.8.10-alpha.3 — same derived-field recompute as the
+    // session slot. After every scope bump, the cached ratio is
+    // refreshed so m_accTokenHitRate can read straight.
+    // Formula: accTokenCachedIn / accTokenTotalIn * 100
+    next.accTokenHitRate = next.accTokenTotalIn > 0
+      ? (next.accTokenCachedIn / next.accTokenTotalIn) * 100
+      : 0;
     mark(key, next);
   };
 
