@@ -1,7 +1,9 @@
-// v0.9.x — tests for the per-tick in-memory accumulator pipeline
-// (src/tick-state.ts). Each test isolates to a tmp status.json via
-// setStatusPathResolver + __resetForTest, mirroring the harness used
-// by render-tokens.test.ts.
+// v1.0 — tests for the data-processor / tick-state pipeline.
+// Data-processing (src/data-processor.ts:processTick) owns all
+// writes to pending; tick-state.ts (src/tick-state.ts) is the
+// in-memory Store backing those writes plus the on-disk commit.
+// Each test isolates to a tmp status.json via setStatusPathResolver
+// + __resetForTest, mirroring the harness used by render-tokens.test.ts.
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -44,7 +46,7 @@ afterEach(() => {
   tickState.resetTickStateForTest();
 });
 
-describe("tick-state — pipeline basics", () => {
+describe("data-processor — pipeline basics", () => {
   it("beginTick + getState returns the seeded TickState", () => {
     const s = tickState.beginTick("D:\\test", validTokens());
     assert.equal(s.cwd, "D:\\test");
@@ -71,7 +73,7 @@ describe("tick-state — pipeline basics", () => {
   });
 });
 
-describe("tick-state — validation gate", () => {
+describe("data-processor — validation gate", () => {
   it("totalIn=0 → invalid (commit is no-op even after mark)", () => {
     tickState.beginTick("D:\\test", validTokens({
       totals: { tokenTotalIn: 0, tokenTotalOut: 50 },
@@ -136,7 +138,7 @@ describe("tick-state — validation gate", () => {
   });
 });
 
-describe("tick-state — one-write-per-active-tick", () => {
+describe("data-processor — one-write-per-active-tick", () => {
   it("5 mark() calls + commit → 1 disk write of the merged store", () => {
     tickState.beginTick("D:\\test", validTokens());
     tickState.mark("tickStatus:sess-test", statusStore.emptyTickStatus());
@@ -156,7 +158,7 @@ describe("tick-state — one-write-per-active-tick", () => {
   });
 });
 
-describe("tick-state — crash-before-flush", () => {
+describe("data-processor — crash-before-flush", () => {
   it("mark + resetTickStateForTest (no commit) → disk unchanged", () => {
     tickState.beginTick("D:\\test", validTokens());
     tickState.mark("tickStatus:sess-test", statusStore.emptyTickStatus());
@@ -169,25 +171,27 @@ describe("tick-state — crash-before-flush", () => {
   });
 });
 
-describe("tick-state — regression-reset + commit interplay", () => {
-  // v0.9.x — the regression-reset path in accPrimer does an
-  // immediate writeTickStatus BEFORE this tick's setAvg writes
-  // land via tickState.mark. commit() must flush the ccsession
-  // entry that setAvg wrote (so the reset is observed + the
-  // delta accumulates correctly). Pin the contract end-to-end.
-  it("ccsession reset immediate write + setAgg accumulation → commit flushes both", () => {
+describe("data-processor — regression-reset + commit interplay", () => {
+  // v1.0 — accPrimer's "immediate statusStore.writeTickStatus"
+  // bypass is GONE. The regression-reset is now a regular
+  // tickState.mark(CCSESSION_KEY, emptyTickStatus()) that the
+  // data-processor (processTick Stage 1) fires BEFORE the same
+  // tick's setAvg (Stage 4). Both flush through a SINGLE commit.
+  // Last-mark-wins means setAvg's later mark can either replace
+  // the empty reset (delta accumulated) OR be skipped (tick with
+  // no delta → reset stays empty). Pin both shapes here.
+  it("ccsession reset mark + setAgg accumulation → last-mark-wins at commit", () => {
     // First tick: seed prev with apiMs=0.
     tickState.beginTick("D:\\test", validTokens());
     tickState.mark(statusStore.PREV_TICK_KEY, statusStore.emptyPrevTickStatus());
     tickState.commit();
 
-    // Second tick: simulate the regression-reset immediate write
-    // (statusStore.writeTickStatus mirrors what accPrimer does).
+    // Second tick: regression-reset mark first (empty ccsession),
+    // then setAgg-style mark lands with accIn=1000. processTick
+    // does exactly this order.
     tickState.resetTickStateForTest();
     tickState.beginTick("D:\\test", validTokens());
-    statusStore.writeTickStatus("D:\\test", statusStore.CCSESSION_KEY, statusStore.emptyTickStatus());
-    // Then the renderer's setAvg marks the ccsession entry with
-    // the current tick's delta.
+    tickState.mark(statusStore.CCSESSION_KEY, statusStore.emptyTickStatus());
     tickState.mark(statusStore.CCSESSION_KEY, {
       ...statusStore.emptyTickStatus(),
       accIn: 1000,
@@ -196,13 +200,33 @@ describe("tick-state — regression-reset + commit interplay", () => {
 
     const raw = readFileSync(join(_tmpDir, "status.json"), "utf8");
     const store = JSON.parse(raw) as Record<string, { kind: string; value: { accIn: number } }>;
-    // The committed pending (with accIn=1000) wins over the
-    // immediate regression-reset write because commit runs after.
+    // setAgg's later mark wins (last-mark-wins via the flat Map).
     assert.equal(store[statusStore.CCSESSION_KEY]?.value.accIn, 1000);
+  });
+
+  it("ccsession reset mark with NO subsequent delta → reset persists empty", () => {
+    // Regression-reset fires, but a same-tick hasDelta=false (e.g.
+    // current totals == prev totals) means setAgg never lands.
+    // The reset entry should be the on-disk truth.
+    tickState.beginTick("D:\\test", validTokens());
+    tickState.mark(statusStore.PREV_TICK_KEY, statusStore.emptyPrevTickStatus());
+    tickState.commit();
+
+    tickState.resetTickStateForTest();
+    tickState.beginTick("D:\\test", validTokens());
+    tickState.mark(statusStore.CCSESSION_KEY, statusStore.emptyTickStatus());
+    // NO setAgg mark follows — simulating hasDelta=false.
+    tickState.commit();
+
+    const raw = readFileSync(join(_tmpDir, "status.json"), "utf8");
+    const store = JSON.parse(raw) as Record<string, { kind: string; value: { accIn: number; accOut: number } }>;
+    const v = store[statusStore.CCSESSION_KEY]?.value;
+    assert.equal(v.accIn, 0);
+    assert.equal(v.accOut, 0);
   });
 });
 
-describe("tick-state — concurrent-overlay commit (m_template nesting)", () => {
+describe("data-processor — concurrent-overlay commit (m_template nesting)", () => {
   // m_template creates inner render contexts; mark() calls from
   // the inner overlay must NOT cause the outer mark to lose its
   // value at commit time. The contract: pending is a flat Map;
@@ -219,7 +243,7 @@ describe("tick-state — concurrent-overlay commit (m_template nesting)", () => 
   });
 });
 
-describe("tick-state — getState throws without beginTick", () => {
+describe("data-processor — getState throws without beginTick", () => {
   it("getState() with no prior beginTick throws a clear error", () => {
     assert.throws(() => tickState.getState(), /without beginTick\(\)/);
   });

@@ -30,10 +30,12 @@ src/
   types.ts            # Provider union: 'minimax' | 'deepseek' | null
   api.ts              # MiniMax fetch + tolerant parser for /v1/token_plan/remains
   api.deepseek.ts     # DeepSeek fetch + parser for /user/balance + URL gate
-  render.ts           # pure: pctBar + ANSI color thresholds + formatLine + formatBalanceLine (reads configStore)
+  render.ts           # v1.0 READ-ONLY against tickState.pending: pctBar + ANSI color thresholds + formatLine + formatBalanceLine; NO setAvg/setPrevTick/setLastSpeed calls (those moved to data-processor.ts)
+  data-processor.ts   # v1.0 processTick + setPrevTick + setAvg + setLastSpeed/ApiMs/TokenHitRate + computeAndCacheTickDeltaPure + getDeltaForRender — owns ALL writes to tickState.pending
   cache.ts            # TTL + stale-on-error (Map<key, {at, value}>) — TTL passed in by index.ts from configStore
   config.ts           # loads ~/.claude/plugins/topgauge-cc/config.json; module-level singleton store
   composition.ts      # reads TOPGAUGE_CC_UPSTREAM env, prepends (preserving ANSI/multi-line) and appends line
+  tick-state.ts       # v1.0 per-tick in-memory Store: beginTick / mark / commit; backing the data-processor's writes + the single commit() flush
   __fixtures__/       # remains.real.json, balance.real.json, balance.multi.json, …
   session-parse.ts    # parseTokenSnapshot — stdin JSON → TokenSnapshot (extracted from index.ts so unit tests don't drag index side effects)
   token-store.ts      # append-only JSONL state file at state/<projectHash>/<sessionId>.jsonl for sum/avg modules (v0.4.x+; v0.8.0 adds readAllSamples cross-project scan)
@@ -106,24 +108,29 @@ Claude Code's `statusLine.command` spawns a child process that reads a session J
 
 ### Per-Project State Layout (v0.4.x+)
 
-#### Per-tick write invariant (v0.9.x)
+#### Per-tick write invariant (v1.0)
 
-The renderer runs inside a single per-tick in-memory pipeline owned by `src/tick-state.ts`. The pipeline is:
+The per-tick pipeline is a two-phase split between **data-processor (writes)** and **render (reads)** — owned by `src/data-processor.ts` and `src/tick-state.ts`. The pipeline:
 
-1. **`beginTick(cwd, tokens)`** (index.ts:main, right after `diagnostics.setSessionCwd`) — loads `state/<projectHash>/status.json` into a per-tick `pending` map, validates the snapshot (see below), and exposes the pending map for the renderer to mutate.
-2. **Render** — every read goes through `tickState.getState().pending[key]` (in-memory only, no disk); every write goes through `tickState.mark(key, value)` (cheap, no disk).
-3. **`commit()`** (index.ts:main, right after `process.stdout.write(compose(...))`) — flushes `pending` to `status.json` as ONE full-file rewrite. No-op when:
+1. **`beginTick(cwd, tokens)`** (index.ts:main, right after `diagnostics.setSessionCwd`) — loads `state/<projectHash>/status.json` into a per-tick `pending` map, validates the snapshot (see below), and exposes the pending map for the data-processor to mutate.
+2. **`processTick(cwd, tokens)`** (index.ts:main, right after `beginTick`) — ALREADY-RUNS data-processing pipeline. **Always fires**, independent of the user's `lineTemplate`. Even an empty template still has the data-processor run, so the next tick has a baseline. Five stages, gated on the validation flag:
+   - **Stage 1** — regression-reset: if `prev.totalApiMs > current.totalApiDurationMs` (claude-code process restarted), `tickState.mark(CCSESSION_KEY, emptyTickStatus())`.
+   - **Stage 2** — compute deltas via `computeAndCacheTickDeltaPure(tokens)`; stash on `_state.delta` for render reads (no on-disk side effect).
+   - **Stage 3** — `setPrevTick`: writes PREV_TICK_KEY for next tick's baseline.
+   - **Stage 4** — `setAvg` for the per-session slot (accIn / accOut / accApiMs / accApiCount / accTotalIn).
+   - **Stage 4b** — `setAvg` for the cache track (`accCached` only, when stdin shipped `cache_read_input_tokens`).
+   - **Stage 5** — `lastActive:*` marks: `tpsIn`, `tpsOut`, `apiMs`, `tokenHitRate` for the speed/cache/idle-render fallbacks.
+3. **`commit()`** (index.ts:main, between `appendSample` and the provider-dispatch branch) — flushes `pending` to `status.json` as ONE full-file rewrite. No-op when:
    - `dirty === false` (nothing was marked — pristine / idle tick);
    - `valid === false` (validation gate failed — see below);
    - `cwd === null` (no per-project dir to write to).
+4. **Render** (`buildProviderLine` → `renderTemplate`) — PURE READ against `tickState.getState().pending[key]`. NO `tickState.mark` / `setAvg` / `setPrevTick` / `setLastSpeed` / `setLastApiMs` / `setLastTokenHitRate` calls anywhere in `src/render.ts`. Reads go through `getDeltaForRender()` / `peekAcc` / `peekPrevTick` / `peekLastSpeed` / `peekLastApiMs` / `peekLastTokenHitRate`. mid-render mutations.
 
-**Invariant**: **at most one full-file rewrite per tick** (zero on invalid / idle / pristine ticks). The previous v0.8.x code path fired 5–13 `writeFileSync` calls per active render (`accPrimer`, `accCachePrimer`, `setLastSpeed`, `setPrevTick`); v0.9.x collapses those to one.
+**Invariant**: **at most one full-file rewrite per tick** (zero on invalid / idle / pristine ticks). The previous v0.8.x code path fired 5–13 `writeFileSync` calls per active render (`accPrimer`, `accCachePrimer`, `setLastSpeed`, `setPrevTick`); v0.9.x collapsed that to one, and **v1.0 fully decoupled writes from reads** so render is read-only against the in-memory store. No `statusStore.writeTickStatus` bypass anywhere — the v0.9.x regression-reset "immediate write" exception is gone; in v1.0 the reset is a regular `tickState.mark` that flushes alongside every other write via the same single `commit()`.
 
-**Validation gate** (per user contract 2026-07-04): `tokens.totals.tokenTotalIn > 0 AND tokens.totals.tokenTotalOut > 0 AND (tokens.cost.totalApiDurationMs - prevTickStatus.totalApiMs) > 0`. On the first tick (no prev baseline), the rule collapses to `totalApiDurationMs > 0`. Invalid ticks commit nothing — the renderer can still read pending (which is a clone of the loaded on-disk state) but no disk IO happens.
+**Validation gate** (per user contract 2026-07-04): `tokens.totals.tokenTotalIn > 0 AND tokens.totals.tokenTotalOut > 0 AND (tokens.cost.totalApiDurationMs - prevTickStatus.totalApiMs) > 0`. On the first tick (no prev baseline), the rule collapses to `totalApiDurationMs > 0`. Invalid ticks commit nothing — but **`processTick` Stages 3-5 are skipped on invalid ticks**, only Stage 1 (regression-reset) always fires. Writes staged in `pending` (regression reset mark) survive in-memory until the next valid tick when `commit()` flushes them. The renderer can still read pending (which is a clone of the loaded on-disk state) so render never crashes on invalid ticks — it just falls back to placeholder / "0" / last-cached values via the existing `getDeltaForRender` sentinel + `peekLast*` fallbacks.
 
-**One exception** — the `accPrimer` regression-reset path in `src/render.ts` (the `totalApiDurationMs < prevTickStatus.totalApiMs` branch) does an **immediate** `statusStore.writeTickStatus` to flush the ccsession reset BEFORE the same-tick `setAvg` runs. This is the ONE write that bypasses the deferred-write pattern; it also mirrors the reset into `tickState.pending[CCSESSION_KEY]` so `setAvg` sees a zeroed baseline. Documented in `src/render.ts` "Regression-reset exception" block.
-
-**Module-keyed field naming** (v0.9.x): `TokenSnapshot` fields are named for their primary reader module — `tokens.current.tokenIn` (read by `m_tokenIn`), `tokens.totals.tokenTotalIn` (read by `m_tokenTotalIn`), `tokens.contextWindow.contextWindowSize` (read by `m_contextWindowsSize`), etc. The grouping (`current` for per-turn deltas, `totals` for session-cumulative, `contextWindow` for capacity/percentages, `cost` for stdin `cost.*` fields) is preserved so the `total_input_tokens == input_tokens + cache_read_input_tokens` invariant check in `src/session-parse.ts` still rides on the type-level signal.
+**Module-keyed field naming** (v0.9.x+): `TokenSnapshot` fields are named for their primary reader module — `tokens.current.tokenIn` (read by `m_tokenIn`), `tokens.totals.tokenTotalIn` (read by `m_tokenTotalIn`), `tokens.contextWindow.contextWindowSize` (read by `m_contextWindowsSize`), etc. The grouping (`current` for per-turn deltas, `totals` for session-cumulative, `contextWindow` for capacity/percentages, `cost` for stdin `cost.*` fields) is preserved so the `total_input_tokens == input_tokens + cache_read_input_tokens` invariant check in `src/session-parse.ts` still rides on the type-level signal.
 
 ### Per-Project State Layout (v0.4.x+)
 

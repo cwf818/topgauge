@@ -26,6 +26,8 @@ import {
   beginTickForTest,
   resetTickStateForTest,
 } from "./tick-state.ts";
+import * as tickState from "./tick-state.ts";
+import { processTick } from "./data-processor.ts";
 import { compose } from "./composition.ts";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1410,18 +1412,25 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
     });
     // The cache needs to be primed for sess-speed. We import
     // the helper from render.ts so the test is self-contained.
+    const snap = {
+      cwd: "C:\\fake",
+      sessionId: "sess-speed",
+      totals: { tokenTotalIn: 5000, tokenTotalOut: 100 },
+      current: { tokenIn: 100, tokenOut: 100, tokenCacheCreation: 0, tokenCachedIn: 0 },
+      cost: { totalDurationMs: 5000, totalApiDurationMs: 2000, totalLinesAdded: null, totalLinesRemoved: null },
+    };
+    // v1.0 — beginTickForTest must run BEFORE setPrevTick so the
+    // prev seed survives the in-memory load (beginTick replaces
+    // pending with a clone of the disk-loaded store).
+    beginTickForTest(snap.cwd, snap);
     setPrevTick("sess-speed", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "C:\\fake");
+    processTick(snap.cwd, snap);
+    tickState.commit();
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
       fiveHour: null, weekly: null, balance: null,
       ageMs: null, stale: false, version: "",
-      tokens: {
-        cwd: "C:\\fake",
-        sessionId: "sess-speed",
-        totals: { tokenTotalIn: 5000, tokenTotalOut: 0 },
-        current: { tokenIn: 100, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
-        cost: { totalDurationMs: 5000, totalApiDurationMs: 2000, totalLinesAdded: null, totalLinesRemoved: null },
-      },
+      tokens: snap,
     });
     // STALE_COLOR must not appear; red must wrap the speed chunk.
     // delta_in=100, delta_api=2000 → speed=50 t/s → "in:50.0 t/s"
@@ -1435,17 +1444,21 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
     });
     // v0.8.0+ per-turn formula: current.cacheRead / totals.input.
     // Set totals.input=1000, current.cacheRead=900 → 90.0%.
+    const snap = {
+      cwd: "C:\\fake",
+      sessionId: "sess-hit",
+      totals: { tokenTotalIn: 1000, tokenTotalOut: 100 },
+      current: { tokenIn: 100, tokenOut: 100, tokenCacheCreation: 0, tokenCachedIn: 900 },
+      cost: { totalDurationMs: 1000, totalApiDurationMs: 1000, totalLinesAdded: null, totalLinesRemoved: null },
+    };
+    beginTickForTest(snap.cwd, snap);
+    processTick(snap.cwd, snap);
+    tickState.commit();
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
       fiveHour: null, weekly: null, balance: null,
       ageMs: null, stale: false, version: "",
-      tokens: {
-        cwd: "C:\\fake",
-        sessionId: "sess-hit",
-        totals: { tokenTotalIn: 1000, tokenTotalOut: 0 },
-        current: { tokenIn: 100, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 900 },
-        cost: { totalDurationMs: 1000, totalApiDurationMs: 1000, totalLinesAdded: null, totalLinesRemoved: null },
-      },
+      tokens: snap,
     });
     // Hit rate = 90% (900 read / 1000 totals.input). Default band
     // color is "good" (\x1b[38;5;41m brightGreen). Override forces
@@ -1467,18 +1480,21 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
     __resetForTest({
       statuslineTemplate:["m_tokenIn|color|brightGreen"],
     });
-    setPrevTick("sess-tok-in", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "C:\\fake");
+    const snap = {
+      cwd: "C:\\fake",
+      sessionId: "sess-tok-in",
+      totals: { tokenTotalIn: 1500, tokenTotalOut: 100 },
+      current: { tokenIn: 1500, tokenOut: 100, tokenCacheCreation: 0, tokenCachedIn: 0 },
+      cost: { totalDurationMs: 1_000, totalApiDurationMs: 1_000, totalLinesAdded: null, totalLinesRemoved: null },
+    };
+    beginTickForTest(snap.cwd, snap);
+    processTick(snap.cwd, snap);
+    tickState.commit();
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
       fiveHour: null, weekly: null, balance: null,
       ageMs: null, stale: false, version: "",
-      tokens: {
-        cwd: "C:\\fake",
-        sessionId: "sess-tok-in",
-        totals: { tokenTotalIn: 1500, tokenTotalOut: 0 },
-        current: { tokenIn: 1500, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
-        cost: { totalDurationMs: 1_000, totalApiDurationMs: 1_000, totalLinesAdded: null, totalLinesRemoved: null },
-      },
+      tokens: snap,
     });
     assert.equal(line, "\x1b[38;5;41min:1.5k\x1b[0m", `got: ${JSON.stringify(line)}`);
   });
@@ -1490,18 +1506,21 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
     __resetForTest({
       statuslineTemplate:["m_tokenIn"],
     });
-    setPrevTick("sess-tok-in-bare", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "C:\\fake");
+    const snap = {
+      cwd: "C:\\fake",
+      sessionId: "sess-tok-in-bare",
+      totals: { tokenTotalIn: 1500, tokenTotalOut: 100 },
+      current: { tokenIn: 1500, tokenOut: 100, tokenCacheCreation: 0, tokenCachedIn: 0 },
+      cost: { totalDurationMs: 1_000, totalApiDurationMs: 1_000, totalLinesAdded: null, totalLinesRemoved: null },
+    };
+    beginTickForTest(snap.cwd, snap);
+    processTick(snap.cwd, snap);
+    tickState.commit();
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
       fiveHour: null, weekly: null, balance: null,
       ageMs: null, stale: false, version: "",
-      tokens: {
-        cwd: "C:\\fake",
-        sessionId: "sess-tok-in-bare",
-        totals: { tokenTotalIn: 1500, tokenTotalOut: 0 },
-        current: { tokenIn: 1500, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
-        cost: { totalDurationMs: 1_000, totalApiDurationMs: 1_000, totalLinesAdded: null, totalLinesRemoved: null },
-      },
+      tokens: snap,
     });
     assert.equal(line, "in:1.5k", `got: ${JSON.stringify(line)}`);
   });

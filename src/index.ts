@@ -35,6 +35,7 @@ import { compose } from "./composition.ts";
 import { type FetchResult, buildProviderLine } from "./dispatch.ts";
 import { applyProviderOverrides, configStore, loadConfig } from "./config.ts";
 import { peekPrevTick } from "./render.ts";
+import { processTick } from "./data-processor.ts";
 import { beginTick, commit as tickStateCommit } from "./tick-state.ts";
 import {
   fetchForProvider,
@@ -209,6 +210,15 @@ async function main(): Promise<void> {
   // (or zero writes on invalid ticks / idle ticks). See
   // src/tick-state.ts for the contract.
   beginTick(tokens?.cwd ?? null, tokens);
+  // v1.0 — data-processor (per user contract 2026-07-04) ALWAYS
+  // runs, independent of the user's lineTemplate. Even an empty
+  // template still has the data-processor fire so the next tick
+  // has a fresh baseline. Runs BEFORE appendSample so the
+  // latter still sees pending[PREV_TICK_KEY] = load-time prev
+  // baseline (processTick's setPrevTick mark is for THIS tick's
+  // writeBack, which the next tick will load as `prev`). See
+  // src/data-processor.ts:processTick.
+  processTick(tokens?.cwd ?? null, tokens);
   // Record the raw stdin frame for postmortem. Gated by the same
   // TOPGAUGE_CC_DIAGNOSTICS_ENABLE switch as the rest of diagnostics.jsonl
   // (no-op when off). Source "stdin" so it doesn't collide with the
@@ -272,6 +282,16 @@ async function main(): Promise<void> {
   const upstream = UPSTREAM;
   const provider = matchProvider(baseUrl);
 
+  // v1.0 — flush the deferred writes from processTick into a
+  // single full-file rewrite of status.json. Moved up from the
+  // tail of main() (it used to live after process.stdout.write).
+  // Even on the null-provider branch below the data-processor
+  // still wrote to pending, so the commit MUST run before the
+  // early-return — otherwise the writes are silently dropped. No-op
+  // when validation failed or nothing was marked (idle tick /
+  // pristine tick); see tick-state.commit.
+  tickStateCommit();
+
   // v0.4.x — when no provider entry matches ANTHROPIC_BASE_URL,
   // dispatch through buildProviderLine anyway so provider-AGNOSTIC
   // modules (m_token*, m_session, m_version, m_model, …) can still
@@ -316,11 +336,10 @@ async function main(): Promise<void> {
   const line = buildProviderLine(provider, result, tokens);
 
   process.stdout.write(compose(upstream, line));
-  // v0.9.x — flush the deferred writes from the renderer's
-  // tickState.mark() calls into a single full-file rewrite of
-  // status.json. No-op when validation failed or nothing was
-  // marked (idle tick / pristine tick); see tick-state.commit.
-  tickStateCommit();
+  // v1.0 — tickStateCommit() moved up (before the null-provider
+  // branch) so the data-processor's writes flush regardless of
+  // whether render ran. See the call above, between
+  // diagnostics.append and the provider dispatch.
 }
 
 // parseTokenSnapshot lives in ./session-parse.ts so unit tests can

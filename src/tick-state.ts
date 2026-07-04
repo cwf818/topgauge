@@ -1,13 +1,24 @@
-// v0.9.x — per-tick in-memory accumulator for `status.json`.
+// v1.0 — per-tick in-memory accumulator for `status.json`.
 //
-// Owns the load → validate → compute → commit pipeline that replaces
-// the render-time on-demand write/read pattern in src/render.ts. The
-// plugin runs as a fresh process on every statusline tick, so the
-// tick begins with no in-memory state; beginTick() reads the entire
-// status.json into memory once, validates the incoming TokenSnapshot,
-// and exposes a single pending Store for the renderer to mutate.
-// commit() runs at end of tick (after the line is rendered) and
-// flushes the pending Store to disk as one synchronous writeFileSync.
+// Owns the load → validate → commit pipeline that backs the
+// two-phase per-tick pipeline (data-processor writes, then render
+// reads). The plugin runs as a fresh process on every statusline
+// tick, so the tick begins with no in-memory state; beginTick()
+// reads the entire status.json into memory once, validates the
+// incoming TokenSnapshot, and exposes a single pending Store for
+// the data-processor (src/data-processor.ts) to mutate. commit()
+// runs IMMEDIATELY after the data-processor finishes, BEFORE
+// render begins, so a render crash leaves an up-to-date status.json
+// on disk.
+//
+// Two-phase pipeline (per user contract 2026-07-04):
+//   1. Data processing (src/data-processor.ts:processTick) — owns
+//      all writes to pending. Always runs, independent of the
+//      user's lineTemplate. Even an empty template still has the
+//      data-processor fire (so the next tick has a baseline).
+//   2. Rendering (src/render.ts) — pure read against pending. NO
+//      tickState.mark / statusStore.write* calls anywhere in
+//      render.ts anymore.
 //
 // Why this exists:
 //   - The previous code path fired 5–13 writeFileSync calls per
@@ -74,6 +85,12 @@ export type TickState = {
   dirty: boolean;
   prevTick: import("./status-store.ts").PrevTickStatusValue | null;
   valid: boolean;
+  // v1.0 — TickDeltaResult computed by processTick Stage 2. Stashed
+  // here (NOT in `pending`) because it's a transient per-tick
+  // reading, not part of status.json. Render modules read it via
+  // `getDeltaForRender()` from data-processor.ts. Set by processTick
+  // once per tick; never read by commit(); never serialized to disk.
+  delta: import("./data-processor.ts").TickDeltaResult | null;
 };
 
 let _state: TickState | null = null;
@@ -181,6 +198,13 @@ function validateTick(
   return true;
 }
 
+// v1.0 — exported so data-processor's processTick can re-validate
+// against the actual tokens it received (beginTick's `valid` was
+// computed against whatever tokens the beginTick-for-test path
+// passed in — sometimes null, sometimes a stale parse — and
+// processTick must trust the same tokens the renderer will).
+export const validateTickForDataProcessor = validateTick;
+
 // Initialize the per-tick state. Called exactly once per tick from
 // index.ts:main right after parseTokenSnapshot. Reads the entire
 // status.json into `loaded`, clones it to `pending`, runs
@@ -204,6 +228,7 @@ export function beginTick(cwd: string | null, tokens: TokenSnapshot | null): Tic
     dirty: false,
     prevTick: prev,
     valid,
+    delta: null,
   };
   return _state;
 }
