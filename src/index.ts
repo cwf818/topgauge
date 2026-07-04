@@ -35,6 +35,7 @@ import { compose } from "./composition.ts";
 import { type FetchResult, buildProviderLine } from "./dispatch.ts";
 import { applyProviderOverrides, configStore, loadConfig } from "./config.ts";
 import { peekPrevTick } from "./render.ts";
+import { beginTick, commit as tickStateCommit } from "./tick-state.ts";
 import {
   fetchForProvider,
   getProviderEntry,
@@ -123,7 +124,11 @@ async function fetchProviderData(
   // cache.getWithAge is generic on the data shape. We dispatch on
   // TYPE for the concrete type; unknown is the cross-type union.
   // (noinspection is needed because TS can't narrow `unknown` to
-  // Remains/Balance purely from entry.TYPE.)
+  // Remains/Balance purely from entry.TYPE.) The audit row in
+  // diagnostics.jsonl picks up cwd via the process-level session
+  // cwd store (set by `setSessionCwd` once `parseTokenSnapshot`
+  // has parsed stdin above), so the top-level cache.json row
+  // is automatically attributed to the originating session.
   const readCache = <T>(): { value: T; ageMs: number } | null => {
     const hit = cache.getWithAge<T>(cacheKey, ttlMs);
     return hit ? { value: hit.value, ageMs: hit.ageMs } : null;
@@ -186,6 +191,24 @@ async function main(): Promise<void> {
   // TokenSnapshot parsing is cheap (regex + small object walk) and
   // does not depend on anything in this function.
   const tokens = parseTokenSnapshot(stdinRaw);
+  // Populate the process-level session cwd store BEFORE any subsequent
+  // logFs* call. This is the architectural decision behind the v0.8.7+
+  // fs-audit rework: cwd-unaware modules (cache.ts reading the shared
+  // top-level cache.json, config.ts loading the shared top-level
+  // config.json, index.ts probing the plugin manifest) can call
+  // logFs*(path, fn) with no cwd parameter and still have their audit
+  // rows stamped with the originating session's cwd. The store is
+  // reset on every tick — the plugin is a per-tick child process so
+  // _sessionCwd never leaks across sessions.
+  diagnostics.setSessionCwd(tokens?.cwd ?? null);
+  // v0.9.x — per-tick in-memory pipeline. beginTick loads the
+  // project-scoped status.json once, validates the snapshot
+  // (totalIn>0 AND totalOut>0 AND deltaApiMs>0), and exposes
+  // pending state for the renderer to mutate. commit() at the
+  // very end flushes pending to disk as ONE full-file rewrite
+  // (or zero writes on invalid ticks / idle ticks). See
+  // src/tick-state.ts for the contract.
+  beginTick(tokens?.cwd ?? null, tokens);
   // Record the raw stdin frame for postmortem. Gated by the same
   // TOPGAUGE_CC_DIAGNOSTICS_ENABLE switch as the rest of diagnostics.jsonl
   // (no-op when off). Source "stdin" so it doesn't collide with the
@@ -216,20 +239,20 @@ async function main(): Promise<void> {
     tokens &&
     tokens.sessionId &&
     tokens.cwd &&
-    tokens.totals.input != null &&
-    tokens.totals.output != null &&
+    tokens.totals.tokenTotalIn != null &&
+    tokens.totals.tokenTotalOut != null &&
     tokens.cost.totalApiDurationMs != null
   ) {
     const prev = peekPrevTick(tokens.sessionId, tokens.cwd);
     const decision = resolveApiMsSample({
       at: Date.now(),
-      totalIn: tokens.totals.input,
-      totalOut: tokens.totals.output,
+      totalIn: tokens.totals.tokenTotalIn,
+      totalOut: tokens.totals.tokenTotalOut,
       current: {
-        input: tokens.current.input,
-        output: tokens.current.output,
-        cacheRead: tokens.current.cacheRead,
-        cacheCreation: tokens.current.cacheCreation,
+        tokenIn: tokens.current.tokenIn,
+        tokenOut: tokens.current.tokenOut,
+        tokenCachedIn: tokens.current.tokenCachedIn,
+        tokenCacheCreation: tokens.current.tokenCacheCreation,
       },
       modelDisplayName: tokens.modelDisplayName,
       totalApiMs: tokens.cost.totalApiDurationMs,
@@ -293,6 +316,11 @@ async function main(): Promise<void> {
   const line = buildProviderLine(provider, result, tokens);
 
   process.stdout.write(compose(upstream, line));
+  // v0.9.x — flush the deferred writes from the renderer's
+  // tickState.mark() calls into a single full-file rewrite of
+  // status.json. No-op when validation failed or nothing was
+  // marked (idle tick / pristine tick); see tick-state.commit.
+  tickStateCommit();
 }
 
 // parseTokenSnapshot lives in ./session-parse.ts so unit tests can
@@ -329,6 +357,7 @@ function loadPluginVersion(): void {
     join(here, ".claude-plugin", "plugin.json"),
   ];
   for (const p of candidates) {
+    diagnostics.logFsRead(p, "index.loadPluginVersion");
     if (!existsSync(p)) continue;
     try {
       const raw = readFileSync(p, "utf8");

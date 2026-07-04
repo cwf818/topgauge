@@ -28,6 +28,11 @@ import {
   __resetForTest as resetStatusForTest,
   setStatusPathResolver,
 } from "./status-store.ts";
+import {
+  beginTickForTest,
+  resetTickStateForTest,
+} from "./tick-state.ts";
+import * as tickState from "./tick-state.ts";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -49,12 +54,12 @@ const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 const fakeSnapshot = (overrides: Partial<TokenSnapshot> = {}): TokenSnapshot => ({
   sessionId: "sess-test",
   cwd: "D:\\test",
-  totals: { input: 163479, output: 155 },
+  totals: { tokenTotalIn: 163479, tokenTotalOut: 155 },
   current: {
-    input: 38,
-    output: 155,
-    cacheCreation: 0,
-    cacheRead: 163441,
+    tokenIn: 38,
+    tokenOut: 155,
+    tokenCacheCreation: 0,
+    tokenCachedIn: 163441,
   },
   cost: { totalDurationMs: 600_000, totalApiDurationMs: 60_000, totalLinesAdded: 3965, totalLinesRemoved: 967 }, // 10 minutes total, 1m API time
   // v0.4.0+ — session identity / metadata / context stats
@@ -63,7 +68,7 @@ const fakeSnapshot = (overrides: Partial<TokenSnapshot> = {}): TokenSnapshot => 
   effort: "high",
   repo: { host: "github.com", owner: "cwf818", name: "topgauge-cc" },
   ccversion: "2.1.191",
-  contextWindow: { size: 200000, usedPct: 63, remainingPct: 37 },
+  contextWindow: { contextWindowSize: 200000, contextUsedPercent: 63, contextRemainingPercent: 37 },
   ...overrides,
 });
 
@@ -85,12 +90,12 @@ const ctxFor = (
   stale: false,
   version: "0.4.0-dev0",
   tokens,
-  // v0.4.0+ — synthesized from tokens.contextWindow.usedPct.
+  // v0.4.0+ — synthesized from tokens.contextWindow.contextUsedPercent.
   // The renderProviderLine helper does this synthesis; tests build
   // RenderContext directly so we mirror it here.
   contextWindow:
-    tokens?.contextWindow?.usedPct != null
-      ? { pct: tokens.contextWindow.usedPct }
+    tokens?.contextWindow?.contextUsedPercent != null
+      ? { pct: tokens.contextWindow.contextUsedPercent }
       : null,
   // v0.4.x — the provider TYPE discriminator. Tests that don't care
   // about type filtering use the default "plan"; m_template coverage
@@ -122,6 +127,14 @@ beforeEach(() => {
   setStatusPathResolver(() => join(_tmpDir, "status.json"));
   resetCacheForTest(); // clears in-memory Map + lazy-load guard
   resetStatusForTest(); // clears status-store in-memory cache
+  // v0.9.x — render functions now read/write through tick-state;
+  // tests that drive renderers directly must seed the per-tick
+  // state with beginTickForTest() before the first render call.
+  // null cwd means an empty in-memory store; null tokens means
+  // validation fails (commit() is a no-op), so tests that exercise
+  // the in-memory contract don't accidentally hit the disk.
+  resetTickStateForTest();
+  beginTickForTest(null, null);
   // v0.8.0+ — token-store's stateRoot hook needs an explicit
   // reset between tests so sum/avg scans don't leak into a
   // different test's tmp dir.
@@ -284,7 +297,7 @@ describe("renderTemplate — m_token* modules", () => {
     // is THIS turn's delta → render "in:200", not "in:162" (no
     // subtraction from the 38 baseline).
     const next = fakeSnapshot({
-      current: { input: 200, output: 155, cacheCreation: 0, cacheRead: 163441 },
+      current: { tokenIn: 200, tokenOut: 155, tokenCacheCreation: 0, tokenCachedIn: 163441 },
       cost: { totalDurationMs: 700_000, totalApiDurationMs: 65_000, totalLinesAdded: null, totalLinesRemoved: null },
     });
     const out = renderTemplate(["m_tokenIn"], ctxFor(next)).join("\n");
@@ -376,7 +389,7 @@ describe("renderTemplate — m_token* modules", () => {
     // the per-turn input IS current.input verbatim, and a
     // zero rate is the truthful answer.
     const snap = fakeSnapshot({
-      current: { input: 0, output: 50, cacheCreation: 0, cacheRead: 0 },
+      current: { tokenIn: 0, tokenOut: 50, tokenCacheCreation: 0, tokenCachedIn: 0 },
       cost: { totalDurationMs: 600_000, totalApiDurationMs: 60_000, totalLinesAdded: null, totalLinesRemoved: null },
     });
     setPrevTick("sess-test", { apiMs: 30_000, in: 0, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
@@ -388,7 +401,7 @@ describe("renderTemplate — m_token* modules", () => {
   it("m_tokenInSpeed| second tick with real API call → emits real speed", () => {
     renderTemplate(["m_tokenInSpeed"], ctxFor(fakeSnapshot()));
     const next = fakeSnapshot({
-      current: { input: 200, output: 250, cacheCreation: 0, cacheRead: 163441 },
+      current: { tokenIn: 200, tokenOut: 250, tokenCacheCreation: 0, tokenCachedIn: 163441 },
       cost: { totalDurationMs: 700_000, totalApiDurationMs: 65_000, totalLinesAdded: null, totalLinesRemoved: null },
     });
     const out = renderTemplate(["m_tokenInSpeed"], ctxFor(next)).join("\n");
@@ -437,7 +450,7 @@ describe("renderTemplate — m_token* modules", () => {
     setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0, totalIn: 0 }, "D:\\test");
     renderTemplate(["m_accTokenIn"], ctxFor(fakeSnapshot()));
     const next = fakeSnapshot({
-      current: { input: 200, output: 250, cacheCreation: 0, cacheRead: 163441 },
+      current: { tokenIn: 200, tokenOut: 250, tokenCacheCreation: 0, tokenCachedIn: 163441 },
       cost: { totalDurationMs: 700_000, totalApiDurationMs: 65_000, totalLinesAdded: null, totalLinesRemoved: null },
     });
     const out = renderTemplate(
@@ -478,7 +491,7 @@ describe("renderTemplate — m_token* modules", () => {
     setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0, totalIn: 0 }, "D:\\test");
     renderTemplate(["m_accTokenOut"], ctxFor(fakeSnapshot()));
     const next = fakeSnapshot({
-      current: { input: 200, output: 250, cacheCreation: 0, cacheRead: 163441 },
+      current: { tokenIn: 200, tokenOut: 250, tokenCacheCreation: 0, tokenCachedIn: 163441 },
       cost: { totalDurationMs: 700_000, totalApiDurationMs: 65_000, totalLinesAdded: null, totalLinesRemoved: null },
     });
     const out = renderTemplate(
@@ -499,7 +512,7 @@ describe("renderTemplate — m_token* modules", () => {
   it("m_accTokenCachedIn missing stdin field → 'cache:--'", () => {
     const out = renderTemplate(
       ["m_accTokenCachedIn"],
-      ctxFor(fakeSnapshot({ current: { input: 38, output: 155, cacheCreation: 0, cacheRead: null } })),
+      ctxFor(fakeSnapshot({ current: { tokenIn: 38, tokenOut: 155, tokenCacheCreation: 0, tokenCachedIn: null } })),
     ).join("\n");
     assert.equal(strip(out), "cache:--");
   });
@@ -523,7 +536,7 @@ describe("renderTemplate — m_token* modules", () => {
       ctxFor(fakeSnapshot()),
     );
     const next = fakeSnapshot({
-      current: { input: 200, output: 250, cacheCreation: 0, cacheRead: 350_000 },
+      current: { tokenIn: 200, tokenOut: 250, tokenCacheCreation: 0, tokenCachedIn: 350_000 },
       cost: { totalDurationMs: 700_000, totalApiDurationMs: 65_000, totalLinesAdded: null, totalLinesRemoved: null },
     });
     const out = renderTemplate(
@@ -633,8 +646,8 @@ describe("renderTemplate — m_token* modules", () => {
       ["m_tokenHitRate"],
       ctxFor(
         fakeSnapshot({
-          totals: { input: 38, output: 155 },
-          current: { input: 38, output: 155, cacheCreation: 0, cacheRead: 0 },
+          totals: { tokenTotalIn: 38, tokenTotalOut: 155 },
+          current: { tokenIn: 38, tokenOut: 155, tokenCacheCreation: 0, tokenCachedIn: 0 },
         }),
       ),
     ).join("\n");
@@ -662,7 +675,7 @@ describe("renderTemplate — m_token* modules", () => {
       ctxFor(
         fakeSnapshot({
           sessionId: "sess-hr-cache-fallback",
-          current: { input: 0, output: 0, cacheCreation: 0, cacheRead: null },
+          current: { tokenIn: 0, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: null },
         }),
       ),
     ).join("\n");
@@ -682,7 +695,7 @@ describe("renderTemplate — m_token* modules", () => {
       ctxFor(
         fakeSnapshot({
           sessionId: "sess-hr-no-cache",
-          current: { input: 0, output: 0, cacheCreation: 0, cacheRead: null },
+          current: { tokenIn: 0, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: null },
         }),
       ),
     ).join("\n");
@@ -704,7 +717,7 @@ describe("renderTemplate — m_token* modules", () => {
       ctxFor(
         fakeSnapshot({
           sessionId: "sess-hr-inline-color",
-          current: { input: 0, output: 0, cacheCreation: 0, cacheRead: null },
+          current: { tokenIn: 0, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: null },
         }),
       ),
     ).join("\n");
@@ -1421,7 +1434,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
   it("m_tokenTotalIn|nulldrop|false renders 'total|n/a' placeholder on null totals.input", () => {
     const out = renderTemplate(
       ["m_tokenTotalIn|nulldrop|false"],
-      ctxFor(fakeSnapshot({ totals: { input: null, output: null } })),
+      ctxFor(fakeSnapshot({ totals: { tokenTotalIn: null, tokenTotalOut: null } })),
     ).join("\n");
     assert.equal(strip(out), "total:n/a");
   });
@@ -1702,7 +1715,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     const out = renderTemplate(
       ["m_windowContext"],
       ctxFor(
-        fakeSnapshot({ contextWindow: { size: 200000, usedPct: null, remainingPct: null } }),
+        fakeSnapshot({ contextWindow: { contextWindowSize: 200000, contextUsedPercent: null, contextRemainingPercent: null } }),
       ),
     ).join("\n");
     assert.equal(strip(out), "░░░░░░░░ 0%");
@@ -1717,7 +1730,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
   it("m_windowContext| usedPct=0 renders '░░░░░░░░ 0%' (NOT hidden)", () => {
     const out = renderTemplate(
       ["m_windowContext"],
-      ctxFor(fakeSnapshot({ contextWindow: { size: 200000, usedPct: 0, remainingPct: 100 } })),
+      ctxFor(fakeSnapshot({ contextWindow: { contextWindowSize: 200000, contextUsedPercent: 0, contextRemainingPercent: 100 } })),
     ).join("\n");
     assert.equal(strip(out), "░░░░░░░░ 0%");
   });
@@ -1725,7 +1738,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
   it("m_windowContext|display|remaining with usedPct=0 renders full-bar 100% (NOT hidden)", () => {
     const out = renderTemplate(
       ["m_windowContext|display|remaining"],
-      ctxFor(fakeSnapshot({ contextWindow: { size: 200000, usedPct: 0, remainingPct: 100 } })),
+      ctxFor(fakeSnapshot({ contextWindow: { contextWindowSize: 200000, contextUsedPercent: 0, contextRemainingPercent: 100 } })),
     ).join("\n");
     assert.equal(strip(out), "▓▓▓▓▓▓▓▓ 100%");
   });
@@ -1734,7 +1747,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     const RED_SGR = "\x1b[38;5;196m";
     const out = renderTemplate(
       ["m_windowContext|color|red"],
-      ctxFor(fakeSnapshot({ contextWindow: { size: 200000, usedPct: 0, remainingPct: 100 } })),
+      ctxFor(fakeSnapshot({ contextWindow: { contextWindowSize: 200000, contextUsedPercent: 0, contextRemainingPercent: 100 } })),
     ).join("\n");
     assert.equal(strip(out), "░░░░░░░░ 0%");
     assert.ok(out.includes(RED_SGR), `expected RED SGR in: ${JSON.stringify(out)}`);
@@ -1743,7 +1756,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
   it("m_contextUsedPercent| usedPct=0 renders 'used|0%' (NOT hidden)", () => {
     const out = renderTemplate(
       ["m_contextUsedPercent"],
-      ctxFor(fakeSnapshot({ contextWindow: { size: 200000, usedPct: 0, remainingPct: 100 } })),
+      ctxFor(fakeSnapshot({ contextWindow: { contextWindowSize: 200000, contextUsedPercent: 0, contextRemainingPercent: 100 } })),
     ).join("\n");
     assert.equal(strip(out), "used:0%");
   });
@@ -1846,8 +1859,8 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
       ["m_contextSize|nulldrop|false"],
       ctxFor(
         fakeSnapshot({
-          totals: { input: 0, output: 0 },
-          current: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
+          totals: { tokenTotalIn: 0, tokenTotalOut: 0 },
+          current: { tokenIn: 0, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
         }),
       ),
     ).join("\n");
@@ -1879,7 +1892,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
       ["m_tokenCachedIn|nulldrop|false"],
       ctxFor(
         fakeSnapshot({
-          current: { input: 38, output: 155, cacheCreation: 0, cacheRead: 0 },
+          current: { tokenIn: 38, tokenOut: 155, tokenCacheCreation: 0, tokenCachedIn: 0 },
         }),
       ),
     ).join("\n");
@@ -1893,7 +1906,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
       ["m_tokenCachedIn|nulldrop|false"],
       ctxFor(
         fakeSnapshot({
-          current: { input: 38, output: 155, cacheCreation: 0, cacheRead: null },
+          current: { tokenIn: 38, tokenOut: 155, tokenCacheCreation: 0, tokenCachedIn: null },
         }),
       ),
     ).join("\n");
@@ -1908,7 +1921,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
       ["m_tokenCachedIn"],
       ctxFor(
         fakeSnapshot({
-          current: { input: 38, output: 155, cacheCreation: 0, cacheRead: 0 },
+          current: { tokenIn: 38, tokenOut: 155, tokenCacheCreation: 0, tokenCachedIn: 0 },
         }),
       ),
     ).join("\n");
@@ -1923,8 +1936,8 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
       ["m_tokenHitRate|nulldrop|false"],
       ctxFor(
         fakeSnapshot({
-          totals: { input: 38, output: 155 },
-          current: { input: 38, output: 155, cacheCreation: 0, cacheRead: 0 },
+          totals: { tokenTotalIn: 38, tokenTotalOut: 155 },
+          current: { tokenIn: 38, tokenOut: 155, tokenCacheCreation: 0, tokenCachedIn: 0 },
         }),
       ),
     ).join("\n");
@@ -1939,7 +1952,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     const out = renderTemplate(
       ["m_contextWindowsSize|nulldrop|false"],
       ctxFor(
-        fakeSnapshot({ contextWindow: { size: null, usedPct: null, remainingPct: null } }),
+        fakeSnapshot({ contextWindow: { contextWindowSize: null, contextUsedPercent: null, contextRemainingPercent: null } }),
       ),
     ).join("\n");
     assert.equal(strip(out), "size:n/a");
@@ -1949,7 +1962,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     const out = renderTemplate(
       ["m_contextUsedPercent|nulldrop|false"],
       ctxFor(
-        fakeSnapshot({ contextWindow: { size: 200000, usedPct: null, remainingPct: null } }),
+        fakeSnapshot({ contextWindow: { contextWindowSize: 200000, contextUsedPercent: null, contextRemainingPercent: null } }),
       ),
     ).join("\n");
     assert.equal(strip(out), "used:n/a%");
@@ -1959,7 +1972,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     const out = renderTemplate(
       ["m_tokenInTotal|nulldrop|false"],
       ctxFor(
-        fakeSnapshot({ totals: { input: null, output: null } }),
+        fakeSnapshot({ totals: { tokenTotalIn: null, tokenTotalOut: null } }),
       ),
     ).join("\n");
     assert.equal(strip(out), "in:n/a");
@@ -1969,7 +1982,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     const out = renderTemplate(
       ["m_tokenTotalOut|nulldrop|false"],
       ctxFor(
-        fakeSnapshot({ totals: { input: null, output: null } }),
+        fakeSnapshot({ totals: { tokenTotalIn: null, tokenTotalOut: null } }),
       ),
     ).join("\n");
     assert.equal(strip(out), "out:n/a");
@@ -2014,7 +2027,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     const out = renderTemplate(
       ["m_windowContext|nulldrop|false"],
       ctxFor(
-        fakeSnapshot({ contextWindow: { size: 200000, usedPct: null, remainingPct: null } }),
+        fakeSnapshot({ contextWindow: { contextWindowSize: 200000, contextUsedPercent: null, contextRemainingPercent: null } }),
       ),
     ).join("\n");
     assert.equal(strip(out), "░░░░░░░░ 0%");
@@ -2025,7 +2038,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     const out = renderTemplate(
       ["m_windowContext|nulldrop|false|display|remaining"],
       ctxFor(
-        fakeSnapshot({ contextWindow: { size: 200000, usedPct: null, remainingPct: null } }),
+        fakeSnapshot({ contextWindow: { contextWindowSize: 200000, contextUsedPercent: null, contextRemainingPercent: null } }),
       ),
     ).join("\n");
     assert.equal(strip(out), "▓▓▓▓▓▓▓▓ 100%");
@@ -2036,7 +2049,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     const out = renderTemplate(
       ["m_windowContext|nulldrop|false|color|red"],
       ctxFor(
-        fakeSnapshot({ contextWindow: { size: 200000, usedPct: null, remainingPct: null } }),
+        fakeSnapshot({ contextWindow: { contextWindowSize: 200000, contextUsedPercent: null, contextRemainingPercent: null } }),
       ),
     ).join("\n");
     assert.equal(strip(out), "░░░░░░░░ 0%");
@@ -2049,7 +2062,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     const out = renderTemplate(
       ["m_windowContext"],
       ctxFor(
-        fakeSnapshot({ contextWindow: { size: 200000, usedPct: null, remainingPct: null } }),
+        fakeSnapshot({ contextWindow: { contextWindowSize: 200000, contextUsedPercent: null, contextRemainingPercent: null } }),
       ),
     ).join("\n");
     assert.equal(strip(out), "░░░░░░░░ 0%");
@@ -2203,7 +2216,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     const out = renderTemplate(
       ["m_windowContext"],
       ctxFor(
-        fakeSnapshot({ contextWindow: { size: 200000, usedPct: null, remainingPct: null } }),
+        fakeSnapshot({ contextWindow: { contextWindowSize: 200000, contextUsedPercent: null, contextRemainingPercent: null } }),
       ),
     ).join("\n");
     assert.equal(strip(out), "░░░░░░░░ 0%");
@@ -2213,7 +2226,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     const out = renderTemplate(
       ["m_windowContext|"],
       ctxFor(
-        fakeSnapshot({ contextWindow: { size: 200000, usedPct: null, remainingPct: null } }),
+        fakeSnapshot({ contextWindow: { contextWindowSize: 200000, contextUsedPercent: null, contextRemainingPercent: null } }),
       ),
     ).join("\n");
     assert.equal(strip(out), "░░░░░░░░ 0%");
@@ -2223,7 +2236,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     const out = renderTemplate(
       ["m_windowContext|nulldrop|true"],
       ctxFor(
-        fakeSnapshot({ contextWindow: { size: 200000, usedPct: null, remainingPct: null } }),
+        fakeSnapshot({ contextWindow: { contextWindowSize: 200000, contextUsedPercent: null, contextRemainingPercent: null } }),
       ),
     );
     assert.deepEqual(out, []);
@@ -2320,7 +2333,7 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     // → palette[3] = orange.
     setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
     const snap = fakeSnapshot({
-      current: { input: 3000, output: 3000, cacheCreation: 0, cacheRead: 0 },
+      current: { tokenIn: 3000, tokenOut: 3000, tokenCacheCreation: 0, tokenCachedIn: 0 },
     });
     const out = renderTemplate(["m_tokenInSpeed"], ctxFor(snap)).join("\n");
     assert.equal(strip(out), "in:50.0 t/s");
@@ -2332,7 +2345,7 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     // 400 >= bands[3]=400 → bright green.
     setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
     const snap = fakeSnapshot({
-      current: { input: 24_000, output: 24_000, cacheCreation: 0, cacheRead: 0 },
+      current: { tokenIn: 24_000, tokenOut: 24_000, tokenCacheCreation: 0, tokenCachedIn: 0 },
     });
     const out = renderTemplate(["m_tokenInSpeed"], ctxFor(snap)).join("\n");
     assert.equal(strip(out), "in:400.0 t/s");
@@ -2344,7 +2357,7 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     // 80 >= bands[3]=80 → bright green.
     setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
     const snap = fakeSnapshot({
-      current: { input: 4800, output: 4800, cacheCreation: 0, cacheRead: 0 },
+      current: { tokenIn: 4800, tokenOut: 4800, tokenCacheCreation: 0, tokenCachedIn: 0 },
     });
     const out = renderTemplate(["m_tokenOutSpeed"], ctxFor(snap)).join("\n");
     assert.equal(strip(out), "out:80.0 t/s");
@@ -2354,7 +2367,7 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
   it("m_tokenOutSpeed| 30 t/s → yellow (20 ≤ 30 < 40)", () => {
     setPrevTick("sess-test", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0}, "D:\\test");
     const snap = fakeSnapshot({
-      current: { input: 1800, output: 1800, cacheCreation: 0, cacheRead: 0 },
+      current: { tokenIn: 1800, tokenOut: 1800, tokenCacheCreation: 0, tokenCachedIn: 0 },
     });
     const out = renderTemplate(["m_tokenOutSpeed"], ctxFor(snap)).join("\n");
     assert.equal(strip(out), "out:30.0 t/s");
@@ -2573,7 +2586,12 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     // STALE_COLORed cached value.
     seedBackdatedLastActive("in", 12.5, { apiMs: 60_000, in: 0, out: 0, cacheRead: 0, totalIn: 0 });
     resetStatusForTest();
-    const out = renderTemplate(["m_tokenInSpeed"], ctxFor(fakeSnapshot())).join("\n");
+    // v0.9.x — re-bootstrap tick-state now that the on-disk file
+    // is populated; beforeEach's beginTickForTest loaded an empty
+    // store when this cwd was null.
+    const snap = fakeSnapshot();
+    beginTickForTest(snap.cwd, snap);
+    const out = renderTemplate(["m_tokenInSpeed"], ctxFor(snap)).join("\n");
     assert.equal(strip(out), "in:12.5 t/s");
     assert.ok(out.includes(STALE), `expected STALE on backdated cache: ${JSON.stringify(out)}`);
   });
@@ -2581,7 +2599,9 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
   it("m_tokenOutSpeed| backdated (5 min old) lastActive:out → idle tick surfaces cached tps (TTL gate disabled, R7)", () => {
     seedBackdatedLastActive("out", 8.25, { apiMs: 60_000, in: 0, out: 0, cacheRead: 0, totalIn: 0 });
     resetStatusForTest();
-    const out = renderTemplate(["m_tokenOutSpeed"], ctxFor(fakeSnapshot())).join("\n");
+    const snap = fakeSnapshot();
+    beginTickForTest(snap.cwd, snap);
+    const out = renderTemplate(["m_tokenOutSpeed"], ctxFor(snap)).join("\n");
     assert.equal(strip(out), "out:8.3 t/s");
     assert.ok(out.includes(STALE), `expected STALE on backdated cache: ${JSON.stringify(out)}`);
   });
@@ -2590,14 +2610,14 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     // apiMs=30_000 in both prev and current → deltaApi=0 → idle.
     seedBackdatedLastActive("apiMs", 90_000, { apiMs: 30_000, in: 0, out: 0, cacheRead: 0, totalIn: 0 });
     resetStatusForTest();
+    const snap = fakeSnapshot({
+      sessionId: "sess-apims-r7",
+      cost: { totalDurationMs: 60_000, totalApiDurationMs: 30_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+    });
+    beginTickForTest(snap.cwd, snap);
     const out = renderTemplate(
       ["m_apiMs"],
-      ctxFor(
-        fakeSnapshot({
-          sessionId: "sess-apims-r7",
-          cost: { totalDurationMs: 60_000, totalApiDurationMs: 30_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
-        }),
-      ),
+      ctxFor(snap),
     ).join("\n");
     assert.equal(strip(out), "api:1m");
     assert.ok(out.includes(STALE), `expected STALE on backdated cache: ${JSON.stringify(out)}`);
@@ -2608,14 +2628,14 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     // paths converge on the same lastActive:tokenHitRate lookup.
     seedBackdatedLastActive("tokenHitRate", 87.3, { apiMs: 60_000, in: 0, out: 0, cacheRead: 0, totalIn: 0 });
     resetStatusForTest();
+    const snap = fakeSnapshot({
+      sessionId: "sess-hr-r7",
+      current: { tokenIn: 0, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: null },
+    });
+    beginTickForTest(snap.cwd, snap);
     const out = renderTemplate(
       ["m_tokenHitRate"],
-      ctxFor(
-        fakeSnapshot({
-          sessionId: "sess-hr-r7",
-          current: { input: 0, output: 0, cacheCreation: 0, cacheRead: null },
-        }),
-      ),
+      ctxFor(snap),
     ).join("\n");
     assert.equal(strip(out), "hit:87.3%");
     assert.ok(out.includes(STALE), `expected STALE on backdated cache: ${JSON.stringify(out)}`);
@@ -2724,7 +2744,7 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
       sessionId: "sess-pt",
       cwd: "D:\\WorkSpace\\pt",
       // No current delta — we only want the seeded session slot to surface.
-      current: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
+      current: { tokenIn: 0, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
       cost: { totalDurationMs: 0, totalApiDurationMs: 0, totalLinesAdded: null, totalLinesRemoved: null },
     });
     const out = renderTemplate(["m_template|foo|scope|session"], ctxFor(tokens)).join("\n");
@@ -2756,7 +2776,7 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
     const tokens = fakeSnapshot({
       sessionId: "sess-pt2",
       cwd: "D:\\WorkSpace\\pt2",
-      current: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
+      current: { tokenIn: 0, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
       cost: { totalDurationMs: 0, totalApiDurationMs: 0, totalLinesAdded: null, totalLinesRemoved: null },
     });
     // Pre-write a session-only value (11) so the session slot
@@ -2793,7 +2813,7 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
     const tokens = fakeSnapshot({
       sessionId: "sess-pt3",
       cwd: "D:\\WorkSpace\\pt3",
-      current: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
+      current: { tokenIn: 0, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
       cost: { totalDurationMs: 0, totalApiDurationMs: 0, totalLinesAdded: null, totalLinesRemoved: null },
     });
     const out = renderTemplate(["m_template|foo|scope|project"], ctxFor(tokens)).join("\n");
@@ -2924,49 +2944,77 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
 describe("render — per-project cache isolation", () => {
   it("same sessionId, different cwds → accumulators are independent", () => {
     __resetForTest({ lineTemplates: { tok: ["m_tokenInSpeed", "m_tokenOutSpeed"] } });
-    // Use the EXACT same sessionId but two different cwds. If the
-    // per-project prefix were missing, the two renders would share
-    // the same tickSpeed: cache slot and the second render would
-    // see the first render's prev-tick snapshot — leading to
-    // wrong deltaIn/deltaOut values.
+    // v0.9.x — per-cwd isolation is enforced by the on-disk file
+    // path (state/<projectHash>/status.json), not by per-key
+    // prefixing. status-store keeps a per-cwd `_stores` cache
+    // keyed by cwd, so writing via setPrevTick(cwdA) and then
+    // re-loading via loadFromDisk(cwdA) returns cwdA's slot
+    // while loadFromDisk(cwdB) returns cwdB's (empty, on a
+    // fresh tmp dir). The tick-state's per-tick pending
+    // accumulates ONE cwd at a time — to verify two-cwd
+    // independence we exercise the disk persistence boundary
+    // directly: write both, commit, then read each back
+    // independently.
     const sid = "sess-shared";
-    const tokensA = fakeSnapshot({
-      sessionId: sid,
-      cwd: "D:\\WorkSpace\\alpha",
-      totals: { input: 0, output: 0 },
-      current: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
-      cost: { totalDurationMs: 0, totalApiDurationMs: 0, totalLinesAdded: 0, totalLinesRemoved: 0 },
-    });
-    const tokensB = fakeSnapshot({
-      sessionId: sid,
-      cwd: "D:\\WorkSpace\\beta",
-      totals: { input: 0, output: 0 },
-      current: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
-      cost: { totalDurationMs: 0, totalApiDurationMs: 0, totalLinesAdded: 0, totalLinesRemoved: 0 },
-    });
-    // First render in project A: set a prev-tick baseline via the
-    // public setPrevTick + cwd (which exercises the same key
-    // prefixing the production code path uses). After the render,
-    // the tickSpeed: slot for project A holds 100ms of apiMs.
-    setPrevTick(sid, { apiMs: 100, in: 0, out: 0, cacheRead: 0, totalIn: 0 }, tokensA.cwd);
-    // First render in project B: different cwd → different slot.
-    // Set a distinct baseline (0ms) so the two slots are clearly
-    // distinguishable.
-    setPrevTick(sid, { apiMs: 0, in: 0, out: 0, cacheRead: 0, totalIn: 0 }, tokensB.cwd);
+    const cwdA = "D:\\WorkSpace\\alpha";
+    const cwdB = "D:\\WorkSpace\\beta";
 
-    // Peek each project's slot — they must be distinct.
-    const a = peekPrevTick(sid, tokensA.cwd);
-    const b = peekPrevTick(sid, tokensB.cwd);
-    // v0.8.x cwf-tickStatus-v2 — PrevTickSnapshot now also carries
-    // totalIn (the per-tick totalIn baseline for the delta math).
-    assert.deepEqual(a, { apiMs: 100, in: 0, out: 0, cacheRead: 0, totalIn: 0 });
-    assert.deepEqual(b, { apiMs: 0, in: 0, out: 0, cacheRead: 0, totalIn: 0 });
+    // v0.9.x — per-cwd isolation is enforced by the on-disk file
+    // path (state/<projectHash>/status.json), not by per-key
+    // prefixing. status-store keeps a per-cwd `_stores` cache
+    // keyed by cwd, so writing via setPrevTick(cwdA) and then
+    // re-loading via loadFromDisk(cwdA) returns cwdA's slot
+    // while loadFromDisk(cwdB) returns cwdB's (empty, on a
+    // fresh tmp dir). The tick-state's per-tick pending
+    // accumulates ONE cwd at a time — to verify two-cwd
+    // independence we exercise the disk persistence boundary
+    // directly: write both, commit, then read each back
+    // independently.
+    // Default setStatusPathResolver from beforeEach returns a
+    // single file regardless of cwd — override with a cwd-aware
+    // resolver that mirrors the production state/<projectHash>/
+    // status.json layout so each cwd lands in its own file.
+    setStatusPathResolver((cwd) => join(_tmpDir, `${projectHash(cwd)}.status.json`));
+    resetStatusForTest();
+
+    // Tick 1 in project A: apiMs baseline = 100ms.
+    const tokensA = fakeSnapshot({
+      sessionId: sid, cwd: cwdA,
+      totals: { tokenTotalIn: 100, tokenTotalOut: 50 },
+      current: { tokenIn: 100, tokenOut: 50, tokenCacheCreation: 0, tokenCachedIn: 0 },
+      cost: { totalDurationMs: 0, totalApiDurationMs: 100, totalLinesAdded: 0, totalLinesRemoved: 0 },
+    });
+    beginTickForTest(cwdA, tokensA);
+    setPrevTick(sid, { apiMs: 100, in: 100, out: 50, cacheRead: 0, totalIn: 100 }, cwdA);
+    tickState.commit();
+
+    // Tick 2 in project B: apiMs baseline = 0ms.
+    const tokensB = fakeSnapshot({
+      sessionId: sid, cwd: cwdB,
+      totals: { tokenTotalIn: 100, tokenTotalOut: 50 },
+      current: { tokenIn: 100, tokenOut: 50, tokenCacheCreation: 0, tokenCachedIn: 0 },
+      cost: { totalDurationMs: 0, totalApiDurationMs: 100, totalLinesAdded: 0, totalLinesRemoved: 0 },
+    });
+    beginTickForTest(cwdB, tokensB);
+    setPrevTick(sid, { apiMs: 0, in: 100, out: 50, cacheRead: 0, totalIn: 100 }, cwdB);
+    tickState.commit();
+
+    // Peek each project's slot via a fresh tick — the on-disk
+    // file for project A holds apiMs=100, the file for project
+    // B holds apiMs=0.
+    resetStatusForTest();
+    beginTickForTest(cwdA, tokensA);
+    const a = peekPrevTick(sid, cwdA);
+    beginTickForTest(cwdB, tokensB);
+    const b = peekPrevTick(sid, cwdB);
+    assert.deepEqual(a, { apiMs: 100, in: 100, out: 50, cacheRead: 0, totalIn: 100 });
+    assert.deepEqual(b, { apiMs: 0, in: 100, out: 50, cacheRead: 0, totalIn: 100 });
 
     // Cleanup: clear both slots so the next test in the suite
     // (which uses the default `D:\\test` cwd → projectHash
     // "d--test") is not contaminated.
-    __resetPrevTickForTest(sid, tokensA.cwd);
-    __resetPrevTickForTest(sid, tokensB.cwd);
+    __resetPrevTickForTest(sid, cwdA);
+    __resetPrevTickForTest(sid, cwdB);
   });
 });
 
@@ -3252,7 +3300,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     assert.equal(strip(out), "total:327.0k");
   });
 
-  it("m_accApiMs| session scope reads accApi from per-session slot", () => {
+  it("m_accApiMs| default scope (ccsession) delta-accumulates under unified contract", () => {
     setAvg(
       "sess-acc-api",
       { accIn: 0, accOut: 0, accApi: 60_000, accCached: 0, accApiCount: 1 , accTotalIn: 0},
@@ -3271,13 +3319,16 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       ["m_accApiMs"],
       ctxFor(fakeSnapshot({ sessionId: "sess-acc-api" })),
     ).join("\n");
-    // v0.8.x — m_accApiMs mirrors m_apiMs's "api:<dhms>" format
-    // (was v0.7.x "acc:<raw-ms>"). 60_000ms with minUnit="m"
-    // collapses to "1m" via formatRemainingMs. accApi is
-    // session-cumulative (absolute), not a delta, so the
-    // per-tick write of totalApiMs=60_000 lands as the
-    // current value (not added to the prior 60_000).
-    assert.equal(strip(out), "api:1m");
+    // v0.8.x scope contract (refined 2026-07-04) — ALL 4 scopes
+    // (session/project/model/ccsession) DELTA-ACCUMULATE the
+    // accApiMs scalar; the only ccsession-specific behavior is
+    // the regression-reset (zero on backwards totalApiMs step).
+    // Under the unified semantic, setAvg's deltaApiMs=60_000
+    // lands on ccsession (=60_000), then accPrimer fires from
+    // m_accApiMs and adds another deltaApiMs=60_000 → total
+    // 120_000ms = "api:2m". Previously the test expected the
+    // absolute-mirror "api:1m" — the mirror was retracted.
+    assert.equal(strip(out), "api:2m");
   });
 
   // v0.8.x — m_accApiCalls reads accApiCount from the chosen scope
@@ -4162,8 +4213,12 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
     renderTemplate(["m_accTokenIn"], ctxFor(snap));
     const avg = peekAvg("sess-totalApi", "D:\\test");
     assert.ok(avg, "peekAvg should return a non-null AvgSnapshot after render");
-    assert.equal(avg.accApi, 60_000,
-      "accApi is the session-cumulative cost.totalApiDurationMs (mirrors the v0.8.x TokenSample.totalApiMs)");
+    // v0.8.x scope contract — session-slot accApi is a
+    // delta-accumulator (user rule 2026-07-04). prev.apiMs=30_000
+    // and current.totalApiDurationMs=60_000 → delta=30_000
+    // (NOT the absolute 60_000 the previous contract mirrored).
+    assert.equal(avg.accApi, 30_000,
+      "scope=session accApiMs accumulates deltaApiMs (delta-accumulator), not absolute stdin field");
     // v0.8.x cwf-tickStatus-v2 — accTotalIn accumulates the
     // per-tick delta of totalIn (current.totalIn - prev.totalIn).
     // fakeSnapshot defaults totals.input to 163479; prev.totalIn
@@ -4179,7 +4234,7 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
     const t0 = ctxFor(fakeSnapshot({
       sessionId: "sess-accTotalIn",
       cwd: "D:\\test",
-      totals: { input: 250, output: 0 },
+      totals: { tokenTotalIn: 250, tokenTotalOut: 0 },
       cost: { totalDurationMs: 0, totalApiDurationMs: 31_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
     }));
     renderTemplate(["m_accTokenIn"], t0);
@@ -4188,7 +4243,7 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
     const t1 = ctxFor(fakeSnapshot({
       sessionId: "sess-accTotalIn",
       cwd: "D:\\test",
-      totals: { input: 400, output: 0 },
+      totals: { tokenTotalIn: 400, tokenTotalOut: 0 },
       cost: { totalDurationMs: 0, totalApiDurationMs: 32_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
     }));
     renderTemplate(["m_accTokenIn"], t1);
@@ -4206,7 +4261,7 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
     renderTemplate(["m_accTokenIn"], ctxFor(fakeSnapshot({
       sessionId: "sess-clamp",
       cwd: "D:\\test",
-      totals: { input: 500, output: 0 },
+      totals: { tokenTotalIn: 500, tokenTotalOut: 0 },
     })));
     const avg = peekAvg("sess-clamp", "D:\\test");
     assert.equal(avg?.accTotalIn, 0, "regression clamps deltaTotalIn to 0; accumulator stays positive");
@@ -4236,12 +4291,15 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
     setPrevTick("sess-ccs", { apiMs: 0, in: 0, out: 0, cacheRead: 0, totalIn: 0 }, "D:\\test");
     // First render: totalApiMs=100_000, current.input=1000.
     // ccsession accIn accumulates to 1000.
-    renderTemplate(["m_accTokenIn"], ctxFor(fakeSnapshot({
+    const snap1 = fakeSnapshot({
       sessionId: "sess-ccs",
       cwd: "D:\\test",
-      current: { input: 1000, output: 0, cacheCreation: 0, cacheRead: 0 },
+      current: { tokenIn: 1000, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
       cost: { totalDurationMs: 0, totalApiDurationMs: 100_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
-    })));
+    });
+    beginTickForTest(snap1.cwd, snap1);
+    renderTemplate(["m_accTokenIn"], ctxFor(snap1));
+    tickState.commit();
     // Verify the ccsession slot is populated to 1000 first.
     const ccs0 = statusStore.readTickStatus("D:\\test", statusStore.CCSESSION_KEY);
     assert.equal(ccs0?.accIn, 1000, "first tick writes 1000 to ccsession");
@@ -4251,13 +4309,275 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
     // happens. The session-scope slot is NOT updated (hasDelta=false
     // under the regression). The ccsession slot, however, was reset
     // BEFORE the no-op, so it now reads 0.
-    renderTemplate(["m_accTokenIn"], ctxFor(fakeSnapshot({
+    const snap2 = fakeSnapshot({
       sessionId: "sess-ccs",
       cwd: "D:\\test",
-      current: { input: 2000, output: 0, cacheCreation: 0, cacheRead: 0 },
+      current: { tokenIn: 2000, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
       cost: { totalDurationMs: 0, totalApiDurationMs: 50_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
-    })));
+    });
+    beginTickForTest(snap2.cwd, snap2);
+    renderTemplate(["m_accTokenIn"], ctxFor(snap2));
+    tickState.commit();
     const ccs1 = statusStore.readTickStatus("D:\\test", statusStore.CCSESSION_KEY);
     assert.equal(ccs1?.accIn, 0, "ccsession slot was reset on the regression");
+  });
+
+  // v0.8.x — scope contract for accApiMs (user rule 2026-07-04,
+// refined 2026-07-04 to unify all 4 scopes on delta-accumulation):
+//   ALL 4 scopes (session / project / model / ccsession):
+//     accApiMs += deltaApiMs (delta-accumulator)
+//   ccsession ADDITIONALLY: zero the entire slot on a
+//     backwards `totalApiMs` step (Claude Code process restart).
+//   The earlier ccsession absolute-mirror was retracted to
+//   avoid ambiguity — under non-autostart, mirror and
+//   accumulator diverge.
+  describe("scope contract — accApiMs handler per scope", () => {
+    it("scope=session: accApiMs accumulates deltaApiMs (not absolute)", () => {
+      setPrevTick("sess-scope-api",
+        { apiMs: 30_000, in: 38, out: 155, cacheRead: 0, totalIn: 0 },
+        "D:\\test");
+      // fakeSnapshot defaults totalApiDurationMs=60_000 → deltaApi=30_000
+      renderTemplate(["m_accApiMs|scope|session"],
+        ctxFor(fakeSnapshot({ sessionId: "sess-scope-api", cwd: "D:\\test" })));
+      const avg = peekAvg("sess-scope-api", "D:\\test");
+      assert.ok(avg);
+      assert.equal(avg.accApi, 30_000,
+        "session-slot accApi is deltaApiMs (60_000 - 30_000), NOT the absolute 60_000");
+    });
+
+    it("scope=project: accApiMs accumulates deltaApiMs (not absolute)", () => {
+      setPrevTick("sess-proj-api",
+        { apiMs: 0, in: 0, out: 0, cacheRead: 0, totalIn: 0 },
+        "D:\\test");
+      // First tick: totalApiMs=20_000 → deltaApi=20_000
+      beginTickForTest("D:\\test", fakeSnapshot({
+        sessionId: "sess-proj-api",
+        cwd: "D:\\test",
+        current: { tokenIn: 38, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
+        cost: { totalDurationMs: 0, totalApiDurationMs: 20_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+      }));
+      renderTemplate(["m_accApiMs|scope|project"],
+        ctxFor(fakeSnapshot({
+          sessionId: "sess-proj-api",
+          cwd: "D:\\test",
+          current: { tokenIn: 38, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
+          cost: { totalDurationMs: 0, totalApiDurationMs: 20_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+        })));
+      tickState.commit();
+      // Second tick: totalApiMs=50_000 → deltaApi=30_000; project slot +=30_000
+      setPrevTick("sess-proj-api",
+        { apiMs: 20_000, in: 38, out: 0, cacheRead: 0, totalIn: 0 },
+        "D:\\test");
+      beginTickForTest("D:\\test", fakeSnapshot({
+        sessionId: "sess-proj-api",
+        cwd: "D:\\test",
+        current: { tokenIn: 76, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
+        cost: { totalDurationMs: 0, totalApiDurationMs: 50_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+      }));
+      renderTemplate(["m_accApiMs|scope|project"],
+        ctxFor(fakeSnapshot({
+          sessionId: "sess-proj-api",
+          cwd: "D:\\test",
+          current: { tokenIn: 76, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
+          cost: { totalDurationMs: 0, totalApiDurationMs: 50_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+        })));
+      tickState.commit();
+      const projectKey = `tickStatus:${projectHash("D:\\test")}`;
+      const proj = statusStore.readTickStatus("D:\\test", projectKey);
+      assert.ok(proj);
+      assert.equal(proj.accApiMs, 50_000,
+        "project-slot accApiMs accumulates deltaApiMs: 20_000 (tick1) + 30_000 (tick2) = 50_000");
+    });
+
+    it("scope=ccsession: accApiMs delta-accumulator (unified contract, refined 2026-07-04)", () => {
+      // v0.8.x — refined 2026-07-04: ALL 4 scopes (session /
+      // project / model / ccsession) now DELTA-ACCUMULATE the
+      // accApiMs scalar. The earlier ccsession-mirror contract
+      // was retracted to avoid ambiguity (the absolute mirror
+      // and the delta-accumulator only differ when the plugin
+      // doesn't auto-start with the system).
+      //
+      // Read the ccsession slot via tickState's pending map
+      // (NOT disk) — the per-cwd status path resolver is
+      // shared across all cwds in this test file, so a disk
+      // read picks up stale prev from prior tests. The pending
+      // map is in-memory and reflects this tick's writes only.
+      //
+      // Seed prev DIRECTLY via statusStore.writePrevTickStatus —
+      // setPrevTick only marks in-memory pending, but
+      // beginTickForTest calls loadFromDisk which overwrites
+      // pending. The direct write is the only way to ensure the
+      // baseline persists into the next beginTick load.
+      statusStore.writePrevTickStatus("D:\\test", {
+        in: 38, out: 155, cachedIn: 0, totalIn: 0, totalApiMs: 30_000,
+        sessionId: "sess-ccs-api", cwd: "D:\\test", model: null,
+      });
+      // prev=30_000, fakeSnapshot defaults totalApiMs=60_000 →
+      // deltaApi=30_000 → ccsession.accApiMs += 30_000.
+      beginTickForTest("D:\\test", fakeSnapshot({
+        sessionId: "sess-ccs-api",
+        cwd: "D:\\test",
+      }));
+      renderTemplate(["m_accApiMs|scope|ccsession"],
+        ctxFor(fakeSnapshot({ sessionId: "sess-ccs-api", cwd: "D:\\test" })));
+      const ccsEntry = tickState.getState().pending[statusStore.CCSESSION_KEY];
+      assert.ok(ccsEntry && ccsEntry.kind === "tickStatus");
+      assert.equal(ccsEntry.value.accApiMs, 30_000,
+        "ccsession-slot accApiMs accumulates deltaApiMs (60_000 - 30_000 = 30_000), NOT the absolute 60_000");
+    });
+
+    it("scope=ccsession regression: accApiMs zeroed on regression tick (unified contract)", () => {
+      // Seed prev DIRECTLY via statusStore.writePrevTickStatus —
+      // see sibling test for rationale.
+      // First tick: prev=0, currentApi=100_000 → deltaApi=100_000
+      // → ccsession.accApiMs += 100_000
+      statusStore.writePrevTickStatus("D:\\test", {
+        in: 0, out: 0, cachedIn: 0, totalIn: 0, totalApiMs: 0,
+        sessionId: "sess-ccs-reg", cwd: "D:\\test", model: null,
+      });
+      beginTickForTest("D:\\test", fakeSnapshot({
+        sessionId: "sess-ccs-reg",
+        cwd: "D:\\test",
+        current: { tokenIn: 100, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
+        cost: { totalDurationMs: 0, totalApiDurationMs: 100_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+      }));
+      renderTemplate(["m_accApiMs|scope|ccsession"],
+        ctxFor(fakeSnapshot({
+          sessionId: "sess-ccs-reg",
+          cwd: "D:\\test",
+          current: { tokenIn: 100, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
+          cost: { totalDurationMs: 0, totalApiDurationMs: 100_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+        })));
+      let ccsEntry = tickState.getState().pending[statusStore.CCSESSION_KEY];
+      assert.ok(ccsEntry && ccsEntry.kind === "tickStatus");
+      assert.equal(ccsEntry.value.accApiMs, 100_000, "first tick: ccsession accumulates deltaApiMs = 100_000");
+      // Regression tick: prev=100_000, current drops to 50_000 →
+      // accPrimer's regression-reset path zeros the slot.
+      // deltaApi<0 → hasDelta=false → setAvg early-returns, so
+      // the ccsession slot stays at 0 (no immediate re-seed).
+      statusStore.writePrevTickStatus("D:\\test", {
+        in: 100, out: 0, cachedIn: 0, totalIn: 0, totalApiMs: 100_000,
+        sessionId: "sess-ccs-reg", cwd: "D:\\test", model: null,
+      });
+      beginTickForTest("D:\\test", fakeSnapshot({
+        sessionId: "sess-ccs-reg",
+        cwd: "D:\\test",
+        current: { tokenIn: 200, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
+        cost: { totalDurationMs: 0, totalApiDurationMs: 50_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+      }));
+      renderTemplate(["m_accApiMs|scope|ccsession"],
+        ctxFor(fakeSnapshot({
+          sessionId: "sess-ccs-reg",
+          cwd: "D:\\test",
+          current: { tokenIn: 200, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
+          cost: { totalDurationMs: 0, totalApiDurationMs: 50_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+        })));
+      ccsEntry = tickState.getState().pending[statusStore.CCSESSION_KEY];
+      assert.ok(ccsEntry && ccsEntry.kind === "tickStatus");
+      assert.equal(ccsEntry.value.accApiMs, 0,
+        "regression tick: ccsession accApiMs zeroed by accPrimer (the only ccsession-specific quirk under the unified contract)");
+    });
+
+    it("scope=ccsession regression: isolated regression reset preserves on-disk slot correctly", () => {
+      // Mirrors the existing regression test at line 4275 but checks
+      // accApiMs (not accIn) — pins that the ccsession slot's
+      // accApiMs is reset to 0 on a regression tick under the
+      // unified delta-accumulator contract.
+      // Read via tickState.pending (NOT disk) — see sibling test.
+      statusStore.writePrevTickStatus("D:\\test", {
+        in: 0, out: 0, cachedIn: 0, totalIn: 0, totalApiMs: 0,
+        sessionId: "sess-ccs-api-reset", cwd: "D:\\test", model: null,
+      });
+      // Seed ccsession via a normal first tick: totalApiMs=100_000 → deltaApi=100_000
+      beginTickForTest("D:\\test", fakeSnapshot({
+        sessionId: "sess-ccs-api-reset",
+        cwd: "D:\\test",
+        current: { tokenIn: 100, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
+        cost: { totalDurationMs: 0, totalApiDurationMs: 100_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+      }));
+      renderTemplate(["m_accApiMs|scope|ccsession"],
+        ctxFor(fakeSnapshot({
+          sessionId: "sess-ccs-api-reset",
+          cwd: "D:\\test",
+          current: { tokenIn: 100, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
+          cost: { totalDurationMs: 0, totalApiDurationMs: 100_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+        })));
+      let ccsEntry = tickState.getState().pending[statusStore.CCSESSION_KEY];
+      assert.ok(ccsEntry && ccsEntry.kind === "tickStatus");
+      assert.equal(ccsEntry.value.accApiMs, 100_000, "first tick: ccsession accumulates deltaApiMs = 100_000");
+      // Now seed prev with apiMs=100_000; regression tick drops
+      // totalApiMs to 50_000. accPrimer zeros the ccsession slot;
+      // hasDelta=false → setAvg doesn't fire → slot stays at 0.
+      statusStore.writePrevTickStatus("D:\\test", {
+        in: 100, out: 0, cachedIn: 0, totalIn: 0, totalApiMs: 100_000,
+        sessionId: "sess-ccs-api-reset", cwd: "D:\\test", model: null,
+      });
+      beginTickForTest("D:\\test", fakeSnapshot({
+        sessionId: "sess-ccs-api-reset",
+        cwd: "D:\\test",
+        current: { tokenIn: 200, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
+        cost: { totalDurationMs: 0, totalApiDurationMs: 50_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+      }));
+      renderTemplate(["m_accApiMs|scope|ccsession"],
+        ctxFor(fakeSnapshot({
+          sessionId: "sess-ccs-api-reset",
+          cwd: "D:\\test",
+          current: { tokenIn: 200, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
+          cost: { totalDurationMs: 0, totalApiDurationMs: 50_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+        })));
+      ccsEntry = tickState.getState().pending[statusStore.CCSESSION_KEY];
+      assert.ok(ccsEntry && ccsEntry.kind === "tickStatus");
+      assert.equal(ccsEntry.value.accApiMs, 0,
+        "regression tick: ccsession accApiMs zeroed by accPrimer (delta-accumulator reset, NOT summed 100_000 + (-50_000))");
+    });
+
+    it("scope=model: accApiMs accumulates deltaApiMs (not absolute)", () => {
+      const model = "MiniMax-M3";
+      setPrevTick("sess-model-api",
+        { apiMs: 0, in: 0, out: 0, cacheRead: 0, totalIn: 0 },
+        "D:\\test");
+      // First tick: totalApiMs=15_000 → deltaApi=15_000
+      beginTickForTest("D:\\test", fakeSnapshot({
+        sessionId: "sess-model-api",
+        cwd: "D:\\test",
+        modelDisplayName: model,
+        current: { tokenIn: 50, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
+        cost: { totalDurationMs: 0, totalApiDurationMs: 15_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+      }));
+      renderTemplate(["m_accApiMs|scope|model"],
+        ctxFor(fakeSnapshot({
+          sessionId: "sess-model-api",
+          cwd: "D:\\test",
+          modelDisplayName: model,
+          current: { tokenIn: 50, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
+          cost: { totalDurationMs: 0, totalApiDurationMs: 15_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+        })));
+      tickState.commit();
+      // Second tick: totalApiMs=35_000 → deltaApi=20_000; model slot +=20_000
+      setPrevTick("sess-model-api",
+        { apiMs: 15_000, in: 50, out: 0, cacheRead: 0, totalIn: 0 },
+        "D:\\test");
+      beginTickForTest("D:\\test", fakeSnapshot({
+        sessionId: "sess-model-api",
+        cwd: "D:\\test",
+        modelDisplayName: model,
+        current: { tokenIn: 100, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
+        cost: { totalDurationMs: 0, totalApiDurationMs: 35_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+      }));
+      renderTemplate(["m_accApiMs|scope|model"],
+        ctxFor(fakeSnapshot({
+          sessionId: "sess-model-api",
+          cwd: "D:\\test",
+          modelDisplayName: model,
+          current: { tokenIn: 100, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
+          cost: { totalDurationMs: 0, totalApiDurationMs: 35_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+        })));
+      tickState.commit();
+      const provKey = `tickStatus:${model}`;
+      const prov = statusStore.readTickStatus("D:\\test", provKey);
+      assert.ok(prov);
+      assert.equal(prov.accApiMs, 35_000,
+        "model-slot accApiMs accumulates deltaApiMs: 15_000 (tick1) + 20_000 (tick2) = 35_000");
+    });
   });
 });

@@ -30,6 +30,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { logFsMkdir, logFsRead, logFsWrite } from "./diagnostics.ts";
 
 // Note: homedir() is still imported above for the rare case where
 // both HOME and USERPROFILE are unset (some sandboxed environments
@@ -116,9 +117,15 @@ export function __resetForTest(): void {
 function loadFromDisk(): void {
   if (_loaded) return;
   _loaded = true;
+  const loadPath = _pathResolver();
+  // Top-level file — route the audit row to the top-level
+  // diagnostics.jsonl (passing cwd=null bypasses the global session
+  // cwd store so the row lands where a postmortem reader expects to
+  // find cross-project IO).
+  logFsRead(loadPath, "cache.loadFromDisk", undefined, null);
   let raw: string;
   try {
-    raw = readFileSync(_pathResolver(), "utf8");
+    raw = readFileSync(loadPath, "utf8");
   } catch {
     // ENOENT or unreadable: silent. An empty / missing cache file is
     // the steady state for a fresh install — there is nothing to load.
@@ -159,8 +166,10 @@ function loadFromDisk(): void {
 
 function flushToDisk(): void {
   const path = _pathResolver();
+  const dir = dirname(path);
+  logFsMkdir(dir, "cache.flushToDisk", null);
   try {
-    mkdirSync(dirname(path), { recursive: true });
+    mkdirSync(dir, { recursive: true });
   } catch {
     // mkdir failure: don't try to write — the in-memory Map is still
     // authoritative for this process. Surface a one-line warning so
@@ -183,8 +192,10 @@ function flushToDisk(): void {
     }
     obj[k] = v;
   }
+  const payload = JSON.stringify(obj);
+  logFsWrite(path, "cache.flushToDisk", payload.length, null);
   try {
-    writeFileSync(path, JSON.stringify(obj));
+    writeFileSync(path, payload);
   } catch {
     process.stderr.write(
       "topgauge-cc: cache write failed; in-memory only\n",

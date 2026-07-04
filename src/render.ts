@@ -29,6 +29,7 @@ import {
 import { readAllSamples, projectHash } from "./token-store.ts";
 import { readGitInfo } from "./git-info.ts";
 import * as statusStore from "./status-store.ts";
+import * as tickState from "./tick-state.ts";
 import * as cache from "./cache.ts";
 
 export type Window = {
@@ -700,7 +701,7 @@ type RenderContext = {
   // renderProviderLine); tests inject a fake via __resetForTest.
   tokens: TokenSnapshot | null;
   // v0.4.0+ — synthetic Window for the m_windowContext module.
-  // Synthesized from tokens.contextWindow.usedPct; only `pct` is
+  // Synthesized from tokens.contextWindow.contextUsedPercent; only `pct` is
   // read by formatOneChunk. Null when stdin lacks used_percentage.
   contextWindow: Window | null;
   // v0.4.x — the provider's TYPE discriminator. Populated by
@@ -790,9 +791,19 @@ type Module = ((ctx: RenderContext) => string | null) & {
 //         accOut       — accumulated current.output
 //         accCached    — accumulated current.cacheRead
 //         accTotalIn   — per-tick-delta-accumulator of totalIn
-//         accApiMs     — session-cumulative cost.totalApiDurationMs
-//                        (mirrors stdin's monotonic field)
+//         accApiMs     — scope-dependent (see scope contract below)
 //         accApiCount  — accumulated API-call count
+//
+//       accApiMs SCOPE CONTRACT (v0.8.x — user rule 2026-07-04):
+//         scope=session   : += deltaApiMs (delta-accumulator;
+//                           missing slot → seeded from 0)
+//         scope=project   : += deltaApiMs (delta-accumulator)
+//         scope=model     : += deltaApiMs (delta-accumulator)
+//         scope=ccsession : = cost.totalApiDurationMs (mirrors
+//                           stdin's monotonic field; on a
+//                           regression the entire slot is zeroed
+//                           by accPrimer so the new process can
+//                           re-seed from 0)
 //
 //   (B) prevTickStatus  — SINGLETON, NOT per-dimension. Holds the
 //       last tick's stdin snapshot. Used by the writer to (i)
@@ -833,7 +844,10 @@ export function peekPrevTick(
   sessionId: string,
   cwd?: string | null,
 ): PrevTickSnapshot | null {
-  const v = statusStore.readPrevTickStatus(cwd);
+  void cwd;
+  const s = tickState.getState();
+  const e = s.pending[statusStore.PREV_TICK_KEY];
+  const v = e?.kind === "prevTickStatus" ? e.value : null;
   if (!v) return null;
   // v0.8.x cwf-tickStatus-v2 — the singleton prevTickStatus is
   // shared across ALL sessions in the same cwd. To preserve the
@@ -866,8 +880,13 @@ export function setPrevTick(
   identity?: { sessionId?: string | null; cwd?: string | null; model?: string | null },
 ): void {
   void _sessionId;
-  const prev = statusStore.readPrevTickStatus(cwd) ?? statusStore.emptyPrevTickStatus();
-  statusStore.writePrevTickStatus(cwd, {
+  void cwd;
+  const s = tickState.getState();
+  const prevEntry = s.pending[statusStore.PREV_TICK_KEY];
+  const prev = prevEntry?.kind === "prevTickStatus"
+    ? prevEntry.value
+    : statusStore.emptyPrevTickStatus();
+  tickState.mark(statusStore.PREV_TICK_KEY, {
     in: snap.in,
     out: snap.out,
     cachedIn: snap.cacheRead,
@@ -907,7 +926,10 @@ export function peekLastSpeed(
   cwd?: string | null,
 ): number | null {
   void _sessionId;
-  return statusStore.readLastActive(cwd, direction);
+  void cwd;
+  const e = tickState.getState().pending[`lastActive:${direction}`];
+  if (!e || e.kind !== "lastActive") return null;
+  return Number.isFinite(e.value.tps) ? e.value.tps : null;
 }
 export function setLastSpeed(
   _sessionId: string,
@@ -916,7 +938,8 @@ export function setLastSpeed(
   cwd?: string | null,
 ): void {
   void _sessionId;
-  statusStore.writeLastActive(cwd, direction, tps);
+  void cwd;
+  tickState.mark(`lastActive:${direction}`, { direction, tps });
 }
 // v0.8.x — parallel helpers for m_apiMs's TTL-bounded fallback
 // cache. Mirrors peekLastSpeed/setLastSpeed but stores the raw
@@ -930,7 +953,10 @@ export function peekLastApiMs(
   cwd?: string | null,
 ): number | null {
   void _sessionId;
-  return statusStore.readLastActive(cwd, "apiMs");
+  void cwd;
+  const e = tickState.getState().pending["lastActive:apiMs"];
+  if (!e || e.kind !== "lastActive") return null;
+  return Number.isFinite(e.value.tps) ? e.value.tps : null;
 }
 export function setLastApiMs(
   _sessionId: string,
@@ -938,7 +964,8 @@ export function setLastApiMs(
   cwd?: string | null,
 ): void {
   void _sessionId;
-  statusStore.writeLastActive(cwd, "apiMs", deltaApiMs);
+  void cwd;
+  tickState.mark("lastActive:apiMs", { direction: "apiMs", tps: deltaApiMs });
 }
 // v0.8.x — parallel helpers for m_tokenHitRate's TTL-bounded
 // fallback cache. Mirrors peekLastApiMs/setLastApiMs but stores
@@ -953,7 +980,10 @@ export function peekLastTokenHitRate(
   cwd?: string | null,
 ): number | null {
   void _sessionId;
-  return statusStore.readLastActive(cwd, "tokenHitRate");
+  void cwd;
+  const e = tickState.getState().pending["lastActive:tokenHitRate"];
+  if (!e || e.kind !== "lastActive") return null;
+  return Number.isFinite(e.value.tps) ? e.value.tps : null;
 }
 export function setLastTokenHitRate(
   _sessionId: string,
@@ -961,7 +991,8 @@ export function setLastTokenHitRate(
   cwd?: string | null,
 ): void {
   void _sessionId;
-  statusStore.writeLastActive(cwd, "tokenHitRate", pct);
+  void cwd;
+  tickState.mark("lastActive:tokenHitRate", { direction: "tokenHitRate", tps: pct });
 }
 // Test-only: clear the last-active entry for a direction. v0.4.x:
 // the entry lives in status.json under the project dir; tests
@@ -984,7 +1015,7 @@ export function __resetPrevTickForTest(
   _cwd?: string | null,
 ): void {
   // Tests that need a clean slot pre-seed with empty values via
-  // setPrevTick(..., {apiMs:0, in:0, out:0, cacheRead:0}).
+  // stashPrevTick(..., {apiMs:0, in:0, out:0, cacheRead:0}).
 }
 
 // Reads the per-session accumulator from status.json. The
@@ -1013,8 +1044,10 @@ export function peekAvg(
   cwd?: string | null,
 ): AvgSnapshot | null {
   if (!sessionId) return null;
-  const v = statusStore.readTickStatus(cwd, `tickStatus:${sessionId}`);
-  if (!v) return null;
+  void cwd;
+  const e = tickState.getState().pending[`tickStatus:${sessionId}`];
+  if (!e || e.kind !== "tickStatus") return null;
+  const v = e.value;
   return {
     accIn: v.accIn,
     accOut: v.accOut,
@@ -1060,8 +1093,9 @@ function peekAcc(
     if (!model) return null;
     key = `tickStatus:${model}`;
   }
-  const v = statusStore.readTickStatus(cwd, key);
-  if (!v) return null;
+  const e = tickState.getState().pending[key];
+  if (!e || e.kind !== "tickStatus") return null;
+  const v = e.value;
   return {
     accIn: v.accIn,
     accOut: v.accOut,
@@ -1081,19 +1115,50 @@ function peekAcc(
 // `tickStatus:<modelDisplayName>` entries with the SAME delta so
 // every scoping level reflects this tick.
 //
-// v0.8.x cwf-tickStatus-v2:
-//   - tickStatus:<sid>   : ABSOLUTE (snap.acc* used as-is)
+// v0.8.x cwf-tickStatus-v2 (scope contract — user rule 2026-07-04,
+// refined 2026-07-04 to unify all 4 scopes on delta-accumulation):
+//   - tickStatus:<sid>   : DELTA-ACCUMULATE for all scalar
+//                          fields (in/out/cached/totalIn/apiMs/
+//                          apiCount). A new session starts from
+//                          zero because the on-disk slot key
+//                          changes (`tickStatus:<sid>` is unique
+//                          per sessionId).
 //   - tickStatus:<hash>  : DELTA-ACCUMULATE across sessions/ticks
-//   - tickStatus:ccsession: DELTA-ACCUMULATE, but with reset
-//                          detection (see ccsessionReset below)
-//   - tickStatus:<model> : DELTA-ACCUMULATE
+//                          (same scalar fields).
+//   - tickStatus:ccsession: DELTA-ACCUMULATE for all scalar
+//                          fields (matches the other 3 scopes).
+//                          ADDITIONALLY, on a regression
+//                          (current < prev.totalApiMs) the
+//                          accPrimer regression-reset path
+//                          zeroes the entire slot — the Claude
+//                          Code process restarted, the new
+//                          accumulator must start from 0.
+//   - tickStatus:<model> : DELTA-ACCUMULATE for all scalar
+//                          fields (in/out/cached/totalIn/apiMs/
+//                          apiCount).
+//
+// Earlier v0.8.x drafts tried to MIRROR stdin's absolute
+// cost.totalApiDurationMs for the ccsession slot (the rationale
+// being: ccsession is bounded by the CC process lifetime, not by
+// any individual session, so the absolute mirror is unambiguous).
+// Per user rule 2026-07-04's refinement, that mirror was
+// RETRACTED to avoid ambiguity: unless the plugin auto-starts
+// with the system, the absolute mirror and the delta-accumulator
+// produce different values on a process restart. To keep a single
+// consistent semantic, all 4 scopes now DELTA-ACCUMULATE; the
+// regression-reset check (zero on a backwards `totalApiMs` step)
+// is the only ccsession-specific quirk.
 //
 // `snap` field meanings (v0.8.x — no `totalIn`, the
 // session-cumulative totalIn lives in prevTickStatus now):
 //   snap.accIn      = session-cumulative current.input
 //   snap.accOut     = session-cumulative current.output
-//   snap.accApi     = session-cumulative cost.totalApiDurationMs
-//                     (mirrors the on-disk accApiMs field)
+//   snap.accApi     = legacy ABSOLUTE cost.totalApiDurationMs —
+//                     DEPRECATED as of v0.8.x. The per-session
+//                     accApiMs is now a delta-accumulator (see
+//                     extras.deltaApiMs below). Retained in the
+//                     signature for backward compat — no
+//                     production caller reads it anymore.
 //   snap.accCached  = session-cumulative current.cacheRead
 //   snap.accApiCount = session-cumulative count of API calls
 //   snap.accTotalIn = per-tick-delta-accumulator of totalIn
@@ -1104,12 +1169,17 @@ function peekAcc(
 // in the singleton `prevTickStatus` slot, which the caller
 // updates via setPrevTick BEFORE/AFTER calling setAvg.
 //
-// IMPORTANT: the per-session slot stores ABSOLUTE cumulative
-// values for that session (`accIn = session_prev_accIn + delta`).
-// The project-wide / ccsession / per-provider slots store
-// DELTAS ACCUMULATED across ticks (`accIn += deltaIn`), so
-// multiple sessions tick into the same aggregate without
-// overwriting each other.
+// `extras.deltaApiMs` is the per-tick INCREMENT of
+// cost.totalApiDurationMs (current - prev.totalApiMs). Used as
+// the additive input for scope=session / project / model; for
+// scope=ccsession it's IGNORED — ccsession mirrors the
+// absolute stdin field via `extras.currentApiMs` instead.
+//
+// IMPORTANT: every scope (session / project / model / ccsession)
+// now DELTA-ACCUMULATES the in/out/cached/totalIn/apiCount
+// scalars. The only difference across scopes is the
+// accApiMs handling — only ccsession mirrors the absolute
+// stdin field, all others accumulate deltaApiMs.
 export function setAvg(
   sessionId: string,
   snap: AvgSnapshot,
@@ -1136,29 +1206,42 @@ export function setAvg(
   // to keep the gate logic colocated with the delta math.
   const incrementCount = extras?.deltaApiCount ?? 0;
 
-  // Per-session slot — DELTA-ACCUMULATE for in/out/cached/
-  // totalIn/apiCount, but ABSOLUTE for accApiMs. The on-disk
-  // TickStatusValue is acc-only (v0.8.x cwf-tickStatus-v2):
-  // per-tick / session-cumulative input/output/cacheRead/totalIn/
-  // totalApiMs live in prevTickStatus. setAvg receives a
-  // per-tick `snap` and adds the deltas into the existing slot
-  // (or seeds it from zero on the first tick). accApiMs is the
-  // session-cumulative cost.totalApiDurationMs at the last
-  // write — it MIRRORS stdin's monotonic field rather than
-  // accumulating deltas, so we always write the absolute
-  // current value (and on a regression the ccsession reset
-  // logic zeroes the ccsession slot so the new process can
-  // re-seed from zero; the session-slot, which is per-current-
-  // session, never sees a regression within its own scope).
-  const existing = statusStore.readTickStatus(cwd, `tickStatus:${sessionId}`);
-  const next: statusStore.TickStatusValue = existing ?? statusStore.emptyTickStatus();
+  // Per-session slot — DELTA-ACCUMULATE for ALL scalar fields
+  // including accApiMs (v0.8.x — broken out from the prior
+  // ABSOLUTE-write behavior per the user's scope contract).
+  // The on-disk TickStatusValue is acc-only (v0.8.x
+  // cwf-tickStatus-v2): per-tick / session-cumulative input/
+  // output/cacheRead/totalIn/totalApiMs live in prevTickStatus.
+  // setAvg receives a per-tick `snap` and adds the deltas into
+  // the existing slot (or seeds it from zero on the first
+  // tick). For scope=session the accumulator is a pure
+  // delta-accumulator of `deltaApiMs` (which is the per-tick
+  // increment of cost.totalApiDurationMs); when a new session
+  // starts the on-disk slot is missing → seeded from zero. The
+  // ccsession scope is the ONLY one that mirrors stdin's
+  // monotonic totalApiDurationMs — see the dedicated block
+  // below; the session-slot never sees a regression within
+  // its own scope (a new session always starts from zero by
+  // virtue of the `tickStatus:<sid>` key changing).
+  void cwd;
+  const sid = `tickStatus:${sessionId}`;
+  const sidEntry = tickState.getState().pending[sid];
+  const next: statusStore.TickStatusValue =
+    sidEntry?.kind === "tickStatus"
+      ? { ...sidEntry.value }
+      : statusStore.emptyTickStatus();
   next.accIn += snap.accIn;
   next.accOut += snap.accOut;
-  next.accApiMs = snap.accApi;
+  // v0.8.x — accApiMs for scope=session is a delta-accumulator
+  // (NOT absolute). snap.accApi is the absolute current
+  // totalApiDurationMs; we ignore it here and land the
+  // deltaApiMs from extras (or snap.accTotalIn-style
+  // accApi-deprecated path).
+  if (extras?.deltaApiMs) next.accApiMs += extras.deltaApiMs;
   next.accCached += snap.accCached;
   next.accApiCount += snap.accApiCount;
   next.accTotalIn += snap.accTotalIn;
-  statusStore.writeTickStatus(cwd, `tickStatus:${sessionId}`, next);
+  tickState.mark(sid, next);
 
   // Per-project aggregate — ACCUMULATE per-tick deltas so two
   // concurrent sessions both contribute without overwriting each
@@ -1173,15 +1256,22 @@ export function setAvg(
   ) {
     if (cwd) {
       const projectKey = `tickStatus:${projectHash(cwd)}`;
-      const agg = statusStore.readTickStatus(cwd, projectKey) ??
-        statusStore.emptyTickStatus();
+      const projEntry = tickState.getState().pending[projectKey];
+      const agg: statusStore.TickStatusValue =
+        projEntry?.kind === "tickStatus"
+          ? { ...projEntry.value }
+          : statusStore.emptyTickStatus();
       if (extras?.deltaIn) agg.accIn += extras.deltaIn;
       if (extras?.deltaOut) agg.accOut += extras.deltaOut;
       if (extras?.deltaCache) agg.accCached += extras.deltaCache;
-      if (extras?.currentApiMs != null) agg.accApiMs = extras.currentApiMs;
+      // v0.8.x — project-scope accApiMs is a delta-accumulator
+      // (matches the user's spec: scope=session/project/model
+      // all accumulate deltaApiMs from 0; only ccsession
+      // mirrors the stdin monotonic field).
+      if (extras?.deltaApiMs) agg.accApiMs += extras.deltaApiMs;
       if (extras?.deltaTotalIn) agg.accTotalIn += extras.deltaTotalIn;
       if (incrementCount > 0) agg.accApiCount += incrementCount;
-      statusStore.writeTickStatus(cwd, projectKey, agg);
+      tickState.mark(projectKey, agg);
     }
 
     // Per-claude-code-process (ccsession) aggregate. Same
@@ -1197,26 +1287,38 @@ export function setAvg(
     // the slot is already reset to zero by accPrimer on a
     // regression, so a positive-delta tick that follows lands
     // its contribution on the clean baseline).
-    const ccs =
-      statusStore.readTickStatus(cwd, statusStore.CCSESSION_KEY) ??
-      statusStore.emptyTickStatus();
+    void cwd;
+    const ccsEntry = tickState.getState().pending[statusStore.CCSESSION_KEY];
+    const ccs: statusStore.TickStatusValue =
+      ccsEntry?.kind === "tickStatus"
+        ? { ...ccsEntry.value }
+        : statusStore.emptyTickStatus();
     if (extras?.deltaIn) ccs.accIn += extras.deltaIn;
     if (extras?.deltaOut) ccs.accOut += extras.deltaOut;
     if (extras?.deltaCache) ccs.accCached += extras.deltaCache;
-    if (extras?.currentApiMs != null) ccs.accApiMs = extras.currentApiMs;
+    // v0.8.x — ccsession-scope accApiMs DELTA-ACCUMULATES
+    // (matches scope=session/project/model — refined
+    // 2026-07-04 to unify all 4 scopes). The
+    // accPrimer regression-reset path zeroes the entire
+    // slot on a backwards `totalApiMs` step (Claude Code
+    // process restart) — that path is the only ccsession-
+    // specific behavior beyond the delta-accumulator.
+    if (extras?.deltaApiMs) ccs.accApiMs += extras.deltaApiMs;
     if (extras?.deltaTotalIn) ccs.accTotalIn += extras.deltaTotalIn;
     if (incrementCount > 0) ccs.accApiCount += incrementCount;
     // Only persist when at least one field changed; otherwise
     // the read+write is a no-op disk touch on every tick.
+    // v0.8.x — gate uses deltaApiMs (not currentApiMs) under
+    // the unified delta-accumulator contract.
     if (
       extras?.deltaIn ||
       extras?.deltaOut ||
       extras?.deltaCache ||
-      extras?.currentApiMs != null ||
+      extras?.deltaApiMs ||
       extras?.deltaTotalIn ||
       incrementCount > 0
     ) {
-      statusStore.writeTickStatus(cwd, statusStore.CCSESSION_KEY, ccs);
+      tickState.mark(statusStore.CCSESSION_KEY, ccs);
     }
   }
 
@@ -1227,15 +1329,23 @@ export function setAvg(
   // total without overwriting siblings.
   const model = extras?.modelDisplayName;
   if (model && model.length > 0) {
-    const prov = statusStore.readTickStatus(cwd, `tickStatus:${model}`) ??
-      statusStore.emptyTickStatus();
+    void cwd;
+    const provKey = `tickStatus:${model}`;
+    const provEntry = tickState.getState().pending[provKey];
+    const prov: statusStore.TickStatusValue =
+      provEntry?.kind === "tickStatus"
+        ? { ...provEntry.value }
+        : statusStore.emptyTickStatus();
     if (extras?.deltaIn) prov.accIn += extras.deltaIn;
     if (extras?.deltaOut) prov.accOut += extras.deltaOut;
     if (extras?.deltaCache) prov.accCached += extras.deltaCache;
-    if (extras?.currentApiMs != null) prov.accApiMs = extras.currentApiMs;
+    // v0.8.x — model-scope accApiMs is a delta-accumulator
+    // (matches scope=session/project — only ccsession mirrors
+    // the stdin monotonic field).
+    if (extras?.deltaApiMs) prov.accApiMs += extras.deltaApiMs;
     if (extras?.deltaTotalIn) prov.accTotalIn += extras.deltaTotalIn;
     if (incrementCount > 0) prov.accApiCount += incrementCount;
-    statusStore.writeTickStatus(cwd, `tickStatus:${model}`, prov);
+    tickState.mark(provKey, prov);
   }
 }
 
@@ -1271,10 +1381,10 @@ type TickDeltaResult = {
   // v0.8.0+: delta of context_window.total_input_tokens across the
   // last tick. Mirrors the v0.4.x deltaCacheRead shape — both feed
   // per-tick-delta-accumulator fields (accTotalIn, accCached).
-  // Source: t.totals.input; on first tick assumes prev=0.
+  // Source: t.totals.tokenTotalIn; on first tick assumes prev=0.
   deltaTotalIn: number;
   // v0.8.0+: latest session-cumulative context_window.total_input_tokens
-  // (snapshot, not delta). Source: t.totals.input. Stored on
+  // (snapshot, not delta). Source: t.totals.tokenTotalIn. Stored on
   // tickStatus.value.totalIn.
   currentTotalIn: number | null;
   writeBack: PrevTickSnapshot | null;
@@ -1289,6 +1399,74 @@ const _tickAvgWriteMemo = new WeakMap<RenderContext, true>();
 // write fired by accCachePrimer. Keeps the "field not shipped"
 // contract on accCached independent of the main primer.
 const _tickCacheWriteMemo = new WeakMap<RenderContext, true>();
+
+// v0.8.x — deferred setPrevTick queue. Per-API-call modules
+// (m_tokenIn / m_tokenOut / m_tokenInSpeed / m_tokenOutSpeed /
+// m_apiMs / m_tokenHitRate) and accPrimer stash the writeBack
+// candidate here instead of writing to disk immediately. At the
+// very end of renderTemplate, `commitPrevTickOnce` flushes the
+// queue — exactly once per render — so innerCtx (created by
+// m_template) and outerCtx both saw the same prev baseline.
+//
+// Why this exists: m_template creates a NEW RenderContext object
+// for every inner-template expansion
+// (`innerCtx = { ...ctx, passThrough }`), and the per-API-call
+// modules (m_tokenIn, etc.) historically fired setPrevTick inline.
+// The first module would write the just-computed writeBack to
+// the status-store; a subsequent innerCtx calling peekPrevTick
+// would then re-read prevTickStatus, see prev==current, and
+// report hasDelta=false — which causes every m_acc* module to
+// bail out via the `if (!r.hasDelta) return;` gate in accPrimer,
+// leaving status.json with NO tickStatus:* keys and the m_acc*
+// family rendering "n/a" forever. Stashing defers the write
+// until the END of the render so the innerCtx peek sees the
+// unmodified prevTickStatus (the real prior tick baseline).
+type PendingPrevTick = {
+  sessionId: string;
+  cwd: string | null;
+  writeBack: PrevTickSnapshot;
+  identity: { sessionId: string; cwd: string | null; model: string | null };
+};
+const _pendingPrevTick: PendingPrevTick[] = [];
+
+function stashPrevTick(
+  sessionId: string,
+  writeBack: PrevTickSnapshot,
+  cwd: string | null,
+  identity: PendingPrevTick["identity"],
+): void {
+  _pendingPrevTick.push({ sessionId, cwd, writeBack, identity });
+}
+
+function commitPrevTickOnce(ctx: RenderContext): void {
+  if (_pendingPrevTick.length === 0) return;
+  // Dedupe by sessionId — multi-context renders (m_template with
+  // both outer and inner ctx calling stashPrevTick) push the same
+  // writeBack N times. writeBack is identical across pushes
+  // (same memo source), so one write per sessionId suffices.
+  const seen = new Set<string>();
+  for (const p of _pendingPrevTick) {
+    if (seen.has(p.sessionId)) continue;
+    seen.add(p.sessionId);
+    setPrevTick(p.sessionId, p.writeBack, p.cwd, p.identity);
+  }
+  _pendingPrevTick.length = 0;
+  void ctx;
+}
+
+export function __resetPendingPrevTickForTest(): void {
+  _pendingPrevTick.length = 0;
+}
+
+// v0.8.x — renderTemplate nesting depth. Incremented at function
+// entry, decremented at exit. The deferred setPrevTick is
+// committed ONLY when the depth returns to zero, i.e. at the
+// outermost call. Nested renderTemplate invocations (created by
+// m_template's `innerCtx = { ...ctx, passThrough }` followed by
+// `renderTemplate(inner, innerCtx)`) bump the depth but skip the
+// commit — so the next sibling m_template expansion still sees
+// the unmodified prevTickStatus (the real prior tick baseline).
+let _renderDepth = 0;
 
 // One source of truth for the per-API-call delta math. Lives at
 // the top of the per-tick pipeline so every v0.4.0+ per-API-call
@@ -1343,13 +1521,13 @@ function computeAndCacheTickDelta(ctx: RenderContext): TickDeltaResult {
     return result;
   }
   const currentApi = t.cost.totalApiDurationMs;
-  const currentIn = t.current.input;
-  const currentOut = t.current.output;
-  const currentCacheRead = t.current.cacheRead;
-  // v0.8.0+ — `totals.input` IS the v0.8.0 `totalIn` (source:
+  const currentIn = t.current.tokenIn;
+  const currentOut = t.current.tokenOut;
+  const currentCacheRead = t.current.tokenCachedIn;
+  // v0.8.0+ — `totals.tokenTotalIn` IS the v0.8.0 `totalIn` (source:
   // context_window.total_input_tokens). May be null on stdin that
   // lacks the field; in that case deltaTotalIn=0 and currentTotalIn=null.
-  const currentTotalIn = t.totals?.input ?? null;
+  const currentTotalIn = t.totals?.tokenTotalIn ?? null;
   if (currentApi == null || currentIn == null || currentOut == null) {
     result = {
       hasDelta: false, deltaIn: 0, deltaOut: 0, deltaApi: 0,
@@ -1531,7 +1709,7 @@ function computeTickSpeed(
 
 // Per-API-call raw token delta. v6.x — distinguishes three states:
 //
-//   - snapshot data missing (tokens / sessionId / current.input
+//   - snapshot data missing (tokens / sessionId / current.tokenIn
 //     absent)         → `${direction}:n/a`  (no stdin at all)
 //   - idle tick       → `${direction}:0`    (stdin present, no
 //                                             delta this tick —
@@ -1645,6 +1823,7 @@ function accPrimer(ctx: RenderContext): void {
   const t = ctx.tokens;
   if (!t || !t.sessionId) return;
   // v0.8.x — fire on every valid tick. setAvg now ACCUMULATES
+  // v0.8.x — fire on every valid tick. setAvg now ACCUMULATES
   // (session slot uses +=, not =) so the per-tick deltas land
   // additively on top of any prior tick. _tickAvgWriteMemo
   // dedupes within a single render (multiple m_acc* calls on the
@@ -1657,17 +1836,34 @@ function accPrimer(ctx: RenderContext): void {
   // run BEFORE computeAndCacheTickDelta's writeBack (which
   // overwrites prevTickStatus with the current snapshot).
   if (t.cwd && t.cost.totalApiDurationMs != null) {
-    const prevPrev = statusStore.readPrevTickStatus(t.cwd);
+    // Regression-reset is the ONE write path that bypasses
+    // tick-state.mark — it has to flush BEFORE this tick's
+    // setAvg re-applies on top of a possibly-non-zero baseline.
+    // v0.9.x refactor: we still do the immediate write (so a
+    // crash mid-tick doesn't leave a non-zero ccsession on disk
+    // after a process restart), AND mirror the reset into
+    // tick-state.pending so the in-memory view is coherent for
+    // setAvg's read on this tick.
+    const pendingState = tickState.getState();
+    const prevEntry = pendingState.pending[statusStore.PREV_TICK_KEY];
+    const prevPrev = prevEntry?.kind === "prevTickStatus" ? prevEntry.value : null;
     if (
       prevPrev != null &&
       t.cost.totalApiDurationMs < prevPrev.totalApiMs
     ) {
-      statusStore.writeTickStatus(t.cwd, statusStore.CCSESSION_KEY, statusStore.emptyTickStatus());
+      const empty = statusStore.emptyTickStatus();
+      statusStore.writeTickStatus(t.cwd, statusStore.CCSESSION_KEY, empty);
+      pendingState.pending[statusStore.CCSESSION_KEY] = {
+        at: Date.now(),
+        value: empty,
+        kind: "tickStatus",
+      };
+      pendingState.dirty = true;
     }
   }
   const r = computeAndCacheTickDelta(ctx);
   if (r.writeBack) {
-    setPrevTick(t.sessionId, r.writeBack, t.cwd, {
+    stashPrevTick(t.sessionId, r.writeBack, t.cwd, {
       sessionId: t.sessionId,
       cwd: t.cwd,
       model: t.modelDisplayName ?? null,
@@ -1690,12 +1886,12 @@ function accPrimer(ctx: RenderContext): void {
     // m_accTokenHitRate bodies call accCachePrimer() to bump
     // accCached on a separate code path.
     accCached: 0,
-    accApiCount: r.deltaApi > 0 && t.current.input != null && t.current.input > 0 ? 1 : 0,
+    accApiCount: r.deltaApi > 0 && t.current.tokenIn != null && t.current.tokenIn > 0 ? 1 : 0,
     accTotalIn: r.deltaTotalIn,
   };
   setAvg(t.sessionId, next, t.cwd, {
     modelDisplayName: t.modelDisplayName ?? null,
-    deltaApiCount: r.deltaApi > 0 && t.current.input != null && t.current.input > 0 ? 1 : 0,
+    deltaApiCount: r.deltaApi > 0 && t.current.tokenIn != null && t.current.tokenIn > 0 ? 1 : 0,
     currentApiMs: t.cost.totalApiDurationMs ?? undefined,
     deltaIn: r.deltaIn,
     deltaOut: r.deltaOut,
@@ -1724,25 +1920,25 @@ function accCachePrimer(ctx: RenderContext): void {
   if (_tickCacheWriteMemo.get(ctx)) return;
   const t = ctx.tokens;
   if (!t || !t.sessionId) return;
-  if (t.current.cacheRead == null) return; // "field not shipped"
+  if (t.current.tokenCachedIn == null) return; // "field not shipped"
   const r = computeAndCacheTickDelta(ctx);
   if (!r.hasDelta) return;
   _tickCacheWriteMemo.set(ctx, true);
-  // v0.8.x cwf-tickStatus-v2 — setAvg ACCUMULATES for the
-  // per-tick deltas but ABSOLUTE for accApi. accPrimer already
-  // wrote the per-tick deltas (including the absolute
-  // totalApiDurationMs) for this render, so we must:
-  //   - pass zero for accIn/accOut/accCached/accApiCount/accTotalIn
-  //     (accPrimer already accumulated these; we'd double-count
-  //     otherwise)
-  //   - pass the current absolute totalApiDurationMs for accApi
-  //     (setAvg's `next.accApiMs = snap.accApi` mirrors the
-  //     stdin monotonic field; passing 0 here would zero it out)
-  const currentApi = t.cost.totalApiDurationMs ?? 0;
+  // v0.8.x cwf-tickStatus-v2 — setAvg ACCUMULATES for ALL
+  // scalar fields per the user's scope contract (session /
+  // project / model all accumulate deltaApiMs; only ccsession
+  // mirrors the stdin monotonic field). accPrimer already
+  // wrote the per-tick deltas for this render, so we must:
+  //   - pass zero for every accumulator (accIn/accOut/accCached
+  //     /accApiCount/accTotalIn AND accApi) — accPrimer
+  //     already accumulated these; we'd double-count otherwise
+  //   - pass the current absolute totalApiDurationMs to the
+  //     ccsession slot only (via extras.currentApiMs), so the
+  //     ccsession mirror stays idempotent across re-fires
   const next: AvgSnapshot = {
     accIn: 0,
     accOut: 0,
-    accApi: currentApi,
+    accApi: 0,
     accCached: r.deltaCacheRead,
     accApiCount: 0,
     accTotalIn: 0,
@@ -1788,7 +1984,7 @@ function accBody(
   // CacheIn behavior.
   if (
     (field === "cached" || field === "total") &&
-    ctx.tokens?.current?.cacheRead === null
+    ctx.tokens?.current?.tokenCachedIn === null
   ) {
     return placeholderAcc(field, useScope, ctx);
   }
@@ -1863,7 +2059,7 @@ function accHitRateBody(
   // the cache track. m_accTokenHitRate is undefined when stdin
   // lacks cache_read_input_tokens — render the placeholder
   // rather than fabricating a 0% hit rate.
-  if (ctx.tokens?.current?.cacheRead === null) {
+  if (ctx.tokens?.current?.tokenCachedIn === null) {
     return placeholderAcc("hitRate", scope ?? "ccsession", ctx);
   }
   accCachePrimer(ctx);
@@ -1915,7 +2111,7 @@ function placeholderAcc(
   // suffix.
   const fieldNotShipped =
     (field === "cached" || field === "total") &&
-    ctx.tokens?.current?.cacheRead === null;
+    ctx.tokens?.current?.tokenCachedIn === null;
   let body: string;
   if (fieldNotShipped) {
     body = `${prefix}--`;
@@ -2040,7 +2236,7 @@ const MODULES: Record<string, Module> = {
   // / m_tokenSession.
   m_tokenIn: (c) => {
     const r = computeTickDelta(c, "in");
-    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack, c.tokens.cwd, {
+    if (r.writeBack && c.tokens?.sessionId) stashPrevTick(c.tokens.sessionId, r.writeBack, c.tokens.cwd, {
       sessionId: c.tokens.sessionId, cwd: c.tokens.cwd, model: c.tokens.modelDisplayName ?? null,
     });
     return r.value;
@@ -2050,7 +2246,7 @@ const MODULES: Record<string, Module> = {
   // turns all produce different "out:--" / "out:N" signals).
   m_tokenOut: (c) => {
     const r = computeTickDelta(c, "out");
-    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack, c.tokens.cwd, {
+    if (r.writeBack && c.tokens?.sessionId) stashPrevTick(c.tokens.sessionId, r.writeBack, c.tokens.cwd, {
       sessionId: c.tokens.sessionId, cwd: c.tokens.cwd, model: c.tokens.modelDisplayName ?? null,
     });
     return r.value;
@@ -2062,10 +2258,10 @@ const MODULES: Record<string, Module> = {
   m_tokenTotal: (c) => {
     const t = c.tokens;
     if (!t) return placeholderBare("m_tokenTotal", c);
-    const inT = t.totals.input ?? 0;
-    const outT = t.totals.output ?? 0;
+    const inT = t.totals.tokenTotalIn ?? 0;
+    const outT = t.totals.tokenTotalOut ?? 0;
     const cache =
-      (t.current.cacheCreation ?? 0) + (t.current.cacheRead ?? 0);
+      (t.current.tokenCacheCreation ?? 0) + (t.current.tokenCachedIn ?? 0);
     return `tot:${formatCompactToken(inT + outT + cache)}`;
   },
   // Alias for m_tokenTotal — clearer when used in a template that
@@ -2074,10 +2270,10 @@ const MODULES: Record<string, Module> = {
   m_tokenSession: (c) => {
     const t = c.tokens;
     if (!t) return placeholderBare("m_tokenSession", c);
-    const inT = t.totals.input ?? 0;
-    const outT = t.totals.output ?? 0;
+    const inT = t.totals.tokenTotalIn ?? 0;
+    const outT = t.totals.tokenTotalOut ?? 0;
     const cache =
-      (t.current.cacheCreation ?? 0) + (t.current.cacheRead ?? 0);
+      (t.current.tokenCacheCreation ?? 0) + (t.current.tokenCachedIn ?? 0);
     return `session:${formatCompactToken(inT + outT + cache)}`;
   },
   // v0.8.0+ — renamed from `m_ctx`. The new semantic: "context
@@ -2093,9 +2289,9 @@ const MODULES: Record<string, Module> = {
   //
   // v6.x: zero length renders as "size:0" (the user's "0 直接显示"
   // rule). The placeholder path is reserved for the truly
-  // missing-data case (no totals.input at all).
+  // missing-data case (no totals.tokenTotalIn at all).
   m_contextSize: (c) => {
-    const total = c.tokens?.totals?.input;
+    const total = c.tokens?.totals?.tokenTotalIn;
     if (total == null) return placeholderBare("m_contextSize", c);
     return `size:${formatCompactToken(total)}`;
   },
@@ -2114,8 +2310,8 @@ const MODULES: Record<string, Module> = {
   m_tokenHitRate: (c) => {
     const t = c.tokens;
     if (!t) return placeholderBare("m_tokenHitRate", c);
-    const total = t.totals?.input;
-    const cacheRead = t.current?.cacheRead;
+    const total = t.totals?.tokenTotalIn;
+    const cacheRead = t.current?.tokenCachedIn;
     if (total == null || cacheRead == null) {
       // v0.8.x — mirror m_apiMs / m_tokenInSpeed / m_tokenOutSpeed:
       // when the field is not shipped this tick but a prior
@@ -2159,7 +2355,7 @@ const MODULES: Record<string, Module> = {
     // already idempotently overwrites with the same value, so
     // the cache is unaffected by an idle re-render.
     const r = computeAndCacheTickDelta(c);
-    if (r.writeBack && t.sessionId) setPrevTick(t.sessionId, r.writeBack, t.cwd, {
+    if (r.writeBack && t.sessionId) stashPrevTick(t.sessionId, r.writeBack, t.cwd, {
       sessionId: t.sessionId, cwd: t.cwd, model: t.modelDisplayName ?? null,
     });
     if (!r.hasDelta) {
@@ -2193,8 +2389,8 @@ const MODULES: Record<string, Module> = {
     // null (field not shipped by stdin) → "cache:n/a" placeholder;
     // 0 (real zero cache reads) → "cache:0" — the user can
     // see "we tracked, nothing cached" vs "no tracking at all".
-    if (t.cacheRead == null) return placeholderBare("m_tokenCachedIn", c);
-    const label = formatCompactToken(t.cacheRead);
+    if (t.tokenCachedIn == null) return placeholderBare("m_tokenCachedIn", c);
+    const label = formatCompactToken(t.tokenCachedIn);
     const prefix = labelFor("cacheIn");
     return `${STALE_COLOR}${prefix}${label}${RESET}`;
   },
@@ -2219,7 +2415,7 @@ const MODULES: Record<string, Module> = {
       ? speedScaleColor("in", probe.tps ?? 0)
       : STALE_COLOR; // unused — computeTickSpeed forces STALE
     const r = computeTickSpeed(c, "in", color);
-    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack, c.tokens.cwd, {
+    if (r.writeBack && c.tokens?.sessionId) stashPrevTick(c.tokens.sessionId, r.writeBack, c.tokens.cwd, {
       sessionId: c.tokens.sessionId, cwd: c.tokens.cwd, model: c.tokens.modelDisplayName ?? null,
     });
     return r.value;
@@ -2232,7 +2428,7 @@ const MODULES: Record<string, Module> = {
       ? speedScaleColor("out", probe.tps ?? 0)
       : STALE_COLOR;
     const r = computeTickSpeed(c, "out", color);
-    if (r.writeBack && c.tokens?.sessionId) setPrevTick(c.tokens.sessionId, r.writeBack, c.tokens.cwd, {
+    if (r.writeBack && c.tokens?.sessionId) stashPrevTick(c.tokens.sessionId, r.writeBack, c.tokens.cwd, {
       sessionId: c.tokens.sessionId, cwd: c.tokens.cwd, model: c.tokens.modelDisplayName ?? null,
     });
     return r.value;
@@ -2462,7 +2658,7 @@ const MODULES: Record<string, Module> = {
     const t = c.tokens;
     if (!t || !t.sessionId) return placeholderBare("m_apiMs", c);
     const r = computeAndCacheTickDelta(c);
-    if (r.writeBack && t.sessionId) setPrevTick(t.sessionId, r.writeBack, t.cwd, {
+    if (r.writeBack && t.sessionId) stashPrevTick(t.sessionId, r.writeBack, t.cwd, {
       sessionId: t.sessionId, cwd: t.cwd, model: t.modelDisplayName ?? null,
     });
     if (!r.hasDelta) {
@@ -2502,22 +2698,22 @@ const MODULES: Record<string, Module> = {
     return n != null ? wrapPlainDefault("m_linesRemoved", `- ${n}`, undefined) : placeholderBare("m_linesRemoved", c);
   },
   // Session-cumulative input tokens (stdin.context_window.total_input_tokens).
-  // v6.x: totals.input=null → "in:n/a" placeholder (was: drop).
+  // v6.x: totals.tokenTotalIn=null → "in:n/a" placeholder (was: drop).
   m_tokenInTotal: (c) =>
-    c.tokens?.totals.input != null
-      ? `${labelFor("in")}${formatCompactToken(c.tokens.totals.input)}`
+    c.tokens?.totals.tokenTotalIn != null
+      ? `${labelFor("in")}${formatCompactToken(c.tokens.totals.tokenTotalIn)}`
       : placeholderBare("m_tokenInTotal", c),
-  // Session-cumulative output tokens. v6.x: totals.output=null →
+  // Session-cumulative output tokens. v6.x: totals.tokenTotalOut=null →
   // "out:n/a" placeholder. v0.8.0+ — renamed from `m_tokenOutTotal`
   // to `m_tokenTotalOut` so it sits in the `totalOut` family
   // alongside `m_accTokenOut` (in-memory acc) / `m_sumTokenOut`
   // (cross-project sum) / `totalOut` on-disk jsonl column. Source
-  // unchanged: reads `tokens.totals.output` (= stdin
+  // unchanged: reads `tokens.totals.tokenTotalOut` (= stdin
   // `context_window.total_output_tokens`) directly, distinct from
   // `m_accTokenOut`'s in-memory accumulator rollup.
   m_tokenTotalOut: (c) =>
-    c.tokens?.totals.output != null
-      ? `${labelFor("out")}${formatCompactToken(c.tokens.totals.output)}`
+    c.tokens?.totals.tokenTotalOut != null
+      ? `${labelFor("out")}${formatCompactToken(c.tokens.totals.tokenTotalOut)}`
       : placeholderBare("m_tokenTotalOut", c),
   // v0.8.0+ — new module added to fix the v0.8.0 contract gap.
   // Source: same as m_tokenInTotal (stdin.context_window.
@@ -2528,8 +2724,8 @@ const MODULES: Record<string, Module> = {
   // m_tokenInTotal's data path; the two names exist so callers
   // can pick the family whose label matches their config.
   m_tokenTotalIn: (c) =>
-    c.tokens?.totals.input != null
-      ? `${labelFor("totalIn")}${formatCompactToken(c.tokens.totals.input)}`
+    c.tokens?.totals.tokenTotalIn != null
+      ? `${labelFor("totalIn")}${formatCompactToken(c.tokens.totals.tokenTotalIn)}`
       : placeholderBare("m_tokenTotalIn", c),
   // Project-wide count of valid API calls since first tick.
   // v6.x: missing cwd → "calls:n/a" placeholder (was: "calls:0").
@@ -2540,9 +2736,11 @@ const MODULES: Record<string, Module> = {
     if (!cwd) return placeholderBare("m_apiCalls", c);
     // v0.8.x cwf-tickStatus-v2 — project-wide key is now
     // `tickStatus:<projectHash(cwd)>` (no prefix-less `tickStatus`).
-    const v = statusStore.readTickStatus(cwd, `tickStatus:${projectHash(cwd)}`);
-    if (!v) return wrapPlainDefault("m_apiCalls", "calls:0", undefined);
-    return wrapPlainDefault("m_apiCalls", `calls:${v.accApiCount}`, undefined);
+    void cwd;
+    const projKey = `tickStatus:${projectHash(c.tokens!.cwd!)}`;
+    const projEntry = tickState.getState().pending[projKey];
+    if (!projEntry || projEntry.kind !== "tickStatus") return wrapPlainDefault("m_apiCalls", "calls:0", undefined);
+    return wrapPlainDefault("m_apiCalls", `calls:${projEntry.value.accApiCount}`, undefined);
   },
   // v0.8.0+ — renamed from `m_contextSize`. The old name now lives
   // at `m_contextSize` with a different source (the cumulative
@@ -2553,15 +2751,15 @@ const MODULES: Record<string, Module> = {
   // Source: `context_window.context_window_size`. v6.x: size=null →
   // "size:n/a" placeholder.
   m_contextWindowsSize: (c) => {
-    const sz = c.tokens?.contextWindow?.size;
+    const sz = c.tokens?.contextWindow?.contextWindowSize;
     return sz != null ? wrapPlainDefault("m_contextWindowsSize", `size:${formatCompactToken(sz)}`, undefined) : placeholderBare("m_contextWindowsSize", c);
   },
   // v0.8.0+ — renamed from `m_contextUsed` (the `Percent` suffix
   // makes the unit explicit and matches m_tokenHitRate's % output
   // style). Source: `context_window.used_percentage`. v6.x:
-  // usedPct=null → "n/a%" placeholder. Zero renders as "0%".
+  // contextUsedPercent=null → "n/a%" placeholder. Zero renders as "0%".
   m_contextUsedPercent: (c) => {
-    const pct = c.tokens?.contextWindow?.usedPct;
+    const pct = c.tokens?.contextWindow?.contextUsedPercent;
     return pct != null ? wrapPlainDefault("m_contextUsedPercent", `used:${pct}%`, undefined) : placeholderBare("m_contextUsedPercent", c);
   },
   // v0.8.0+ — new per-turn module. Sibling of m_contextUsedPercent,
@@ -2569,7 +2767,7 @@ const MODULES: Record<string, Module> = {
   // Source: `context_window.remaining_percentage`. Zero renders
   // as "0%"; null → "remain:n/a%" placeholder.
   m_contextRemainingPercent: (c) => {
-    const pct = c.tokens?.contextWindow?.remainingPct;
+    const pct = c.tokens?.contextWindow?.contextRemainingPercent;
     return pct != null ? wrapPlainDefault("m_contextRemainingPercent", `remain:${pct}%`, undefined) : placeholderBare("m_contextRemainingPercent", c);
   },
   // Context window bar + 5-band-colored percentage. v6.x: bare
@@ -4137,14 +4335,14 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   },
   m_tokenIn: (params, ctx) => {
     const r = computeTickDelta(ctx, "in");
-    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack, ctx.tokens.cwd, {
+    if (r.writeBack && ctx.tokens?.sessionId) stashPrevTick(ctx.tokens.sessionId, r.writeBack, ctx.tokens.cwd, {
       sessionId: ctx.tokens.sessionId, cwd: ctx.tokens.cwd, model: ctx.tokens.modelDisplayName ?? null,
     });
     return wrapPlain(r.value, params.color as string | undefined);
   },
   m_tokenOut: (params, ctx) => {
     const r = computeTickDelta(ctx, "out");
-    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack, ctx.tokens.cwd, {
+    if (r.writeBack && ctx.tokens?.sessionId) stashPrevTick(ctx.tokens.sessionId, r.writeBack, ctx.tokens.cwd, {
       sessionId: ctx.tokens.sessionId, cwd: ctx.tokens.cwd, model: ctx.tokens.modelDisplayName ?? null,
     });
     return wrapPlain(r.value, params.color as string | undefined);
@@ -4162,7 +4360,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   // v0.8.0+ — inline form of m_contextSize (cumulative occupancy,
   // total_input_tokens). See MODULES entry for the new semantic.
   m_contextSize: (params, ctx) => {
-    const total = ctx.tokens?.totals?.input;
+    const total = ctx.tokens?.totals?.tokenTotalIn;
     if (total == null) return placeholderWithColor("m_contextSize", params, ctx);
     return wrapPlain(
       `size:${formatCompactToken(total)}`,
@@ -4177,8 +4375,8 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   m_tokenHitRate: (params, ctx) => {
     const t = ctx.tokens;
     if (!t) return placeholderWithColor("m_tokenHitRate", params, ctx);
-    const total = t.totals?.input;
-    const cacheRead = t.current?.cacheRead;
+    const total = t.totals?.tokenTotalIn;
+    const cacheRead = t.current?.tokenCachedIn;
     if (total == null || cacheRead == null) {
       // v0.8.x — TTL-bounded cache fallback (mirrors MODULES path
       // and the m_apiMs / m_tokenInSpeed convention). Idle tick
@@ -4210,7 +4408,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // renders STALE_COLOR regardless of the user's |color|
     // override, matching computeTickSpeed.
     const r = computeAndCacheTickDelta(ctx);
-    if (r.writeBack && t.sessionId) setPrevTick(t.sessionId, r.writeBack, t.cwd, {
+    if (r.writeBack && t.sessionId) stashPrevTick(t.sessionId, r.writeBack, t.cwd, {
       sessionId: t.sessionId, cwd: t.cwd, model: t.modelDisplayName ?? null,
     });
     if (!r.hasDelta) {
@@ -4233,8 +4431,8 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // stdin) from cacheRead=0 (real zero cache reads).
     //   null → placeholder "cache:n/a"
     //   0    → "cache:0" (real zero, not hidden)
-    if (t.cacheRead == null) return placeholderWithColor("m_tokenCachedIn", params, ctx);
-    const label = formatCompactToken(t.cacheRead);
+    if (t.tokenCachedIn == null) return placeholderWithColor("m_tokenCachedIn", params, ctx);
+    const label = formatCompactToken(t.tokenCachedIn);
     const color = (params.color as string | undefined) ?? STALE_COLOR;
     const prefix = labelFor("cacheIn");
     return `${color}${prefix}${label}${RESET}`;
@@ -4253,7 +4451,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
         ? speedScaleColor("in", probe.tps ?? 0)
         : (userColor ?? STALE_COLOR);
     const r = computeTickSpeed(ctx, "in", activeColor);
-    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack, ctx.tokens.cwd, {
+    if (r.writeBack && ctx.tokens?.sessionId) stashPrevTick(ctx.tokens.sessionId, r.writeBack, ctx.tokens.cwd, {
       sessionId: ctx.tokens.sessionId, cwd: ctx.tokens.cwd, model: ctx.tokens.modelDisplayName ?? null,
     });
     return r.value;
@@ -4266,7 +4464,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
         ? speedScaleColor("out", probe.tps ?? 0)
         : (userColor ?? STALE_COLOR);
     const r = computeTickSpeed(ctx, "out", activeColor);
-    if (r.writeBack && ctx.tokens?.sessionId) setPrevTick(ctx.tokens.sessionId, r.writeBack, ctx.tokens.cwd, {
+    if (r.writeBack && ctx.tokens?.sessionId) stashPrevTick(ctx.tokens.sessionId, r.writeBack, ctx.tokens.cwd, {
       sessionId: ctx.tokens.sessionId, cwd: ctx.tokens.cwd, model: ctx.tokens.modelDisplayName ?? null,
     });
     return r.value;
@@ -4481,7 +4679,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const t = ctx.tokens;
     if (!t || !t.sessionId) return placeholderWithColor("m_apiMs", params, ctx);
     const r = computeAndCacheTickDelta(ctx);
-    if (r.writeBack && t.sessionId) setPrevTick(t.sessionId, r.writeBack, t.cwd, {
+    if (r.writeBack && t.sessionId) stashPrevTick(t.sessionId, r.writeBack, t.cwd, {
       sessionId: t.sessionId, cwd: t.cwd, model: t.modelDisplayName ?? null,
     });
     if (!r.hasDelta) {
@@ -4520,17 +4718,17 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   },
   m_tokenInTotal: (params, ctx) => {
     const t = ctx.tokens;
-    if (!t || t.totals.input == null) return placeholderWithColor("m_tokenInTotal", params, ctx);
+    if (!t || t.totals.tokenTotalIn == null) return placeholderWithColor("m_tokenInTotal", params, ctx);
     return wrapPlain(
-      `${labelFor("in")}${formatCompactToken(t.totals.input)}`,
+      `${labelFor("in")}${formatCompactToken(t.totals.tokenTotalIn)}`,
       params.color as string | undefined,
     );
   },
   m_tokenTotalOut: (params, ctx) => {
     const t = ctx.tokens;
-    if (!t || t.totals.output == null) return placeholderWithColor("m_tokenTotalOut", params, ctx);
+    if (!t || t.totals.tokenTotalOut == null) return placeholderWithColor("m_tokenTotalOut", params, ctx);
     return wrapPlain(
-      `${labelFor("out")}${formatCompactToken(t.totals.output)}`,
+      `${labelFor("out")}${formatCompactToken(t.totals.tokenTotalOut)}`,
       params.color as string | undefined,
     );
   },
@@ -4539,9 +4737,9 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   // modules differ in which labels.* axis labels them.
   m_tokenTotalIn: (params, ctx) => {
     const t = ctx.tokens;
-    if (!t || t.totals.input == null) return placeholderWithColor("m_tokenTotalIn", params, ctx);
+    if (!t || t.totals.tokenTotalIn == null) return placeholderWithColor("m_tokenTotalIn", params, ctx);
     return wrapPlain(
-      `${labelFor("totalIn")}${formatCompactToken(t.totals.input)}`,
+      `${labelFor("totalIn")}${formatCompactToken(t.totals.tokenTotalIn)}`,
       params.color as string | undefined,
     );
   },
@@ -4557,25 +4755,27 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (!cwd) return wrapPlainDefault("m_apiCalls", "calls:0", params.color as string | undefined);
     // v0.8.x cwf-tickStatus-v2 — project-wide key now keyed by
     // projectHash (no prefix-less `tickStatus`).
-    const v = statusStore.readTickStatus(cwd, `tickStatus:${projectHash(cwd)}`);
-    if (!v) return wrapPlainDefault("m_apiCalls", "calls:0", params.color as string | undefined);
-    return wrapPlainDefault("m_apiCalls", `calls:${v.accApiCount}`, params.color as string | undefined);
+    void cwd;
+    const projKey = `tickStatus:${projectHash(ctx.tokens!.cwd!)}`;
+    const projEntry = tickState.getState().pending[projKey];
+    if (!projEntry || projEntry.kind !== "tickStatus") return wrapPlainDefault("m_apiCalls", "calls:0", params.color as string | undefined);
+    return wrapPlainDefault("m_apiCalls", `calls:${projEntry.value.accApiCount}`, params.color as string | undefined);
   },
   // v0.8.0+ — inline form of m_contextWindowsSize (capacity).
   m_contextWindowsSize: (params, ctx) => {
-    const sz = ctx.tokens?.contextWindow?.size;
+    const sz = ctx.tokens?.contextWindow?.contextWindowSize;
     if (sz == null) return placeholderWithColor("m_contextWindowsSize", params, ctx);
     return wrapPlainDefault("m_contextWindowsSize", `size:${formatCompactToken(sz)}`, params.color as string | undefined);
   },
   // v0.8.0+ — inline form of m_contextUsedPercent.
   m_contextUsedPercent: (params, ctx) => {
-    const pct = ctx.tokens?.contextWindow?.usedPct;
+    const pct = ctx.tokens?.contextWindow?.contextUsedPercent;
     if (pct == null) return placeholderWithColor("m_contextUsedPercent", params, ctx);
     return wrapPlainDefault("m_contextUsedPercent", `used:${pct}%`, params.color as string | undefined);
   },
   // v0.8.0+ — inline form of m_contextRemainingPercent.
   m_contextRemainingPercent: (params, ctx) => {
-    const pct = ctx.tokens?.contextWindow?.remainingPct;
+    const pct = ctx.tokens?.contextWindow?.contextRemainingPercent;
     if (pct == null) return placeholderWithColor("m_contextRemainingPercent", params, ctx);
     return wrapPlainDefault("m_contextRemainingPercent", `remain:${pct}%`, params.color as string | undefined);
   },
@@ -4640,9 +4840,9 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
 function inlineTokenTotalLabel(ctx: RenderContext): string | null {
   const t = ctx.tokens;
   if (!t) return "tot:n/a";
-  const inT = t.totals.input ?? 0;
-  const outT = t.totals.output ?? 0;
-  const cache = (t.current.cacheCreation ?? 0) + (t.current.cacheRead ?? 0);
+  const inT = t.totals.tokenTotalIn ?? 0;
+  const outT = t.totals.tokenTotalOut ?? 0;
+  const cache = (t.current.tokenCacheCreation ?? 0) + (t.current.tokenCachedIn ?? 0);
   return `tot:${formatCompactToken(inT + outT + cache)}`;
 }
 
@@ -4650,9 +4850,9 @@ function inlineTokenTotalLabel(ctx: RenderContext): string | null {
 function inlineTokenSessionLabel(ctx: RenderContext): string | null {
   const t = ctx.tokens;
   if (!t) return "session:n/a";
-  const inT = t.totals.input ?? 0;
-  const outT = t.totals.output ?? 0;
-  const cache = (t.current.cacheCreation ?? 0) + (t.current.cacheRead ?? 0);
+  const inT = t.totals.tokenTotalIn ?? 0;
+  const outT = t.totals.tokenTotalOut ?? 0;
+  const cache = (t.current.tokenCacheCreation ?? 0) + (t.current.tokenCachedIn ?? 0);
   return `session:${formatCompactToken(inT + outT + cache)}`;
 }
 
@@ -4752,6 +4952,7 @@ function expandInlineToken(
 }
 
 export function renderTemplate(template: readonly string[], ctx: RenderContext): string[] {
+  _renderDepth++;
   const seps = cfg().separators;
   const lines: string[] = [];
   let current = "";
@@ -5080,6 +5281,20 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
   }
   // Flush whatever's left in the in-progress line.
   if (current.length > 0) lines.push(current);
+  // v0.8.x — commit the deferred setPrevTick at the very end of
+  // the OUTERMOST renderTemplate call only. Per-API-call modules
+  // stash writeBack candidates during their render; accPrimer does
+  // the same. Without this single-shot commit, an innerCtx
+  // created by m_template would re-peek prevTickStatus AFTER the
+  // outer ctx's modules already setPrevTick'd the just-computed
+  // writeBack, see prev==current, and report hasDelta=false —
+  // leaving the m_acc* family at "n/a" forever. We use the
+  // depth counter (incremented at function entry, decremented at
+  // exit) so nested renderTemplate invocations (m_template)
+  // don't commit prematurely and clobber the prev baseline that
+  // later siblings still need to peek. See commitPrevTickOnce.
+  _renderDepth--;
+  if (_renderDepth === 0) commitPrevTickOnce(ctx);
   return lines;
 }
 
@@ -5100,15 +5315,15 @@ export function renderProviderLine(
     // don't thread a TokenSnapshot. Defaults to null, which causes
     // all m_token* modules to skip rendering.
     tokens?: TokenSnapshot | null;
-    // v0.4.0+ — optional. Synthesized from tokens.contextWindow.usedPct
+    // v0.4.0+ — optional. Synthesized from tokens.contextWindow.contextUsedPercent
     // when omitted. Only read by m_windowContext.
     contextWindow?: Window | null;
   },
 ): string {
   // v0.4.0+ — synthesize the contextWindow Window from
-  // tokens.contextWindow.usedPct when not supplied. formatOneChunk
+  // tokens.contextWindow.contextUsedPercent when not supplied. formatOneChunk
   // only reads `pct`, so this minimal shape is enough.
-  const usedPct = ctx.tokens?.contextWindow?.usedPct;
+  const usedPct = ctx.tokens?.contextWindow?.contextUsedPercent;
   const contextWindow =
     ctx.contextWindow !== undefined
       ? ctx.contextWindow

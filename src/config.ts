@@ -606,6 +606,7 @@ export async function loadConfig(): Promise<Config> {
   const path = _pathResolver();
   // Cheap existence probe — the common case is no config file, no need
   // to even open the file descriptor.
+  diagnostics.logFsRead(path, "config.loadConfig");
   if (!existsSync(path)) {
     _current = DEFAULT_CONFIG;
     return _current;

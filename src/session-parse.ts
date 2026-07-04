@@ -15,13 +15,20 @@
 // totalLinesAdded, totalLinesRemoved).
 //
 // v0.8.0+ — invariant check on the parsed TokenSnapshot:
-//   total_input_tokens == current.input + current.cacheRead
+//   total_input_tokens == current.input_tokens + current.cache_read_input_tokens
 // When violated, a `warning` is appended to the per-project
 // diagnostics log (gated by TOPGAUGE_CC_DIAGNOSTICS_ENABLE). This
 // surfaces schema drift early (e.g. a provider changing the
 // cache_read accounting) without breaking the render path — the
 // renderer still gets a fully populated snapshot. See
 // [[token-modules-redesign-v0-8-0]] for the contract.
+//
+// v0.9.x — module-keyed naming (the parser's output shape is named
+// after the modules that consume it): `current.input → current.tokenIn`
+// (m_tokenIn), `current.cacheRead → current.tokenCachedIn`
+// (m_tokenCachedIn), `totals.input → totals.tokenTotalIn` (m_tokenTotalIn
+// + m_tokenInTotal + m_contextSize — same source, three module names).
+// The invariant check below reads through the renamed fields.
 import type { TokenSnapshot } from "./types.ts";
 import * as diagnostics from "./diagnostics.ts";
 
@@ -98,14 +105,14 @@ export function parseTokenSnapshot(raw: string): TokenSnapshot | null {
     sessionId: strOrNull(r.session_id),
     cwd: strOrNull(r.cwd),
     totals: {
-      input: numOrNull(cwObj?.total_input_tokens),
-      output: numOrNull(cwObj?.total_output_tokens),
+      tokenTotalIn: numOrNull(cwObj?.total_input_tokens),
+      tokenTotalOut: numOrNull(cwObj?.total_output_tokens),
     },
     current: {
-      input: numOrNull(cuObj?.input_tokens),
-      output: numOrNull(cuObj?.output_tokens),
-      cacheCreation: numOrNull(cuObj?.cache_creation_input_tokens),
-      cacheRead: numOrNull(cuObj?.cache_read_input_tokens),
+      tokenIn: numOrNull(cuObj?.input_tokens),
+      tokenOut: numOrNull(cuObj?.output_tokens),
+      tokenCacheCreation: numOrNull(cuObj?.cache_creation_input_tokens),
+      tokenCachedIn: numOrNull(cuObj?.cache_read_input_tokens),
     },
     cost: {
       totalDurationMs: numOrNull(costObj?.total_duration_ms),
@@ -119,9 +126,9 @@ export function parseTokenSnapshot(raw: string): TokenSnapshot | null {
     repo,
     ccversion: strOrNull(r.version),
     contextWindow: {
-      size: numOrNull(cwObj?.context_window_size),
-      usedPct: numOrNull(cwObj?.used_percentage),
-      remainingPct: numOrNull(cwObj?.remaining_percentage),
+      contextWindowSize: numOrNull(cwObj?.context_window_size),
+      contextUsedPercent: numOrNull(cwObj?.used_percentage),
+      contextRemainingPercent: numOrNull(cwObj?.remaining_percentage),
     },
   };
 
@@ -134,16 +141,20 @@ export function parseTokenSnapshot(raw: string): TokenSnapshot | null {
   // break the render path. The warning is gated by the
   // diagnostics system (env TOPGAUGE_CC_DIAGNOSTICS_ENABLE=1) and
   // deduped 60s per unique message. See diagnostics.ts.
+  //
+  // v0.9.x — reads through the module-keyed field names:
+  // `snap.totals.tokenTotalIn` / `snap.current.tokenIn` /
+  // `snap.current.tokenCachedIn`.
   if (
-    snap.totals.input != null &&
-    snap.current.input != null &&
-    snap.current.cacheRead != null &&
-    snap.totals.input !== snap.current.input + snap.current.cacheRead
+    snap.totals.tokenTotalIn != null &&
+    snap.current.tokenIn != null &&
+    snap.current.tokenCachedIn != null &&
+    snap.totals.tokenTotalIn !== snap.current.tokenIn + snap.current.tokenCachedIn
   ) {
     diagnostics.append(
       "warning",
       "tokenTotalIn-invariant",
-      `total_input_tokens=${snap.totals.input} != input_tokens(${snap.current.input}) + cache_read_input_tokens(${snap.current.cacheRead})`,
+      `total_input_tokens=${snap.totals.tokenTotalIn} != input_tokens(${snap.current.tokenIn}) + cache_read_input_tokens(${snap.current.tokenCachedIn})`,
       Date.now(),
       snap.cwd,
     );

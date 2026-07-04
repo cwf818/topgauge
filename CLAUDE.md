@@ -106,6 +106,27 @@ Claude Code's `statusLine.command` spawns a child process that reads a session J
 
 ### Per-Project State Layout (v0.4.x+)
 
+#### Per-tick write invariant (v0.9.x)
+
+The renderer runs inside a single per-tick in-memory pipeline owned by `src/tick-state.ts`. The pipeline is:
+
+1. **`beginTick(cwd, tokens)`** (index.ts:main, right after `diagnostics.setSessionCwd`) — loads `state/<projectHash>/status.json` into a per-tick `pending` map, validates the snapshot (see below), and exposes the pending map for the renderer to mutate.
+2. **Render** — every read goes through `tickState.getState().pending[key]` (in-memory only, no disk); every write goes through `tickState.mark(key, value)` (cheap, no disk).
+3. **`commit()`** (index.ts:main, right after `process.stdout.write(compose(...))`) — flushes `pending` to `status.json` as ONE full-file rewrite. No-op when:
+   - `dirty === false` (nothing was marked — pristine / idle tick);
+   - `valid === false` (validation gate failed — see below);
+   - `cwd === null` (no per-project dir to write to).
+
+**Invariant**: **at most one full-file rewrite per tick** (zero on invalid / idle / pristine ticks). The previous v0.8.x code path fired 5–13 `writeFileSync` calls per active render (`accPrimer`, `accCachePrimer`, `setLastSpeed`, `setPrevTick`); v0.9.x collapses those to one.
+
+**Validation gate** (per user contract 2026-07-04): `tokens.totals.tokenTotalIn > 0 AND tokens.totals.tokenTotalOut > 0 AND (tokens.cost.totalApiDurationMs - prevTickStatus.totalApiMs) > 0`. On the first tick (no prev baseline), the rule collapses to `totalApiDurationMs > 0`. Invalid ticks commit nothing — the renderer can still read pending (which is a clone of the loaded on-disk state) but no disk IO happens.
+
+**One exception** — the `accPrimer` regression-reset path in `src/render.ts` (the `totalApiDurationMs < prevTickStatus.totalApiMs` branch) does an **immediate** `statusStore.writeTickStatus` to flush the ccsession reset BEFORE the same-tick `setAvg` runs. This is the ONE write that bypasses the deferred-write pattern; it also mirrors the reset into `tickState.pending[CCSESSION_KEY]` so `setAvg` sees a zeroed baseline. Documented in `src/render.ts` "Regression-reset exception" block.
+
+**Module-keyed field naming** (v0.9.x): `TokenSnapshot` fields are named for their primary reader module — `tokens.current.tokenIn` (read by `m_tokenIn`), `tokens.totals.tokenTotalIn` (read by `m_tokenTotalIn`), `tokens.contextWindow.contextWindowSize` (read by `m_contextWindowsSize`), etc. The grouping (`current` for per-turn deltas, `totals` for session-cumulative, `contextWindow` for capacity/percentages, `cost` for stdin `cost.*` fields) is preserved so the `total_input_tokens == input_tokens + cache_read_input_tokens` invariant check in `src/session-parse.ts` still rides on the type-level signal.
+
+### Per-Project State Layout (v0.4.x+)
+
 The runtime state directory is partitioned by project so multiple Claude Code sessions in different project directories never contend over the same files. Assumption: one project directory → one Claude Code session.
 
 ```

@@ -22,6 +22,10 @@ import {
   __resetForTest as resetCacheForTest,
   setCachePathResolver,
 } from "./cache.ts";
+import {
+  beginTickForTest,
+  resetTickStateForTest,
+} from "./tick-state.ts";
 import { compose } from "./composition.ts";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -39,6 +43,11 @@ beforeEach(() => {
   _tmpDir = mkdtempSync(join(tmpdir(), "tokenplan-lineTemplate-"));
   setCachePathResolver(() => join(_tmpDir, "cache.json"));
   resetCacheForTest();
+  // v0.9.x — render functions now go through tick-state; seed an
+  // empty tick so the read paths don't throw. null cwd keeps the
+  // in-memory store empty (no commit fires on these tests).
+  resetTickStateForTest();
+  beginTickForTest(null, null);
 });
 
 describe("lineTemplate — custom template (drop the 7d window)", () => {
@@ -1141,10 +1150,10 @@ describe("lineTemplate — m_window5h / m_window7d / m_windowContext :display ov
       tokens: {
         cwd: "C:\\fake",
         sessionId: "sess-ctx-display",
-        totals: { input: 0, output: 0 },
-        current: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
+        totals: { tokenTotalIn: 0, tokenTotalOut: 0 },
+        current: { tokenIn: 0, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
         cost: { totalDurationMs: 0, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null },
-        contextWindow: { size: 200000, usedPct: 63, remainingPct: 37 },
+        contextWindow: { contextWindowSize: 200000, contextUsedPercent: 63, contextRemainingPercent: 37 },
       },
     });
     // 100 - 63 = 37. 37 in [20, 40) → band 1. In "remaining" mode
@@ -1164,10 +1173,10 @@ describe("lineTemplate — m_window5h / m_window7d / m_windowContext :display ov
       tokens: {
         cwd: "C:\\fake",
         sessionId: "sess-ctx-used",
-        totals: { input: 0, output: 0 },
-        current: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
+        totals: { tokenTotalIn: 0, tokenTotalOut: 0 },
+        current: { tokenIn: 0, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
         cost: { totalDurationMs: 0, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null },
-        contextWindow: { size: 200000, usedPct: 63, remainingPct: 37 },
+        contextWindow: { contextWindowSize: 200000, contextUsedPercent: 63, contextRemainingPercent: 37 },
       },
     });
     // ctx.mode="remaining" + inline display="used" → display wins → 63%.
@@ -1382,8 +1391,8 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
       tokens: {
         cwd: "C:\\fake",
         sessionId: "sess-cache-read",
-        totals: { input: 1000, output: 500 },
-        current: { input: 100, output: 50, cacheCreation: 100, cacheRead: 900 },
+        totals: { tokenTotalIn: 1000, tokenTotalOut: 500 },
+        current: { tokenIn: 100, tokenOut: 50, tokenCacheCreation: 100, tokenCachedIn: 900 },
         cost: { totalDurationMs: 1000, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null },
       },
     });
@@ -1409,8 +1418,8 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
       tokens: {
         cwd: "C:\\fake",
         sessionId: "sess-speed",
-        totals: { input: 5000, output: 0 },
-        current: { input: 100, output: 0, cacheCreation: 0, cacheRead: 0 },
+        totals: { tokenTotalIn: 5000, tokenTotalOut: 0 },
+        current: { tokenIn: 100, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
         cost: { totalDurationMs: 5000, totalApiDurationMs: 2000, totalLinesAdded: null, totalLinesRemoved: null },
       },
     });
@@ -1433,8 +1442,8 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
       tokens: {
         cwd: "C:\\fake",
         sessionId: "sess-hit",
-        totals: { input: 1000, output: 0 },
-        current: { input: 100, output: 0, cacheCreation: 0, cacheRead: 900 },
+        totals: { tokenTotalIn: 1000, tokenTotalOut: 0 },
+        current: { tokenIn: 100, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 900 },
         cost: { totalDurationMs: 1000, totalApiDurationMs: 1000, totalLinesAdded: null, totalLinesRemoved: null },
       },
     });
@@ -1466,8 +1475,8 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
       tokens: {
         cwd: "C:\\fake",
         sessionId: "sess-tok-in",
-        totals: { input: 1500, output: 0 },
-        current: { input: 1500, output: 0, cacheCreation: 0, cacheRead: 0 },
+        totals: { tokenTotalIn: 1500, tokenTotalOut: 0 },
+        current: { tokenIn: 1500, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
         cost: { totalDurationMs: 1_000, totalApiDurationMs: 1_000, totalLinesAdded: null, totalLinesRemoved: null },
       },
     });
@@ -1489,8 +1498,8 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
       tokens: {
         cwd: "C:\\fake",
         sessionId: "sess-tok-in-bare",
-        totals: { input: 1500, output: 0 },
-        current: { input: 1500, output: 0, cacheCreation: 0, cacheRead: 0 },
+        totals: { tokenTotalIn: 1500, tokenTotalOut: 0 },
+        current: { tokenIn: 1500, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
         cost: { totalDurationMs: 1_000, totalApiDurationMs: 1_000, totalLinesAdded: null, totalLinesRemoved: null },
       },
     });
@@ -1510,8 +1519,8 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
       tokens: {
         cwd: "C:\\fake",
         sessionId: "sess-ctx",
-        totals: { input: 1000, output: 0 },
-        current: { input: 800, output: 0, cacheCreation: 0, cacheRead: 200 },
+        totals: { tokenTotalIn: 1000, tokenTotalOut: 0 },
+        current: { tokenIn: 800, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 200 },
         cost: { totalDurationMs: 0, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null },
       },
     });
@@ -1541,8 +1550,8 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
         tokens: {
           cwd: "C:\\fake",
           sessionId: "sess-no-out",
-          totals: { input: 100, output: null },
-          current: { input: 0, output: null, cacheCreation: 0, cacheRead: 0 },
+          totals: { tokenTotalIn: 100, tokenTotalOut: null },
+          current: { tokenIn: 0, tokenOut: null, tokenCacheCreation: 0, tokenCachedIn: 0 },
           cost: { totalDurationMs: 1000, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null },
         },
       }),
@@ -1568,8 +1577,8 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
         tokens: {
           cwd: "C:\\fake",
           sessionId: "sess-tok-in-bad",
-          totals: { input: 1500, output: 0 },
-          current: { input: 0, output: 0, cacheCreation: 0, cacheRead: 0 },
+          totals: { tokenTotalIn: 1500, tokenTotalOut: 0 },
+          current: { tokenIn: 0, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
           cost: { totalDurationMs: 0, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null },
         },
       }),

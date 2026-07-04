@@ -28,12 +28,12 @@ describe("parseTokenSnapshot — happy path", () => {
     // Existing fields (unchanged from v0.4.0 dev work)
     assert.equal(snap!.sessionId, "b2bee628-bc4f-4c79-a198-cb39b098b547");
     assert.equal(snap!.cwd, "D:\\WorkSpace\\tokenplan-usage-hud");
-    assert.equal(snap!.totals.input, 126860);
-    assert.equal(snap!.totals.output, 265);
-    assert.equal(snap!.current.input, 140);
-    assert.equal(snap!.current.output, 265);
-    assert.equal(snap!.current.cacheCreation, 0);
-    assert.equal(snap!.current.cacheRead, 126720);
+    assert.equal(snap!.totals.tokenTotalIn, 126860);
+    assert.equal(snap!.totals.tokenTotalOut, 265);
+    assert.equal(snap!.current.tokenIn, 140);
+    assert.equal(snap!.current.tokenOut, 265);
+    assert.equal(snap!.current.tokenCacheCreation, 0);
+    assert.equal(snap!.current.tokenCachedIn, 126720);
     assert.equal(snap!.cost.totalDurationMs, 74514744);
     // v0.4.0+ — session identity / metadata
     assert.equal(snap!.sessionName, "strip-diagnostics-display");
@@ -46,9 +46,9 @@ describe("parseTokenSnapshot — happy path", () => {
     });
     assert.equal(snap!.ccversion, "2.1.191");
     // v0.4.0+ — context window
-    assert.equal(snap!.contextWindow!.size, 200000);
-    assert.equal(snap!.contextWindow!.usedPct, 63);
-    assert.equal(snap!.contextWindow!.remainingPct, 37);
+    assert.equal(snap!.contextWindow!.contextWindowSize, 200000);
+    assert.equal(snap!.contextWindow!.contextUsedPercent, 63);
+    assert.equal(snap!.contextWindow!.contextRemainingPercent, 37);
     // v0.4.0+ — extended cost
     assert.equal(snap!.cost.totalApiDurationMs, 8301407);
     assert.equal(snap!.cost.totalLinesAdded, 3965);
@@ -61,13 +61,13 @@ describe("parseTokenSnapshot — happy path", () => {
     assert.ok(snap);
     assert.equal(snap!.sessionId, "x");
     assert.equal(snap!.cwd, "/y");
-    assert.equal(snap!.totals.input, null);
-    assert.equal(snap!.totals.output, null);
-    assert.equal(snap!.current.input, null);
-    assert.equal(snap!.current.cacheRead, null);
+    assert.equal(snap!.totals.tokenTotalIn, null);
+    assert.equal(snap!.totals.tokenTotalOut, null);
+    assert.equal(snap!.current.tokenIn, null);
+    assert.equal(snap!.current.tokenCachedIn, null);
     assert.equal(snap!.cost.totalDurationMs, null);
-    assert.equal(snap!.contextWindow!.size, null);
-    assert.equal(snap!.contextWindow!.usedPct, null);
+    assert.equal(snap!.contextWindow!.contextWindowSize, null);
+    assert.equal(snap!.contextWindow!.contextUsedPercent, null);
   });
 
   it("tolerates current_usage being a number instead of object", () => {
@@ -79,8 +79,8 @@ describe("parseTokenSnapshot — happy path", () => {
     });
     const snap = parseTokenSnapshot(raw);
     assert.ok(snap);
-    assert.equal(snap!.current.input, null);
-    assert.equal(snap!.current.cacheRead, null);
+    assert.equal(snap!.current.tokenIn, null);
+    assert.equal(snap!.current.tokenCachedIn, null);
   });
 
   it("tolerates cost being missing", () => {
@@ -185,9 +185,9 @@ describe("parseTokenSnapshot — v0.4.0+ field edge cases", () => {
     const raw = JSON.stringify({ context_window: { total_input_tokens: 100 } });
     const snap = parseTokenSnapshot(raw);
     assert.ok(snap);
-    assert.equal(snap!.contextWindow!.size, null);
-    assert.equal(snap!.contextWindow!.usedPct, null);
-    assert.equal(snap!.contextWindow!.remainingPct, null);
+    assert.equal(snap!.contextWindow!.contextWindowSize, null);
+    assert.equal(snap!.contextWindow!.contextUsedPercent, null);
+    assert.equal(snap!.contextWindow!.contextRemainingPercent, null);
   });
 });
 
@@ -293,9 +293,9 @@ describe("parseTokenSnapshot — v0.8.0 tokenTotalIn invariant", () => {
     assert.ok(snap);
     // Returns the parsed values verbatim — invariant violation is
     // a signal, not a hard error.
-    assert.equal(snap!.totals.input, 999);
-    assert.equal(snap!.current.input, 1);
-    assert.equal(snap!.current.cacheRead, 1);
+    assert.equal(snap!.totals.tokenTotalIn, 999);
+    assert.equal(snap!.current.tokenIn, 1);
+    assert.equal(snap!.current.tokenCachedIn, 1);
   });
 
   it("missing field → invariant skipped (no warn on partial stdin)", () => {

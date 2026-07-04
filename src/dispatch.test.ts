@@ -244,12 +244,12 @@ describe("buildProviderLine — null provider (no ANTHROPIC_BASE_URL match)", ()
   const TOKENS: TokenSnapshot = {
     sessionId: "sess-test",
     cwd: "D:\\test",
-    totals: { input: 163479, output: 155 },
+    totals: { tokenTotalIn: 163479, tokenTotalOut: 155 },
     current: {
-      input: 38,
-      output: 155,
-      cacheCreation: 0,
-      cacheRead: 163441,
+      tokenIn: 38,
+      tokenOut: 155,
+      tokenCacheCreation: 0,
+      tokenCachedIn: 163441,
     },
     cost: { totalDurationMs: 600_000, totalApiDurationMs: 60_000, totalLinesAdded: 3965, totalLinesRemoved: 967 },
     sessionName: "strip-diagnostics-display",
@@ -257,7 +257,7 @@ describe("buildProviderLine — null provider (no ANTHROPIC_BASE_URL match)", ()
     effort: "high",
     repo: { host: "github.com", owner: "cwf818", name: "topgauge-cc" },
     ccversion: "2.1.191",
-    contextWindow: { size: 200000, usedPct: 63, remainingPct: 37 },
+    contextWindow: { contextWindowSize: 200000, contextUsedPercent: 63, contextRemainingPercent: 37 },
   };
 
   it("null provider + fresh data + tokens: renders provider-agnostic modules", () => {

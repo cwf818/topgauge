@@ -36,10 +36,11 @@ export type ApiMsDecision =
   | { kind: "skip" };
 
 export type CurrentUsageLite = {
-  input: number | null;
-  output: number | null;
-  cacheRead: number | null;
-  cacheCreation: number | null;
+  // v0.9.x — module-keyed naming (mirrors TokenSnapshot.current).
+  tokenIn: number | null;
+  tokenOut: number | null;
+  tokenCachedIn: number | null;
+  tokenCacheCreation: number | null;
 };
 
 export type ApiMsInputs = {
@@ -74,7 +75,7 @@ export function resolveApiMsSample(inp: ApiMsInputs): ApiMsDecision {
   // `if (inp.prev == null)` shape).
   const prev = inp.prev;
   if (prev == null || prev.apiMs === 0) {
-    const out = inp.current.output ?? 0;
+    const out = inp.current.tokenOut ?? 0;
     const totalInGt = inp.totalIn > 0;
     const totalOutGt = inp.totalOut > 0;
     if (!totalInGt && !totalOutGt) {
@@ -87,10 +88,10 @@ export function resolveApiMsSample(inp: ApiMsInputs): ApiMsDecision {
         at: inp.at,
         totalIn: inp.totalIn,
         totalOut: inp.totalOut,
-        in: inp.current.input ?? 0,
+        in: inp.current.tokenIn ?? 0,
         out,
-        cacheCreation: inp.current.cacheCreation ?? 0,
-        cacheIn: inp.current.cacheRead ?? 0,
+        cacheCreation: inp.current.tokenCacheCreation ?? 0,
+        cacheIn: inp.current.tokenCachedIn ?? 0,
         model: inp.modelDisplayName ?? undefined,
         totalApiMs: inp.totalApiMs,
         apiMs: fallbackMs,
@@ -122,10 +123,10 @@ export function resolveApiMsSample(inp: ApiMsInputs): ApiMsDecision {
         at: inp.at,
         totalIn: inp.totalIn,
         totalOut: inp.totalOut,
-        in: inp.current.input ?? 0,
-        out: inp.current.output ?? 0,
-        cacheCreation: inp.current.cacheCreation ?? 0,
-        cacheIn: inp.current.cacheRead ?? 0,
+        in: inp.current.tokenIn ?? 0,
+        out: inp.current.tokenOut ?? 0,
+        cacheCreation: inp.current.tokenCacheCreation ?? 0,
+        cacheIn: inp.current.tokenCachedIn ?? 0,
         model: inp.modelDisplayName ?? undefined,
         totalApiMs: inp.totalApiMs,
         apiMs: deltaApiMs,

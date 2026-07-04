@@ -38,6 +38,7 @@
 
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { logFsList, logFsMkdir, logFsRead, logFsStat, logFsWrite } from "./diagnostics.ts";
 import type { TokenSample } from "./types.ts";
 
 // Root of all token-plan plugin state files. Sibling of `upstream-cmd.sh`
@@ -104,9 +105,17 @@ export function appendSample(
   sample: TokenSample,
 ): void {
   const path = sampleFilePath(cwd, sessionId);
+  const dir = dirname(path);
+  // cwd is passed to logFsWrite as an override so the audit row
+  // carries the session's cwd even when the per-tick session cwd
+  // store (set by `index.ts:setSessionCwd`) hasn't fired yet on
+  // the very first tick of a fresh process.
+  logFsMkdir(dir, "token-store.appendSample", cwd);
   try {
-    mkdirSync(dirname(path), { recursive: true });
-    appendFileSync(path, JSON.stringify(sample) + "\n", "utf8");
+    mkdirSync(dir, { recursive: true });
+    const payload = JSON.stringify(sample) + "\n";
+    logFsWrite(path, "token-store.appendSample", payload.length, cwd);
+    appendFileSync(path, payload, "utf8");
   } catch {
     process.stderr.write("topgauge-cc: token-sample append failed\n");
   }
@@ -134,6 +143,7 @@ export function readSamples(
   modelFilter?: string,
 ): TokenSample[] {
   const path = sampleFilePath(cwd, sessionId);
+  logFsRead(path, "token-store.readSamples", undefined, cwd);
   let raw: string;
   try {
     raw = readFileSync(path, "utf8");
@@ -209,6 +219,13 @@ export function readSamples(
 export function readAllSamples(sinceMs: number): TokenSample[] {
   const root = stateRoot();
   const out: TokenSample[] = [];
+  // readAllSamples walks every projectDir under the state root; it
+  // is intentionally cwd-agnostic (sum/avg is cross-project). The
+  // audit rows therefore don't carry a per-session cwd override —
+  // the process-level session cwd store (when set) is a global
+  // marker of "this tick triggered this scan", which postmortem
+  // readers may treat as informational.
+  logFsList(root, "token-store.readAllSamples");
   let projectDirs: string[];
   try {
     projectDirs = readdirSync(root);
@@ -217,6 +234,7 @@ export function readAllSamples(sinceMs: number): TokenSample[] {
   }
   for (const projDir of projectDirs) {
     const projPath = join(root, projDir);
+    logFsStat(projPath, "token-store.readAllSamples");
     let st;
     try {
       st = statSync(projPath);
@@ -224,6 +242,7 @@ export function readAllSamples(sinceMs: number): TokenSample[] {
       continue;
     }
     if (!st.isDirectory()) continue;
+    logFsList(projPath, "token-store.readAllSamples");
     let sessions: string[];
     try {
       sessions = readdirSync(projPath);
@@ -240,6 +259,7 @@ export function readAllSamples(sinceMs: number): TokenSample[] {
       // below remains the correctness guarantee (mtime can lag
       // behind the most-recent row by a few ms).
       if (sinceMs > 0) {
+        logFsStat(path, "token-store.readAllSamples");
         let fst;
         try {
           fst = statSync(path);
@@ -248,6 +268,7 @@ export function readAllSamples(sinceMs: number): TokenSample[] {
         }
         if (fst.mtimeMs < sinceMs) continue;
       }
+      logFsRead(path, "token-store.readAllSamples");
       let raw: string;
       try {
         raw = readFileSync(path, "utf8");

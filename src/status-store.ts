@@ -72,6 +72,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { logFsMkdir, logFsRead, logFsWrite } from "./diagnostics.ts";
 import { projectHash } from "./token-store.ts";
 
 // ----- Acc shape (per-dimension tickStatus value) -----
@@ -149,6 +150,13 @@ type Entry =
 
 type Store = Record<string, Entry>;
 
+// v0.9.x — re-export the Store type so peer modules (tick-state.ts)
+// can pass it to flushToDisk() and inspect pending / loaded state
+// without re-declaring the shape. Treated as immutable at the
+// consumer side; mutation goes through tick-state.mark() so the
+// dirty/flush contract stays coherent.
+export type { Store, Entry };
+
 function stateRoot(): string {
   const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
   const claudeRoot = process.env.CLAUDE_CONFIG_DIR ?? join(home, ".claude");
@@ -182,7 +190,7 @@ export function resetStatusPathResolver(): void {
 const _stores = new Map<string, Store>();
 const _loaded = new Set<string>();
 
-function loadFromDisk(cwd: string): Store {
+function loadFromDiskInternal(cwd: string): Store {
   const cached = _stores.get(cwd);
   if (cached) return cached;
   if (_loaded.has(cwd)) {
@@ -194,9 +202,11 @@ function loadFromDisk(cwd: string): Store {
     return empty;
   }
   _loaded.add(cwd);
+  const statusPath = _pathResolver(cwd);
+  logFsRead(statusPath, "status-store.loadFromDisk", undefined, cwd);
   let raw: string;
   try {
-    raw = readFileSync(_pathResolver(cwd), "utf8");
+    raw = readFileSync(statusPath, "utf8");
   } catch {
     const empty: Store = {};
     _stores.set(cwd, empty);
@@ -278,23 +288,34 @@ function loadFromDisk(cwd: string): Store {
   return out;
 }
 
-function flushToDisk(cwd: string, store: Store): void {
+function flushToDiskInternal(cwd: string, store: Store): void {
   const path = _pathResolver(cwd);
+  const dir = dirname(path);
+  logFsMkdir(dir, "status-store.flushToDisk", cwd);
   try {
-    mkdirSync(dirname(path), { recursive: true });
+    mkdirSync(dir, { recursive: true });
   } catch {
     process.stderr.write(
       "topgauge-cc: status mkdir failed; in-memory only\n",
     );
     return;
   }
+  const payload = JSON.stringify(store);
+  logFsWrite(path, "status-store.flushToDisk", payload.length, cwd);
   try {
-    writeFileSync(path, JSON.stringify(store));
+    writeFileSync(path, payload);
   } catch {
     process.stderr.write(
       "topgauge-cc: status write failed; in-memory only\n",
     );
+    return;
   }
+  // v0.9.x — keep the per-cwd in-memory cache coherent with disk
+  // so subsequent readTickStatus / readPrevTickStatus calls
+  // (especially in tests that mix tick-state commits with
+  // legacy read paths) see the freshly-written Store. Without
+  // this, _stores stays stale until the next process restart.
+  _stores.set(cwd, store);
 }
 
 // Construct a fresh empty TickStatusValue (zeroed). Centralized so
@@ -330,7 +351,7 @@ export function readTickStatus(
   key: string,
 ): TickStatusValue | null {
   if (!cwd) return null;
-  const store = loadFromDisk(cwd);
+  const store = loadFromDiskInternal(cwd);
   const e = store[key];
   if (!e || e.kind !== "tickStatus") return null;
   return e.value;
@@ -342,9 +363,9 @@ export function writeTickStatus(
   value: TickStatusValue,
 ): void {
   if (!cwd) return;
-  const store = loadFromDisk(cwd);
+  const store = loadFromDiskInternal(cwd);
   store[key] = { at: Date.now(), value, kind: "tickStatus" };
-  flushToDisk(cwd, store);
+  flushToDiskInternal(cwd, store);
 }
 
 // ----- prevTickStatus (singleton) -----
@@ -353,7 +374,7 @@ export function readPrevTickStatus(
   cwd: string | null | undefined,
 ): PrevTickStatusValue | null {
   if (!cwd) return null;
-  const store = loadFromDisk(cwd);
+  const store = loadFromDiskInternal(cwd);
   const e = store[PREV_TICK_KEY];
   if (!e || e.kind !== "prevTickStatus") return null;
   return e.value;
@@ -364,9 +385,9 @@ export function writePrevTickStatus(
   value: PrevTickStatusValue,
 ): void {
   if (!cwd) return;
-  const store = loadFromDisk(cwd);
+  const store = loadFromDiskInternal(cwd);
   store[PREV_TICK_KEY] = { at: Date.now(), value, kind: "prevTickStatus" };
-  flushToDisk(cwd, store);
+  flushToDiskInternal(cwd, store);
 }
 
 // ----- lastActive (v0.4.x) --------------------------------------------
@@ -408,7 +429,7 @@ export function readLastActive(
   direction: "in" | "out" | "apiMs" | "tokenHitRate",
 ): number | null {
   if (!cwd) return null;
-  const store = loadFromDisk(cwd);
+  const store = loadFromDiskInternal(cwd);
   const key = `lastActive:${direction}`;
   const e = store[key];
   if (!e || e.kind !== "lastActive") return null;
@@ -426,14 +447,14 @@ export function writeLastActive(
   tps: number,
 ): void {
   if (!cwd) return;
-  const store = loadFromDisk(cwd);
+  const store = loadFromDiskInternal(cwd);
   const key = `lastActive:${direction}`;
   store[key] = {
     at: Date.now(),
     value: { direction, tps },
     kind: "lastActive",
   };
-  flushToDisk(cwd, store);
+  flushToDiskInternal(cwd, store);
 }
 
 // Test-only: wipe the in-memory cache so the next call hits disk
@@ -441,4 +462,30 @@ export function writeLastActive(
 export function __resetForTest(): void {
   _loaded.clear();
   _stores.clear();
+}
+
+// v0.9.x — public pass-through for the tick-state module. The
+// `tick-state.ts` module owns the per-tick load→validate→compute→
+// commit flow; it calls `loadFromDisk(cwd)` once at beginTick and
+// `flushToDisk(cwd, pending)` once at commit. The internal
+// wrappers (`loadFromDiskInternal`, `flushToDiskInternal`) stay
+// private to this module so the rest of the codebase continues to
+// go through readTickStatus / writeTickStatus / readPrevTickStatus
+// / writePrevTickStatus / readLastActive / writeLastActive (see
+// "Why a separate file (vs cache.json)?" in this file's header).
+//
+// Both wrappers preserve the full lazy-load semantics of the
+// module-global _stores / _loaded Maps: a second loadFromDisk(cwd)
+// during the same child process returns the same parsed Store
+// instance without re-reading the file. flushToDisk writes the
+// caller-provided store verbatim — it does NOT consult _stores,
+// which keeps the tick-state module's "load once, mutate pending,
+// flush once" pipeline cleanly separated from the read-then-write
+// helpers that already exist.
+export function loadFromDisk(cwd: string): Store {
+  return loadFromDiskInternal(cwd);
+}
+
+export function flushToDisk(cwd: string, store: Store): void {
+  flushToDiskInternal(cwd, store);
 }

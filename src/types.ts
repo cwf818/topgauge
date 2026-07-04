@@ -114,24 +114,45 @@ export type TokenSample = {
 //            ccversion) feed the corresponding m_* modules verbatim.
 //
 // v0.8.0+ — semantic clarification:
-//   - `current.input` / `current.output` / `current.cacheRead` are
-//     PER-TURN DELTAS (the contract formalized in
+//   - `current.tokenIn` / `current.tokenOut` / `current.tokenCachedIn`
+//     are PER-TURN DELTAS (the contract formalized in
 //     [[per-turn-delta-contract]]). The user's invariant
 //     `total_input_tokens == input_tokens + cache_read_input_tokens`
 //     must hold; a diagnostics warning is emitted on violation.
-//   - `totals.input` / `totals.output` are session-cumulative.
+//   - `totals.tokenTotalIn` / `totals.tokenTotalOut` are session-cumulative.
+//
+// v0.9.x — module-keyed field naming. Each parse-time field is now
+// named for its primary reader module so the path from stdin to
+// renderer is one hop, no layer of indirection. The `current` group
+// still encodes "per-turn delta" (vs the `totals` group encoding
+// "session-cumulative") because the type-level invariant rides on
+// that distinction. Naming summary:
+//
+//   current.tokenIn         ← m_tokenIn,         stdin: current_usage.input_tokens
+//   current.tokenOut        ← m_tokenOut,        stdin: current_usage.output_tokens
+//   current.tokenCachedIn   ← m_tokenCachedIn,   stdin: current_usage.cache_read_input_tokens
+//   current.tokenCacheCreation ← (no module yet), stdin: current_usage.cache_creation_input_tokens
+//   totals.tokenTotalIn     ← m_tokenTotalIn / m_tokenInTotal / m_contextSize
+//                                  stdin: context_window.total_input_tokens
+//   totals.tokenTotalOut    ← m_tokenTotalOut,   stdin: context_window.total_output_tokens
+//   contextWindow.contextWindowSize        ← m_contextWindowsSize (typo preserved),
+//                                                stdin: context_window.context_window_size
+//   contextWindow.contextUsedPercent       ← m_contextUsedPercent,
+//                                                stdin: context_window.used_percentage
+//   contextWindow.contextRemainingPercent  ← m_contextRemainingPercent,
+//                                                stdin: context_window.remaining_percentage
 export type TokenSnapshot = {
   sessionId: string | null;
   cwd: string | null;
   totals: {
-    input: number | null;
-    output: number | null;
+    tokenTotalIn: number | null;
+    tokenTotalOut: number | null;
   };
   current: {
-    input: number | null;
-    output: number | null;
-    cacheCreation: number | null;
-    cacheRead: number | null;
+    tokenIn: number | null;
+    tokenOut: number | null;
+    tokenCacheCreation: number | null;
+    tokenCachedIn: number | null;
   };
   cost: {
     totalDurationMs: number | null;
@@ -155,9 +176,9 @@ export type TokenSnapshot = {
   ccversion?: string | null;
   // v0.4.0+ — context window stats read from stdin.context_window.
   contextWindow?: {
-    size: number | null;
-    usedPct: number | null;
-    remainingPct: number | null;
+    contextWindowSize: number | null;
+    contextUsedPercent: number | null;
+    contextRemainingPercent: number | null;
   };
 };
 

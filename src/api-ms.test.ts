@@ -13,7 +13,7 @@ describe("resolveApiMsSample — first-tick fallback", () => {
       at: 1000,
       totalIn: 100,
       totalOut: 50,
-      current: { input: 100, output: 50, cacheRead: 0, cacheCreation: 0 },
+      current: { tokenIn: 100, tokenOut: 50, tokenCachedIn: 0, tokenCacheCreation: 0 },
       totalApiMs: 60_000,
       prev: null,
     });
@@ -33,7 +33,7 @@ describe("resolveApiMsSample — first-tick fallback", () => {
       at: 1783056713633,
       totalIn: 146036,
       totalOut: 639,
-      current: { input: 116, output: 639, cacheRead: 145920, cacheCreation: 0 },
+      current: { tokenIn: 116, tokenOut: 639, tokenCachedIn: 145920, tokenCacheCreation: 0 },
       totalApiMs: 10_521_994,
       prev: null,
     });
@@ -51,7 +51,7 @@ describe("resolveApiMsSample — first-tick fallback", () => {
       at: 2000,
       totalIn: 200,
       totalOut: 100,
-      current: { input: 100, output: 50, cacheRead: 0, cacheCreation: 0 },
+      current: { tokenIn: 100, tokenOut: 50, tokenCachedIn: 0, tokenCacheCreation: 0 },
       totalApiMs: 90_000,
       prev: { apiMs: 30_000 },
     });
@@ -73,7 +73,7 @@ describe("resolveApiMsSample — first-tick fallback", () => {
       at: 2000,
       totalIn: 100,
       totalOut: 50,
-      current: { input: 100, output: 50, cacheRead: 0, cacheCreation: 0 },
+      current: { tokenIn: 100, tokenOut: 50, tokenCachedIn: 0, tokenCacheCreation: 0 },
       totalApiMs: 60_000,
       prev: { apiMs: 0 },
     });
@@ -93,7 +93,7 @@ describe("resolveApiMsSample — first-tick fallback", () => {
       at: 1000,
       totalIn: 0,
       totalOut: 0,
-      current: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+      current: { tokenIn: 0, tokenOut: 0, tokenCachedIn: 0, tokenCacheCreation: 0 },
       totalApiMs: 0,
       prev: null,
     });
@@ -105,7 +105,7 @@ describe("resolveApiMsSample — first-tick fallback", () => {
       at: 1000,
       totalIn: 100,
       totalOut: 150,
-      current: { input: 100, output: 150, cacheRead: 0, cacheCreation: 0 },
+      current: { tokenIn: 100, tokenOut: 150, tokenCachedIn: 0, tokenCacheCreation: 0 },
       totalApiMs: 0,
       prev: null,
     });
@@ -120,7 +120,7 @@ describe("resolveApiMsSample — first-tick fallback", () => {
       at: 1000,
       totalIn: 100,
       totalOut: 51,
-      current: { input: 50, output: 51, cacheRead: 0, cacheCreation: 0 },
+      current: { tokenIn: 50, tokenOut: 51, tokenCachedIn: 0, tokenCacheCreation: 0 },
       totalApiMs: 0,
       prev: null,
     });
@@ -136,7 +136,7 @@ describe("resolveApiMsSample — first-tick fallback", () => {
       at: 1000,
       totalIn: 100,
       totalOut: 1,
-      current: { input: 99, output: 1, cacheRead: 0, cacheCreation: 0 },
+      current: { tokenIn: 99, tokenOut: 1, tokenCachedIn: 0, tokenCacheCreation: 0 },
       totalApiMs: 0,
       prev: null,
     });
@@ -153,7 +153,7 @@ describe("resolveApiMsSample — first-tick fallback", () => {
       at: 1000,
       totalIn: 0,
       totalOut: 0,
-      current: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+      current: { tokenIn: 0, tokenOut: 0, tokenCachedIn: 0, tokenCacheCreation: 0 },
       totalApiMs: 0,
       prev: { apiMs: 0 },
     });
@@ -170,7 +170,7 @@ describe("resolveApiMsSample — first-tick fallback", () => {
       at: 5000,
       totalIn: 112424,
       totalOut: 122,
-      current: { input: 133, output: 122, cacheRead: 112291, cacheCreation: 0 },
+      current: { tokenIn: 133, tokenOut: 122, tokenCachedIn: 112291, tokenCacheCreation: 0 },
       totalApiMs: 13158865, // 3.6h — the user's log value
       prev: { apiMs: 0 },
     });
@@ -195,7 +195,7 @@ describe("resolveApiMsSample — deltaApiMs == 0 (v0.8.6: always skip)", () => {
       at: 2000,
       totalIn: 100,
       totalOut: 50,
-      current: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+      current: { tokenIn: 0, tokenOut: 0, tokenCachedIn: 0, tokenCacheCreation: 0 },
       totalApiMs: 60_000,
       prev: { apiMs: 60_000 },
     });
@@ -207,7 +207,7 @@ describe("resolveApiMsSample — deltaApiMs == 0 (v0.8.6: always skip)", () => {
       at: 2000,
       totalIn: 150,
       totalOut: 50,
-      current: { input: 50, output: 0, cacheRead: 0, cacheCreation: 0 },
+      current: { tokenIn: 50, tokenOut: 0, tokenCachedIn: 0, tokenCacheCreation: 0 },
       totalApiMs: 60_000,
       prev: { apiMs: 60_000 },
     });
@@ -219,7 +219,7 @@ describe("resolveApiMsSample — deltaApiMs == 0 (v0.8.6: always skip)", () => {
       at: 2000,
       totalIn: 100,
       totalOut: 70,
-      current: { input: 0, output: 20, cacheRead: 0, cacheCreation: 0 },
+      current: { tokenIn: 0, tokenOut: 20, tokenCachedIn: 0, tokenCacheCreation: 0 },
       totalApiMs: 60_000,
       prev: { apiMs: 60_000 },
     });
@@ -235,7 +235,7 @@ describe("resolveApiMsSample — deltaApiMs == 0 (v0.8.6: always skip)", () => {
       at: 1783070952837,
       totalIn: 151217,
       totalOut: 0,
-      current: { input: 647, output: 0, cacheRead: 150570, cacheCreation: 0 },
+      current: { tokenIn: 647, tokenOut: 0, tokenCachedIn: 150570, tokenCacheCreation: 0 },
       totalApiMs: 13553322,
       prev: { apiMs: 13553322 },
     });
@@ -247,7 +247,7 @@ describe("resolveApiMsSample — deltaApiMs == 0 (v0.8.6: always skip)", () => {
       at: 2000,
       totalIn: 200,
       totalOut: 100,
-      current: { input: 0, output: 0, cacheRead: 0, cacheCreation: 50 },
+      current: { tokenIn: 0, tokenOut: 0, tokenCachedIn: 0, tokenCacheCreation: 50 },
       totalApiMs: 60_000,
       prev: { apiMs: 60_000 },
     });
@@ -259,7 +259,7 @@ describe("resolveApiMsSample — deltaApiMs == 0 (v0.8.6: always skip)", () => {
       at: 2000,
       totalIn: 100,
       totalOut: 50,
-      current: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+      current: { tokenIn: 0, tokenOut: 0, tokenCachedIn: 0, tokenCacheCreation: 0 },
       totalApiMs: 30_000,
       prev: { apiMs: 60_000 },
     });
@@ -280,7 +280,7 @@ describe("resolveApiMsSample — zero-token gate (v0.8.2)", () => {
       at: 1783058264113,
       totalIn: 0,
       totalOut: 0,
-      current: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+      current: { tokenIn: 0, tokenOut: 0, tokenCachedIn: 0, tokenCacheCreation: 0 },
       totalApiMs: 11032103,
       prev: { apiMs: 10911837 },
     });
@@ -295,7 +295,7 @@ describe("resolveApiMsSample — zero-token gate (v0.8.2)", () => {
       at: 1000,
       totalIn: 0,
       totalOut: 0,
-      current: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
+      current: { tokenIn: 0, tokenOut: 0, tokenCachedIn: 0, tokenCacheCreation: 0 },
       totalApiMs: 5_000,
       prev: null,
     });
@@ -309,7 +309,7 @@ describe("resolveApiMsSample — zero-token gate (v0.8.2)", () => {
       at: 2000,
       totalIn: 100,
       totalOut: 0,
-      current: { input: 100, output: 0, cacheRead: 0, cacheCreation: 0 },
+      current: { tokenIn: 100, tokenOut: 0, tokenCachedIn: 0, tokenCacheCreation: 0 },
       totalApiMs: 60_000,
       prev: { apiMs: 30_000 },
     });

@@ -80,17 +80,128 @@ export type Level = "error" | "warning" | "info";
 
 // One JSONL row. Structured so a postmortem reader can grep by level
 // or by source without parsing the message.
+//
+// `at` is the epoch-ms timestamp (cheap to sort/compare); `iso` is the
+// same instant rendered as a local-tz ISO8601 string (e.g.
+// "2026-07-04T08:56:42.123+08:00") for human reading. Computed at append
+// time so a postmortem never has to convert timestamps manually — the
+// statusline runs cross-platform and the user's local-tz offset is
+// whatever `Intl.DateTimeFormat().resolvedOptions().timeZone` reports
+// on the host. v0.8.x+ keeps `at` for backward-compatible sorting and
+// adds `iso` for greppability.
+//
+// `fn` is the calling function in `module.funcName` form (e.g.
+// "cache.loadFromDisk", "token-store.appendSample"). Optional — only
+// file-IO audit rows set it; warning/error rows (fetch / config /
+// stdin) leave it undefined and the JSONL row omits the field.
+//
+// `cwd` is the project cwd the row belongs to. Optional — only
+// rows that route to a project-scoped diagnostics.jsonl set it,
+// and only when the path resolver had a non-null cwd to encode.
+// Fetch / config / stdin rows whose path falls back to the legacy
+// top-level file leave it undefined. A postmortem can grep for
+// `"cwd":"D:\\WorkSpace\\foo"` across either the per-project or
+// the top-level file to scope the trace to one of several
+// concurrent sessions sharing the same state root.
 export type Entry = {
   at: number;
+  iso: string;
   level: Level;
   source: string;
+  fn?: string;
   msg: string;
+  cwd?: string;
 };
 
 // Cap on file length. Append drops the oldest line(s) when the file
 // would exceed this — keeps the file bounded regardless of error
 // rate. Tests can lower this via the optional 3rd arg to append.
 const DEFAULT_MAX_ENTRIES = 200;
+
+// ----- Process-level session cwd store -----
+//
+// The statusline runs as a per-tick child process spawned by Claude
+// Code. Within a single tick we want every audit row (whether from
+// `cache.loadFromDisk` reading the top-level cache.json, from
+// `index.loadPluginVersion` reading plugin.json, or from
+// `token-store.appendSample` writing the per-project sample jsonl)
+// to carry the originating session's cwd on disk so a postmortem
+// can disambiguate rows from concurrent panels sharing the same
+// state root.
+//
+// Without a global store, every call site would have to be
+// threaded with the cwd — a per-tick value that's only known after
+// stdin is parsed, but used across the whole tick. That's
+// invasive (cache.ts would have to take a cwd parameter on every
+// public API just to forward it to the audit row) and pushes
+// session-scoped state into modules whose design is "cwd-unaware
+// at the function-signature level".
+//
+// The compromise: hold the cwd in a module-private variable
+// `_sessionCwd` and let `append` (and the `logFs*` helpers it
+// fronts) read from it. `setSessionCwd` is called ONCE per tick
+// from `index.ts:main()` after stdin has been parsed; from that
+// moment on, every audit row picks up the cwd automatically.
+//
+// Per-tick child processes never share state across invocations,
+// so a single `_sessionCwd` is correct without locking.
+let _sessionCwd: string | null | undefined = undefined;
+
+export function setSessionCwd(cwd: string | null | undefined): void {
+  _sessionCwd = cwd;
+}
+
+// Test hook — clear the global cwd so a test that appends from
+// multiple "sessions" (sandboxed cwd) starts clean.
+export function __resetSessionCwdForTest(): void {
+  _sessionCwd = undefined;
+}
+
+// Read the current session cwd, normalized to undefined when
+// empty/null. Module-private — callers always go through `append`
+// or the `logFs*` helpers, which apply this resolution.
+function currentSessionCwd(): string | undefined {
+  if (typeof _sessionCwd !== "string" || _sessionCwd.length === 0) {
+    return undefined;
+  }
+  return _sessionCwd;
+}
+
+// Local-tz ISO8601 string for a given epoch-ms instant. Uses
+// sv-SE locale as a stable "YYYY-MM-DD HH:MM:SS.mmm" shape so a
+// postmortem reader can sort timestamps lexicographically without
+// any timezone conversion. The offset suffix matches whatever the
+// host's local-tz offset is at that instant — we don't normalize
+// to UTC because the statusline is read by humans who want the
+// time in their own clock.
+//
+// The sv-SE locale is essentially the ISO8601 "extended" format
+// (YYYY-MM-DD HH:MM:SS) with a 24-hour clock. We replace the
+// date/time separator to produce a lexical-equal-of-ISO output
+// like "2026-07-04T08:56:42.123". Without `timeZone: undefined`
+// explicit, we accept the host default — passing no `timeZone`
+// option to Intl is the documented way to ask for local time.
+function localIso(epochMs: number): string {
+  // toLocaleString will be called with the host's local tz when
+  // `timeZone` is omitted. The `--noEmit` TS pass accepts the
+  // Intl option bag without `timeZone` — annotate the cast to
+  // silence strict mode without runtime cost.
+  const opts: Intl.DateTimeFormatOptions = {
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    fractionalSecondDigits: 3,
+  };
+  return new Date(epochMs).toLocaleString("sv-SE", opts)
+    .replace(" ", "T")
+    // sv-SE uses ',' as the fractional-second separator. ISO8601
+    // requires '.' — normalise so Date.parse() round-trips cleanly.
+    .replace(/,(\d{3})$/, ".$1");
+}
 
 // ----- Gate -----
 
@@ -161,17 +272,78 @@ export function __resetDedupeForTest(): void {
 // When omitted/null, the entry falls back to the legacy top-level
 // `state/diagnostics.jsonl` (used for plugin-level errors with no
 // project affiliation, e.g. config-parse warnings).
+//
+// v0.8.x+ — when `cwd` is not explicitly given, `append` reads
+// from the process-level session cwd store (set via
+// `setSessionCwd` from `index.ts:main()` after stdin is parsed)
+// and uses that as both the file-routing key and the row's `cwd`
+// field. This lets `logFs*` audit rows from cwd-unaware modules
+// (e.g. cache.ts reading the top-level cache.json shared across
+// concurrent panels) still carry the originating session's cwd on
+// disk.
+//
+// v0.8.x+ — the same `cwd` argument (resolved or explicit) is
+// also persisted onto the JSONL row under the `cwd` field so a
+// postmortem reading the top-level file (or merging rows from
+// multiple per-project files) can correlate each row back to the
+// originating session without parsing the layout from disk paths.
+// A null/empty cwd omits the field on disk.
+//
+// `fn` (optional, v0.8.x+): identifier of the calling function in
+// `module.funcName` form (e.g. "cache.loadFromDisk"). Only the
+// file-IO audit helpers set it; warning/error rows leave it off.
 export function append(
   level: Level,
   source: string,
   msg: string,
   now: number = Date.now(),
   cwd?: string | null,
+  fn?: string,
 ): void {
   if (!isEnabled()) return;
   if (!shouldEmit(source, msg, now)) return;
-  const path = diagnosticsFilePath(cwd);
-  const entry: Entry = { at: now, level, source, msg };
+  // Resolve cwd: three states matter here:
+  //   1. cwd === undefined → caller did not pass anything. Fall back
+  //      to the process-level session cwd store (cwd-unaware
+  //      callers; e.g. cache.ts reading the shared top-level
+  //      cache.json).
+  //   2. cwd === null      → caller explicitly opts out of the
+  //      per-project file. The row lands in the top-level
+  //      diagnostics.jsonl regardless of the session cwd store.
+  //      Used by top-level IO (cache.loadFromDisk / cache.flushToDisk
+  //      on the shared cache.json; index.loadPluginVersion probing
+  //      the plugin manifest) — these audit rows describe a file
+  //      shared across projects, so the postmortem reader expects
+  //      to find them at the top level, not mixed into one session's
+  //      per-project file.
+  //   3. cwd is a non-empty string → caller-supplied cwd wins; the
+  //      row lands in state/<projectHash>/diagnostics.jsonl for that
+  //      session's own file.
+  const resolvedCwd: string | undefined = (() => {
+    if (cwd === null) return undefined;
+    if (typeof cwd === "string" && cwd.length > 0) return cwd;
+    return currentSessionCwd();
+  })();
+  const path = diagnosticsFilePath(resolvedCwd);
+  const entry: Entry = {
+    at: now,
+    iso: localIso(now),
+    level,
+    source,
+    // `fn` is emitted before `msg` so a postmortem reading the
+    // JSONL sees the call-site identifier immediately followed
+    // by the message body. Spread-into-position keeps the
+    // fields strictly optional without a stray undefined.
+    ...(fn ? { fn } : {}),
+    msg,
+    // `cwd` is recorded for cross-session debugging — multiple
+    // Claude Code windows loading the plugin can share the same
+    // state root, and the top-level diagnostics.jsonl is the
+    // only one that sees every window's rows together. Stamped
+    // last so the row reads `... fn msg cwd` — the previously
+    // human-facing fields get prime position.
+    ...(resolvedCwd ? { cwd: resolvedCwd } : {}),
+  };
   try {
     mkdirSync(dirname(path), { recursive: true });
     appendFileSync(path, JSON.stringify(entry) + "\n", "utf8");
@@ -181,6 +353,121 @@ export function append(
   } catch {
     process.stderr.write("topgauge-cc: diagnostics append failed\n");
   }
+}
+
+// ----- File-IO audit helpers (v0.8.x+) -----
+//
+// Thin wrappers for the per-tick file IO sites (cache.ts,
+// token-store.ts, status-store.ts, config.ts, index.ts) to record
+// their disk activity to the diagnostics log. Reuses the opt-in
+// gate (TOPGAUGE_CC_DIAGNOSTICS_ENABLE) and the per-project JSONL
+// layout — the IO site's `path` is the same string the caller
+// passed to fs.*, so the per-project scoping falls out naturally:
+//   - IO under `${CLAUDE_CONFIG_DIR}/plugins/topgauge-cc/state/` —
+//     cwd is already encoded in the path components the caller
+//     passed in. We still surface each call's full path so a
+//     postmortem can grep it without parsing the layout.
+//   - IO under other locations (config.json at ~/.claude/...,
+//     plugin.json at the cache dir) — also recorded.
+//
+// Why IS in the diagnostic's dedupe pipeline: fs audit rows do
+// ride the same 60s shouldEmit() dedupe as fetch warnings. Audit
+// semantics — "what kinds of IO did this tick do" — is well-served
+// by collapsing repeated identical reads into one row: a per-tick
+// `read cache.json` becomes a single JSONL entry that auto-dedupes
+// with the prior tick's entry, rather than 60 identical rows
+// filling the 200-line cap. To see the volume, the postmortem
+// can grep for the timestamp cluster around `at`. If a caller
+// wants un-deduped per-call logging they can call `append("info",
+// …)` directly.
+//
+// The per-call `msg` is path-only when no byte count is given:
+//   `read ${path}`
+//   `write ${path} (${bytes}B)`
+// Source taxonomy (so a postmortem can filter):
+//   "fs:read"   — readFileSync / existsSync (existence probes count as
+//                 reads; they cost the same syscall)
+//   "fs:write"  — writeFileSync / appendFileSync
+//   "fs:list"   — readdirSync
+//   "fs:stat"   — statSync
+//   "fs:mkdir"  — mkdirSync({recursive: true})
+// Not in scope: stdin reads, process.stdout/stderr writes (pipes,
+// not files), and the diagnostics file's own IO (the user said
+// "日志文件本身除外" — the audit helpers only sit at the boundaries
+// of OTHER files, never in diagnostics.ts's own IO path).
+
+const IO_SOURCE = {
+  read: "fs:read",
+  write: "fs:write",
+  list: "fs:list",
+  stat: "fs:stat",
+  mkdir: "fs:mkdir",
+} as const;
+
+// Truncate `path` to a stable per-call message. State paths under
+// `${CLAUDE_CONFIG_DIR}/plugins/topgauge-cc/state/` are project-scoped
+// — when the call site is in token-store.ts/status-store.ts, the
+// `path` it already carries includes the projectHash, so no extra
+// per-project dedupe is needed. We just cap the message length so
+// the JSONL row stays within ~250B.
+function ioMsg(path: string, bytes?: number): string {
+  const base = path.length > 200 ? path.slice(0, 199) + "…" : path;
+  return typeof bytes === "number" ? `${base} (${bytes}B)` : base;
+}
+
+// Record a file read (readFileSync / existsSync). `bytes` is the
+// payload size when known (e.g. raw.length); omit for existence
+// probes where no body was loaded.
+//
+// Dedupe: this intentionally rides the same 60s shouldEmit() dedupe
+// as fetch warnings. Audit semantics — "what kinds of IO did this
+// tick do" — is well-served by collapsing repeated identical reads
+// into one row: a per-tick `read cache.json` becomes a single JSONL
+// entry that auto-dedupes with the prior tick's entry, rather than
+// 60 identical rows filling the 200-line cap. To see the volume,
+// the postmortem can grep for the timestamp cluster around `at`.
+// If a caller wants un-deduped per-call logging, they can call
+// `append("info", ...)` directly.
+// Record a file read (readFileSync / existsSync). `bytes` is the
+// payload size when known (e.g. raw.length); omit for existence
+// probes where no body was loaded. `fn` identifies the calling
+// function (e.g. "cache.loadFromDisk") so a postmortem can grep
+// by call site. `cwd` is an optional override — when omitted,
+// `append` reads from the per-tick session cwd store (see
+// `setSessionCwd`) so cwd-unaware callers (cache.ts reading the
+// shared top-level cache.json) still get their audit rows stamped.
+export function logFsRead(path: string, fn?: string, bytes?: number, cwd?: string | null): void {
+  if (!isEnabled()) return;
+  append("info", IO_SOURCE.read, ioMsg(path, bytes), Date.now(), cwd, fn);
+}
+
+// Record a file write (writeFileSync / appendFileSync). `bytes` is
+// the payload size written when known.
+export function logFsWrite(path: string, fn?: string, bytes?: number, cwd?: string | null): void {
+  if (!isEnabled()) return;
+  append("info", IO_SOURCE.write, ioMsg(path, bytes), Date.now(), cwd, fn);
+}
+
+// Record a directory listing (readdirSync).
+export function logFsList(path: string, fn?: string, cwd?: string | null): void {
+  if (!isEnabled()) return;
+  append("info", IO_SOURCE.list, ioMsg(path), Date.now(), cwd, fn);
+}
+
+// Record a stat() call.
+export function logFsStat(path: string, fn?: string, cwd?: string | null): void {
+  if (!isEnabled()) return;
+  append("info", IO_SOURCE.stat, ioMsg(path), Date.now(), cwd, fn);
+}
+
+// Record a mkdir({recursive:true}) call. mkdir is reported at the
+// top of every write helper (cache.ts flush, token-store.ts
+// appendSample, status-store.ts flushToDisk), so each is one
+// audit row even though the actual filesystem call may be a
+// no-op (dir already exists).
+export function logFsMkdir(path: string, fn?: string, cwd?: string | null): void {
+  if (!isEnabled()) return;
+  append("info", IO_SOURCE.mkdir, ioMsg(path), Date.now(), cwd, fn);
 }
 
 // Trim a JSONL file to its last N lines. Reads the whole file (small),
@@ -242,11 +529,25 @@ export function readLatest(level: Level, cwd?: string | null): Entry | null {
     if (!parsed || typeof parsed !== "object") continue;
     const r = parsed as Record<string, unknown>;
     if (r.level === level && typeof r.msg === "string") {
+      const at = typeof r.at === "number" ? r.at : 0;
       return {
-        at: typeof r.at === "number" ? r.at : 0,
+        at,
+        // Older rows (pre v0.8.x, written before the `iso` field
+        // landed) had no `iso`. Backfill from `at` so downstream
+        // consumers see a stable shape regardless of file age.
+        iso: typeof r.iso === "string" ? r.iso : localIso(at),
         level,
         source: typeof r.source === "string" ? r.source : "",
+        // `fn` precedes `msg` to mirror the on-disk field order
+        // (the postmortem reads them in the same sequence in both
+        // the JSONL and the in-memory Entry shape).
+        fn: typeof r.fn === "string" ? r.fn : undefined,
         msg: r.msg,
+        // `cwd` is parsed back so a renderer that surfaces a
+        // warning can annotate it with the originating session's
+        // project dir (e.g. m_warning shows
+        // "⚠ <iso> <fn> <msg> [cwd]").
+        cwd: typeof r.cwd === "string" ? r.cwd : undefined,
       };
     }
   }
@@ -259,14 +560,20 @@ export function readLatest(level: Level, cwd?: string | null): Entry | null {
 // message is rendered verbatim — diagnostics are for the user, so the
 // message is the signal, not a hash or code. Cap at a reasonable
 // length to avoid blowing up the statusline.
+//
+// v0.8.x+ prepends the `iso` timestamp so a glance at the
+// statusline tells the user WHEN the last warning/error fired
+// (no need to cross-reference `at`); the optional `fn` and `cwd`
+// sit between iso and the truncated msg so the statusline shape
+// is: `<glyph> <iso>[ <fn>] <msg>[ <cwd>]`.
 const MAX_DISPLAY_LEN = 80;
 export function formatEntry(e: Entry): string {
   const truncated = e.msg.length > MAX_DISPLAY_LEN
     ? e.msg.slice(0, MAX_DISPLAY_LEN - 1) + "…"
     : e.msg;
-  // Prefix with a one-glyph marker so the user can tell warn vs error
-  // at a glance even after stripping SGR.
-  return `${levelGlyph(e.level)} ${truncated}`;
+  const fnPart = e.fn ? ` ${e.fn}` : "";
+  const cwdPart = e.cwd ? ` [${e.cwd}]` : "";
+  return `${levelGlyph(e.level)} ${e.iso}${fnPart} ${truncated}${cwdPart}`;
 }
 
 function levelGlyph(level: Level): string {
