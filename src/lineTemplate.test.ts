@@ -26,6 +26,7 @@ import {
   beginTickForTest,
   processTick,
   resetTickStateForTest,
+  setStateRoot,
 } from "./status-store.ts";
 import * as statusStore from "./status-store.ts";
 import { compose } from "./composition.ts";
@@ -44,6 +45,15 @@ let _tmpDir: string;
 beforeEach(() => {
   _tmpDir = mkdtempSync(join(tmpdir(), "tokenplan-lineTemplate-"));
   setCachePathResolver(() => join(_tmpDir, "cache.json"));
+  // v0.8.11-alpha — also isolate status-store's disk root. Without
+  // this, a prior test's PREV_TICK_KEY entry persists at the default
+  // state root (computed from cwd="C:\\fake") and gets reloaded by
+  // the next test's beginTick — the test would see a stale prev
+  // carrying a DIFFERENT sessionId + non-zero totalApiMs, which the
+  // post-merge v0.8.11 regression detector now correctly flags as a
+  // regression. (Pre-merge, the sessionId mismatch short-circuited
+  // to invalidRegression=false, masking this isolation gap.)
+  setStateRoot(() => join(_tmpDir, "state"));
   resetCacheForTest();
   // v0.9.x — render functions now go through tick-state; seed an
   // empty tick so the read paths don't throw. null cwd keeps the

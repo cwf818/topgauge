@@ -1249,7 +1249,7 @@ function accBody(
     // the "field not shipped" → "--" contract, so we don't fire
     // accCachePrimer here on a missing slot — the placeholder
     // shape is the only honest signal in that case.
-    return placeholderAcc(field, useScope, ctx);
+    return placeholderAcc(field, useScope);
   }
   // v0.8.10-alpha.3 — removed the "field not shipped" cache guard.
 // cache_read_input_tokens absence on the current stdin does not
@@ -1336,7 +1336,6 @@ function accBody(
 function placeholderAcc(
   field: "in" | "out" | "cached" | "total" | "apiMs" | "apiCalls" | "hitRate",
   _scope: "session" | "project" | "model" | "ccsession",
-  ctx: RenderContext,
 ): string {
   // v0.8.0+ labels.* — the four token-axis fields read their
   // prefix from labelFor so the placeholder matches the user's
@@ -1729,7 +1728,7 @@ const MODULES: Record<string, Module> = {
   m_accTokenHitRate: (c) => {
     const useScope = passThroughScope(c) ?? "ccsession";
     const v = peekAcc(useScope, c);
-    if (!v) return placeholderAcc("hitRate", useScope, c);
+    if (!v) return placeholderAcc("hitRate", useScope);
     const pct = v.accTokenHitRate;
     const color = cacheHitColor(pct);
     return `${color}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;
@@ -3684,7 +3683,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   m_accTokenHitRate: (params, ctx) => {
     const scope = passThroughOr<"session" | "project" | "model" | "ccsession">(params, ctx, "scope") ?? "ccsession";
     const v = peekAcc(scope, ctx);
-    if (!v) return placeholderAcc("hitRate", scope, ctx);
+    if (!v) return placeholderAcc("hitRate", scope);
     const pct = v.accTokenHitRate;
     const color = passThroughOr<string>(params, ctx, "color") ?? cacheHitColor(pct);
     return `${color}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;

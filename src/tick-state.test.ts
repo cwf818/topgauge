@@ -130,6 +130,40 @@ describe("data-processor — validation gate", () => {
     assert.equal(statusStore.getState().valid, false, "deltaApiMs < 0 → invalid");
   });
 
+  // v0.8.11-alpha — regression detection is decoupled from
+  // sessionId identity. Stale PREV_TICK carry-overs from a prior
+  // session must STILL trigger the ccsession reset when the
+  // totalApiMs time-series rolls backward, otherwise the
+  // accumulator keeps the prior session's totals forever.
+  it("regression fires even when prev.sessionId differs from current (stale carry-over)", () => {
+    // Seed a prev tick with totalApiMs=1000 from session "old-sess".
+    statusStore.beginTick("D:\\test", validTokens({
+      cost: { totalDurationMs: 1000, totalApiDurationMs: 1000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+    }));
+    statusStore.mark(statusStore.PREV_TICK_KEY, {
+      ...statusStore.emptyPrevTickStatus(),
+      totalApiMs: 1000,
+      sessionId: "old-sess",
+      cwd: "D:\\test",
+      model: null,
+    });
+    statusStore.commit();
+
+    // New session, totalApiMs dropped (process restart). The
+    // baseline is nulled (no meaningful cross-session subtract)
+    // but the regression-reset MUST still fire on the ccsession
+    // slot.
+    statusStore.resetTickStateForTest();
+    statusStore.beginTick("D:\\test", validTokens({
+      cost: { totalDurationMs: 1000, totalApiDurationMs: 200, totalLinesAdded: 0, totalLinesRemoved: 0 },
+      sessionId: "new-sess",
+    }));
+    assert.equal(
+      statusStore.getState().snapshot?.invalidRegression, true,
+      "regression fires across sessionId mismatch",
+    );
+  });
+
   it("null tokens → invalid (parse failure path)", () => {
     statusStore.beginTick("D:\\test", null);
     assert.equal(statusStore.getState().valid, false);

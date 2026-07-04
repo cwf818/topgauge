@@ -861,28 +861,37 @@ export function getStatAggregate(filter: SumFilter): StatAggregate {
 
 let _tickState: TickState | null = null;
 
-// v0.8.10-alpha.2 — the prev cursor carries ONLY totalApiMs. Returns
+// v0.8.11-alpha — the prev cursor carries ONLY totalApiMs. Returns
 // it (as the baseline for `apiMs = current - baseline`) or null when
-// there's no history (no prev, identity mismatch, or unknown session).
+// there's no history. The "session" / "ccsession" distinction lives
+// entirely on the value side of this comparison: if the time-series
+// rolled forward, the difference is the api-call duration; if it
+// rolled backward, the cumulative counter restarted (cc restarted)
+// and detectRegression flags the tick as a reset. Nothing about
+// sessionId identity participates in this math — the numeric
+// direction IS the truth.
 function resolvePreviousBaseline(
   tokens: TokenSnapshot | null,
   prev: PrevTickStatusValue | null,
-): { prevTotalApiMs: number | null; invalidRegression: boolean } {
+): { prevTotalApiMs: number | null } {
   if (!tokens?.sessionId || !prev) {
-    return { prevTotalApiMs: null, invalidRegression: false };
+    return { prevTotalApiMs: null };
   }
-  if (prev.sessionId != null && prev.sessionId !== tokens.sessionId) {
-    return { prevTotalApiMs: null, invalidRegression: false };
-  }
+  return { prevTotalApiMs: prev.totalApiMs };
+}
+
+// v0.8.11-alpha — regression detection: current.totalApiMs <
+// prev.totalApiMs means the cumulative counter rolled backward
+// (cc process restarted). Triggers a ccsession-slot zero reset.
+// The check is purely numerical — no identity guard.
+function detectRegression(
+  tokens: TokenSnapshot | null,
+  prev: PrevTickStatusValue | null,
+): boolean {
+  if (!tokens?.sessionId || !prev) return false;
   const currentTotalApiMs = tokens.cost.totalApiDurationMs;
-  if (
-    currentTotalApiMs != null &&
-    Number.isFinite(currentTotalApiMs) &&
-    currentTotalApiMs < prev.totalApiMs
-  ) {
-    return { prevTotalApiMs: prev.totalApiMs, invalidRegression: true };
-  }
-  return { prevTotalApiMs: prev.totalApiMs, invalidRegression: false };
+  if (currentTotalApiMs == null || !Number.isFinite(currentTotalApiMs)) return false;
+  return currentTotalApiMs < prev.totalApiMs;
 }
 
 function normalizeTick(
@@ -910,15 +919,17 @@ function normalizeTick(
     return { snapshot: null, measurement: EMPTY_TICK };
   }
 
-  const { prevTotalApiMs, invalidRegression } = resolvePreviousBaseline(tokens, prev);
-  // v0.8.10-alpha.2 — apiMs is THE unique cross-tick delta.
-  // When prevTotalApiMs is null (no history, identity
-  // mismatch, or unknown session), we back-derive apiMs from
-  // tokenOut via the legacy v0.4.x formula: apiMs = tokenOut *
-  // 1000 / 50 (assumes a 50 t/s fall-back rate so the first
-  // tick's speed gates render a real value rather than 0).
-  // This matches the user's contract that apiMs is the only
-  // stdin field participating in cross-tick subtraction.
+  const { prevTotalApiMs } = resolvePreviousBaseline(tokens, prev);
+  // v0.8.11-alpha — regression detection is purely numerical and
+  // independent of sessionId identity: a backward totalApiMs jump
+  // always means the cumulative counter restarted (cc restarted),
+  // regardless of whose sessionId the prev baseline belonged to.
+  const invalidRegression = detectRegression(tokens, prev);
+  // apiMs is THE unique cross-tick delta. When prevTotalApiMs is
+  // null (no history yet — first tick after install/cache wipe),
+  // back-derive apiMs from tokenOut via the legacy v0.4.x formula:
+  // apiMs = tokenOut * 1000 / 50 (assumes a 50 t/s fall-back rate so
+  // the first tick's speed gates render a real value rather than 0).
   const apiMs = invalidRegression
     ? -1
     : prevTotalApiMs !== null
@@ -974,13 +985,6 @@ function validateNormalizedTick(tick: CurrentTick | null): boolean {
   if (!tick) return false;
   // v0.8.10-alpha.2 — session-cumulative totals (per user contract).
   return (tick.totalIn ?? 0) > 0 && (tick.totalOut ?? 0) > 0 && tick.apiMs > 0;
-}
-
-export function validateTickForDataProcessor(
-  tokens: TokenSnapshot | null,
-  prev: PrevTickStatusValue | null,
-): boolean {
-  return validateNormalizedTick(normalizeTick(tokens, prev).snapshot);
 }
 
 export function beginTick(cwd: string | null, tokens: TokenSnapshot | null): TickState {
@@ -1358,13 +1362,23 @@ export function processTick(
   // own internal last-value semantics (see setAvg) so the user's
   // `m_accTokenIn|field|total` line-template still gets a meaningful
   // delta accumulator.
+  // v0.8.10-alpha.3 — accTokenHitRate is pre-computed here (raw
+  // accumulators) so the per-session slot READS it directly
+  // without recomputation. Stage 4 below refines it on subsequent
+  // ticks; this initial value is correct for the very first tick
+  // when no prior state exists.
+  const initialCachedIn = snapshot.hasCachedIn ? snapshot.cachedIn : 0;
+  const initialTokenTotalIn = snapshot.totalIn ?? 0;
   setAvg(tokens.sessionId, {
     accTokenIn: snapshot.in,
     accTokenOut: snapshot.out,
     accApiMs: snapshot.apiMs,
-    accTokenCachedIn: snapshot.hasCachedIn ? snapshot.cachedIn : 0,
+    accTokenCachedIn: initialCachedIn,
     accApiCalls: 1,
-    accTokenTotalIn: snapshot.totalIn ?? 0,
+    accTokenTotalIn: initialTokenTotalIn,
+    accTokenHitRate: initialTokenTotalIn > 0
+      ? (initialCachedIn / initialTokenTotalIn) * 100
+      : 0,
   }, cwd, {
     modelDisplayName: tokens.modelDisplayName ?? null,
     deltaApiCalls: 1,

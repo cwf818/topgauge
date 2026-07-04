@@ -1588,7 +1588,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     // Seed the project-wide slot with sumApiCount=7.
     setAvg(
       "sess-1",
-      { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 0 , accTokenTotalIn: 0},
+      { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 0 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
         modelDisplayName: "claude-opus-4-8",
@@ -1603,7 +1603,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     // Subsequent ticks bump the same project-wide slot.
     setAvg(
       "sess-1",
-      { accTokenIn: 38, accTokenOut: 155, accApiMs: 60_000, accTokenCachedIn: 163441, accApiCalls: 1 , accTokenTotalIn: 0},
+      { accTokenIn: 38, accTokenOut: 155, accApiMs: 60_000, accTokenCachedIn: 163441, accApiCalls: 1 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
         modelDisplayName: "claude-opus-4-8",
@@ -1636,7 +1636,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     // back into drop-on-null.
     setAvg(
       "sess-zero",
-      { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 0 , accTokenTotalIn: 0},
+      { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 0 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
         modelDisplayName: null,
@@ -1677,7 +1677,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     // counter that starts at 0.
     setAvg(
       "sess-zero",
-      { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 0 , accTokenTotalIn: 0},
+      { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 0 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
         modelDisplayName: null,
@@ -1714,7 +1714,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
   it("m_apiCalls|color|brightGreen wraps the chunk in brightGreen", () => {
     setAvg(
       "sess-colored",
-      { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 0 , accTokenTotalIn: 0},
+      { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 0 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
         modelDisplayName: null,
@@ -1780,7 +1780,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     // the per-session tickAvg slot.
     setAvg(
       "sess-A",
-      { accTokenIn: 38, accTokenOut: 155, accApiMs: 60_000, accTokenCachedIn: 163441, accApiCalls: 1 , accTokenTotalIn: 0},
+      { accTokenIn: 38, accTokenOut: 155, accApiMs: 60_000, accTokenCachedIn: 163441, accApiCalls: 1 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
         modelDisplayName: "claude-opus-4-8",
@@ -2516,18 +2516,27 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     // Explicit `:color:scale` and bare `m_tokenInSpeed` produce
     // the same color choice. The bare form defaults to scale
     // because scale is the canonical visualization for speed.
-    // Use a fresh sessionId per call so the inline renderer's
-    // writeback doesn't make the second call see deltaApi=0.
+    //
+    // v0.8.11-alpha — this test previously relied on the sessionId
+    // guard inside resolvePreviousBaseline to discard the prev
+    // baseline across sessions, and on `commit()` being skipped
+    // (cwd=null) so the bare call's lastActive:in never reached
+    // disk for the scaled call to read back. After dropping the
+    // sessionId guard (the ccsession reset must trigger whenever
+    // totalApiMs rolls backward, regardless of sessionId), each
+    // call needs its own `beginTickForTest(null, null)` — null cwd
+    // keeps commit() a no-op AND stops status-store's per-cwd
+    // disk cache from leaking between calls.
     const bareSnap = fakeSnapshot({ sessionId: "sess-bare" });
+    beginTickForTest(null, null);
     processTick(bareSnap.cwd, bareSnap);
-    statusStore.commit();
     const bare = renderTemplate(
       ["m_tokenInSpeed"],
       ctxFor(bareSnap),
     ).join("\n");
     const scaledSnap = fakeSnapshot({ sessionId: "sess-scaled" });
+    beginTickForTest(null, null);
     processTick(scaledSnap.cwd, scaledSnap);
-    statusStore.commit();
     const scaled = renderTemplate(
       ["m_tokenInSpeed|color|scale"],
       ctxFor(scaledSnap),
@@ -2916,7 +2925,7 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
     // ccsession), the ccsession slot is empty → placeholder.
     setAvg(
       "sess-pt",
-      { accTokenIn: 42, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1, accTokenTotalIn: 0 },
+      { accTokenIn: 42, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1, accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\WorkSpace\\pt",
       { modelDisplayName: "MiniMax-M3", deltaApiCalls: 0, currentApiMs: 0, deltaTokenIn: 0, deltaTokenOut: 0, deltaTokenCachedIn: 0, deltaApiMs: 0 },
     );
@@ -2945,7 +2954,7 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
     // output matches the project slot's value.
     setAvg(
       "sess-pt2",
-      { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 0, accTokenTotalIn: 0 },
+      { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 0, accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\WorkSpace\\pt2",
       { modelDisplayName: "MiniMax-M3", deltaApiCalls: 1, currentApiMs: 1000, deltaTokenIn: 99, deltaTokenOut: 0, deltaTokenCachedIn: 0, deltaApiMs: 1000, deltaTokenTotalIn: 99 },
     );
@@ -3392,7 +3401,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     // the gate passes).
     setAvg(
       "sess-acc-in",
-      { accTokenIn: 42000, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1 , accTokenTotalIn: 0},
+      { accTokenIn: 42000, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
         modelDisplayName: "MiniMax-M3",
@@ -3420,7 +3429,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
   it("m_accTokenOut| session scope reads accTokenOut from per-session slot", () => {
     setAvg(
       "sess-acc-out",
-      { accTokenIn: 0, accTokenOut: 1234, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1 , accTokenTotalIn: 0},
+      { accTokenIn: 0, accTokenOut: 1234, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
         modelDisplayName: "MiniMax-M3",
@@ -3448,7 +3457,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
   it("m_accTokenCachedIn| session scope reads accTokenCachedIn from per-session slot", () => {
     setAvg(
       "sess-acc-cached",
-      { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 163441, accApiCalls: 1 , accTokenTotalIn: 0},
+      { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 163441, accApiCalls: 1 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
         modelDisplayName: "MiniMax-M3",
@@ -3479,7 +3488,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     // total = 38+163441+38+163441 = 326958.
     setAvg(
       "sess-acc-total",
-      { accTokenIn: 38, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 163441, accApiCalls: 1 , accTokenTotalIn: 0},
+      { accTokenIn: 38, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 163441, accApiCalls: 1 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
         modelDisplayName: "MiniMax-M3",
@@ -3512,7 +3521,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     // "api:1m".
     setAvg(
       "sess-acc-api",
-      { accTokenIn: 0, accTokenOut: 0, accApiMs: 60_000, accTokenCachedIn: 0, accApiCalls: 1 , accTokenTotalIn: 0},
+      { accTokenIn: 0, accTokenOut: 0, accApiMs: 60_000, accTokenCachedIn: 0, accApiCalls: 1 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
         modelDisplayName: "MiniMax-M3",
@@ -3551,7 +3560,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     // accApiCalls (deltaApiCalls) — so the seeded 7 + 1 = 8.
     setAvg(
       "sess-acc-calls",
-      { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 7 , accTokenTotalIn: 0},
+      { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 7 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
         modelDisplayName: "MiniMax-M3",
@@ -3584,7 +3593,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     // Net: ccsession = 0 + 1 (seed) + 1 (primer) = 2.
     setAvg(
       "any-sid-ccs",
-      { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 7 , accTokenTotalIn: 0},
+      { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 7 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
         modelDisplayName: "MiniMax-M3",
@@ -3609,7 +3618,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
   it("m_accApiCalls| value=0 still renders as 'calls:N' (value-zero rule; primer adds 1)", () => {
     setAvg(
       "sess-acc-calls-zero",
-      { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 0 , accTokenTotalIn: 0},
+      { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 0 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
         modelDisplayName: null,
@@ -3655,7 +3664,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     // ccsession; this test seeds the per-session slot only.
     setAvg(
       "sess-acc-hit",
-      { accTokenIn: 38, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 163441, accApiCalls: 1 , accTokenTotalIn: 163479},
+      { accTokenIn: 38, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 163441, accApiCalls: 1 , accTokenTotalIn: 163479, accTokenHitRate: 0 },
       "D:\\test",
       {
         modelDisplayName: "MiniMax-M3",
@@ -3684,7 +3693,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     // (R8 prefix).
     setAvg(
       "sess-acc-zero",
-      { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 0 , accTokenTotalIn: 0},
+      { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 0 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
         modelDisplayName: null,
@@ -3736,7 +3745,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     // all 3 layers — the project slot is keyed by cwd only).
     setAvg(
       "sess-X",
-      { accTokenIn: 100, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1 , accTokenTotalIn: 0},
+      { accTokenIn: 100, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\project-scope-test",
       {
         modelDisplayName: "MiniMax-M3",
@@ -3750,7 +3759,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     );
     setAvg(
       "sess-Y",
-      { accTokenIn: 250, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1 , accTokenTotalIn: 0},
+      { accTokenIn: 250, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\project-scope-test",
       {
         modelDisplayName: "MiniMax-M3",
@@ -3783,7 +3792,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     // sessionId.
     setAvg(
       "sess-M1",
-      { accTokenIn: 100, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1 , accTokenTotalIn: 0},
+      { accTokenIn: 100, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\model-scope-test",
       {
         modelDisplayName: "MiniMax-M3",
@@ -3797,7 +3806,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     );
     setAvg(
       "sess-M2",
-      { accTokenIn: 250, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1 , accTokenTotalIn: 0},
+      { accTokenIn: 250, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\model-scope-test",
       {
         modelDisplayName: "MiniMax-M3",
@@ -3903,7 +3912,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
   it("m_accTokenIn|color|brightGreen wraps the chunk in brightGreen", () => {
     setAvg(
       "sess-acc-colored",
-      { accTokenIn: 12345, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1 , accTokenTotalIn: 0},
+      { accTokenIn: 12345, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
         modelDisplayName: "MiniMax-M3",
@@ -3933,7 +3942,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     // Seed the session slot with a mix of fields.
     setAvg(
       "sess-multi",
-      { accTokenIn: 500, accTokenOut: 250, accApiMs: 5000, accTokenCachedIn: 10000, accApiCalls: 3 , accTokenTotalIn: 0},
+      { accTokenIn: 500, accTokenOut: 250, accApiMs: 5000, accTokenCachedIn: 10000, accApiCalls: 3 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
         modelDisplayName: "MiniMax-M3",
