@@ -11,7 +11,6 @@ import { mkdtempSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import * as tickState from "./tick-state.ts";
 import * as statusStore from "./status-store.ts";
 import type { TokenSnapshot } from "./types.ts";
 
@@ -35,7 +34,7 @@ beforeEach(() => {
   process.env.CLAUDE_CONFIG_DIR = _tmpDir;
   statusStore.setStatusPathResolver(() => join(_tmpDir, "status.json"));
   statusStore.__resetForTest();
-  tickState.resetTickStateForTest();
+  statusStore.resetTickStateForTest();
 });
 
 afterEach(() => {
@@ -43,12 +42,12 @@ afterEach(() => {
   else process.env.CLAUDE_CONFIG_DIR = _prevConfigDir;
   statusStore.resetStatusPathResolver();
   statusStore.__resetForTest();
-  tickState.resetTickStateForTest();
+  statusStore.resetTickStateForTest();
 });
 
 describe("data-processor — pipeline basics", () => {
   it("beginTick + getState returns the seeded TickState", () => {
-    const s = tickState.beginTick("D:\\test", validTokens());
+    const s = statusStore.beginTick("D:\\test", validTokens());
     assert.equal(s.cwd, "D:\\test");
     assert.ok(s.tokens);
     assert.equal(s.valid, true, "valid totals + totalApiMs → valid=true");
@@ -56,10 +55,10 @@ describe("data-processor — pipeline basics", () => {
   });
 
   it("mark() flips dirty + populates pending; commit() flushes", () => {
-    tickState.beginTick("D:\\test", validTokens());
-    tickState.mark("tickStatus:sess-test", statusStore.emptyTickStatus());
-    assert.equal(tickState.getState().dirty, true);
-    tickState.commit();
+    statusStore.beginTick("D:\\test", validTokens());
+    statusStore.mark("tickStatus:sess-test", statusStore.emptyTickStatus());
+    assert.equal(statusStore.getState().dirty, true);
+    statusStore.commit();
     assert.ok(existsSync(join(_tmpDir, "status.json")), "status.json written");
     const raw = readFileSync(join(_tmpDir, "status.json"), "utf8");
     const store = JSON.parse(raw) as Record<string, unknown>;
@@ -67,62 +66,73 @@ describe("data-processor — pipeline basics", () => {
   });
 
   it("commit() is a no-op when dirty=false (pristine tick)", () => {
-    tickState.beginTick("D:\\test", validTokens());
-    tickState.commit();
+    statusStore.beginTick("D:\\test", validTokens());
+    statusStore.commit();
     assert.equal(existsSync(join(_tmpDir, "status.json")), false, "no file written");
   });
 });
 
 describe("data-processor — validation gate", () => {
-  it("totalIn=0 → invalid (commit is no-op even after mark)", () => {
-    tickState.beginTick("D:\\test", validTokens({
+  it("totalIn=0 → invalid (sample skipped, but staged mark flushes through commit)", () => {
+    // v0.8.10-alpha.2 snapshot contract: commit() no longer
+    // gates on `valid`. Staged marks (regression-reset, prev
+    // baseline update) flush even when the validation gate
+    // rejects the tick. Sample append (the JSONL row) is the
+    // *only* thing skipped on invalid ticks.
+    statusStore.beginTick("D:\\test", validTokens({
       totals: { tokenTotalIn: 0, tokenTotalOut: 50 },
     }));
-    assert.equal(tickState.getState().valid, false);
-    tickState.mark("tickStatus:sess-test", statusStore.emptyTickStatus());
-    tickState.commit();
-    assert.equal(existsSync(join(_tmpDir, "status.json")), false);
+    assert.equal(statusStore.getState().valid, false);
+    statusStore.mark("tickStatus:sess-test", statusStore.emptyTickStatus());
+    statusStore.commit();
+    assert.equal(existsSync(join(_tmpDir, "status.json")), true,
+      "v0.8.10-alpha.2 — invalid tick still flushes staged marks through commit");
   });
 
   it("totalOut=0 → invalid", () => {
-    tickState.beginTick("D:\\test", validTokens({
+    statusStore.beginTick("D:\\test", validTokens({
       totals: { tokenTotalIn: 100, tokenTotalOut: 0 },
     }));
-    assert.equal(tickState.getState().valid, false);
+    assert.equal(statusStore.getState().valid, false);
   });
 
-  it("totalApiDurationMs=0 → invalid (first-tick baseline rule)", () => {
-    tickState.beginTick("D:\\test", validTokens({
+  it("totalApiDurationMs=0 on first tick → apiMs back-derives from tokenOut → valid (v0.8.10-alpha.2 contract)", () => {
+    // v0.8.10-alpha.2 (per user refinement 2026-07-04): when
+    // there is no previous tick and totalApiDurationMs=0,
+    // apiMs is back-derived via tokenOut * 1000 / 50 (the
+    // v0.4.x legacy fallback). For default totalOut=50 that
+    // yields apiMs=1000 > 0, so the tick IS valid.
+    statusStore.beginTick("D:\\test", validTokens({
       cost: { totalDurationMs: 1000, totalApiDurationMs: 0, totalLinesAdded: 0, totalLinesRemoved: 0 },
     }));
-    assert.equal(tickState.getState().valid, false);
+    assert.equal(statusStore.getState().valid, true);
   });
 
   it("prev exists + deltaApiMs <= 0 → invalid (regression guard)", () => {
     // Seed a prev tick with totalApiMs=1000 first.
-    tickState.beginTick("D:\\test", validTokens({
+    statusStore.beginTick("D:\\test", validTokens({
       cost: { totalDurationMs: 1000, totalApiDurationMs: 1000, totalLinesAdded: 0, totalLinesRemoved: 0 },
     }));
-    tickState.mark(statusStore.PREV_TICK_KEY, {
+    statusStore.mark(statusStore.PREV_TICK_KEY, {
       ...statusStore.emptyPrevTickStatus(),
       totalApiMs: 1000,
       sessionId: "sess-test",
       cwd: "D:\\test",
       model: null,
     });
-    tickState.commit();
+    statusStore.commit();
 
     // Now tick with totalApiMs < prev.totalApiMs (regression).
-    tickState.resetTickStateForTest();
-    tickState.beginTick("D:\\test", validTokens({
+    statusStore.resetTickStateForTest();
+    statusStore.beginTick("D:\\test", validTokens({
       cost: { totalDurationMs: 1000, totalApiDurationMs: 500, totalLinesAdded: 0, totalLinesRemoved: 0 },
     }));
-    assert.equal(tickState.getState().valid, false, "deltaApiMs < 0 → invalid");
+    assert.equal(statusStore.getState().valid, false, "deltaApiMs < 0 → invalid");
   });
 
   it("null tokens → invalid (parse failure path)", () => {
-    tickState.beginTick("D:\\test", null);
-    assert.equal(tickState.getState().valid, false);
+    statusStore.beginTick("D:\\test", null);
+    assert.equal(statusStore.getState().valid, false);
   });
 
   it("null cwd → valid (commit gates on cwd, not validation)", () => {
@@ -130,23 +140,23 @@ describe("data-processor — validation gate", () => {
     // commit's concern (commit skips when cwd=null). Validating
     // with valid tokens + null cwd returns valid=true so the
     // in-memory pending map is still consumable by tests.
-    tickState.beginTick(null, validTokens());
-    assert.equal(tickState.getState().valid, true);
-    tickState.mark("tickStatus:sess-test", statusStore.emptyTickStatus());
-    tickState.commit(); // cwd=null → no disk write
+    statusStore.beginTick(null, validTokens());
+    assert.equal(statusStore.getState().valid, true);
+    statusStore.mark("tickStatus:sess-test", statusStore.emptyTickStatus());
+    statusStore.commit(); // cwd=null → no disk write
     assert.equal(existsSync(join(_tmpDir, "status.json")), false);
   });
 });
 
 describe("data-processor — one-write-per-active-tick", () => {
   it("5 mark() calls + commit → 1 disk write of the merged store", () => {
-    tickState.beginTick("D:\\test", validTokens());
-    tickState.mark("tickStatus:sess-test", statusStore.emptyTickStatus());
-    tickState.mark(statusStore.CCSESSION_KEY, statusStore.emptyTickStatus());
-    tickState.mark("lastActive:in", { direction: "in", tps: 12.5 });
-    tickState.mark("lastActive:out", { direction: "out", tps: 8.3 });
-    tickState.mark(statusStore.PREV_TICK_KEY, statusStore.emptyPrevTickStatus());
-    tickState.commit();
+    statusStore.beginTick("D:\\test", validTokens());
+    statusStore.mark("tickStatus:sess-test", statusStore.emptyTickStatus());
+    statusStore.mark(statusStore.CCSESSION_KEY, statusStore.emptyTickStatus());
+    statusStore.mark("lastActive:in", { direction: "in", tps: 12.5 });
+    statusStore.mark("lastActive:out", { direction: "out", tps: 8.3 });
+    statusStore.mark(statusStore.PREV_TICK_KEY, statusStore.emptyPrevTickStatus());
+    statusStore.commit();
 
     // The on-disk file should be a single JSON object with all 5 keys.
     const raw = readFileSync(join(_tmpDir, "status.json"), "utf8");
@@ -160,10 +170,10 @@ describe("data-processor — one-write-per-active-tick", () => {
 
 describe("data-processor — crash-before-flush", () => {
   it("mark + resetTickStateForTest (no commit) → disk unchanged", () => {
-    tickState.beginTick("D:\\test", validTokens());
-    tickState.mark("tickStatus:sess-test", statusStore.emptyTickStatus());
+    statusStore.beginTick("D:\\test", validTokens());
+    statusStore.mark("tickStatus:sess-test", statusStore.emptyTickStatus());
     // Simulate a crash: clear state without commit.
-    tickState.resetTickStateForTest();
+    statusStore.resetTickStateForTest();
     assert.equal(
       existsSync(join(_tmpDir, "status.json")), false,
       "no file written — write is deferred to commit",
@@ -174,7 +184,7 @@ describe("data-processor — crash-before-flush", () => {
 describe("data-processor — regression-reset + commit interplay", () => {
   // v1.0 — accPrimer's "immediate statusStore.writeTickStatus"
   // bypass is GONE. The regression-reset is now a regular
-  // tickState.mark(CCSESSION_KEY, emptyTickStatus()) that the
+  // statusStore.mark(CCSESSION_KEY, emptyTickStatus()) that the
   // data-processor (processTick Stage 1) fires BEFORE the same
   // tick's setAvg (Stage 4). Both flush through a SINGLE commit.
   // Last-mark-wins means setAvg's later mark can either replace
@@ -182,47 +192,47 @@ describe("data-processor — regression-reset + commit interplay", () => {
   // no delta → reset stays empty). Pin both shapes here.
   it("ccsession reset mark + setAgg accumulation → last-mark-wins at commit", () => {
     // First tick: seed prev with apiMs=0.
-    tickState.beginTick("D:\\test", validTokens());
-    tickState.mark(statusStore.PREV_TICK_KEY, statusStore.emptyPrevTickStatus());
-    tickState.commit();
+    statusStore.beginTick("D:\\test", validTokens());
+    statusStore.mark(statusStore.PREV_TICK_KEY, statusStore.emptyPrevTickStatus());
+    statusStore.commit();
 
     // Second tick: regression-reset mark first (empty ccsession),
-    // then setAgg-style mark lands with accIn=1000. processTick
+    // then setAgg-style mark lands with accTokenIn=1000. processTick
     // does exactly this order.
-    tickState.resetTickStateForTest();
-    tickState.beginTick("D:\\test", validTokens());
-    tickState.mark(statusStore.CCSESSION_KEY, statusStore.emptyTickStatus());
-    tickState.mark(statusStore.CCSESSION_KEY, {
+    statusStore.resetTickStateForTest();
+    statusStore.beginTick("D:\\test", validTokens());
+    statusStore.mark(statusStore.CCSESSION_KEY, statusStore.emptyTickStatus());
+    statusStore.mark(statusStore.CCSESSION_KEY, {
       ...statusStore.emptyTickStatus(),
-      accIn: 1000,
+      accTokenIn: 1000,
     });
-    tickState.commit();
+    statusStore.commit();
 
     const raw = readFileSync(join(_tmpDir, "status.json"), "utf8");
-    const store = JSON.parse(raw) as Record<string, { kind: string; value: { accIn: number } }>;
+    const store = JSON.parse(raw) as Record<string, { kind: string; value: { accTokenIn: number } }>;
     // setAgg's later mark wins (last-mark-wins via the flat Map).
-    assert.equal(store[statusStore.CCSESSION_KEY]?.value.accIn, 1000);
+    assert.equal(store[statusStore.CCSESSION_KEY]?.value.accTokenIn, 1000);
   });
 
   it("ccsession reset mark with NO subsequent delta → reset persists empty", () => {
     // Regression-reset fires, but a same-tick hasDelta=false (e.g.
     // current totals == prev totals) means setAgg never lands.
     // The reset entry should be the on-disk truth.
-    tickState.beginTick("D:\\test", validTokens());
-    tickState.mark(statusStore.PREV_TICK_KEY, statusStore.emptyPrevTickStatus());
-    tickState.commit();
+    statusStore.beginTick("D:\\test", validTokens());
+    statusStore.mark(statusStore.PREV_TICK_KEY, statusStore.emptyPrevTickStatus());
+    statusStore.commit();
 
-    tickState.resetTickStateForTest();
-    tickState.beginTick("D:\\test", validTokens());
-    tickState.mark(statusStore.CCSESSION_KEY, statusStore.emptyTickStatus());
+    statusStore.resetTickStateForTest();
+    statusStore.beginTick("D:\\test", validTokens());
+    statusStore.mark(statusStore.CCSESSION_KEY, statusStore.emptyTickStatus());
     // NO setAgg mark follows — simulating hasDelta=false.
-    tickState.commit();
+    statusStore.commit();
 
     const raw = readFileSync(join(_tmpDir, "status.json"), "utf8");
-    const store = JSON.parse(raw) as Record<string, { kind: string; value: { accIn: number; accOut: number } }>;
+    const store = JSON.parse(raw) as Record<string, { kind: string; value: { accTokenIn: number; accTokenOut: number } }>;
     const v = store[statusStore.CCSESSION_KEY]?.value;
-    assert.equal(v.accIn, 0);
-    assert.equal(v.accOut, 0);
+    assert.equal(v.accTokenIn, 0);
+    assert.equal(v.accTokenOut, 0);
   });
 });
 
@@ -233,18 +243,18 @@ describe("data-processor — concurrent-overlay commit (m_template nesting)", ()
   // the LAST mark() before commit wins per key (inner sees its
   // own overlay, outer replaces when its own mark lands).
   it("inner mark overlays, outer mark replaces — outer's value wins", () => {
-    tickState.beginTick("D:\\test", validTokens());
-    tickState.mark("tickStatus:sess-test", { ...statusStore.emptyTickStatus(), accIn: 100 });
-    tickState.mark("tickStatus:sess-test", { ...statusStore.emptyTickStatus(), accIn: 200 });
-    tickState.commit();
+    statusStore.beginTick("D:\\test", validTokens());
+    statusStore.mark("tickStatus:sess-test", { ...statusStore.emptyTickStatus(), accTokenIn: 100 });
+    statusStore.mark("tickStatus:sess-test", { ...statusStore.emptyTickStatus(), accTokenIn: 200 });
+    statusStore.commit();
     const raw = readFileSync(join(_tmpDir, "status.json"), "utf8");
-    const store = JSON.parse(raw) as Record<string, { value: { accIn: number } }>;
-    assert.equal(store["tickStatus:sess-test"]?.value.accIn, 200, "outer wins");
+    const store = JSON.parse(raw) as Record<string, { value: { accTokenIn: number } }>;
+    assert.equal(store["tickStatus:sess-test"]?.value.accTokenIn, 200, "outer wins");
   });
 });
 
 describe("data-processor — getState throws without beginTick", () => {
   it("getState() with no prior beginTick throws a clear error", () => {
-    assert.throws(() => tickState.getState(), /without beginTick\(\)/);
+    assert.throws(() => statusStore.getState(), /without beginTick\(\)/);
   });
 });

@@ -6,7 +6,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { projectHash, sampleFilePath, setStateRoot, resetStateRoot, stateRoot } from "./token-store.ts";
+import { projectHash, sampleFilePath, setStateRoot, resetStateRoot, stateRoot } from "./status-store.ts";
 
 describe("token-store — path helpers", () => {
   it("projectHash: replaces path separators with -", () => {

@@ -25,7 +25,7 @@ import {
   peekAvg,
   type AvgSnapshot,
   type PrevTickSnapshot,
-} from "./data-processor.ts";
+} from "./status-store.ts";
 import type { TokenSnapshot } from "./types.ts";
 import {
   buildRainbow,
@@ -794,12 +794,12 @@ type Module = ((ctx: RenderContext) => string | null) & {
 //                                  totalApiMs regression — see setAvg)
 //
 //       value shape (TickStatusValue, acc-only — no per-tick fields):
-//         accIn        — accumulated current.input
-//         accOut       — accumulated current.output
-//         accCached    — accumulated current.cacheRead
-//         accTotalIn   — per-tick-delta-accumulator of totalIn
-//         accApiMs     — scope-dependent (see scope contract below)
-//         accApiCount  — accumulated API-call count
+//         accTokenIn         — accumulated current.input
+//         accTokenOut        — accumulated current.output
+//         accTokenCachedIn   — accumulated current.cacheRead
+//         accTokenTotalIn    — per-tick-delta-accumulator of totalIn
+//         accApiMs           — scope-dependent (see scope contract below)
+//         accApiCalls        — accumulated API-call count
 //
 //       accApiMs SCOPE CONTRACT (v0.8.x — user rule 2026-07-04):
 //         scope=session   : += deltaApiMs (delta-accumulator;
@@ -823,31 +823,31 @@ type Module = ((ctx: RenderContext) => string | null) & {
 //         in/out/cachedIn/totalIn/totalApiMs — previous tick's values
 //         sessionId/cwd/model                 — identity for debug
 //
-// accApiCount contract (unchanged from v0.8.0):
+// accApiCalls contract (unchanged from v0.8.0):
 //   On a tick where deltaApiMs > 0 AND input_tokens > 0 (a real
-//   API call that produced input tokens), accApiCount += 1. The
+//   API call that produced input tokens), accApiCalls += 1. The
 //   gate is AND, not OR — a tick with deltaApiMs > 0 but
 //   input_tokens == 0 does NOT count.
 //
-// v1.0 — PrevTickSnapshot lives in data-processor.ts; the
-// re-export below preserves the test fixture import surface.
-// (Already exported at the top of this file.)
+// v1.0 — PrevTickSnapshot lives in src/status-store.ts; the
+// re-export at the top of this file preserves the test fixture
+// import surface.
 //
-// v1.0 — peekPrevTick moved to src/data-processor.ts. Render is
+// v1.0 — peekPrevTick lives in src/status-store.ts. Render is
 // read-only; the re-export below preserves the test fixture
 // import surface.
-export { peekPrevTick } from "./data-processor.ts";// v1.0 — setPrevTick / setLastSpeed / setLastApiMs /
-// setLastTokenHitRate moved to src/data-processor.ts. Render is
-// read-only; these are the data-processor's writers. The
-// re-exports below preserve the test fixture import surface
-// (e.g. tests importing setPrevTick from "../src/render.ts").
+export { peekPrevTick } from "./status-store.ts";// v1.0 — setPrevTick / setLastSpeed / setLastApiMs /
+// setLastTokenHitRate live in src/status-store.ts. Render is
+// read-only; these are the writer-side helpers. The re-exports
+// below preserve the test fixture import surface (e.g. tests
+// importing setPrevTick from "../src/render.ts").
 
 export {
   setPrevTick as setPrevTick,
   setLastSpeed as setLastSpeed,
   setLastApiMs as setLastApiMs,
   setLastTokenHitRate as setLastTokenHitRate,
-} from "./data-processor.ts";
+} from "./status-store.ts";
 
 // ----- lastActive (v0.4.x) --------------------------------------------
 //
@@ -869,7 +869,7 @@ export {
 // signature for back-compat with existing test fixtures.
 //
 // v1.0 — read side (peekLastSpeed / peekLastApiMs /
-// peekLastTokenHitRate) re-exported from data-processor.
+// peekLastTokenHitRate) re-exported from -processor.
 export type LastSpeedSnapshot = {
   direction: "in" | "out";
   tps: number;
@@ -878,7 +878,7 @@ export {
   peekLastSpeed,
   peekLastApiMs,
   peekLastTokenHitRate,
-} from "./data-processor.ts";
+} from "./status-store.ts";
 
 // Test-only: clear the last-active entry for a direction. v0.4.x:
 // the entry lives in status.json under the project dir; tests
@@ -906,10 +906,10 @@ export function __resetPrevTickForTest(
   // processTick directly.
 }
 
-// v1.0 — peekAvg moved to src/data-processor.ts. Render is
+// v1.0 — peekAvg moved to src/status-store.ts. Render is
 // read-only; the re-export below preserves the test fixture
 // import surface.
-export { peekAvg } from "./data-processor.ts";
+export { peekAvg } from "./status-store.ts";
 
 // v0.8.x cwf-tickStatus-v2 — read the four-layer accumulator at a
 // chosen scope. Used by the m_acc* module family. The four
@@ -944,7 +944,7 @@ function peekAcc(
 // Canonical write path for the four-layer accumulator. Reads the
 // current tickStatus:<sid> entry (or starts from zero), adds the
 // per-tick deltas, and writes the unified shape back — including
-// the new `accApiCount` field (see accApiCount contract above).
+// the new `accApiCalls` field (see accApiCalls contract above).
 // Also bumps the project-wide `tickStatus:<projectHash>`, the
 // per-process `tickStatus:ccsession`, and (when available)
 // `tickStatus:<modelDisplayName>` entries with the SAME delta so
@@ -986,17 +986,17 @@ function peekAcc(
 //
 // `snap` field meanings (v0.8.x — no `totalIn`, the
 // session-cumulative totalIn lives in prevTickStatus now):
-//   snap.accIn      = session-cumulative current.input
-//   snap.accOut     = session-cumulative current.output
-//   snap.accApi     = legacy ABSOLUTE cost.totalApiDurationMs —
+//   snap.accTokenIn      = session-cumulative current.input
+//   snap.accTokenOut     = session-cumulative current.output
+//   snap.accApiMs     = legacy ABSOLUTE cost.totalApiDurationMs —
 //                     DEPRECATED as of v0.8.x. The per-session
 //                     accApiMs is now a delta-accumulator (see
 //                     extras.deltaApiMs below). Retained in the
 //                     signature for backward compat — no
 //                     production caller reads it anymore.
-//   snap.accCached  = session-cumulative current.cacheRead
-//   snap.accApiCount = session-cumulative count of API calls
-//   snap.accTotalIn = per-tick-delta-accumulator of totalIn
+//   snap.accTokenCachedIn  = session-cumulative current.cacheRead
+//   snap.accApiCalls = session-cumulative count of API calls
+//   snap.accTokenTotalIn = per-tick-delta-accumulator of totalIn
 //
 // Caller passes the delta math (computeAndCacheTickDelta already
 // produced it). Per-tick `in`/`out`/`cachedIn`/`totalIn`/
@@ -1015,10 +1015,10 @@ function peekAcc(
 // scalars. The only difference across scopes is the
 // accApiMs handling — only ccsession mirrors the absolute
 // stdin field, all others accumulate deltaApiMs.
-// v1.0 — setAvg moved to src/data-processor.ts. The data-processor
+// v1.0 — setAvg moved to src/status-store.ts. The -processor
 // (processTick Stages 4 + 4b) is the sole caller now. Re-exported
 // here for back-compat with test fixtures.
-export { setAvg } from "./data-processor.ts";
+export { setAvg } from "./status-store.ts";
 // AvgSnapshot / peekAvg re-exports sit at the top of the file.
 
 export function __resetAvgForTest(
@@ -1029,15 +1029,15 @@ export function __resetAvgForTest(
 }
 
 // v1.0 — _tickDeltaMemo / _tickAvgWriteMemo / _tickCacheWriteMemo
-// are GONE. The data-processor (src/data-processor.ts) calls
+// are GONE. The -processor (src/status-store.ts) calls
 // computeAndCacheTickDeltaPure once per tick and stashes the result
 // on tickState.delta. Render reads it via getDeltaForRender() —
 // no per-render memoization needed because there's a single
 // producer per tick.
 
 // v1.0 — the deferred setPrevTick queue / _pendingPrevTick /
-// commitPrevTickOnce / _renderDepth are GONE. The data-processor
-// (src/data-processor.ts:processTick) sets PREV_TICK_KEY once per
+// commitPrevTickOnce / _renderDepth are GONE. The -processor
+// (src/status-store.ts:processTick) sets PREV_TICK_KEY once per
 // tick BEFORE render begins, so all render contexts (outer,
 // m_template inner) see the same baseline via peekPrevTick. No
 // per-render memo or queue needed.
@@ -1046,8 +1046,8 @@ export function __resetAvgForTest(
 // __resetPendingPrevTickForTest, the stub below is preserved as a
 // no-op (see tests using it).
 
-// v1.0 — computeAndCacheTickDelta is GONE. The data-processor
-// (src/data-processor.ts:computeAndCacheTickDeltaPure) owns the
+// v1.0 — computeAndCacheTickDelta is GONE. The -processor
+// (src/status-store.ts:computeAndCacheTickDeltaPure) owns the
 // pure delta math; it stashes the result on tickState.delta.
 // Render modules read via getDeltaForRender(). No per-render
 // memoization needed — single producer per tick.
@@ -1063,7 +1063,7 @@ export function __resetAvgForTest(
 // Test-only stub (preserved for back-compat with test fixtures
 // that import this name). The per-render memos (_tickDeltaMemo /
 // _tickAvgWriteMemo / _tickCacheWriteMemo) are GONE in v1.0 — the
-// data-processor produces the TickDeltaResult once per tick and
+// -processor produces the TickDeltaResult once per tick and
 // stashes it on tickState.delta; render reads via getDeltaForRender.
 export function __resetTickDeltaMemoForTest(_ctx: RenderContext): void {
   // no-op
@@ -1108,55 +1108,42 @@ function computeTickSpeed(
   color: string,
 ): {
   value: string;
-  writeBack: PrevTickSnapshot | null;
   active: boolean;
   tps: number | null;
 } {
-  // v6.x: snapshot missing → "n/a" placeholder (not "in:-- t/s").
-  // Mirrors computeTickDelta's null/zero split: no stdin at all is
-  // a different state from "stdin present but idle this tick".
+  // v0.8.10-alpha.2 — render reads `getDeltaForRender()` which now
+  // returns TickSnapshot ({ hasMeasurement, in, out, ..., apiMs }).
+  // No writeBack field — there is no prev-writeBack payload anymore.
   const t = ctx.tokens;
   if (!t || !t.sessionId) {
     return {
       value: `${direction}:n/a`,
-      writeBack: null,
       active: false,
       tps: null,
     };
   }
   const r = getDeltaForRender();
-  if (!r.hasDelta) {
+  if (!r.hasMeasurement) {
     // Idle tick — fall back to the last active measurement if
     // we have one, otherwise render the truthful "0.0 t/s".
-    // v6.x: previously rendered "-- t/s" here, conflating
-    // "no measurement" with "0.0 t/s". Per user direction,
-    // zero rates are rendered, not hidden.
     const cached = peekLastSpeed(t.sessionId, direction, t.cwd);
     if (cached != null) {
       return {
         value: `${STALE_COLOR}${direction}:${formatSpeed(cached)}${RESET}`,
-        writeBack: r.writeBack,
         active: false,
         tps: cached,
       };
     }
-    // No cached tps and no active tick → truthful 0.0 t/s
-    // (a rate of exactly zero is still data — the API did not
-    // produce any tokens this turn).
     return {
       value: `${color}${direction}:${formatSpeed(0)}${RESET}`,
-      writeBack: r.writeBack,
       active: false,
       tps: 0,
     };
   }
-  const deltaTok = direction === "in" ? r.deltaIn : r.deltaOut;
-  const tps = (deltaTok / r.deltaApi) * 1000;
-  // v1.0 — setLastSpeed moved to data-processor.ts:processTick
-  // Stage 5. Render is read-only.
+  const tok = direction === "in" ? r.in : r.out;
+  const tps = (tok / r.apiMs) * 1000;
   return {
     value: `${color}${direction}:${formatSpeed(tps)}${RESET}`,
-    writeBack: r.writeBack,
     active: true,
     tps,
   };
@@ -1183,28 +1170,20 @@ function computeTickSpeed(
 function computeTickDelta(
   ctx: RenderContext,
   direction: "in" | "out",
-): { value: string; writeBack: PrevTickSnapshot | null } {
+): { value: string } {
   const t = ctx.tokens;
-  // v0.8.0+ — prefix is the configured label (default "In:" / "Out:").
-  // The `direction` still drives the actual delta math; only the
-  // emitted prefix string reads from config now.
   const prefix = labelFor(direction);
-  // v6.x: snapshot missing → "n/a" placeholder (not "0"). Without
-  // this gate the function returns "in:0" for both missing-snapshot
-  // and idle cases, conflating them.
+  // v0.8.10-alpha.2 — `hasMeasurement` mirrors the validity gate
+  // (totals.tokenTotalIn > 0 AND totals.tokenTotalOut > 0 AND apiMs > 0).
   if (!t || !t.sessionId) {
-    return { value: `${prefix}n/a`, writeBack: null };
+    return { value: `${prefix}n/a` };
   }
   const r = getDeltaForRender();
-  if (!r.hasDelta) {
-    // snapshot read but no API call this tick — truthful 0.
-    return { value: `${prefix}0`, writeBack: r.writeBack };
+  if (!r.hasMeasurement) {
+    return { value: `${prefix}0` };
   }
-  const n = direction === "in" ? r.deltaIn : r.deltaOut;
-  return {
-    value: `${prefix}${formatCompactToken(n)}`,
-    writeBack: r.writeBack,
-  };
+  const n = direction === "in" ? r.in : r.out;
+  return { value: `${prefix}${formatCompactToken(n)}` };
 }
 
 // Per-session running average speed across all valid API
@@ -1212,7 +1191,7 @@ function computeTickDelta(
 // AvgSnapshot (running totals). The math across the session:
 //   sum_in  / sum_api  * 1000  (and same for out)
 // Only valid-API-call ticks contribute (deltaApi > 0 AND
-// deltaIn / deltaOut >= 0); idle and regression ticks don't.
+// deltaTokenIn / deltaTokenOut >= 0); idle and regression ticks don't.
 // Renders "--" when no valid tick has accumulated yet (sumApi
 // is still 0 after this tick — i.e. nothing usable came in).
 // Color defaults to STALE_COLOR; the inline :color| path
@@ -1244,15 +1223,15 @@ function computeTickDelta(
 //   scope=project             → "acc(total):N"
 //   scope=model               → "acc(<modelDisplayName>):N"
 //
-// Reads the four-layer accumulator via peekAcc. The data-processor
-// (src/data-processor.ts:processTick) has already written the
+// Reads the four-layer accumulator via peekAcc. The -processor
+// (src/status-store.ts:processTick) has already written the
 // per-tick deltas to tickState.pending BEFORE render begins, so
 // this is a pure read. Placeholder when the chosen slot has never
 // been written (no prior tick, no model for the model scope, no
 // sessionId for the session scope). Zero accumulator renders as
 // "acc:0" (value-zero rule, never dropped).
 
-// v1.0 — accPrimer / accCachePrimer are GONE. The data-processor
+// v1.0 — accPrimer / accCachePrimer are GONE. The -processor
 // (processTick Stages 4 + 4b) owns the accumulator writes now.
 // Render is pure read.
 
@@ -1264,7 +1243,7 @@ function accBody(
   const useScope = scope ?? "ccsession";
   const v = peekAcc(useScope, ctx);
   if (!v) {
-    // v0.8.x cwf-tickStatus-v2 — the accCached track only writes
+    // v0.8.x cwf-tickStatus-v2 — the accTokenCachedIn track only writes
     // when stdin carries the cache field. m_accTokenCachedIn /
     // m_accTokenTotalIn / m_accTokenHitRate must still honor
     // the "field not shipped" → "--" contract, so we don't fire
@@ -1284,21 +1263,21 @@ function accBody(
   ) {
     return placeholderAcc(field, useScope, ctx);
   }
-  // v1.0 — accCachePrimer is gone. The data-processor already
-  // wrote accCached (Stage 4b) when stdin shipped
+  // v1.0 — accCachePrimer is gone. The -processor already
+  // wrote accTokenCachedIn (Stage 4b) when stdin shipped
   // cache_read_input_tokens. Re-read after Stage 4b in case the
-  // first peekAcc fired before the data-processor's writes (rare
+  // first peekAcc fired before the -processor's writes (rare
   // in production — processTick runs before renderTemplate — but
   // tests sometimes interleave).
   const v2 = peekAcc(useScope, ctx) ?? v;
   let n: number;
   switch (field) {
-    case "in": n = v2.accIn; break;
-    case "out": n = v2.accOut; break;
-    case "cached": n = v2.accCached; break;
-    case "apiMs": n = v2.accApi; break;
-    case "apiCalls": n = v2.accApiCount; break;
-    case "total": n = v2.accIn + v2.accCached; break;
+    case "in": n = v2.accTokenIn; break;
+    case "out": n = v2.accTokenOut; break;
+    case "cached": n = v2.accTokenCachedIn; break;
+    case "apiMs": n = v2.accApiMs; break;
+    case "apiCalls": n = v2.accApiCalls; break;
+    case "total": n = v2.accTokenIn + v2.accTokenCachedIn; break;
   }
   // v0.8.0+ — acc* family prefixes use the same label axes as their
   // per-turn siblings. m_accTokenIn/Out/CachedIn/TotalIn share
@@ -1319,7 +1298,7 @@ function accBody(
     case "cached": prefix = labelFor("cacheIn"); body = formatCompactToken(n); break;
     case "total": prefix = labelFor("totalIn"); body = formatCompactToken(n); break;
     // v0.8.x — m_accApiMs now renders `api:<dhms>` to mirror m_apiMs.
-    // The accumulator value (accApi) is session-cumulative
+    // The accumulator value (accApiMs) is session-cumulative
     // totalApiMs, so the formatted string grows monotonically as
     // the session ages (e.g. "api:5m", "api:1h12m").
     case "apiMs": prefix = "api:"; body = formatRemainingMs(n); break;
@@ -1332,7 +1311,7 @@ function accBody(
 }
 
 // m_accTokenHitRate — session-aggregate formula
-// (accCached / (accCached + accIn) * 100). Colored via the
+// (accTokenCachedIn / (accTokenCachedIn + accTokenIn) * 100). Colored via the
 // cacheHitColor palette (good ≥ 80%, warn ≥ 50%, bad < 50%).
 // Zero denominator (no input and no cache reads) renders
 // "hit:0.0%"; missing-acc placeholder when the slot has never
@@ -1349,7 +1328,7 @@ function accHitRateBody(
   ctx: RenderContext,
   scope?: "session" | "project" | "model" | "ccsession",
 ): string {
-  // v1.0 — accPrimer is GONE. The data-processor already mirrored
+  // v1.0 — accPrimer is GONE. The -processor already mirrored
   // current → acc at processTick time, so peekAcc(...) returns the
   // post-mirror value. No mutation in render.
   // v0.8.x cwf-tickStatus-v2 — "field not shipped" signal on
@@ -1362,9 +1341,9 @@ function accHitRateBody(
   const useScope = scope ?? "ccsession";
   const v = peekAcc(useScope, ctx);
   if (!v) return placeholderAcc("hitRate", useScope, ctx);
-  const denom = v.accCached + v.accIn;
+  const denom = v.accTokenCachedIn + v.accTokenIn;
   if (denom === 0) return `${cacheHitColor(0)}hit:0.0%${RESET}`;
-  const pct = (v.accCached / denom) * 100;
+  const pct = (v.accTokenCachedIn / denom) * 100;
   const color = cacheHitColor(pct);
   return `${color}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;
 }
@@ -1532,7 +1511,7 @@ const MODULES: Record<string, Module> = {
   // / m_tokenSession.
   m_tokenIn: (c) => {
     const r = computeTickDelta(c, "in");
-    // v1.0 — setPrevTick moved to data-processor.ts:processTick
+    // v1.0 — setPrevTick moved to status-store.ts:processTick
     // Stage 3. Render is read-only.
     return r.value;
   },
@@ -1541,7 +1520,7 @@ const MODULES: Record<string, Module> = {
   // turns all produce different "out:--" / "out:N" signals).
   m_tokenOut: (c) => {
     const r = computeTickDelta(c, "out");
-    // v1.0 — setPrevTick moved to data-processor.ts:processTick
+    // v1.0 — setPrevTick moved to status-store.ts:processTick
     // Stage 3. Render is read-only.
     return r.value;
   },
@@ -1593,7 +1572,7 @@ const MODULES: Record<string, Module> = {
   // New formula: m_tokenCachedIn / m_tokenTotalIn (per-turn snapshot)
   //   = current_usage.cache_read_input_tokens / context_window.total_input_tokens
   // The session-aggregate formula
-  //   (accCached / (accCached + accIn), v0.4.x semantics) is now
+  //   (accTokenCachedIn / (accTokenCachedIn + accTokenIn), v0.4.x semantics) is now
   // exposed as a separate module: m_accTokenHitRate (see
   // [[token-modules-redesign-v0-8-0]]). Coloring still uses the
   // cacheHitColor palette (good ≥ 80%, warn ≥ 50%, bad < 50%).
@@ -1633,7 +1612,7 @@ const MODULES: Record<string, Module> = {
     // that lack cacheRead can fall back to it (mirrors setLastSpeed
     // / setLastApiMs). Only persist when the per-tick delta is
     // actually present (the gate above already required cacheRead
-    // v1.0 — setLastTokenHitRate moved to data-processor.ts:processTick
+    // v1.0 — setLastTokenHitRate moved to status-store.ts:processTick
     // Stage 5. Render is read-only.
     // v0.8.x — "active" coloring: the per-turn hit rate is only
     // a fresh reading when the API actually did work this tick
@@ -1647,8 +1626,8 @@ const MODULES: Record<string, Module> = {
     // already idempotently overwrites with the same value, so
     // the cache is unaffected by an idle re-render.
     const r = getDeltaForRender();
-    // v1.0 — setPrevTick moved to data-processor.ts:processTick Stage 3. Render is read-only.
-    if (!r.hasDelta) {
+    // v1.0 — setPrevTick moved to status-store.ts:processTick Stage 3. Render is read-only.
+    if (!r.hasMeasurement) {
       return wrapPlainDefault(
         "m_tokenHitRate",
         `hit:${pct.toFixed(cachePctPrecision())}%`,
@@ -1705,7 +1684,7 @@ const MODULES: Record<string, Module> = {
       ? speedScaleColor("in", probe.tps ?? 0)
       : STALE_COLOR; // unused — computeTickSpeed forces STALE
     const r = computeTickSpeed(c, "in", color);
-    // v1.0 — setPrevTick moved to data-processor.ts:processTick Stage 3. Render is read-only.
+    // v1.0 — setPrevTick moved to status-store.ts:processTick Stage 3. Render is read-only.
     return r.value;
   },
   // v0.4.0+ — per-API-call output speed (see m_tokenInSpeed for
@@ -1716,7 +1695,7 @@ const MODULES: Record<string, Module> = {
       ? speedScaleColor("out", probe.tps ?? 0)
       : STALE_COLOR;
     const r = computeTickSpeed(c, "out", color);
-    // v1.0 — setPrevTick moved to data-processor.ts:processTick Stage 3. Render is read-only.
+    // v1.0 — setPrevTick moved to status-store.ts:processTick Stage 3. Render is read-only.
     return r.value;
   },
   // v0.8.x cwf-tickStatus-v2 — m_totalToken* / m_totalTokenWithCacheIn
@@ -1760,14 +1739,14 @@ const MODULES: Record<string, Module> = {
   m_accTokenTotalIn: (c) => accBody(c, "total", passThroughScope(c)),
   m_accApiMs: (c) => accBody(c, "apiMs", passThroughScope(c)),
   // v0.8.x — m_accApiCalls mirrors m_apiCalls (`calls:N`) but reads
-  // the chosen scope's accApiCount slot from status.json. Default
+  // the chosen scope's accApiCalls slot from status.json. Default
   // scope is ccsession (per-process, resets only on totalApiMs
   // regression). Inline `m_accApiCalls|scope|project` etc. to widen
   // or narrow. value=0 still renders as `calls:0` (the value-zero
   // rule — count:0 is real data, not a placeholder).
   m_accApiCalls: (c) => accBody(c, "apiCalls", passThroughScope(c)),
   // m_accTokenHitRate — session-aggregate formula
-  // (accCached / (accCached + accIn) * 100), the v0.4.x semantic
+  // (accTokenCachedIn / (accTokenCachedIn + accTokenIn) * 100), the v0.4.x semantic
   // that m_tokenHitRate (per-turn) replaced. Coloring uses the
   // cacheHitColor palette. v0.8.x — renamed from m_accCacheHitRate
   // to align the namespace with m_tokenHitRate (per-turn) and
@@ -1921,7 +1900,7 @@ const MODULES: Record<string, Module> = {
   },
   // v0.8.0+ — per-turn delta of cost.totalApiDurationMs rendered
   // as a dhms time string with the "api:" prefix. Reuses the
-  // shared computeAndCacheTickDelta memo (same r.deltaApi that
+  // shared computeAndCacheTickDelta memo (same r.apiMs that
   // m_tokenIn / m_tokenOut / m_tokenInSpeed read), so the
   // prev-tick baseline is maintained regardless of which
   // per-turn module appears in the user's template.
@@ -1944,8 +1923,8 @@ const MODULES: Record<string, Module> = {
     const t = c.tokens;
     if (!t || !t.sessionId) return placeholderBare("m_apiMs", c);
     const r = getDeltaForRender();
-    // v1.0 — setPrevTick moved to data-processor.ts:processTick Stage 3. Render is read-only.
-    if (!r.hasDelta) {
+    // v1.0 — setPrevTick moved to status-store.ts:processTick Stage 3. Render is read-only.
+    if (!r.hasMeasurement) {
       // v0.8.x — mirror m_tokenInSpeed/m_tokenOutSpeed: when this
       // tick has no API-call delta, fall back to the last cached
       // deltaApiMs within the 60s TTL window instead of dropping
@@ -1964,9 +1943,9 @@ const MODULES: Record<string, Module> = {
       }
       return placeholderBare("m_apiMs", c);
     }
-    // v1.0 — setLastApiMs moved to data-processor.ts:processTick
+    // v1.0 — setLastApiMs moved to status-store.ts:processTick
     // Stage 5. Render is read-only.
-    return wrapPlainDefault("m_apiMs", `api:${formatRemainingMs(r.deltaApi)}`, undefined);
+    return wrapPlainDefault("m_apiMs", `api:${formatRemainingMs(r.apiMs)}`, undefined);
   },
   // Session-cumulative lines added (stdin.cost.total_lines_added).
   // v6.x: missing field → "+ --" placeholder (was: drop). Zero is
@@ -2019,7 +1998,7 @@ const MODULES: Record<string, Module> = {
     if (!cwd) return placeholderBare("m_apiCalls", c);
     const acc = statusStore.readAccumulator("project", { cwd });
     if (!acc) return wrapPlainDefault("m_apiCalls", "calls:0", undefined);
-    return wrapPlainDefault("m_apiCalls", `calls:${acc.accApiCount}`, undefined);
+    return wrapPlainDefault("m_apiCalls", `calls:${acc.accApiCalls}`, undefined);
   },
   // v0.8.0+ — renamed from `m_contextSize`. The old name now lives
   // at `m_contextSize` with a different source (the cumulative
@@ -3554,12 +3533,12 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   },
   m_tokenIn: (params, ctx) => {
     const r = computeTickDelta(ctx, "in");
-    // v1.0 — setPrevTick moved to data-processor.ts:processTick Stage 3. Render is read-only.
+    // v1.0 — setPrevTick moved to status-store.ts:processTick Stage 3. Render is read-only.
     return wrapPlain(r.value, params.color as string | undefined);
   },
   m_tokenOut: (params, ctx) => {
     const r = computeTickDelta(ctx, "out");
-    // v1.0 — setPrevTick moved to data-processor.ts:processTick Stage 3. Render is read-only.
+    // v1.0 — setPrevTick moved to status-store.ts:processTick Stage 3. Render is read-only.
     return wrapPlain(r.value, params.color as string | undefined);
   },
   m_tokenTotal: (params, ctx) => {
@@ -3615,7 +3594,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     }
     if (total === 0) return `${STALE_COLOR}hit:0.0%${RESET}`;
     const pct = (cacheRead / total) * 100;
-    // v1.0 — setLastTokenHitRate moved to data-processor.ts:processTick
+    // v1.0 — setLastTokenHitRate moved to status-store.ts:processTick
     // Stage 5. Render is read-only.
     // v0.8.x — "active" coloring (mirrors MODULES body and the
     // m_tokenInSpeed / m_tokenOutSpeed / m_apiMs convention). The
@@ -3624,8 +3603,8 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // renders STALE_COLOR regardless of the user's |color|
     // override, matching computeTickSpeed.
     const r = getDeltaForRender();
-    // v1.0 — setPrevTick moved to data-processor.ts:processTick Stage 3. Render is read-only.
-    if (!r.hasDelta) {
+    // v1.0 — setPrevTick moved to status-store.ts:processTick Stage 3. Render is read-only.
+    if (!r.hasMeasurement) {
       return wrapPlainDefault(
         "m_tokenHitRate",
         `hit:${pct.toFixed(cachePctPrecision())}%`,
@@ -3665,7 +3644,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
         ? speedScaleColor("in", probe.tps ?? 0)
         : (userColor ?? STALE_COLOR);
     const r = computeTickSpeed(ctx, "in", activeColor);
-    // v1.0 — setPrevTick moved to data-processor.ts:processTick Stage 3. Render is read-only.
+    // v1.0 — setPrevTick moved to status-store.ts:processTick Stage 3. Render is read-only.
     return r.value;
   },
   m_tokenOutSpeed: (params, ctx) => {
@@ -3676,7 +3655,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
         ? speedScaleColor("out", probe.tps ?? 0)
         : (userColor ?? STALE_COLOR);
     const r = computeTickSpeed(ctx, "out", activeColor);
-    // v1.0 — setPrevTick moved to data-processor.ts:processTick Stage 3. Render is read-only.
+    // v1.0 — setPrevTick moved to status-store.ts:processTick Stage 3. Render is read-only.
     return r.value;
   },
   // v0.8.x cwf-tickStatus-v2 — m_totalToken* / m_totalTokenWithCacheIn
@@ -3889,8 +3868,8 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const t = ctx.tokens;
     if (!t || !t.sessionId) return placeholderWithColor("m_apiMs", params, ctx);
     const r = getDeltaForRender();
-    // v1.0 — setPrevTick moved to data-processor.ts:processTick Stage 3. Render is read-only.
-    if (!r.hasDelta) {
+    // v1.0 — setPrevTick moved to status-store.ts:processTick Stage 3. Render is read-only.
+    if (!r.hasMeasurement) {
       // v0.8.x — TTL-bounded cache fallback (mirrors MODULES path
       // and the m_tokenInSpeed/m_tokenOutSpeed convention). Idle
       // tick within 60s of the last active tick renders the
@@ -3911,9 +3890,9 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
       }
       return placeholderWithColor("m_apiMs", params, ctx);
     }
-    // v1.0 — setLastApiMs moved to data-processor.ts:processTick
+    // v1.0 — setLastApiMs moved to status-store.ts:processTick
     // Stage 5. Render is read-only.
-    return wrapPlainDefault("m_apiMs", `api:${formatRemainingMs(r.deltaApi)}`, params.color as string | undefined);
+    return wrapPlainDefault("m_apiMs", `api:${formatRemainingMs(r.apiMs)}`, params.color as string | undefined);
   },
   m_linesAdded: (params, ctx) => {
     const n = ctx.tokens?.cost.totalLinesAdded;
@@ -3964,7 +3943,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (!cwd) return wrapPlainDefault("m_apiCalls", "calls:0", params.color as string | undefined);
     const acc = statusStore.readAccumulator("project", { cwd });
     if (!acc) return wrapPlainDefault("m_apiCalls", "calls:0", params.color as string | undefined);
-    return wrapPlainDefault("m_apiCalls", `calls:${acc.accApiCount}`, params.color as string | undefined);
+    return wrapPlainDefault("m_apiCalls", `calls:${acc.accApiCalls}`, params.color as string | undefined);
   },
   // v0.8.0+ — inline form of m_contextWindowsSize (capacity).
   m_contextWindowsSize: (params, ctx) => {
@@ -4158,7 +4137,7 @@ function expandInlineToken(
 
 export function renderTemplate(template: readonly string[], ctx: RenderContext): string[] {
   // v1.0 — _renderDepth tracking and the deferred setPrevTick
-  // commit are GONE. The data-processor (processTick Stage 3)
+  // commit are GONE. The -processor (processTick Stage 3)
   // sets PREV_TICK_KEY once per tick BEFORE render begins, so
   // every render context (outer, m_template inner) sees the same
   // baseline via peekPrevTick. No depth counter needed.
@@ -4491,7 +4470,7 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
   // Flush whatever's left in the in-progress line.
   if (current.length > 0) lines.push(current);
   // v1.0 — _renderDepth tracking removed. setPrevTick fires
-  // from the data-processor BEFORE render begins, so no deferred
+  // from the -processor BEFORE render begins, so no deferred
   // commit / depth counter is needed here.
   return lines;
 }

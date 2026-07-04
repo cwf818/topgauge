@@ -187,17 +187,17 @@ export type TokenSnapshot = {
 // `sum*` prefix). The setAvg / peekAvg / __resetAvgForTest helpers in
 // src/render.ts return / consume this shape. Field semantics:
 //
-//   accIn        — accumulated current.input  across API calls
-//   accOut       — accumulated current.output across API calls
-//   accCached    — accumulated current.cacheRead across API calls
-//                  (renamed from `sumCache` so the name matches the
-//                  per-turn module `m_tokenCachedIn`)
-//   accApiMs     — accumulated cost.total_api_duration_ms across API
-//                  calls (cumulative, not per-tick delta — the
-//                  per-tick writeBack uses `apiMs` directly)
-//   accApiCount  — count of valid API calls that produced
-//                  input tokens (see sumApiCount contract in
-//                  render.ts:computeTickAvg)
+//   accTokenIn        — accumulated current.input across API calls
+//   accTokenOut       — accumulated current.output across API calls
+//   accTokenCachedIn  — accumulated current.cacheRead across API calls
+//                       (renamed from `accTokenCachedIn` so the name matches
+//                       the per-turn module `m_tokenCachedIn`)
+//   accApiMs          — accumulated cost.total_api_duration_ms across API
+//                       calls (cumulative, not per-tick delta — the
+//                       per-tick writeBack uses `apiMs` directly)
+//   accApiCalls       — count of valid API calls that produced
+//                       input tokens (see sumApiCount contract in
+//                       render.ts:computeTickAvg)
 //
 // The same shape is persisted at three slots in `status.json`:
 //   tickStatus             (project-wide, accumulating)
@@ -207,11 +207,11 @@ export type TokenSnapshot = {
 // All three are kept in sync by setAvg's atomic three-slot write
 // (see render.ts:947-1035).
 export type AccSnapshot = {
-  accIn: number;
-  accOut: number;
-  accCached: number;
+  accTokenIn: number;
+  accTokenOut: number;
+  accTokenCachedIn: number;
   accApiMs: number;
-  accApiCount: number;
+  accApiCalls: number;
 };
 
 // One provider's declarative config block. All fields are required;

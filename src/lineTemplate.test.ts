@@ -24,10 +24,10 @@ import {
 } from "./cache.ts";
 import {
   beginTickForTest,
+  processTick,
   resetTickStateForTest,
-} from "./tick-state.ts";
-import * as tickState from "./tick-state.ts";
-import { processTick } from "./data-processor.ts";
+} from "./status-store.ts";
+import * as statusStore from "./status-store.ts";
 import { compose } from "./composition.ts";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1423,9 +1423,9 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
     // prev seed survives the in-memory load (beginTick replaces
     // pending with a clone of the disk-loaded store).
     beginTickForTest(snap.cwd, snap);
-    setPrevTick("sess-speed", { apiMs: 0, in: 0, out: 0, cacheRead: 0 , totalIn: 0 }, "C:\\fake");
+    setPrevTick("sess-speed", { totalApiMs: 0 }, "C:\\fake");
     processTick(snap.cwd, snap);
-    tickState.commit();
+    statusStore.commit();
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
       fiveHour: null, weekly: null, balance: null,
@@ -1453,7 +1453,7 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
     };
     beginTickForTest(snap.cwd, snap);
     processTick(snap.cwd, snap);
-    tickState.commit();
+    statusStore.commit();
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
       fiveHour: null, weekly: null, balance: null,
@@ -1489,7 +1489,7 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
     };
     beginTickForTest(snap.cwd, snap);
     processTick(snap.cwd, snap);
-    tickState.commit();
+    statusStore.commit();
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
       fiveHour: null, weekly: null, balance: null,
@@ -1515,7 +1515,7 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
     };
     beginTickForTest(snap.cwd, snap);
     processTick(snap.cwd, snap);
-    tickState.commit();
+    statusStore.commit();
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
       fiveHour: null, weekly: null, balance: null,

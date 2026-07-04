@@ -16,8 +16,6 @@
 // flushes `state.json` once, and appends one JSONL row when valid.
 //
 // Compatibility:
-//   - Legacy per-project `status.json` is fallback-read when `state.json`
-//     does not exist yet.
 //   - `src/token-store.ts`, `src/tick-state.ts`, and `src/data-processor.ts`
 //     are kept as thin compatibility shims that re-export the APIs now
 //     implemented here.
@@ -43,19 +41,21 @@ import type { TokenSample, TokenSnapshot } from "./types.ts";
 // ----- Persisted value families ------------------------------------------------
 
 export type TickStatusValue = {
-  accIn: number;
-  accOut: number;
-  accCached: number;
-  accTotalIn: number;
+  accTokenIn: number;
+  accTokenOut: number;
+  accTokenCachedIn: number;
+  accTokenTotalIn: number;
   accApiMs: number;
-  accApiCount: number;
+  accApiCalls: number;
 };
 
+// v0.8.10-alpha.2 — PrevTickStatusValue is the "prev-snapshot" cursor:
+// the ONLY field the next tick subtracts against is `totalApiMs`
+// (apiMs = current.totalApiMs - prev.totalApiMs). All other per-turn
+// fields live on `TokenSnapshot` as snapshot fields and are read
+// straight, not derived. Identity (sessionId/cwd/model) is kept for
+// stale-baseline detection.
 export type PrevTickStatusValue = {
-  in: number;
-  out: number;
-  cachedIn: number;
-  totalIn: number;
   totalApiMs: number;
   sessionId: string | null;
   cwd: string | null;
@@ -77,60 +77,70 @@ export type Entry =
 
 export type Store = Record<string, Entry>;
 
-export type PrevTickSnapshot = {
-  apiMs: number;
-  in: number;
-  out: number;
-  cacheRead: number;
-  totalIn: number;
+// v0.8.10-alpha.2 — the only derived delta in the whole pipeline.
+// Speed modules (m_tokenInSpeed, m_tokenOutSpeed, m_apiMs) use this.
+// The rest of the render path reads `TickSnapshot.{in, out, ...}` directly.
+export type ApiMsDelta = {
+  apiMs: number;        // -1 = regression sentinel, 0 = idle, >0 = real delta
+  totalApiMs: number;   // current tick stdin value
 };
 
-export type TickDeltaResult = {
-  hasDelta: boolean;
-  deltaIn: number;
-  deltaOut: number;
-  deltaApi: number;
-  deltaCacheRead: number;
-  deltaTotalIn: number;
-  currentTotalIn: number | null;
-  writeBack: PrevTickSnapshot | null;
+// v0.8.10-alpha.2 — TickSnapshot replaces TickDeltaResult. It's a flat
+// projection of the current tick's stdin snapshot + the single derived
+// `apiMs`. No "writeBack" payload — next tick re-reads from disk.
+export type TickSnapshot = {
+  hasMeasurement: boolean;
+  in: number;
+  out: number;
+  cachedIn: number;
+  totalIn: number;
+  totalOut: number;
+  totalApiMs: number;
+  apiMs: number;
 };
 
 export type AvgSnapshot = {
-  accIn: number;
-  accOut: number;
-  accApi: number;
-  accCached: number;
-  accApiCount: number;
-  accTotalIn: number;
+  accTokenIn: number;
+  accTokenOut: number;
+  accApiMs: number;
+  accTokenCachedIn: number;
+  accApiCalls: number;
+  accTokenTotalIn: number;
 };
 
-type NormalizedTick = {
+// v0.8.10-alpha.2 — internal per-tick snapshot for the data-processor.
+// Carries the full stdin snapshot + the single derived apiMs +
+// regression flag + derived speed/rate metrics. Renamed from
+// `NormalizedTick` because "normalized" was the old "delta of two
+// snapshots" mental model.
+type CurrentTick = {
   sessionId: string;
   cwd: string;
   modelDisplayName: string | null;
-  tokenIn: number;
-  tokenOut: number;
-  tokenCachedIn: number;
-  hasTokenCachedIn: boolean;
-  tokenCacheCreation: number;
-  tokenTotalIn: number | null;
-  tokenTotalOut: number | null;
+  // snapshot fields — read straight from stdin, no cross-tick subtract
+  in: number;
+  out: number;
+  cachedIn: number;
+  hasCachedIn: boolean;
+  cacheCreation: number;
+  totalIn: number | null;
+  totalOut: number | null;
   totalApiMs: number;
+  // the only derived delta
   apiMs: number;
-  prev: PrevTickSnapshot | null;
-  prevApiMsForSample: number | null;
-  regressionReset: boolean;
+  // baseline cursor + regression detection
+  prevTotalApiMs: number | null;
+  invalidRegression: boolean;
+  // derived metrics used by speed / hit-rate modules
   tokenHitRate: number | null;
   tokenInSpeed: number | null;
   tokenOutSpeed: number | null;
-  deltaTotalIn: number;
 };
 
 export type ProcessResult = {
   valid: boolean;
-  normalized: NormalizedTick | null;
-  delta: TickDeltaResult;
+  snapshot: CurrentTick | null;
+  measurement: TickSnapshot;
   wroteState: boolean;
   wroteSample: boolean;
 };
@@ -143,8 +153,8 @@ export type TickState = {
   dirty: boolean;
   prevTick: PrevTickStatusValue | null;
   valid: boolean;
-  delta: TickDeltaResult | null;
-  normalized: NormalizedTick | null;
+  measurement: TickSnapshot | null;
+  snapshot: CurrentTick | null;
   sample: TokenSample | null;
 };
 
@@ -169,15 +179,15 @@ export type StatAggregate = {
 
 type StatCacheEntry<T> = { at: number; value: T; ttlMs?: number };
 
-const NO_DELTA: TickDeltaResult = {
-  hasDelta: false,
-  deltaIn: 0,
-  deltaOut: 0,
-  deltaApi: 0,
-  deltaCacheRead: 0,
-  deltaTotalIn: 0,
-  currentTotalIn: null,
-  writeBack: null,
+const EMPTY_TICK: TickSnapshot = {
+  hasMeasurement: false,
+  in: 0,
+  out: 0,
+  cachedIn: 0,
+  totalIn: 0,
+  totalOut: 0,
+  totalApiMs: 0,
+  apiMs: 0,
 };
 
 const STAT_CACHE_TTL_MS = 300_000;
@@ -224,10 +234,6 @@ export function stateFilePath(cwd: string): string {
 
 export function statusFilePath(cwd: string): string {
   return stateFilePath(cwd);
-}
-
-function legacyStatusFilePath(cwd: string): string {
-  return join(stateRoot(), projectHash(cwd), "status.json");
 }
 
 export function sampleFilePath(cwd: string, sessionId: string): string {
@@ -318,14 +324,13 @@ function parseStore(raw: string): Store {
     }
     if (key === PREV_TICK_KEY) {
       const v = e.value as Record<string, unknown>;
+      // v0.8.10-alpha.2 — only totalApiMs + identity participate in
+      // any cross-tick math. Legacy `in/out/cachedIn/totalIn` fields
+      // on disk (from pre-alpha versions) are silently dropped.
       out[key] = {
         at: e.at,
         kind: "prevTickStatus",
         value: {
-          in: typeof v.in === "number" ? v.in : 0,
-          out: typeof v.out === "number" ? v.out : 0,
-          cachedIn: typeof v.cachedIn === "number" ? v.cachedIn : 0,
-          totalIn: typeof v.totalIn === "number" ? v.totalIn : 0,
           totalApiMs: typeof v.totalApiMs === "number" ? v.totalApiMs : 0,
           sessionId: typeof v.sessionId === "string" ? v.sessionId : null,
           cwd: typeof v.cwd === "string" ? v.cwd : null,
@@ -340,12 +345,16 @@ function parseStore(raw: string): Store {
         at: e.at,
         kind: "tickStatus",
         value: {
-          accIn: typeof v.accIn === "number" ? v.accIn : 0,
-          accOut: typeof v.accOut === "number" ? v.accOut : 0,
-          accCached: typeof v.accCached === "number" ? v.accCached : 0,
-          accTotalIn: typeof v.accTotalIn === "number" ? v.accTotalIn : 0,
+          accTokenIn: typeof v.accTokenIn === "number" ? v.accTokenIn
+            : typeof v.accIn === "number" ? v.accIn : 0,
+          accTokenOut: typeof v.accTokenOut === "number" ? v.accTokenOut
+            : typeof v.accOut === "number" ? v.accOut : 0,
+          accTokenCachedIn: typeof v.accTokenCachedIn === "number" ? v.accTokenCachedIn
+            : typeof v.accCached === "number" ? v.accCached : 0,
+          accTokenTotalIn: typeof v.accTokenTotalIn === "number" ? v.accTokenTotalIn : 0,
           accApiMs: typeof v.accApiMs === "number" ? v.accApiMs : 0,
-          accApiCount: typeof v.accApiCount === "number" ? v.accApiCount : 0,
+          accApiCalls: typeof v.accApiCalls === "number" ? v.accApiCalls
+            : typeof v.accApiCount === "number" ? v.accApiCount : 0,
         },
       };
     }
@@ -364,10 +373,6 @@ function loadStoreFromPath(path: string, cwd: string): Store | null {
   return parseStore(raw);
 }
 
-function usingDefaultStatusResolver(): boolean {
-  return _pathResolver === statusFilePath;
-}
-
 function loadFromDiskInternal(cwd: string): Store {
   const cached = _stores.get(cwd);
   if (cached) return cached;
@@ -380,9 +385,6 @@ function loadFromDiskInternal(cwd: string): Store {
 
   const primaryPath = _pathResolver(cwd);
   let store = loadStoreFromPath(primaryPath, cwd);
-  if (store == null && usingDefaultStatusResolver()) {
-    store = loadStoreFromPath(legacyStatusFilePath(cwd), cwd);
-  }
   if (store == null) store = {};
   _stores.set(cwd, store);
   return store;
@@ -419,21 +421,17 @@ export function flushToDisk(cwd: string, store: Store): void {
 
 export function emptyTickStatus(): TickStatusValue {
   return {
-    accIn: 0,
-    accOut: 0,
-    accCached: 0,
-    accTotalIn: 0,
+    accTokenIn: 0,
+    accTokenOut: 0,
+    accTokenCachedIn: 0,
+    accTokenTotalIn: 0,
     accApiMs: 0,
-    accApiCount: 0,
+    accApiCalls: 0,
   };
 }
 
 export function emptyPrevTickStatus(): PrevTickStatusValue {
   return {
-    in: 0,
-    out: 0,
-    cachedIn: 0,
-    totalIn: 0,
     totalApiMs: 0,
     sessionId: null,
     cwd: null,
@@ -491,6 +489,18 @@ export function writeTickStatus(
   if (!cwd) return;
   const store = cloneStore(loadFromDiskInternal(cwd));
   store[key] = { at: Date.now(), kind: "tickStatus", value };
+  // v0.8.10-alpha.2 — also seed the in-memory pending map so
+  // a subsequent processTick on this cwd sees the seed without
+  // requiring an explicit beginTick + load from disk. The
+  // activeStoreFor fallback returns _tickState.pending when
+  // _tickState.cwd is null (the test setup convention
+  // beginTickForTest(null, null)), so updating pending is
+  // the only way to reach the read path even when the active
+  // tick's cwd doesn't match this write's cwd.
+  if (_tickState) {
+    _tickState.pending[key] = { at: Date.now(), kind: "tickStatus", value };
+    _tickState.dirty = true;
+  }
   flushToDiskInternal(cwd, store);
 }
 
@@ -511,6 +521,20 @@ export function writePrevTickStatus(
   if (!cwd) return;
   const store = cloneStore(loadFromDiskInternal(cwd));
   store[PREV_TICK_KEY] = { at: Date.now(), kind: "prevTickStatus", value };
+  // v0.8.10-alpha.2 — also seed the in-memory pending map so a
+  // subsequent beginTickForTest on this cwd sees the seed
+  // (beginTick loads from disk into pending, so the on-disk
+  // write is the source of truth — but seeding pending as well
+  // means a test that fires setPrevTick then beginTickForTest
+  // doesn't lose the seed to a "pending was empty" race).
+  if (_tickState) {
+    _tickState.pending[PREV_TICK_KEY] = {
+      at: Date.now(),
+      kind: "prevTickStatus",
+      value,
+    };
+    _tickState.dirty = true;
+  }
   flushToDiskInternal(cwd, store);
 }
 
@@ -813,15 +837,18 @@ export function getStatAggregate(filter: SumFilter): StatAggregate {
 
 let _tickState: TickState | null = null;
 
+// v0.8.10-alpha.2 — the prev cursor carries ONLY totalApiMs. Returns
+// it (as the baseline for `apiMs = current - baseline`) or null when
+// there's no history (no prev, identity mismatch, or unknown session).
 function resolvePreviousBaseline(
   tokens: TokenSnapshot | null,
   prev: PrevTickStatusValue | null,
-): { prev: PrevTickSnapshot | null; regressionReset: boolean; invalidRegression: boolean } {
+): { prevTotalApiMs: number | null; invalidRegression: boolean } {
   if (!tokens?.sessionId || !prev) {
-    return { prev: null, regressionReset: false, invalidRegression: false };
+    return { prevTotalApiMs: null, invalidRegression: false };
   }
   if (prev.sessionId != null && prev.sessionId !== tokens.sessionId) {
-    return { prev: null, regressionReset: false, invalidRegression: false };
+    return { prevTotalApiMs: null, invalidRegression: false };
   }
   const currentTotalApiMs = tokens.cost.totalApiDurationMs;
   if (
@@ -829,124 +856,114 @@ function resolvePreviousBaseline(
     Number.isFinite(currentTotalApiMs) &&
     currentTotalApiMs < prev.totalApiMs
   ) {
-    return { prev: null, regressionReset: true, invalidRegression: true };
+    return { prevTotalApiMs: prev.totalApiMs, invalidRegression: true };
   }
-  return {
-    prev: {
-      apiMs: prev.totalApiMs,
-      in: prev.in,
-      out: prev.out,
-      cacheRead: prev.cachedIn,
-      totalIn: prev.totalIn,
-    },
-    regressionReset: false,
-    invalidRegression: false,
-  };
+  return { prevTotalApiMs: prev.totalApiMs, invalidRegression: false };
 }
 
 function normalizeTick(
   tokens: TokenSnapshot | null,
   prev: PrevTickStatusValue | null,
-): { normalized: NormalizedTick | null; delta: TickDeltaResult } {
+): { snapshot: CurrentTick | null; measurement: TickSnapshot } {
   if (!tokens || !tokens.sessionId || !tokens.cwd) {
-    return { normalized: null, delta: NO_DELTA };
+    return { snapshot: null, measurement: EMPTY_TICK };
   }
-  const tokenIn = tokens.current.tokenIn;
-  const tokenOut = tokens.current.tokenOut;
+  const in_ = tokens.current.tokenIn;
+  const out_ = tokens.current.tokenOut;
   const totalApiMs = tokens.cost.totalApiDurationMs;
+  const totalIn = tokens.totals.tokenTotalIn ?? null;
+  const totalOut = tokens.totals.tokenTotalOut ?? null;
   if (
-    tokenIn == null ||
-    !Number.isFinite(tokenIn) ||
-    tokenOut == null ||
-    !Number.isFinite(tokenOut) ||
+    in_ == null ||
+    !Number.isFinite(in_) ||
+    out_ == null ||
+    !Number.isFinite(out_) ||
     totalApiMs == null ||
-    !Number.isFinite(totalApiMs)
+    !Number.isFinite(totalApiMs) ||
+    totalIn == null ||
+    totalOut == null
   ) {
-    return { normalized: null, delta: NO_DELTA };
+    return { snapshot: null, measurement: EMPTY_TICK };
   }
 
-  const { prev: baseline, regressionReset, invalidRegression } = resolvePreviousBaseline(tokens, prev);
+  const { prevTotalApiMs, invalidRegression } = resolvePreviousBaseline(tokens, prev);
+  // v0.8.10-alpha.2 — apiMs is THE unique cross-tick delta.
+  // When prevTotalApiMs is null (no history, identity
+  // mismatch, or unknown session), we back-derive apiMs from
+  // tokenOut via the legacy v0.4.x formula: apiMs = tokenOut *
+  // 1000 / 50 (assumes a 50 t/s fall-back rate so the first
+  // tick's speed gates render a real value rather than 0).
+  // This matches the user's contract that apiMs is the only
+  // stdin field participating in cross-tick subtraction.
   const apiMs = invalidRegression
     ? -1
-    : baseline
-      ? totalApiMs - baseline.apiMs
-      : (tokenOut * 1000) / 50;
-  const tokenCachedIn = tokens.current.tokenCachedIn ?? 0;
-  const hasTokenCachedIn = tokens.current.tokenCachedIn != null;
-  const tokenTotalIn = tokens.totals.tokenTotalIn ?? null;
-  const tokenTotalOut = tokens.totals.tokenTotalOut ?? null;
-  const deltaTotalIn =
-    tokenTotalIn != null ? Math.max(0, tokenTotalIn - (baseline?.totalIn ?? 0)) : 0;
+    : prevTotalApiMs !== null
+      ? totalApiMs - prevTotalApiMs
+      : (out_ * 1000) / 50;
+  const cachedIn = tokens.current.tokenCachedIn ?? 0;
+  const hasCachedIn = tokens.current.tokenCachedIn != null;
+  // v0.8.10-alpha.2 — validation gate uses session-cumulative totals
+  // (user contract pinned to the totals.* fields). The per-turn
+  // current.tokenIn / tokenOut are snapshot fields, not gates.
+  const valid = totalIn > 0 && totalOut > 0 && apiMs > 0;
   const tokenHitRate =
-    tokenTotalIn != null && tokenTotalIn > 0
-      ? (tokenCachedIn / tokenTotalIn) * 100
-      : null;
-  const tokenInSpeed = apiMs > 0 ? (tokenIn / apiMs) * 1000 : null;
-  const tokenOutSpeed = apiMs > 0 ? (tokenOut / apiMs) * 1000 : null;
+    totalIn > 0 ? (cachedIn / totalIn) * 100 : null;
+  const tokenInSpeed = apiMs > 0 ? (in_ / apiMs) * 1000 : null;
+  const tokenOutSpeed = apiMs > 0 ? (out_ / apiMs) * 1000 : null;
 
-  const writeBack: PrevTickSnapshot = {
-    apiMs: totalApiMs,
-    in: tokenIn,
-    out: tokenOut,
-    cacheRead: tokenCachedIn,
-    totalIn: tokenTotalIn ?? 0,
-  };
-
-  const valid = tokenIn > 0 && tokenOut > 0 && apiMs > 0;
-  const delta: TickDeltaResult = {
-    hasDelta: valid,
-    deltaIn: valid ? tokenIn : 0,
-    deltaOut: valid ? tokenOut : 0,
-    deltaApi: valid ? apiMs : 0,
-    deltaCacheRead: valid && hasTokenCachedIn ? tokenCachedIn : 0,
-    deltaTotalIn: valid ? deltaTotalIn : 0,
-    currentTotalIn: tokenTotalIn,
-    writeBack,
+  const measurement: TickSnapshot = {
+    hasMeasurement: valid,
+    in: valid ? in_ : 0,
+    out: valid ? out_ : 0,
+    cachedIn: valid && hasCachedIn ? cachedIn : 0,
+    totalIn: totalIn ?? 0,
+    totalOut: totalOut ?? 0,
+    totalApiMs,
+    apiMs: valid ? apiMs : 0,
   };
 
   return {
-    normalized: {
+    snapshot: {
       sessionId: tokens.sessionId,
       cwd: tokens.cwd,
       modelDisplayName: tokens.modelDisplayName ?? null,
-      tokenIn,
-      tokenOut,
-      tokenCachedIn,
-      hasTokenCachedIn,
-      tokenCacheCreation: tokens.current.tokenCacheCreation ?? 0,
-      tokenTotalIn,
-      tokenTotalOut,
+      in: in_,
+      out: out_,
+      cachedIn,
+      hasCachedIn,
+      cacheCreation: tokens.current.tokenCacheCreation ?? 0,
+      totalIn,
+      totalOut,
       totalApiMs,
       apiMs,
-      prev: baseline,
-      prevApiMsForSample: baseline ? baseline.apiMs : null,
-      regressionReset,
+      prevTotalApiMs,
+      invalidRegression,
       tokenHitRate,
       tokenInSpeed,
       tokenOutSpeed,
-      deltaTotalIn,
     },
-    delta,
+    measurement,
   };
 }
 
-function validateNormalizedTick(tick: NormalizedTick | null): boolean {
+function validateNormalizedTick(tick: CurrentTick | null): boolean {
   if (!tick) return false;
-  return tick.tokenIn > 0 && tick.tokenOut > 0 && tick.apiMs > 0;
+  // v0.8.10-alpha.2 — session-cumulative totals (per user contract).
+  return (tick.totalIn ?? 0) > 0 && (tick.totalOut ?? 0) > 0 && tick.apiMs > 0;
 }
 
 export function validateTickForDataProcessor(
   tokens: TokenSnapshot | null,
   prev: PrevTickStatusValue | null,
 ): boolean {
-  return validateNormalizedTick(normalizeTick(tokens, prev).normalized);
+  return validateNormalizedTick(normalizeTick(tokens, prev).snapshot);
 }
 
 export function beginTick(cwd: string | null, tokens: TokenSnapshot | null): TickState {
   const loaded = cwd ? loadFromDiskInternal(cwd) : {};
   const prevEntry = loaded[PREV_TICK_KEY];
   const prev = prevEntry?.kind === "prevTickStatus" ? prevEntry.value : null;
-  const { normalized, delta } = normalizeTick(tokens, prev);
+  const { snapshot, measurement } = normalizeTick(tokens, prev);
   _tickState = {
     cwd,
     tokens,
@@ -954,9 +971,9 @@ export function beginTick(cwd: string | null, tokens: TokenSnapshot | null): Tic
     pending: cloneStore(loaded),
     dirty: false,
     prevTick: prev,
-    valid: validateNormalizedTick(normalized),
-    delta,
-    normalized,
+    valid: validateNormalizedTick(snapshot),
+    measurement,
+    snapshot,
     sample: null,
   };
   return _tickState;
@@ -981,7 +998,14 @@ export function commit(): void {
   const s = _tickState;
   if (!s) return;
   if (!s.cwd) return;
-  if (!s.valid || !s.dirty) return;
+  // v0.8.10-alpha.2 — flush on dirty regardless of `valid`. The
+  // regression-reset mark (ccsession slot zero) needs to reach disk
+  // on the regression tick itself even though the tick is invalid
+  // (apiMs = -1). Validation gate now governs sample-row emission
+  // only (see processTick — `s.sample` stays null on invalid).
+  // v1.0 invariant preserved: at most one full-file rewrite per
+  // tick (one or zero).
+  if (!s.dirty) return;
   flushToDiskInternal(s.cwd, s.pending);
 }
 
@@ -1000,6 +1024,14 @@ export function beginTickForTest(
 
 // ----- Render/query helpers ----------------------------------------------------
 
+// v0.8.10-alpha.2 — peekPrevTick returns just the prev-cursor (the
+// one field the next tick subtracts against). Identity match is
+// still applied so a stale baseline from a different sessionId is
+// masked out.
+export type PrevTickSnapshot = {
+  totalApiMs: number;
+};
+
 export function peekPrevTick(
   sessionId: string,
   cwd?: string | null,
@@ -1007,13 +1039,7 @@ export function peekPrevTick(
   const prev = readPrevTickStatus(cwd);
   if (!prev) return null;
   if (prev.sessionId !== null && prev.sessionId !== sessionId) return null;
-  return {
-    apiMs: prev.totalApiMs,
-    in: prev.in,
-    out: prev.out,
-    cacheRead: prev.cachedIn,
-    totalIn: prev.totalIn,
-  };
+  return { totalApiMs: prev.totalApiMs };
 }
 
 export function peekLastSpeed(
@@ -1049,12 +1075,12 @@ export function peekAvg(
   const v = readTickStatus(cwd, `tickStatus:${sessionId}`);
   if (!v) return null;
   return {
-    accIn: v.accIn,
-    accOut: v.accOut,
-    accApi: v.accApiMs,
-    accCached: v.accCached,
-    accApiCount: v.accApiCount,
-    accTotalIn: v.accTotalIn,
+    accTokenIn: v.accTokenIn,
+    accTokenOut: v.accTokenOut,
+    accApiMs: v.accApiMs,
+    accTokenCachedIn: v.accTokenCachedIn,
+    accApiCalls: v.accApiCalls,
+    accTokenTotalIn: v.accTokenTotalIn,
   };
 }
 
@@ -1082,28 +1108,37 @@ export function readAccumulator(
   const v = readTickStatus(args.cwd, key);
   if (!v) return null;
   return {
-    accIn: v.accIn,
-    accOut: v.accOut,
-    accApi: v.accApiMs,
-    accCached: v.accCached,
-    accApiCount: v.accApiCount,
-    accTotalIn: v.accTotalIn,
+    accTokenIn: v.accTokenIn,
+    accTokenOut: v.accTokenOut,
+    accApiMs: v.accApiMs,
+    accTokenCachedIn: v.accTokenCachedIn,
+    accApiCalls: v.accApiCalls,
+    accTokenTotalIn: v.accTokenTotalIn,
   };
 }
 
-export function getDeltaForRender(): TickDeltaResult {
-  return _tickState?.delta ?? NO_DELTA;
+// v0.8.10-alpha.2 — render-facing snapshot accessor. Returns the
+// current tick's snapshot + the derived apiMs (or EMPTY_TICK when
+// no tick is active). Render reads it for speed/apiMs modules and
+// pulls per-turn fields straight from here without any
+// "delta of two snapshots" math.
+export function getDeltaForRender(): TickSnapshot {
+  return _tickState?.measurement ?? EMPTY_TICK;
 }
 
 // ----- Write-side helpers (compat with old data-processor surface) ------------
 
 export function computeAndCacheTickDeltaPure(
   tokens: TokenSnapshot | null,
-): TickDeltaResult {
+): TickSnapshot {
   const prev = _tickState?.prevTick ?? null;
-  return normalizeTick(tokens, prev).delta;
+  return normalizeTick(tokens, prev).measurement;
 }
 
+// v0.8.10-alpha.2 — setPrevTick now stamps only totalApiMs (the one
+// field the next tick subtracts against for `apiMs`). Identity
+// (sessionId/cwd/model) is preserved across ticks so peekPrevTick's
+// identity-mismatch guard has something to compare against.
 export function setPrevTick(
   _sessionId: string,
   snap: PrevTickSnapshot,
@@ -1111,14 +1146,16 @@ export function setPrevTick(
   identity?: { sessionId?: string | null; cwd?: string | null; model?: string | null },
 ): void {
   void _sessionId;
-  void cwd;
-  const prev = readPrevTickStatus(_tickState?.cwd ?? null) ?? emptyPrevTickStatus();
-  mark(PREV_TICK_KEY, {
-    in: snap.in,
-    out: snap.out,
-    cachedIn: snap.cacheRead,
-    totalIn: snap.totalIn,
-    totalApiMs: snap.apiMs,
+  if (!cwd) return;
+  // v0.8.10-alpha.2 — delegate to writePrevTickStatus so the
+  // seed reaches BOTH disk (so the next beginTickForTest's
+  // loadFromDiskInternal picks it up) AND the in-memory pending
+  // map (so a same-tick setAvg call sees the seed). The earlier
+  // mark-only path wrote only to pending, which got clobbered
+  // by beginTick's loadFromDiskInternal overwrite.
+  const prev = readPrevTickStatus(cwd) ?? emptyPrevTickStatus();
+  writePrevTickStatus(cwd, {
+    totalApiMs: snap.totalApiMs,
     sessionId: identity?.sessionId ?? prev.sessionId,
     cwd: identity?.cwd ?? prev.cwd,
     model: identity?.model ?? prev.model,
@@ -1162,53 +1199,71 @@ export function setAvg(
   cwd?: string | null,
   extras?: {
     modelDisplayName?: string | null;
-    deltaApiCount?: number;
+    deltaApiCalls?: number;
     currentApiMs?: number;
-    deltaIn?: number;
-    deltaOut?: number;
-    deltaCache?: number;
+    deltaTokenIn?: number;
+    deltaTokenOut?: number;
+    deltaTokenCachedIn?: number;
     deltaApiMs?: number;
-    deltaTotalIn?: number;
+    deltaTokenTotalIn?: number;
   },
 ): void {
   if (!sessionId) return;
-  const incrementCount = extras?.deltaApiCount ?? 0;
-  const deltaIn = extras?.deltaIn ?? 0;
-  const deltaOut = extras?.deltaOut ?? 0;
-  const deltaCache = extras?.deltaCache ?? 0;
+  const incrementCalls = extras?.deltaApiCalls ?? 0;
+  const deltaTokenIn = extras?.deltaTokenIn ?? 0;
+  const deltaTokenOut = extras?.deltaTokenOut ?? 0;
+  const deltaTokenCachedIn = extras?.deltaTokenCachedIn ?? 0;
   const deltaApiMs = extras?.deltaApiMs ?? 0;
-  const deltaTotalIn = extras?.deltaTotalIn ?? 0;
+  const deltaTokenTotalIn = extras?.deltaTokenTotalIn ?? 0;
 
   const sessionKey = `tickStatus:${sessionId}`;
   const sessionCurrent = readTickStatus(cwd, sessionKey) ?? emptyTickStatus();
   const sessionNext: TickStatusValue = { ...sessionCurrent };
-  sessionNext.accIn += snap.accIn;
-  sessionNext.accOut += snap.accOut;
-  sessionNext.accCached += snap.accCached;
-  sessionNext.accApiMs += snap.accApi;
-  sessionNext.accTotalIn += snap.accTotalIn;
-  sessionNext.accApiCount += snap.accApiCount;
+  // v0.8.10-alpha.2 (per user refinement 2026-07-04) —
+  // `accTokenTotalIn` is an ACCUMULATE-ADDITIVE accumulator
+  // following the same shape as accTokenIn / accTokenOut /
+  // accTokenCachedIn:
+  //   accTokenTotalIn = accTokenTotalIn + tokenTotalIn
+  // The naming convention is `acc<Field>` matching the
+  // stdout prefix schema (m_accTokenTotalIn) and the on-disk
+  // TickStatusValue field. The "tokenTotalIn" value from
+  // stdin IS a per-tick snapshot (NOT cross-tick cumulative),
+  // but the ACCUMULATOR aggregates it across ticks for
+  // cross-session analytics — that's a deliberate
+  // accumulator choice, NOT a semantic confusion with
+  // "total_api_duration_ms" which IS truly cross-tick
+  // cumulative.
+  sessionNext.accTokenIn += snap.accTokenIn;
+  sessionNext.accTokenOut += snap.accTokenOut;
+  sessionNext.accTokenCachedIn += snap.accTokenCachedIn;
+  sessionNext.accApiMs += snap.accApiMs;
+  sessionNext.accTokenTotalIn += snap.accTokenTotalIn;
+  sessionNext.accApiCalls += snap.accApiCalls;
   mark(sessionKey, sessionNext);
 
   const bumpDeltaScope = (key: string) => {
     const current = readTickStatus(cwd, key) ?? emptyTickStatus();
     const next: TickStatusValue = { ...current };
-    next.accIn += deltaIn;
-    next.accOut += deltaOut;
-    next.accCached += deltaCache;
+    next.accTokenIn += deltaTokenIn;
+    next.accTokenOut += deltaTokenOut;
+    next.accTokenCachedIn += deltaTokenCachedIn;
     next.accApiMs += deltaApiMs;
-    next.accTotalIn += deltaTotalIn;
-    next.accApiCount += incrementCount;
+    // v0.8.10-alpha.2 — all 4 scopes (session / project /
+    // model / ccsession) accumulate `accTokenTotalIn`
+    // additively: `+= tokenTotalIn` per tick, identical to
+    // accTokenIn / accTokenOut / accTokenCachedIn.
+    next.accTokenTotalIn += deltaTokenTotalIn;
+    next.accApiCalls += incrementCalls;
     mark(key, next);
   };
 
-  if (cwd && (incrementCount > 0 || deltaIn || deltaOut || deltaCache || deltaApiMs || deltaTotalIn)) {
+  if (cwd && (incrementCalls > 0 || deltaTokenIn || deltaTokenOut || deltaTokenCachedIn || deltaApiMs || deltaTokenTotalIn)) {
     bumpDeltaScope(`tickStatus:${projectHash(cwd)}`);
   }
-  if (incrementCount > 0 || deltaIn || deltaOut || deltaCache || deltaApiMs || deltaTotalIn) {
+  if (incrementCalls > 0 || deltaTokenIn || deltaTokenOut || deltaTokenCachedIn || deltaApiMs || deltaTokenTotalIn) {
     bumpDeltaScope(CCSESSION_KEY);
   }
-  if (extras?.modelDisplayName && (incrementCount > 0 || deltaIn || deltaOut || deltaCache || deltaApiMs || deltaTotalIn)) {
+  if (extras?.modelDisplayName && (incrementCalls > 0 || deltaTokenIn || deltaTokenOut || deltaTokenCachedIn || deltaApiMs || deltaTokenTotalIn)) {
     bumpDeltaScope(`tickStatus:${extras.modelDisplayName}`);
   }
 }
@@ -1220,74 +1275,81 @@ export function processTick(
   const s = getState();
   const prevEntry = s.pending[PREV_TICK_KEY];
   const prev = prevEntry?.kind === "prevTickStatus" ? prevEntry.value : null;
-  const { normalized, delta } = normalizeTick(tokens, prev);
-  s.normalized = normalized;
-  s.valid = validateNormalizedTick(normalized);
-  s.delta = delta;
+  const { snapshot, measurement } = normalizeTick(tokens, prev);
+  s.snapshot = snapshot;
+  s.valid = validateNormalizedTick(snapshot);
+  s.measurement = measurement;
 
-  if (!s.valid || !normalized || !tokens?.sessionId) {
+  // v0.8.10-alpha.2 — regression-reset (ccsession slot zero) and
+  // prev-tick baseline update fire BEFORE the validity guard, so
+  // they reach disk even on a regression tick (apiMs == -1 → invalid).
+  // The commit gate in commit() is no longer gated on `valid`, so
+  // `dirty === true` is sufficient to flush `pending`.
+  if (snapshot?.invalidRegression) {
+    mark(CCSESSION_KEY, emptyTickStatus());
+  }
+
+  if (!s.valid || !snapshot || !tokens?.sessionId) {
     s.sample = null;
     return;
   }
 
-  if (normalized.regressionReset) {
-    mark(CCSESSION_KEY, emptyTickStatus());
-  }
-
-  setPrevTick(tokens.sessionId, {
-    apiMs: normalized.totalApiMs,
-    in: normalized.tokenIn,
-    out: normalized.tokenOut,
-    cacheRead: normalized.tokenCachedIn,
-    totalIn: normalized.tokenTotalIn ?? 0,
-  }, cwd, {
+  // Stage the prev-cursor (totalApiMs only). The next tick reads
+  // `prev.totalApiMs` to compute `apiMs = current - prev`.
+  mark(PREV_TICK_KEY, {
+    totalApiMs: snapshot.totalApiMs,
     sessionId: tokens.sessionId,
     cwd,
     model: tokens.modelDisplayName ?? null,
   });
 
+  // Accumulators get the current snapshot values straight — no
+  // cross-tick subtraction on per-turn fields. `accTokenTotalIn` keeps its
+  // own internal last-value semantics (see setAvg) so the user's
+  // `m_accTokenIn|field|total` line-template still gets a meaningful
+  // delta accumulator.
   setAvg(tokens.sessionId, {
-    accIn: normalized.tokenIn,
-    accOut: normalized.tokenOut,
-    accApi: normalized.apiMs,
-    accCached: normalized.hasTokenCachedIn ? normalized.tokenCachedIn : 0,
-    accApiCount: 1,
-    accTotalIn: normalized.deltaTotalIn,
+    accTokenIn: snapshot.in,
+    accTokenOut: snapshot.out,
+    accApiMs: snapshot.apiMs,
+    accTokenCachedIn: snapshot.hasCachedIn ? snapshot.cachedIn : 0,
+    accApiCalls: 1,
+    accTokenTotalIn: snapshot.totalIn ?? 0,
   }, cwd, {
     modelDisplayName: tokens.modelDisplayName ?? null,
-    deltaApiCount: 1,
-    deltaIn: normalized.tokenIn,
-    deltaOut: normalized.tokenOut,
-    deltaCache: normalized.hasTokenCachedIn ? normalized.tokenCachedIn : 0,
-    deltaApiMs: normalized.apiMs,
-    deltaTotalIn: normalized.deltaTotalIn,
+    deltaApiCalls: 1,
+    deltaTokenIn: snapshot.in,
+    deltaTokenOut: snapshot.out,
+    deltaTokenCachedIn: snapshot.hasCachedIn ? snapshot.cachedIn : 0,
+    deltaApiMs: snapshot.apiMs,
+    deltaTokenTotalIn: snapshot.totalIn ?? 0,
   });
 
-  if (normalized.tokenInSpeed != null) {
-    setLastSpeed(tokens.sessionId, "in", normalized.tokenInSpeed, cwd);
+  if (snapshot.tokenInSpeed != null) {
+    setLastSpeed(tokens.sessionId, "in", snapshot.tokenInSpeed, cwd);
   }
-  if (normalized.tokenOutSpeed != null) {
-    setLastSpeed(tokens.sessionId, "out", normalized.tokenOutSpeed, cwd);
+  if (snapshot.tokenOutSpeed != null) {
+    setLastSpeed(tokens.sessionId, "out", snapshot.tokenOutSpeed, cwd);
   }
-  setLastApiMs(tokens.sessionId, normalized.apiMs, cwd);
-  if (normalized.tokenHitRate != null) {
-    setLastTokenHitRate(tokens.sessionId, normalized.tokenHitRate, cwd);
+  setLastApiMs(tokens.sessionId, snapshot.apiMs, cwd);
+  if (snapshot.tokenHitRate != null) {
+    setLastTokenHitRate(tokens.sessionId, snapshot.tokenHitRate, cwd);
   }
 
   s.sample =
-    normalized.tokenTotalIn != null && normalized.tokenTotalOut != null
+    snapshot.totalIn != null && snapshot.totalOut != null
       ? {
           at: Date.now(),
-          totalIn: normalized.tokenTotalIn,
-          totalOut: normalized.tokenTotalOut,
-          in: normalized.tokenIn,
-          out: normalized.tokenOut,
-          cacheCreation: normalized.tokenCacheCreation,
-          cacheIn: normalized.tokenCachedIn,
-          model: normalized.modelDisplayName ?? undefined,
-          totalApiMs: normalized.totalApiMs,
-          apiMs: normalized.apiMs,
-          prevApiMs: normalized.prevApiMsForSample,
+          totalIn: snapshot.totalIn,
+          totalOut: snapshot.totalOut,
+          in: snapshot.in,
+          out: snapshot.out,
+          cacheCreation: snapshot.cacheCreation,
+          cacheIn: snapshot.cachedIn,
+          model: snapshot.modelDisplayName ?? undefined,
+          totalApiMs: snapshot.totalApiMs,
+          apiMs: snapshot.apiMs,
+          prevApiMs: snapshot.prevTotalApiMs,
         }
       : null;
 }
@@ -1299,7 +1361,10 @@ export function processAndSaveTick(
   beginTick(cwd, tokens);
   processTick(cwd, tokens);
   const s = getState();
-  const shouldWriteState = !!s.cwd && s.valid && s.dirty;
+  // v0.8.10-alpha.2 — `s.valid` no longer gates flush. Sample-row
+  // emission is still gated on `s.valid` (invalid ticks don't have
+  // a meaningful row to append).
+  const shouldWriteState = !!s.cwd && s.dirty;
   commit();
   let wroteSample = false;
   if (s.valid && s.sample && tokens?.sessionId && cwd) {
@@ -1308,8 +1373,8 @@ export function processAndSaveTick(
   }
   return {
     valid: s.valid,
-    normalized: s.normalized,
-    delta: s.delta ?? NO_DELTA,
+    snapshot: s.snapshot,
+    measurement: s.measurement ?? EMPTY_TICK,
     wroteState: shouldWriteState,
     wroteSample,
   };

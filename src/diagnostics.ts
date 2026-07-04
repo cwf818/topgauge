@@ -46,7 +46,7 @@
 
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { projectHash } from "./token-store.ts";
+import { projectHash } from "./status-store.ts";
 
 // ----- Path -----
 
