@@ -30,19 +30,15 @@ import * as cache from "./cache.ts";
 import { type Remains } from "./api.ts";
 import { type Balance } from "./api.deepseek.ts";
 import type { Provider } from "./types.ts";
-import { resolveApiMsSample } from "./api-ms.ts";
 import { compose } from "./composition.ts";
 import { type FetchResult, buildProviderLine } from "./dispatch.ts";
 import { applyProviderOverrides, configStore, loadConfig } from "./config.ts";
-import { peekPrevTick } from "./render.ts";
-import { processTick } from "./data-processor.ts";
-import { beginTick, commit as tickStateCommit } from "./tick-state.ts";
+import * as statusStore from "./status-store.ts";
 import {
   fetchForProvider,
   getProviderEntry,
   matchProvider,
 } from "./providers.ts";
-import { appendSample } from "./token-store.ts";
 import { parseTokenSnapshot } from "./session-parse.ts";
 import * as diagnostics from "./diagnostics.ts";
 import { existsSync, readFileSync } from "node:fs";
@@ -202,23 +198,11 @@ async function main(): Promise<void> {
   // reset on every tick — the plugin is a per-tick child process so
   // _sessionCwd never leaks across sessions.
   diagnostics.setSessionCwd(tokens?.cwd ?? null);
-  // v0.9.x — per-tick in-memory pipeline. beginTick loads the
-  // project-scoped status.json once, validates the snapshot
-  // (totalIn>0 AND totalOut>0 AND deltaApiMs>0), and exposes
-  // pending state for the renderer to mutate. commit() at the
-  // very end flushes pending to disk as ONE full-file rewrite
-  // (or zero writes on invalid ticks / idle ticks). See
-  // src/tick-state.ts for the contract.
-  beginTick(tokens?.cwd ?? null, tokens);
-  // v1.0 — data-processor (per user contract 2026-07-04) ALWAYS
-  // runs, independent of the user's lineTemplate. Even an empty
-  // template still has the data-processor fire so the next tick
-  // has a fresh baseline. Runs BEFORE appendSample so the
-  // latter still sees pending[PREV_TICK_KEY] = load-time prev
-  // baseline (processTick's setPrevTick mark is for THIS tick's
-  // writeBack, which the next tick will load as `prev`). See
-  // src/data-processor.ts:processTick.
-  processTick(tokens?.cwd ?? null, tokens);
+  // Centralized stdin-derived state pipeline. status-store owns the
+  // per-project state transaction, validation gate, one-shot state.json
+  // flush, and the optional sample JSONL append. It runs before render
+  // regardless of whether any module ends up producing output.
+  statusStore.processAndSaveTick(tokens?.cwd ?? null, tokens);
   // Record the raw stdin frame for postmortem. Gated by the same
   // TOPGAUGE_CC_DIAGNOSTICS_ENABLE switch as the rest of diagnostics.jsonl
   // (no-op when off). Source "stdin" so it doesn't collide with the
@@ -232,65 +216,9 @@ async function main(): Promise<void> {
   // different projects from racing on the same write stream.
   diagnostics.append("info", "stdin", stdinRaw, Date.now(), tokens?.cwd ?? null);
 
-  // Persist one sample row per tick so m_token5h/m_token7d can read
-  // across-tick history. v6.x — only stamp rows when the DELTA of
-  // totalApiDurationMs vs the previous tick is > 0 (an API call
-  // actually happened between ticks). The previous "absolute > 0"
-  // gate would still write rows on every tick of a long-running
-  // session even when cost data didn't advance — wasteful. On the
-  // first tick (no prev) any positive totalApiDurationMs counts as
-  // a delta — we always want at least one baseline row. Idle ticks
-  // (delta=0) carry no fresh per-API-call info, so a row would just
-  // duplicate the previous total. The path
-  // (`state/<projectHash>/<sessionId>.jsonl`) already encodes cwd +
-  // session, so the row carries only token + cache + the new
-  // model/apiMs tags. appendSample swallows disk errors.
-  if (
-    tokens &&
-    tokens.sessionId &&
-    tokens.cwd &&
-    tokens.totals.tokenTotalIn != null &&
-    tokens.totals.tokenTotalOut != null &&
-    tokens.cost.totalApiDurationMs != null
-  ) {
-    const prev = peekPrevTick(tokens.sessionId, tokens.cwd);
-    const decision = resolveApiMsSample({
-      at: Date.now(),
-      totalIn: tokens.totals.tokenTotalIn,
-      totalOut: tokens.totals.tokenTotalOut,
-      current: {
-        tokenIn: tokens.current.tokenIn,
-        tokenOut: tokens.current.tokenOut,
-        tokenCachedIn: tokens.current.tokenCachedIn,
-        tokenCacheCreation: tokens.current.tokenCacheCreation,
-      },
-      modelDisplayName: tokens.modelDisplayName,
-      totalApiMs: tokens.cost.totalApiDurationMs,
-      prev: prev ? { apiMs: prev.apiMs } : null,
-      sessionId: tokens.sessionId,
-    });
-    if (decision.kind === "write") {
-      appendSample(tokens.cwd, tokens.sessionId, decision.sample);
-    }
-    // v0.8.6 — dropped the `decision.kind === "warn"` branch that used
-    // to write the "deltaApiMs=0 with token activity" row into
-    // diagnostics.jsonl as source `apiMs-stuck`. The decision is now
-    // uniformly skip when there's nothing useful to write.
-  }
-
   const baseUrl = process.env.ANTHROPIC_BASE_URL;
   const upstream = UPSTREAM;
   const provider = matchProvider(baseUrl);
-
-  // v1.0 — flush the deferred writes from processTick into a
-  // single full-file rewrite of status.json. Moved up from the
-  // tail of main() (it used to live after process.stdout.write).
-  // Even on the null-provider branch below the data-processor
-  // still wrote to pending, so the commit MUST run before the
-  // early-return — otherwise the writes are silently dropped. No-op
-  // when validation failed or nothing was marked (idle tick /
-  // pristine tick); see tick-state.commit.
-  tickStateCommit();
 
   // v0.4.x — when no provider entry matches ANTHROPIC_BASE_URL,
   // dispatch through buildProviderLine anyway so provider-AGNOSTIC

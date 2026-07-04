@@ -1,84 +1,47 @@
-// Per-project tick-status state.
+// Runtime state boundary for stdin-derived data.
 //
-// v0.8.x — cwf-tickStatus-v2. The on-disk schema in
-// `<projectHash>/status.json` now carries two top-level slot
-// families with clearly separated semantic roles:
+// This module owns three related state files under
+// `${CLAUDE_CONFIG_DIR}/plugins/topgauge-cc/state/`:
 //
-//   (A) tickStatus:<...>  — PURE ACCUMULATORS (the user's
-//       "tickStatus 只表示累计状态" rule). Four dimensions, all
-//       write-only through setAvg's atomic path in render.ts:
+//   - `cache.stat.json`                    — cross-project sum/avg stat cache
+//   - `<projectHash>/state.json`           — per-project accumulated state
+//   - `<projectHash>/<sessionId>.jsonl`    — append-only normalized samples
 //
-//       tickStatus:<sessionId>   per-session (clear-bounded)
-//       tickStatus:<projectHash> per-project (cwd-bounded, no prefix)
-//       tickStatus:<model>       per-model (modelDisplayName)
-//       tickStatus:ccsession     per-claude-code-process (singleton,
-//                                no sessionId suffix; reset on
-//                                totalApiMs regression — see render.ts)
+// The write path is intentionally centralized here:
 //
-//       value shape (TickStatusValue):
-//         accIn        — accumulated current.input   across API calls
-//         accOut       — accumulated current.output  across API calls
-//         accCached    — accumulated current.cacheRead across API calls
-//         accTotalIn   — per-tick-delta-accumulator of totalIn
-//         accApiMs     — session-cumulative cost.totalApiDurationMs
-//                        at the last write (NOT a delta accumulator;
-//                        mirrors stdin's monotonic field)
-//         accApiCount  — accumulated API-call count
+//   stdin -> parseTokenSnapshot -> processAndSaveTick -> render
 //
-//   (B) prevTickStatus  — SINGLETON, NOT per-dimension. Holds the
-//       last tick's stdin snapshot. Pure std cache used by the
-//       writer to (i) compute the per-tick delta in/out/cachedIn/
-//       totalIn/totalApiMs and (ii) detect a ccsession reset (the
-//       user-defined rule: if current totalApiMs <
-//       prevTickStatus.totalApiMs, the Claude Code process
-//       restarted and the ccsession accumulator must be reset).
+// `processAndSaveTick()` loads the project state, normalizes stdin,
+// validates it, updates accumulators / prevTickStatus / lastActive,
+// flushes `state.json` once, and appends one JSONL row when valid.
 //
-//       value shape (PrevTickStatusValue):
-//         in          — prev tick's current.input
-//         out         — prev tick's current.output
-//         cachedIn    — prev tick's current.cacheRead
-//         totalIn     — prev tick's session-cumulative totalIn
-//         totalApiMs  — prev tick's session-cumulative cost.totalApiDurationMs
-//         sessionId   — prev tick's stdin session_id (debug aid)
-//         cwd         — prev tick's stdin cwd
-//         model       — prev tick's stdin modelDisplayName
-//
-// Why a separate file (vs. cache.json)?
-//   - The legacy `state/cache.json` is the home for provider-specific
-//     data (minimax, deepseek) AND the v0.8.0+ sum/avg cross-project
-//     cache (see D4 in v0.8.0 plan). Tick-status data is per-tick
-//     stdin state — a completely different concern. Keeping them apart
-//     means `:clean --purge-runtime` can keep provider caches
-//     intact while wiping per-tick state.
-//   - The file lives under `state/<projectHash>/` so concurrent
-//     Claude Code instances running against different projects never
-//     share a write stream.
-//
-// Mutation model:
-//   - Reads return a snapshot of the entry's `value` (or null on
-//     miss / file error).
-//   - Writes are full-file rewrites — the file is small (a handful
-//     of entries, < 1KB total), so an in-memory read-modify-write
-//     followed by a single synchronous writeFileSync is the simplest
-//     correct strategy. The per-tick child-process model means we
-//     only have ONE writer per file (no concurrent-process races
-//     within the same project), so we don't need an append journal.
-//   - Failures are swallowed (stderr only) so a write error never
-//     blocks the statusline.
+// Compatibility:
+//   - Legacy per-project `status.json` is fallback-read when `state.json`
+//     does not exist yet.
+//   - `src/token-store.ts`, `src/tick-state.ts`, and `src/data-processor.ts`
+//     are kept as thin compatibility shims that re-export the APIs now
+//     implemented here.
 
 import {
+  appendFileSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { logFsMkdir, logFsRead, logFsWrite } from "./diagnostics.ts";
-import { projectHash } from "./token-store.ts";
+import {
+  logFsList,
+  logFsMkdir,
+  logFsRead,
+  logFsStat,
+  logFsWrite,
+} from "./diagnostics.ts";
+import type { TokenSample, TokenSnapshot } from "./types.ts";
 
-// ----- Acc shape (per-dimension tickStatus value) -----
-//
-// Pure accumulator. No per-tick / per-session-cumulative fields —
-// those live in prevTickStatus.
+// ----- Persisted value families ------------------------------------------------
+
 export type TickStatusValue = {
   accIn: number;
   accOut: number;
@@ -88,7 +51,6 @@ export type TickStatusValue = {
   accApiCount: number;
 };
 
-// ----- Prev-tick std snapshot (singleton) -----
 export type PrevTickStatusValue = {
   in: number;
   out: number;
@@ -101,77 +63,184 @@ export type PrevTickStatusValue = {
 };
 
 export type LastActiveValue = {
-  // v0.8.x — widened to cover the apiMs and tokenHitRate dimensions
-  // (m_apiMs and m_tokenHitRate use the same persistent cache as
-  // m_tokenInSpeed/m_tokenOutSpeed, so idle ticks can fall back to
-  // the last active measurement indefinitely). The `direction`
-  // field's `"apiMs"` variant carries `tps` as the raw deltaApiMs
-  // value (the per-API-call ms increment, NOT a rate); the
-  // `"tokenHitRate"` variant carries `tps` as the per-turn hit
-  // rate percentage (e.g. 99.5 = 99.5%). R7 — TTL gate disabled:
-  // the cache is the persistent "last known good" value, not a
-  // 60s-stale snapshot. The LAST_ACTIVE_TTL_MS constant in
-  // readLastActive is retained for future opt-in.
   direction: "in" | "out" | "apiMs" | "tokenHitRate";
   tps: number;
 };
 
-// ----- Key taxonomy -----
-//
-// tickStatus:* — acc-only. The dimension is encoded in the suffix
-// (sid | hash | model) OR the bare `tickStatus:ccsession` for the
-// process-lifetime singleton. There is intentionally NO bare
-// `tickStatus` (no suffix) — that was the v0.8.0 project-wide
-// slot, now keyed by projectHash.
-//
-// lastActive:in / lastActive:out — per-direction tps cache.
-// lastActive:apiMs — last deltaApiMs cache (feeds m_apiMs's
-//                     idle-tick fallback so the module renders the
-//                     last measurement instead of "api:--" when
-//                     stdin shows no API call this turn).
-// lastActive:tokenHitRate — last per-turn hit-rate percentage cache
-//                     (feeds m_tokenHitRate's fallback so the module
-//                     renders the last hit rate instead of "hit:n/a"
-//                     when stdin lacks cacheRead this tick).
-//
-// v0.8.x R7 — TTL gate is disabled: the lastActive:* entries are
-// effectively permanent (the LAST_ACTIVE_TTL_MS constant in
-// readLastActive is retained for future opt-in via config, but
-// the read path no longer compares against it). Idle ticks
-// surface the last active measurement indefinitely.
-
 export const CCSESSION_KEY = "tickStatus:ccsession";
 export const PREV_TICK_KEY = "prevTickStatus";
 
-type Entry =
+export type Entry =
   | { at: number; value: TickStatusValue; kind: "tickStatus" }
   | { at: number; value: PrevTickStatusValue; kind: "prevTickStatus" }
   | { at: number; value: LastActiveValue; kind: "lastActive" };
 
-type Store = Record<string, Entry>;
+export type Store = Record<string, Entry>;
 
-// v0.9.x — re-export the Store type so peer modules (tick-state.ts)
-// can pass it to flushToDisk() and inspect pending / loaded state
-// without re-declaring the shape. Treated as immutable at the
-// consumer side; mutation goes through tick-state.mark() so the
-// dirty/flush contract stays coherent.
-export type { Store, Entry };
+export type PrevTickSnapshot = {
+  apiMs: number;
+  in: number;
+  out: number;
+  cacheRead: number;
+  totalIn: number;
+};
 
-function stateRoot(): string {
+export type TickDeltaResult = {
+  hasDelta: boolean;
+  deltaIn: number;
+  deltaOut: number;
+  deltaApi: number;
+  deltaCacheRead: number;
+  deltaTotalIn: number;
+  currentTotalIn: number | null;
+  writeBack: PrevTickSnapshot | null;
+};
+
+export type AvgSnapshot = {
+  accIn: number;
+  accOut: number;
+  accApi: number;
+  accCached: number;
+  accApiCount: number;
+  accTotalIn: number;
+};
+
+type NormalizedTick = {
+  sessionId: string;
+  cwd: string;
+  modelDisplayName: string | null;
+  tokenIn: number;
+  tokenOut: number;
+  tokenCachedIn: number;
+  hasTokenCachedIn: boolean;
+  tokenCacheCreation: number;
+  tokenTotalIn: number | null;
+  tokenTotalOut: number | null;
+  totalApiMs: number;
+  apiMs: number;
+  prev: PrevTickSnapshot | null;
+  prevApiMsForSample: number | null;
+  regressionReset: boolean;
+  tokenHitRate: number | null;
+  tokenInSpeed: number | null;
+  tokenOutSpeed: number | null;
+  deltaTotalIn: number;
+};
+
+export type ProcessResult = {
+  valid: boolean;
+  normalized: NormalizedTick | null;
+  delta: TickDeltaResult;
+  wroteState: boolean;
+  wroteSample: boolean;
+};
+
+export type TickState = {
+  cwd: string | null;
+  tokens: TokenSnapshot | null;
+  loaded: Store;
+  pending: Store;
+  dirty: boolean;
+  prevTick: PrevTickStatusValue | null;
+  valid: boolean;
+  delta: TickDeltaResult | null;
+  normalized: NormalizedTick | null;
+  sample: TokenSample | null;
+};
+
+export type SumFilter = {
+  windowKey: "5h" | "7d" | "all";
+  sinceMs: number;
+  alignActive: boolean;
+  modelFilter?: string;
+};
+
+export type StatAggregate = {
+  sumIn: number;
+  sumOut: number;
+  sumCached: number;
+  sumTotalIn: number;
+  sumApiMs: number;
+  rows: number;
+  calls: number;
+  lastAt: number;
+  generatedAt: number;
+};
+
+type StatCacheEntry<T> = { at: number; value: T; ttlMs?: number };
+
+const NO_DELTA: TickDeltaResult = {
+  hasDelta: false,
+  deltaIn: 0,
+  deltaOut: 0,
+  deltaApi: 0,
+  deltaCacheRead: 0,
+  deltaTotalIn: 0,
+  currentTotalIn: null,
+  writeBack: null,
+};
+
+const STAT_CACHE_TTL_MS = 300_000;
+
+// ----- Shared state root + path helpers ---------------------------------------
+
+function defaultStateRoot(): string {
   const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
   const claudeRoot = process.env.CLAUDE_CONFIG_DIR ?? join(home, ".claude");
   return join(claudeRoot, "plugins", "topgauge-cc", "state");
 }
 
-// Public: per-project status file path. Exported so tests can point
-// the resolver at a tmp dir.
+let _stateRoot: () => string = defaultStateRoot;
+
+export function stateRoot(): string {
+  return _stateRoot();
+}
+
+export function setStateRoot(fn: () => string): void {
+  _stateRoot = fn;
+  _loaded.clear();
+  _stores.clear();
+  __resetStatCacheForTest();
+}
+
+export function resetStateRoot(): void {
+  _stateRoot = defaultStateRoot;
+  _loaded.clear();
+  _stores.clear();
+  __resetStatCacheForTest();
+}
+
+export function projectHash(cwd: string): string {
+  return cwd
+    .replace(/[\\/:]/g, "-")
+    .replace(/[\s\x00-\x1f\x7f]/g, "-")
+    .toLowerCase()
+    .slice(0, 80);
+}
+
+export function stateFilePath(cwd: string): string {
+  return join(stateRoot(), projectHash(cwd), "state.json");
+}
+
 export function statusFilePath(cwd: string): string {
+  return stateFilePath(cwd);
+}
+
+function legacyStatusFilePath(cwd: string): string {
   return join(stateRoot(), projectHash(cwd), "status.json");
 }
 
-let _pathResolver: (cwd: string) => string = statusFilePath;
+export function sampleFilePath(cwd: string, sessionId: string): string {
+  return join(stateRoot(), projectHash(cwd), `${sessionId}.jsonl`);
+}
 
-// Test-only path hook. Production code never sets this.
+export function statCacheFilePath(): string {
+  return join(stateRoot(), "cache.stat.json");
+}
+
+let _pathResolver: (cwd: string) => string = statusFilePath;
+let _statCachePathResolver: () => string = statCacheFilePath;
+
 export function setStatusPathResolver(fn: (cwd: string) => string): void {
   _pathResolver = fn;
 }
@@ -180,73 +249,70 @@ export function resetStatusPathResolver(): void {
   _pathResolver = statusFilePath;
 }
 
-// Per-cwd lazy-load guard so we read the file at most once per
-// (cwd, process). The statusStore is small (a handful of entries)
-// and persists across per-tick child-process invocations through the
-// on-disk file, just like cache.ts. The parsed `Store` is cached
-// in-memory keyed by cwd so subsequent read-modify-write cycles
-// within the same child process see prior writes without needing
-// to re-parse the file every time.
+export function setStatCachePathResolver(fn: () => string): void {
+  _statCachePathResolver = fn;
+}
+
+export function resetStatCachePathResolver(): void {
+  _statCachePathResolver = statCacheFilePath;
+}
+
+// ----- Per-project store load/flush -------------------------------------------
+
 const _stores = new Map<string, Store>();
 const _loaded = new Set<string>();
 
-function loadFromDiskInternal(cwd: string): Store {
-  const cached = _stores.get(cwd);
-  if (cached) return cached;
-  if (_loaded.has(cwd)) {
-    // First call saw a missing/malformed file — return an empty
-    // store for this cwd so writes still get flushed, but don't
-    // re-attempt the disk read on every call.
-    const empty: Store = {};
-    _stores.set(cwd, empty);
-    return empty;
+function cloneStore(store: Store): Store {
+  const out: Store = {};
+  for (const [key, entry] of Object.entries(store)) {
+    if (entry.kind === "prevTickStatus") {
+      out[key] = { at: entry.at, kind: entry.kind, value: { ...entry.value } };
+      continue;
+    }
+    if (entry.kind === "lastActive") {
+      out[key] = { at: entry.at, kind: entry.kind, value: { ...entry.value } };
+      continue;
+    }
+    out[key] = { at: entry.at, kind: entry.kind, value: { ...entry.value } };
   }
-  _loaded.add(cwd);
-  const statusPath = _pathResolver(cwd);
-  logFsRead(statusPath, "status-store.loadFromDisk", undefined, cwd);
-  let raw: string;
-  try {
-    raw = readFileSync(statusPath, "utf8");
-  } catch {
-    const empty: Store = {};
-    _stores.set(cwd, empty);
-    return empty;
-  }
+  return out;
+}
+
+function parseStore(raw: string): Store {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    process.stderr.write(
-      "topgauge-cc: status file is malformed; ignoring\n",
-    );
-    const empty: Store = {};
-    _stores.set(cwd, empty);
-    return empty;
+    process.stderr.write("topgauge-cc: state file is malformed; ignoring\n");
+    return {};
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    const empty: Store = {};
-    _stores.set(cwd, empty);
-    return empty;
-  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
   const out: Store = {};
   for (const [key, rawEntry] of Object.entries(parsed as Record<string, unknown>)) {
     const e = rawEntry as { at?: unknown; value?: unknown };
     if (typeof e.at !== "number" || !e.value || typeof e.value !== "object") continue;
-    if (key === "lastActive:in" || key === "lastActive:out" || key === "lastActive:apiMs" || key === "lastActive:tokenHitRate") {
+    if (
+      key === "lastActive:in" ||
+      key === "lastActive:out" ||
+      key === "lastActive:apiMs" ||
+      key === "lastActive:tokenHitRate"
+    ) {
       const v = e.value as Record<string, unknown>;
-      // v0.8.x — wider direction set; "apiMs" carries the raw
-      // deltaApiMs and "tokenHitRate" carries the per-turn
-      // hit-rate percentage (tps field is repurposed).
-      const dir: "in" | "out" | "apiMs" | "tokenHitRate" =
-        key === "lastActive:in" ? "in" :
-        key === "lastActive:out" ? "out" :
-        key === "lastActive:apiMs" ? "apiMs" :
-        "tokenHitRate";
-      const tps = typeof v.tps === "number" ? v.tps : 0;
+      const direction: LastActiveValue["direction"] =
+        key === "lastActive:in"
+          ? "in"
+          : key === "lastActive:out"
+            ? "out"
+            : key === "lastActive:apiMs"
+              ? "apiMs"
+              : "tokenHitRate";
       out[key] = {
         at: e.at,
-        value: { direction: dir, tps },
         kind: "lastActive",
+        value: {
+          direction,
+          tps: typeof v.tps === "number" ? v.tps : 0,
+        },
       };
       continue;
     }
@@ -254,6 +320,7 @@ function loadFromDiskInternal(cwd: string): Store {
       const v = e.value as Record<string, unknown>;
       out[key] = {
         at: e.at,
+        kind: "prevTickStatus",
         value: {
           in: typeof v.in === "number" ? v.in : 0,
           out: typeof v.out === "number" ? v.out : 0,
@@ -264,7 +331,6 @@ function loadFromDiskInternal(cwd: string): Store {
           cwd: typeof v.cwd === "string" ? v.cwd : null,
           model: typeof v.model === "string" ? v.model : null,
         },
-        kind: "prevTickStatus",
       };
       continue;
     }
@@ -272,6 +338,7 @@ function loadFromDiskInternal(cwd: string): Store {
       const v = e.value as Record<string, unknown>;
       out[key] = {
         at: e.at,
+        kind: "tickStatus",
         value: {
           accIn: typeof v.accIn === "number" ? v.accIn : 0,
           accOut: typeof v.accOut === "number" ? v.accOut : 0,
@@ -280,12 +347,45 @@ function loadFromDiskInternal(cwd: string): Store {
           accApiMs: typeof v.accApiMs === "number" ? v.accApiMs : 0,
           accApiCount: typeof v.accApiCount === "number" ? v.accApiCount : 0,
         },
-        kind: "tickStatus",
       };
     }
   }
-  _stores.set(cwd, out);
   return out;
+}
+
+function loadStoreFromPath(path: string, cwd: string): Store | null {
+  logFsRead(path, "status-store.loadFromDisk", undefined, cwd);
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+  return parseStore(raw);
+}
+
+function usingDefaultStatusResolver(): boolean {
+  return _pathResolver === statusFilePath;
+}
+
+function loadFromDiskInternal(cwd: string): Store {
+  const cached = _stores.get(cwd);
+  if (cached) return cached;
+  if (_loaded.has(cwd)) {
+    const empty: Store = {};
+    _stores.set(cwd, empty);
+    return empty;
+  }
+  _loaded.add(cwd);
+
+  const primaryPath = _pathResolver(cwd);
+  let store = loadStoreFromPath(primaryPath, cwd);
+  if (store == null && usingDefaultStatusResolver()) {
+    store = loadStoreFromPath(legacyStatusFilePath(cwd), cwd);
+  }
+  if (store == null) store = {};
+  _stores.set(cwd, store);
+  return store;
 }
 
 function flushToDiskInternal(cwd: string, store: Store): void {
@@ -295,9 +395,7 @@ function flushToDiskInternal(cwd: string, store: Store): void {
   try {
     mkdirSync(dir, { recursive: true });
   } catch {
-    process.stderr.write(
-      "topgauge-cc: status mkdir failed; in-memory only\n",
-    );
+    process.stderr.write("topgauge-cc: state mkdir failed; in-memory only\n");
     return;
   }
   const payload = JSON.stringify(store);
@@ -305,21 +403,20 @@ function flushToDiskInternal(cwd: string, store: Store): void {
   try {
     writeFileSync(path, payload);
   } catch {
-    process.stderr.write(
-      "topgauge-cc: status write failed; in-memory only\n",
-    );
+    process.stderr.write("topgauge-cc: state write failed; in-memory only\n");
     return;
   }
-  // v0.9.x — keep the per-cwd in-memory cache coherent with disk
-  // so subsequent readTickStatus / readPrevTickStatus calls
-  // (especially in tests that mix tick-state commits with
-  // legacy read paths) see the freshly-written Store. Without
-  // this, _stores stays stale until the next process restart.
   _stores.set(cwd, store);
 }
 
-// Construct a fresh empty TickStatusValue (zeroed). Centralized so
-// the read and write paths agree on the field set.
+export function loadFromDisk(cwd: string): Store {
+  return loadFromDiskInternal(cwd);
+}
+
+export function flushToDisk(cwd: string, store: Store): void {
+  flushToDiskInternal(cwd, store);
+}
+
 export function emptyTickStatus(): TickStatusValue {
   return {
     accIn: 0,
@@ -344,14 +441,43 @@ export function emptyPrevTickStatus(): PrevTickStatusValue {
   };
 }
 
-// ----- tickStatus (per-dimension acc) -----
+function makeEntry(key: string, value: Entry["value"]): Entry {
+  if (key === PREV_TICK_KEY) {
+    return { at: Date.now(), kind: "prevTickStatus", value: value as PrevTickStatusValue };
+  }
+  if (
+    key === "lastActive:in" ||
+    key === "lastActive:out" ||
+    key === "lastActive:apiMs" ||
+    key === "lastActive:tokenHitRate"
+  ) {
+    return { at: Date.now(), kind: "lastActive", value: value as LastActiveValue };
+  }
+  if (key === CCSESSION_KEY || key.startsWith("tickStatus:")) {
+    return { at: Date.now(), kind: "tickStatus", value: value as TickStatusValue };
+  }
+  throw new Error(
+    `status-store: unknown key "${key}" — must be ${PREV_TICK_KEY}, ` +
+      `tickStatus:<dim>, ${CCSESSION_KEY}, or lastActive:<in|out|apiMs|tokenHitRate>`,
+  );
+}
+
+function activeStoreFor(cwd: string | null | undefined): Store | null {
+  if (_tickState) {
+    if (_tickState.cwd == null) return _tickState.pending;
+    if (cwd == null) return _tickState.pending;
+    if (_tickState.cwd === cwd) return _tickState.pending;
+  }
+  if (cwd) return loadFromDiskInternal(cwd);
+  return null;
+}
 
 export function readTickStatus(
   cwd: string | null | undefined,
   key: string,
 ): TickStatusValue | null {
-  if (!cwd) return null;
-  const store = loadFromDiskInternal(cwd);
+  const store = activeStoreFor(cwd);
+  if (!store) return null;
   const e = store[key];
   if (!e || e.kind !== "tickStatus") return null;
   return e.value;
@@ -363,18 +489,16 @@ export function writeTickStatus(
   value: TickStatusValue,
 ): void {
   if (!cwd) return;
-  const store = loadFromDiskInternal(cwd);
-  store[key] = { at: Date.now(), value, kind: "tickStatus" };
+  const store = cloneStore(loadFromDiskInternal(cwd));
+  store[key] = { at: Date.now(), kind: "tickStatus", value };
   flushToDiskInternal(cwd, store);
 }
-
-// ----- prevTickStatus (singleton) -----
 
 export function readPrevTickStatus(
   cwd: string | null | undefined,
 ): PrevTickStatusValue | null {
-  if (!cwd) return null;
-  const store = loadFromDiskInternal(cwd);
+  const store = activeStoreFor(cwd);
+  if (!store) return null;
   const e = store[PREV_TICK_KEY];
   if (!e || e.kind !== "prevTickStatus") return null;
   return e.value;
@@ -385,59 +509,21 @@ export function writePrevTickStatus(
   value: PrevTickStatusValue,
 ): void {
   if (!cwd) return;
-  const store = loadFromDiskInternal(cwd);
-  store[PREV_TICK_KEY] = { at: Date.now(), value, kind: "prevTickStatus" };
+  const store = cloneStore(loadFromDiskInternal(cwd));
+  store[PREV_TICK_KEY] = { at: Date.now(), kind: "prevTickStatus", value };
   flushToDiskInternal(cwd, store);
 }
 
-// ----- lastActive (v0.4.x) --------------------------------------------
-//
-// The pre-existing `tickSpeedDisplay:<direction>:<sessionId>` cache
-// slot survives, simplified: no session dimension (single global
-// per-project entry). Used by m_tokenInSpeed / m_tokenOutSpeed so
-// an idle tick (no API call this turn) can surface the
-// last-active-tick tps instead of rendering "-- t/s".
-//
-// v0.8.x — widened the `direction` set to include "apiMs" and
-// "tokenHitRate" so m_apiMs and m_tokenHitRate can use the SAME
-// persistent cache pattern: store the last measurement on an
-// active tick, fall back to it on an idle tick. The `tps` field
-// is repurposed for both cases (carries the raw ms value for
-// apiMs, the hit-rate percentage for tokenHitRate — neither is
-// a true rate).
-//
-// v0.8.x R7 — TTL gate disabled. The cache is the persistent
-// "last known good" value: idle ticks surface the last active
-// measurement indefinitely. The LAST_ACTIVE_TTL_MS constant in
-// readLastActive is retained for future opt-in via config (e.g.
-// a `lastActiveTtlMs` setting), but the read path no longer
-// compares against it.
-
-// v0.8.x — TTL capability retained but the gate is disabled.
-// The constant is kept for future opt-in (e.g. a config flag to
-// re-enable the 60s window) but readLastActive no longer compares
-// `Date.now() - e.at` against it. The cache is effectively
-// permanent: the last value written survives across idle ticks
-// indefinitely, and is only overwritten when a fresher active
-// measurement arrives. The "always read" decision was made in
-// R7 — keeping active/inactive distinction but treating the cache
-// as the "last known good" value rather than a 60s-stale snapshot.
 export const LAST_ACTIVE_TTL_MS = 60_000;
 
 export function readLastActive(
   cwd: string | null | undefined,
   direction: "in" | "out" | "apiMs" | "tokenHitRate",
 ): number | null {
-  if (!cwd) return null;
-  const store = loadFromDiskInternal(cwd);
-  const key = `lastActive:${direction}`;
-  const e = store[key];
+  const store = activeStoreFor(cwd);
+  if (!store) return null;
+  const e = store[`lastActive:${direction}`];
   if (!e || e.kind !== "lastActive") return null;
-  // v0.8.x R7 — TTL gate removed. The cache is the persistent
-  // "last active measurement"; idle ticks always surface it.
-  // (The LAST_ACTIVE_TTL_MS constant above stays for future
-  // opt-in via config; the `> LAST_ACTIVE_TTL_MS` check is
-  // intentionally NOT evaluated here.)
   return Number.isFinite(e.value.tps) ? e.value.tps : null;
 }
 
@@ -447,45 +533,796 @@ export function writeLastActive(
   tps: number,
 ): void {
   if (!cwd) return;
-  const store = loadFromDiskInternal(cwd);
-  const key = `lastActive:${direction}`;
-  store[key] = {
+  const store = cloneStore(loadFromDiskInternal(cwd));
+  store[`lastActive:${direction}`] = {
     at: Date.now(),
-    value: { direction, tps },
     kind: "lastActive",
+    value: { direction, tps },
   };
   flushToDiskInternal(cwd, store);
 }
 
-// Test-only: wipe the in-memory cache so the next call hits disk
-// again. Mirrors cache.ts's `__resetForTest`.
+// ----- Sample JSONL ownership --------------------------------------------------
+
+export function appendSample(
+  cwd: string,
+  sessionId: string,
+  sample: TokenSample,
+): void {
+  const path = sampleFilePath(cwd, sessionId);
+  const dir = dirname(path);
+  logFsMkdir(dir, "status-store.appendSample", cwd);
+  try {
+    mkdirSync(dir, { recursive: true });
+    const payload = JSON.stringify(sample) + "\n";
+    logFsWrite(path, "status-store.appendSample", payload.length, cwd);
+    appendFileSync(path, payload, "utf8");
+  } catch {
+    process.stderr.write("topgauge-cc: token-sample append failed\n");
+  }
+}
+
+function coerceSampleRow(r: Record<string, unknown>, sinceMs: number): TokenSample | null {
+  if (
+    typeof r.at !== "number" ||
+    r.at < sinceMs ||
+    typeof r.totalIn !== "number" ||
+    typeof r.totalOut !== "number"
+  ) {
+    return null;
+  }
+  return {
+    at: r.at,
+    totalIn: r.totalIn,
+    totalOut: r.totalOut,
+    in: typeof r.in === "number" ? r.in : 0,
+    out: typeof r.out === "number" ? r.out : 0,
+    cacheCreation: typeof r.cacheCreation === "number" ? r.cacheCreation : 0,
+    cacheIn: typeof r.cacheIn === "number" ? r.cacheIn : 0,
+    model: typeof r.model === "string" ? r.model : undefined,
+    totalApiMs: typeof r.totalApiMs === "number" ? r.totalApiMs : undefined,
+    apiMs: typeof r.apiMs === "number" ? r.apiMs : undefined,
+    prevApiMs:
+      r.prevApiMs === null
+        ? null
+        : typeof r.prevApiMs === "number"
+          ? r.prevApiMs
+          : undefined,
+  };
+}
+
+export function readSamples(
+  cwd: string,
+  sessionId: string,
+  sinceMs: number,
+  modelFilter?: string,
+): TokenSample[] {
+  const path = sampleFilePath(cwd, sessionId);
+  logFsRead(path, "status-store.readSamples", undefined, cwd);
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    return [];
+  }
+  const out: TokenSample[] = [];
+  for (const line of raw.split("\n")) {
+    if (!line) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!parsed || typeof parsed !== "object") continue;
+    const sample = coerceSampleRow(parsed as Record<string, unknown>, sinceMs);
+    if (!sample) continue;
+    if (modelFilter !== undefined && sample.model !== modelFilter) continue;
+    out.push(sample);
+  }
+  return out;
+}
+
+export function readAllSamples(sinceMs: number): TokenSample[] {
+  const root = stateRoot();
+  const out: TokenSample[] = [];
+  logFsList(root, "status-store.readAllSamples");
+  let projectDirs: string[];
+  try {
+    projectDirs = readdirSync(root);
+  } catch {
+    return [];
+  }
+  for (const projDir of projectDirs) {
+    const projPath = join(root, projDir);
+    logFsStat(projPath, "status-store.readAllSamples");
+    let st;
+    try {
+      st = statSync(projPath);
+    } catch {
+      continue;
+    }
+    if (!st.isDirectory()) continue;
+    logFsList(projPath, "status-store.readAllSamples");
+    let sessions: string[];
+    try {
+      sessions = readdirSync(projPath);
+    } catch {
+      continue;
+    }
+    for (const f of sessions) {
+      if (!f.endsWith(".jsonl")) continue;
+      const path = join(projPath, f);
+      if (sinceMs > 0) {
+        logFsStat(path, "status-store.readAllSamples");
+        let fst;
+        try {
+          fst = statSync(path);
+        } catch {
+          continue;
+        }
+        if (fst.mtimeMs < sinceMs) continue;
+      }
+      logFsRead(path, "status-store.readAllSamples");
+      let raw: string;
+      try {
+        raw = readFileSync(path, "utf8");
+      } catch {
+        continue;
+      }
+      for (const line of raw.split("\n")) {
+        if (!line) continue;
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (!parsed || typeof parsed !== "object") continue;
+        const sample = coerceSampleRow(parsed as Record<string, unknown>, sinceMs);
+        if (!sample) continue;
+        out.push(sample);
+      }
+    }
+  }
+  return out;
+}
+
+// ----- Stat cache ownership ----------------------------------------------------
+
+const _statCacheStore = new Map<string, StatCacheEntry<unknown>>();
+let _statCacheLoaded = false;
+
+function loadStatCacheFromDisk(): void {
+  if (_statCacheLoaded) return;
+  _statCacheLoaded = true;
+  const path = _statCachePathResolver();
+  logFsRead(path, "status-store.loadStatCache", undefined, null);
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    return;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    process.stderr.write("topgauge-cc: stat cache file is malformed; ignoring\n");
+    return;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+    const e = value as { at?: unknown; value?: unknown; ttlMs?: unknown };
+    if (typeof e.at !== "number" || !("value" in e)) continue;
+    const ttlMs = typeof e.ttlMs === "number" && e.ttlMs > 0 ? e.ttlMs : undefined;
+    _statCacheStore.set(key, { at: e.at, value: e.value, ttlMs });
+  }
+}
+
+function flushStatCacheToDisk(): void {
+  const path = _statCachePathResolver();
+  const dir = dirname(path);
+  logFsMkdir(dir, "status-store.flushStatCache", null);
+  try {
+    mkdirSync(dir, { recursive: true });
+  } catch {
+    process.stderr.write("topgauge-cc: stat cache mkdir failed; in-memory only\n");
+    return;
+  }
+  const now = Date.now();
+  const obj: Record<string, StatCacheEntry<unknown>> = {};
+  for (const [k, v] of _statCacheStore) {
+    if (v.ttlMs != null && now - v.at > v.ttlMs) {
+      _statCacheStore.delete(k);
+      continue;
+    }
+    obj[k] = v;
+  }
+  const payload = JSON.stringify(obj);
+  logFsWrite(path, "status-store.flushStatCache", payload.length, null);
+  try {
+    writeFileSync(path, payload);
+  } catch {
+    process.stderr.write("topgauge-cc: stat cache write failed; in-memory only\n");
+  }
+}
+
+function getStatCache<T>(key: string, ttlMs: number): T | null {
+  loadStatCacheFromDisk();
+  const e = _statCacheStore.get(key) as StatCacheEntry<T> | undefined;
+  if (!e) return null;
+  if (Date.now() - e.at > ttlMs) return null;
+  return e.value;
+}
+
+function setStatCache<T>(key: string, value: T, ttlMs: number): void {
+  loadStatCacheFromDisk();
+  _statCacheStore.set(key, { at: Date.now(), value, ttlMs });
+  flushStatCacheToDisk();
+}
+
+export function __resetStatCacheForTest(): void {
+  _statCacheStore.clear();
+  _statCacheLoaded = false;
+}
+
+function aggregateSamples(samples: TokenSample[]): StatAggregate {
+  let sumIn = 0;
+  let sumOut = 0;
+  let sumCached = 0;
+  let sumApiMs = 0;
+  let lastAt = 0;
+  let calls = 0;
+  for (const s of samples) {
+    sumIn += s.in;
+    sumOut += s.out;
+    sumCached += s.cacheIn;
+    sumApiMs += s.apiMs ?? 0;
+    if ((s.apiMs ?? 0) > 0) calls += 1;
+    if (s.at > lastAt) lastAt = s.at;
+  }
+  return {
+    sumIn,
+    sumOut,
+    sumCached,
+    sumTotalIn: sumIn + sumCached,
+    sumApiMs,
+    rows: samples.length,
+    calls,
+    lastAt,
+    generatedAt: Date.now(),
+  };
+}
+
+export function getStatAggregate(filter: SumFilter): StatAggregate {
+  const key = `stat:${filter.modelFilter ?? "all"}:${filter.windowKey}:${filter.alignActive}`;
+  const cached = getStatCache<StatAggregate>(key, STAT_CACHE_TTL_MS);
+  if (cached) return cached;
+  const samples = readAllSamples(filter.sinceMs);
+  const filtered =
+    filter.modelFilter === undefined
+      ? samples
+      : samples.filter((s) => s.model === filter.modelFilter);
+  const agg = aggregateSamples(filtered);
+  setStatCache(key, agg, STAT_CACHE_TTL_MS);
+  return agg;
+}
+
+// ----- In-memory tick state ----------------------------------------------------
+
+let _tickState: TickState | null = null;
+
+function resolvePreviousBaseline(
+  tokens: TokenSnapshot | null,
+  prev: PrevTickStatusValue | null,
+): { prev: PrevTickSnapshot | null; regressionReset: boolean; invalidRegression: boolean } {
+  if (!tokens?.sessionId || !prev) {
+    return { prev: null, regressionReset: false, invalidRegression: false };
+  }
+  if (prev.sessionId != null && prev.sessionId !== tokens.sessionId) {
+    return { prev: null, regressionReset: false, invalidRegression: false };
+  }
+  const currentTotalApiMs = tokens.cost.totalApiDurationMs;
+  if (
+    currentTotalApiMs != null &&
+    Number.isFinite(currentTotalApiMs) &&
+    currentTotalApiMs < prev.totalApiMs
+  ) {
+    return { prev: null, regressionReset: true, invalidRegression: true };
+  }
+  return {
+    prev: {
+      apiMs: prev.totalApiMs,
+      in: prev.in,
+      out: prev.out,
+      cacheRead: prev.cachedIn,
+      totalIn: prev.totalIn,
+    },
+    regressionReset: false,
+    invalidRegression: false,
+  };
+}
+
+function normalizeTick(
+  tokens: TokenSnapshot | null,
+  prev: PrevTickStatusValue | null,
+): { normalized: NormalizedTick | null; delta: TickDeltaResult } {
+  if (!tokens || !tokens.sessionId || !tokens.cwd) {
+    return { normalized: null, delta: NO_DELTA };
+  }
+  const tokenIn = tokens.current.tokenIn;
+  const tokenOut = tokens.current.tokenOut;
+  const totalApiMs = tokens.cost.totalApiDurationMs;
+  if (
+    tokenIn == null ||
+    !Number.isFinite(tokenIn) ||
+    tokenOut == null ||
+    !Number.isFinite(tokenOut) ||
+    totalApiMs == null ||
+    !Number.isFinite(totalApiMs)
+  ) {
+    return { normalized: null, delta: NO_DELTA };
+  }
+
+  const { prev: baseline, regressionReset, invalidRegression } = resolvePreviousBaseline(tokens, prev);
+  const apiMs = invalidRegression
+    ? -1
+    : baseline
+      ? totalApiMs - baseline.apiMs
+      : (tokenOut * 1000) / 50;
+  const tokenCachedIn = tokens.current.tokenCachedIn ?? 0;
+  const hasTokenCachedIn = tokens.current.tokenCachedIn != null;
+  const tokenTotalIn = tokens.totals.tokenTotalIn ?? null;
+  const tokenTotalOut = tokens.totals.tokenTotalOut ?? null;
+  const deltaTotalIn =
+    tokenTotalIn != null ? Math.max(0, tokenTotalIn - (baseline?.totalIn ?? 0)) : 0;
+  const tokenHitRate =
+    tokenTotalIn != null && tokenTotalIn > 0
+      ? (tokenCachedIn / tokenTotalIn) * 100
+      : null;
+  const tokenInSpeed = apiMs > 0 ? (tokenIn / apiMs) * 1000 : null;
+  const tokenOutSpeed = apiMs > 0 ? (tokenOut / apiMs) * 1000 : null;
+
+  const writeBack: PrevTickSnapshot = {
+    apiMs: totalApiMs,
+    in: tokenIn,
+    out: tokenOut,
+    cacheRead: tokenCachedIn,
+    totalIn: tokenTotalIn ?? 0,
+  };
+
+  const valid = tokenIn > 0 && tokenOut > 0 && apiMs > 0;
+  const delta: TickDeltaResult = {
+    hasDelta: valid,
+    deltaIn: valid ? tokenIn : 0,
+    deltaOut: valid ? tokenOut : 0,
+    deltaApi: valid ? apiMs : 0,
+    deltaCacheRead: valid && hasTokenCachedIn ? tokenCachedIn : 0,
+    deltaTotalIn: valid ? deltaTotalIn : 0,
+    currentTotalIn: tokenTotalIn,
+    writeBack,
+  };
+
+  return {
+    normalized: {
+      sessionId: tokens.sessionId,
+      cwd: tokens.cwd,
+      modelDisplayName: tokens.modelDisplayName ?? null,
+      tokenIn,
+      tokenOut,
+      tokenCachedIn,
+      hasTokenCachedIn,
+      tokenCacheCreation: tokens.current.tokenCacheCreation ?? 0,
+      tokenTotalIn,
+      tokenTotalOut,
+      totalApiMs,
+      apiMs,
+      prev: baseline,
+      prevApiMsForSample: baseline ? baseline.apiMs : null,
+      regressionReset,
+      tokenHitRate,
+      tokenInSpeed,
+      tokenOutSpeed,
+      deltaTotalIn,
+    },
+    delta,
+  };
+}
+
+function validateNormalizedTick(tick: NormalizedTick | null): boolean {
+  if (!tick) return false;
+  return tick.tokenIn > 0 && tick.tokenOut > 0 && tick.apiMs > 0;
+}
+
+export function validateTickForDataProcessor(
+  tokens: TokenSnapshot | null,
+  prev: PrevTickStatusValue | null,
+): boolean {
+  return validateNormalizedTick(normalizeTick(tokens, prev).normalized);
+}
+
+export function beginTick(cwd: string | null, tokens: TokenSnapshot | null): TickState {
+  const loaded = cwd ? loadFromDiskInternal(cwd) : {};
+  const prevEntry = loaded[PREV_TICK_KEY];
+  const prev = prevEntry?.kind === "prevTickStatus" ? prevEntry.value : null;
+  const { normalized, delta } = normalizeTick(tokens, prev);
+  _tickState = {
+    cwd,
+    tokens,
+    loaded,
+    pending: cloneStore(loaded),
+    dirty: false,
+    prevTick: prev,
+    valid: validateNormalizedTick(normalized),
+    delta,
+    normalized,
+    sample: null,
+  };
+  return _tickState;
+}
+
+export function getState(): TickState {
+  if (!_tickState) {
+    throw new Error(
+      "status-store: getState() called without beginTick() — every render must be wrapped in a tick",
+    );
+  }
+  return _tickState;
+}
+
+export function mark(key: string, value: Entry["value"]): void {
+  const s = getState();
+  s.pending[key] = makeEntry(key, value);
+  s.dirty = true;
+}
+
+export function commit(): void {
+  const s = _tickState;
+  if (!s) return;
+  if (!s.cwd) return;
+  if (!s.valid || !s.dirty) return;
+  flushToDiskInternal(s.cwd, s.pending);
+}
+
+export function resetTickStateForTest(): void {
+  _tickState = null;
+}
+
+export function beginTickForTest(
+  cwd: string | null = null,
+  tokens: TokenSnapshot | null = null,
+): TickState {
+  beginTick(cwd, tokens);
+  _tickState!.dirty = false;
+  return _tickState!;
+}
+
+// ----- Render/query helpers ----------------------------------------------------
+
+export function peekPrevTick(
+  sessionId: string,
+  cwd?: string | null,
+): PrevTickSnapshot | null {
+  const prev = readPrevTickStatus(cwd);
+  if (!prev) return null;
+  if (prev.sessionId !== null && prev.sessionId !== sessionId) return null;
+  return {
+    apiMs: prev.totalApiMs,
+    in: prev.in,
+    out: prev.out,
+    cacheRead: prev.cachedIn,
+    totalIn: prev.totalIn,
+  };
+}
+
+export function peekLastSpeed(
+  _sessionId: string,
+  direction: "in" | "out",
+  cwd?: string | null,
+): number | null {
+  void _sessionId;
+  return readLastActive(cwd, direction);
+}
+
+export function peekLastApiMs(
+  _sessionId: string,
+  cwd?: string | null,
+): number | null {
+  void _sessionId;
+  return readLastActive(cwd, "apiMs");
+}
+
+export function peekLastTokenHitRate(
+  _sessionId: string,
+  cwd?: string | null,
+): number | null {
+  void _sessionId;
+  return readLastActive(cwd, "tokenHitRate");
+}
+
+export function peekAvg(
+  sessionId: string,
+  cwd?: string | null,
+): AvgSnapshot | null {
+  if (!sessionId) return null;
+  const v = readTickStatus(cwd, `tickStatus:${sessionId}`);
+  if (!v) return null;
+  return {
+    accIn: v.accIn,
+    accOut: v.accOut,
+    accApi: v.accApiMs,
+    accCached: v.accCached,
+    accApiCount: v.accApiCount,
+    accTotalIn: v.accTotalIn,
+  };
+}
+
+export function readAccumulator(
+  scope: "session" | "project" | "model" | "ccsession",
+  args: {
+    sessionId?: string | null;
+    cwd?: string | null;
+    modelDisplayName?: string | null;
+  },
+): AvgSnapshot | null {
+  let key: string | null = null;
+  if (scope === "session") {
+    if (!args.sessionId) return null;
+    key = `tickStatus:${args.sessionId}`;
+  } else if (scope === "project") {
+    if (!args.cwd) return null;
+    key = `tickStatus:${projectHash(args.cwd)}`;
+  } else if (scope === "ccsession") {
+    key = CCSESSION_KEY;
+  } else {
+    if (!args.modelDisplayName) return null;
+    key = `tickStatus:${args.modelDisplayName}`;
+  }
+  const v = readTickStatus(args.cwd, key);
+  if (!v) return null;
+  return {
+    accIn: v.accIn,
+    accOut: v.accOut,
+    accApi: v.accApiMs,
+    accCached: v.accCached,
+    accApiCount: v.accApiCount,
+    accTotalIn: v.accTotalIn,
+  };
+}
+
+export function getDeltaForRender(): TickDeltaResult {
+  return _tickState?.delta ?? NO_DELTA;
+}
+
+// ----- Write-side helpers (compat with old data-processor surface) ------------
+
+export function computeAndCacheTickDeltaPure(
+  tokens: TokenSnapshot | null,
+): TickDeltaResult {
+  const prev = _tickState?.prevTick ?? null;
+  return normalizeTick(tokens, prev).delta;
+}
+
+export function setPrevTick(
+  _sessionId: string,
+  snap: PrevTickSnapshot,
+  cwd?: string | null,
+  identity?: { sessionId?: string | null; cwd?: string | null; model?: string | null },
+): void {
+  void _sessionId;
+  void cwd;
+  const prev = readPrevTickStatus(_tickState?.cwd ?? null) ?? emptyPrevTickStatus();
+  mark(PREV_TICK_KEY, {
+    in: snap.in,
+    out: snap.out,
+    cachedIn: snap.cacheRead,
+    totalIn: snap.totalIn,
+    totalApiMs: snap.apiMs,
+    sessionId: identity?.sessionId ?? prev.sessionId,
+    cwd: identity?.cwd ?? prev.cwd,
+    model: identity?.model ?? prev.model,
+  });
+}
+
+export function setLastSpeed(
+  _sessionId: string,
+  direction: "in" | "out",
+  tps: number,
+  cwd?: string | null,
+): void {
+  void _sessionId;
+  void cwd;
+  mark(`lastActive:${direction}`, { direction, tps });
+}
+
+export function setLastApiMs(
+  _sessionId: string,
+  deltaApiMs: number,
+  cwd?: string | null,
+): void {
+  void _sessionId;
+  void cwd;
+  mark("lastActive:apiMs", { direction: "apiMs", tps: deltaApiMs });
+}
+
+export function setLastTokenHitRate(
+  _sessionId: string,
+  pct: number,
+  cwd?: string | null,
+): void {
+  void _sessionId;
+  void cwd;
+  mark("lastActive:tokenHitRate", { direction: "tokenHitRate", tps: pct });
+}
+
+export function setAvg(
+  sessionId: string,
+  snap: AvgSnapshot,
+  cwd?: string | null,
+  extras?: {
+    modelDisplayName?: string | null;
+    deltaApiCount?: number;
+    currentApiMs?: number;
+    deltaIn?: number;
+    deltaOut?: number;
+    deltaCache?: number;
+    deltaApiMs?: number;
+    deltaTotalIn?: number;
+  },
+): void {
+  if (!sessionId) return;
+  const incrementCount = extras?.deltaApiCount ?? 0;
+  const deltaIn = extras?.deltaIn ?? 0;
+  const deltaOut = extras?.deltaOut ?? 0;
+  const deltaCache = extras?.deltaCache ?? 0;
+  const deltaApiMs = extras?.deltaApiMs ?? 0;
+  const deltaTotalIn = extras?.deltaTotalIn ?? 0;
+
+  const sessionKey = `tickStatus:${sessionId}`;
+  const sessionCurrent = readTickStatus(cwd, sessionKey) ?? emptyTickStatus();
+  const sessionNext: TickStatusValue = { ...sessionCurrent };
+  sessionNext.accIn += snap.accIn;
+  sessionNext.accOut += snap.accOut;
+  sessionNext.accCached += snap.accCached;
+  sessionNext.accApiMs += snap.accApi;
+  sessionNext.accTotalIn += snap.accTotalIn;
+  sessionNext.accApiCount += snap.accApiCount;
+  mark(sessionKey, sessionNext);
+
+  const bumpDeltaScope = (key: string) => {
+    const current = readTickStatus(cwd, key) ?? emptyTickStatus();
+    const next: TickStatusValue = { ...current };
+    next.accIn += deltaIn;
+    next.accOut += deltaOut;
+    next.accCached += deltaCache;
+    next.accApiMs += deltaApiMs;
+    next.accTotalIn += deltaTotalIn;
+    next.accApiCount += incrementCount;
+    mark(key, next);
+  };
+
+  if (cwd && (incrementCount > 0 || deltaIn || deltaOut || deltaCache || deltaApiMs || deltaTotalIn)) {
+    bumpDeltaScope(`tickStatus:${projectHash(cwd)}`);
+  }
+  if (incrementCount > 0 || deltaIn || deltaOut || deltaCache || deltaApiMs || deltaTotalIn) {
+    bumpDeltaScope(CCSESSION_KEY);
+  }
+  if (extras?.modelDisplayName && (incrementCount > 0 || deltaIn || deltaOut || deltaCache || deltaApiMs || deltaTotalIn)) {
+    bumpDeltaScope(`tickStatus:${extras.modelDisplayName}`);
+  }
+}
+
+export function processTick(
+  cwd: string | null,
+  tokens: TokenSnapshot | null,
+): void {
+  const s = getState();
+  const prevEntry = s.pending[PREV_TICK_KEY];
+  const prev = prevEntry?.kind === "prevTickStatus" ? prevEntry.value : null;
+  const { normalized, delta } = normalizeTick(tokens, prev);
+  s.normalized = normalized;
+  s.valid = validateNormalizedTick(normalized);
+  s.delta = delta;
+
+  if (!s.valid || !normalized || !tokens?.sessionId) {
+    s.sample = null;
+    return;
+  }
+
+  if (normalized.regressionReset) {
+    mark(CCSESSION_KEY, emptyTickStatus());
+  }
+
+  setPrevTick(tokens.sessionId, {
+    apiMs: normalized.totalApiMs,
+    in: normalized.tokenIn,
+    out: normalized.tokenOut,
+    cacheRead: normalized.tokenCachedIn,
+    totalIn: normalized.tokenTotalIn ?? 0,
+  }, cwd, {
+    sessionId: tokens.sessionId,
+    cwd,
+    model: tokens.modelDisplayName ?? null,
+  });
+
+  setAvg(tokens.sessionId, {
+    accIn: normalized.tokenIn,
+    accOut: normalized.tokenOut,
+    accApi: normalized.apiMs,
+    accCached: normalized.hasTokenCachedIn ? normalized.tokenCachedIn : 0,
+    accApiCount: 1,
+    accTotalIn: normalized.deltaTotalIn,
+  }, cwd, {
+    modelDisplayName: tokens.modelDisplayName ?? null,
+    deltaApiCount: 1,
+    deltaIn: normalized.tokenIn,
+    deltaOut: normalized.tokenOut,
+    deltaCache: normalized.hasTokenCachedIn ? normalized.tokenCachedIn : 0,
+    deltaApiMs: normalized.apiMs,
+    deltaTotalIn: normalized.deltaTotalIn,
+  });
+
+  if (normalized.tokenInSpeed != null) {
+    setLastSpeed(tokens.sessionId, "in", normalized.tokenInSpeed, cwd);
+  }
+  if (normalized.tokenOutSpeed != null) {
+    setLastSpeed(tokens.sessionId, "out", normalized.tokenOutSpeed, cwd);
+  }
+  setLastApiMs(tokens.sessionId, normalized.apiMs, cwd);
+  if (normalized.tokenHitRate != null) {
+    setLastTokenHitRate(tokens.sessionId, normalized.tokenHitRate, cwd);
+  }
+
+  s.sample =
+    normalized.tokenTotalIn != null && normalized.tokenTotalOut != null
+      ? {
+          at: Date.now(),
+          totalIn: normalized.tokenTotalIn,
+          totalOut: normalized.tokenTotalOut,
+          in: normalized.tokenIn,
+          out: normalized.tokenOut,
+          cacheCreation: normalized.tokenCacheCreation,
+          cacheIn: normalized.tokenCachedIn,
+          model: normalized.modelDisplayName ?? undefined,
+          totalApiMs: normalized.totalApiMs,
+          apiMs: normalized.apiMs,
+          prevApiMs: normalized.prevApiMsForSample,
+        }
+      : null;
+}
+
+export function processAndSaveTick(
+  cwd: string | null,
+  tokens: TokenSnapshot | null,
+): ProcessResult {
+  beginTick(cwd, tokens);
+  processTick(cwd, tokens);
+  const s = getState();
+  const shouldWriteState = !!s.cwd && s.valid && s.dirty;
+  commit();
+  let wroteSample = false;
+  if (s.valid && s.sample && tokens?.sessionId && cwd) {
+    appendSample(cwd, tokens.sessionId, s.sample);
+    wroteSample = true;
+  }
+  return {
+    valid: s.valid,
+    normalized: s.normalized,
+    delta: s.delta ?? NO_DELTA,
+    wroteState: shouldWriteState,
+    wroteSample,
+  };
+}
+
+export function resetDataProcessorForTest(): void {
+  // no-op compatibility stub; write-side state is entirely module-local now
+}
+
+// ----- Test-only resets --------------------------------------------------------
+
 export function __resetForTest(): void {
   _loaded.clear();
   _stores.clear();
-}
-
-// v0.9.x — public pass-through for the tick-state module. The
-// `tick-state.ts` module owns the per-tick load→validate→compute→
-// commit flow; it calls `loadFromDisk(cwd)` once at beginTick and
-// `flushToDisk(cwd, pending)` once at commit. The internal
-// wrappers (`loadFromDiskInternal`, `flushToDiskInternal`) stay
-// private to this module so the rest of the codebase continues to
-// go through readTickStatus / writeTickStatus / readPrevTickStatus
-// / writePrevTickStatus / readLastActive / writeLastActive (see
-// "Why a separate file (vs cache.json)?" in this file's header).
-//
-// Both wrappers preserve the full lazy-load semantics of the
-// module-global _stores / _loaded Maps: a second loadFromDisk(cwd)
-// during the same child process returns the same parsed Store
-// instance without re-reading the file. flushToDisk writes the
-// caller-provided store verbatim — it does NOT consult _stores,
-// which keeps the tick-state module's "load once, mutate pending,
-// flush once" pipeline cleanly separated from the read-then-write
-// helpers that already exist.
-export function loadFromDisk(cwd: string): Store {
-  return loadFromDiskInternal(cwd);
-}
-
-export function flushToDisk(cwd: string, store: Store): void {
-  flushToDiskInternal(cwd, store);
+  _tickState = null;
 }

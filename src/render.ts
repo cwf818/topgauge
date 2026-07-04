@@ -26,7 +26,7 @@ import {
   type AvgSnapshot,
   type PrevTickSnapshot,
 } from "./data-processor.ts";
-import type { TokenSample, TokenSnapshot } from "./types.ts";
+import type { TokenSnapshot } from "./types.ts";
 import {
   buildRainbow,
   buildHue,
@@ -35,11 +35,8 @@ import {
   quoteIndex,
   type QuoteFreq,
 } from "./quotes.ts";
-import { readAllSamples, projectHash } from "./token-store.ts";
 import { readGitInfo } from "./git-info.ts";
 import * as statusStore from "./status-store.ts";
-import * as tickState from "./tick-state.ts";
-import * as cache from "./cache.ts";
 export type { PrevTickSnapshot, AvgSnapshot };
 
 export type Window = {
@@ -937,29 +934,11 @@ function peekAcc(
     if (!t?.sessionId) return null;
     return peekAvg(t.sessionId, cwd);
   }
-  let key: string;
-  if (scope === "project") {
-    if (!cwd) return null;
-    key = `tickStatus:${projectHash(cwd)}`;
-  } else if (scope === "ccsession") {
-    key = statusStore.CCSESSION_KEY;
-  } else {
-    // scope === "model"
-    const model = t?.modelDisplayName;
-    if (!model) return null;
-    key = `tickStatus:${model}`;
-  }
-  const e = tickState.getState().pending[key];
-  if (!e || e.kind !== "tickStatus") return null;
-  const v = e.value;
-  return {
-    accIn: v.accIn,
-    accOut: v.accOut,
-    accApi: v.accApiMs,
-    accCached: v.accCached,
-    accApiCount: v.accApiCount,
-    accTotalIn: v.accTotalIn,
-  };
+  return statusStore.readAccumulator(scope, {
+    sessionId: t?.sessionId,
+    cwd,
+    modelDisplayName: t?.modelDisplayName,
+  });
 }
 
 // Canonical write path for the four-layer accumulator. Reads the
@@ -2038,13 +2017,9 @@ const MODULES: Record<string, Module> = {
   m_apiCalls: (c) => {
     const cwd = c.tokens?.cwd;
     if (!cwd) return placeholderBare("m_apiCalls", c);
-    // v0.8.x cwf-tickStatus-v2 — project-wide key is now
-    // `tickStatus:<projectHash(cwd)>` (no prefix-less `tickStatus`).
-    void cwd;
-    const projKey = `tickStatus:${projectHash(c.tokens!.cwd!)}`;
-    const projEntry = tickState.getState().pending[projKey];
-    if (!projEntry || projEntry.kind !== "tickStatus") return wrapPlainDefault("m_apiCalls", "calls:0", undefined);
-    return wrapPlainDefault("m_apiCalls", `calls:${projEntry.value.accApiCount}`, undefined);
+    const acc = statusStore.readAccumulator("project", { cwd });
+    if (!acc) return wrapPlainDefault("m_apiCalls", "calls:0", undefined);
+    return wrapPlainDefault("m_apiCalls", `calls:${acc.accApiCount}`, undefined);
   },
   // v0.8.0+ — renamed from `m_contextSize`. The old name now lives
   // at `m_contextSize` with a different source (the cumulative
@@ -2331,70 +2306,10 @@ function parseWindowScope(
 // the StatAggregate dict below. ReadAllSamples is called with the
 // resolved sinceMs and applies a mtime pre-filter to skip stale
 // files before opening them.
-type StatAggregate = {
-  sumIn: number;
-  sumOut: number;
-  sumCached: number;
-  sumTotalIn: number; // sumIn + sumCached
-  sumApiMs: number;
-  rows: number; // total rows scanned (incl. fallback apiMs=0 rows)
-  calls: number; // v0.8.x — count of rows with apiMs > 0 (real API activity)
-  lastAt: number; // max sample `at`; 0 when no rows
-  generatedAt: number; // Date.now() at scan time; for diagnostics
-};
-
-function aggregateSamples(samples: TokenSample[]): StatAggregate {
-  // v0.8.0+ — TokenSample field rename. The per-turn columns are
-  // now `in` (was `ctx_in`), `cacheIn` (was `ctx_read`), and `apiMs`
-  // (was `deltaApiMs`). The cumulative columns `totalIn` /
-  // `totalOut` / `totalApiMs` are kept on the row for off-line audit
-  // but NOT summed — they're monotonic session totals, so summing
-  // them would produce meaningless numbers. m_sumTokenTotalIn
-  // therefore derives from per-turn columns (sumIn + sumCached)
-  // rather than from the cumulative totalIn field.
-  let sumIn = 0, sumOut = 0, sumCached = 0, sumApiMs = 0, lastAt = 0, calls = 0;
-  for (const s of samples) {
-    sumIn += s.in;
-    sumOut += s.out;
-    sumCached += s.cacheIn;
-    sumApiMs += s.apiMs ?? 0;
-    if ((s.apiMs ?? 0) > 0) calls += 1;
-    if (s.at > lastAt) lastAt = s.at;
-  }
-  return {
-    sumIn,
-    sumOut,
-    sumCached,
-    sumTotalIn: sumIn + sumCached,
-    sumApiMs,
-    rows: samples.length,
-    calls,
-    lastAt,
-    generatedAt: Date.now(),
-  };
-}
+type StatAggregate = statusStore.StatAggregate;
 
 function fetchSumAggregate(filter: SumFilter): StatAggregate {
-  // Key is bound to the discrete filter triple (model, window, align)
-  // — `sinceMs` is derived but NOT part of the key. That caps the
-  // key space at 12 entries (2 model × 3 window × 2 align). Value is
-  // the StatAggregate dict feeding all 8 sum/avg modules; on TTL
-  // expiry we re-scan (no incremental reuse).
-  const key = `stat:${filter.modelFilter ?? "all"}:${filter.windowKey}:${filter.alignActive}`;
-  const cached = cache.get<StatAggregate>(key, 300_000);
-  if (cached) return cached;
-  // Cross-project scan (no cwd scoping); the inline-args
-  // resolution never carries a cwd key, so we always go through
-  // readAllSamples here. readAllSamples applies a mtime pre-filter
-  // to skip stale files. Per-project reads are reserved for the
-  // future "per-cwd window" use case.
-  const samples = readAllSamples(filter.sinceMs);
-  const filtered = filter.modelFilter === undefined
-    ? samples
-    : samples.filter((s) => s.model === filter.modelFilter);
-  const agg = aggregateSamples(filtered);
-  cache.set(key, agg, 300_000);
-  return agg;
+  return statusStore.getStatAggregate(filter);
 }
 
 
@@ -4047,13 +3962,9 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   m_apiCalls: (params, ctx) => {
     const cwd = ctx.tokens?.cwd;
     if (!cwd) return wrapPlainDefault("m_apiCalls", "calls:0", params.color as string | undefined);
-    // v0.8.x cwf-tickStatus-v2 — project-wide key now keyed by
-    // projectHash (no prefix-less `tickStatus`).
-    void cwd;
-    const projKey = `tickStatus:${projectHash(ctx.tokens!.cwd!)}`;
-    const projEntry = tickState.getState().pending[projKey];
-    if (!projEntry || projEntry.kind !== "tickStatus") return wrapPlainDefault("m_apiCalls", "calls:0", params.color as string | undefined);
-    return wrapPlainDefault("m_apiCalls", `calls:${projEntry.value.accApiCount}`, params.color as string | undefined);
+    const acc = statusStore.readAccumulator("project", { cwd });
+    if (!acc) return wrapPlainDefault("m_apiCalls", "calls:0", params.color as string | undefined);
+    return wrapPlainDefault("m_apiCalls", `calls:${acc.accApiCount}`, params.color as string | undefined);
   },
   // v0.8.0+ — inline form of m_contextWindowsSize (capacity).
   m_contextWindowsSize: (params, ctx) => {
