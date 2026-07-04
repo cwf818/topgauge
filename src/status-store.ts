@@ -30,6 +30,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+  append as appendDiag,
   logFsList,
   logFsMkdir,
   logFsRead,
@@ -1324,6 +1325,16 @@ export function processTick(
   // they reach disk even on a regression tick (apiMs == -1 → invalid).
   // The commit gate in commit() is no longer gated on `valid`, so
   // `dirty === true` is sufficient to flush `pending`.
+  if (process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE === "1") {
+    appendDiag(
+      "info",
+      "smoke-ccsession",
+      `invalidRegression=${snapshot?.invalidRegression} totalApiMs=${snapshot?.totalApiMs ?? "null"} hasSnapshot=${snapshot != null} sid=${tokens?.sessionId ?? "null"} valid=${s.valid}`,
+      Date.now(),
+      cwd ?? undefined,
+      "status-store.processTick",
+    );
+  }
   if (snapshot?.invalidRegression) {
     mark(CCSESSION_KEY, emptyTickStatus());
   }
