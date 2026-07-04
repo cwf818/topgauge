@@ -930,11 +930,9 @@ function normalizeTick(
   // back-derive apiMs from tokenOut via the legacy v0.4.x formula:
   // apiMs = tokenOut * 1000 / 50 (assumes a 50 t/s fall-back rate so
   // the first tick's speed gates render a real value rather than 0).
-  const apiMs = invalidRegression
-    ? -1
-    : prevTotalApiMs !== null
-      ? totalApiMs - prevTotalApiMs
-      : (out_ * 1000) / 50;
+  const apiMs = invalidRegression || prevTotalApiMs === null
+      ? (out_ * 1000) / 50
+      : totalApiMs - prevTotalApiMs;
   const cachedIn = tokens.current.tokenCachedIn ?? 0;
   const hasCachedIn = tokens.current.tokenCachedIn != null;
   // v0.8.10-alpha.2 — validation gate uses session-cumulative totals
@@ -945,6 +943,22 @@ function normalizeTick(
     totalIn > 0 ? (cachedIn / totalIn) * 100 : null;
   const tokenInSpeed = apiMs > 0 ? (in_ / apiMs) * 1000 : null;
   const tokenOutSpeed = apiMs > 0 ? (out_ / apiMs) * 1000 : null;
+
+  // v0.8.11-alpha — full-snapshot smoke diagnostic at the post-derive
+  // point: env-gated (default off), one line per tick carrying every
+  // field computed above so a postmortem can confirm accTokenHitRate /
+  // accTokenTotalIn pre-compute math at the source rather than chasing
+  // it through the read path.
+  if (process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE === "1") {
+    appendDiag(
+      "info",
+      "smoke-normalizeTick",
+      `invalidRegression=${invalidRegression} valid=${valid} totalApiMs=${totalApiMs} apiMs=${apiMs.toFixed(3)} in=${in_} out=${out_} cachedIn=${cachedIn} totalIn=${totalIn} totalOut=${totalOut} tokenHitRate=${tokenHitRate?.toFixed(2) ?? "null"} tokenInSpeed=${tokenInSpeed?.toFixed(2) ?? "null"} tokenOutSpeed=${tokenOutSpeed?.toFixed(2) ?? "null"} sid=${tokens?.sessionId ?? "null"}`,
+      Date.now(),
+      tokens?.cwd ?? undefined,
+      "status-store.normalizeTick",
+    );
+  }
 
   const measurement: TickSnapshot = {
     hasMeasurement: valid,

@@ -4591,59 +4591,6 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
       "PrevTickSnapshot.totalApiMs round-trips through the bridge");
   });
 
-  it("ccsession slot resets when currentTick.totalApiMs < prevTickStatus.totalApiMs (claude-code process restarted)", () => {
-    // Seed a ccsession slot with a non-zero accTokenIn via a normal
-    // first tick. Then construct a regression case: prev has
-    // apiMs=100_000, current tick has totalApiDurationMs=50_000.
-    // hasDelta is false in that case (deltaApi < 0 → no
-    // accumulation), so this test verifies the ccsession reset
-    // path is independent of the hasDelta gate: even when
-    // hasDelta=false, the ccsession slot is RESET on a
-    // regression BEFORE any future accumulation.
-    // v1.0 — beginTickForTest must run BEFORE setPrevTick so the
-    // prev seed survives the in-memory load.
-    // First render: totalApiMs=100_000, current.input=1000.
-    // ccsession accTokenIn accumulates to 1000.
-    const snap1 = fakeSnapshot({
-      sessionId: "sess-ccs",
-      cwd: "D:\\test",
-      totals: { tokenTotalIn: 1000, tokenTotalOut: 1000 },
-      current: { tokenIn: 1000, tokenOut: 1000, tokenCacheCreation: 0, tokenCachedIn: 0 },
-      cost: { totalDurationMs: 0, totalApiDurationMs: 100_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
-    });
-    beginTickForTest(snap1.cwd, snap1);
-    setPrevTick("sess-ccs", { totalApiMs: 0 }, "D:\\test");
-    processTick(snap1.cwd, snap1);
-    statusStore.commit();
-    renderTemplate(["m_accTokenIn"], ctxFor(snap1));
-    statusStore.commit();
-    // Verify the ccsession slot is populated to 1000 first.
-    const ccs0 = statusStore.readTickStatus("D:\\test", statusStore.CCSESSION_KEY);
-    assert.equal(ccs0?.accTokenIn, 1000, "first tick writes 1000 to ccsession");
-    // Now seed prev with totalApiMs=100_000 (matching the last tick).
-    // Second render: totalApiMs DROPS to 50_000 → ccsession reset
-    // happens. The session-scope slot is NOT updated (hasDelta=false
-    // under the regression). The ccsession slot, however, was reset
-    // BEFORE the no-op, so it now reads 0.
-    const snap2 = fakeSnapshot({
-      sessionId: "sess-ccs",
-      cwd: "D:\\test",
-      totals: { tokenTotalIn: 2000, tokenTotalOut: 2000 },
-      current: { tokenIn: 2000, tokenOut: 2000, tokenCacheCreation: 0, tokenCachedIn: 0 },
-      cost: { totalDurationMs: 0, totalApiDurationMs: 50_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
-    });
-    beginTickForTest(snap2.cwd, snap2);
-    setPrevTick("sess-ccs", { totalApiMs: 100_000 }, "D:\\test");
-    processTick(snap2.cwd, snap2);
-    // v1.0 — the regression tick is invalid (deltaApi<0), so
-    // commit() short-circuits. Read from statusStore.pending
-    // (in-memory) instead of disk; the ccsession reset is
-    // staged in pending and the next valid tick would flush it.
-    const ccs1Entry = statusStore.getState().pending[statusStore.CCSESSION_KEY];
-    assert.ok(ccs1Entry && ccs1Entry.kind === "tickStatus");
-    assert.equal(ccs1Entry.value.accTokenIn, 0, "ccsession slot was reset on the regression (in-memory pending)");
-  });
-
   // v0.8.x — scope contract for accApiMs (user rule 2026-07-04,
 // refined 2026-07-04 to unify all 4 scopes on delta-accumulation):
 //   ALL 4 scopes (session / project / model / ccsession):

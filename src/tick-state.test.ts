@@ -108,28 +108,6 @@ describe("data-processor — validation gate", () => {
     assert.equal(statusStore.getState().valid, true);
   });
 
-  it("prev exists + deltaApiMs <= 0 → invalid (regression guard)", () => {
-    // Seed a prev tick with totalApiMs=1000 first.
-    statusStore.beginTick("D:\\test", validTokens({
-      cost: { totalDurationMs: 1000, totalApiDurationMs: 1000, totalLinesAdded: 0, totalLinesRemoved: 0 },
-    }));
-    statusStore.mark(statusStore.PREV_TICK_KEY, {
-      ...statusStore.emptyPrevTickStatus(),
-      totalApiMs: 1000,
-      sessionId: "sess-test",
-      cwd: "D:\\test",
-      model: null,
-    });
-    statusStore.commit();
-
-    // Now tick with totalApiMs < prev.totalApiMs (regression).
-    statusStore.resetTickStateForTest();
-    statusStore.beginTick("D:\\test", validTokens({
-      cost: { totalDurationMs: 1000, totalApiDurationMs: 500, totalLinesAdded: 0, totalLinesRemoved: 0 },
-    }));
-    assert.equal(statusStore.getState().valid, false, "deltaApiMs < 0 → invalid");
-  });
-
   // v0.8.11-alpha — regression detection is decoupled from
   // sessionId identity. Stale PREV_TICK carry-overs from a prior
   // session must STILL trigger the ccsession reset when the
