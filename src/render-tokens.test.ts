@@ -4170,6 +4170,56 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     assert.equal(strip(out), "in:60");
   });
 
+  it("m_sumTokenIn|window|5h|align|true uses ctx.fiveHour.resetStartAt (not wall-clock)", () => {
+    // v0.8.12 — regression. Earlier parseWindowScope type-checked
+    // `typeof w.resetStartAt === "number"` which never matched the
+    // ISO-string shape from Window, so aligned mode silently fell
+    // through to the wall-clock fallback (nowMs - 5h). That inflated
+    // m_sum* totals to the entire trailing 5h regardless of where
+    // the plan window actually starts. The fix: parse the ISO string
+    // with Date.parse and gate on Number.isFinite, returning the
+    // resetStartAt epoch as sinceMs.
+    const stateRootDir = join(_tmpDir, "sum-fixture-aligned-5h");
+    setStateRoot(() => stateRootDir);
+    const projHash = "d--sum-al";
+    const sess = "sess-sum-al";
+    const cwd = "D:\\sum-al";
+    const sessionFile = join(stateRootDir, projHash, `${sess}.jsonl`);
+    mkdirSync(dirname(sessionFile), { recursive: true });
+    const now = 1_700_000_000_000;
+    // Plan window started 30min ago, runs 5h. Aligned window
+    // covers [now - 30min, now]. Wall-clock 5h would cover
+    // [now - 5h, now] — much wider.
+    const resetStartAt = new Date(now - 30 * 60_000).toISOString();
+    const resetAt = new Date(now + 4 * 3600_000 + 30 * 60_000).toISOString();
+    writeFileSync(
+      sessionFile,
+      [
+        // Inside the aligned 30m window
+        JSON.stringify({ at: now - 10 * 60_000, totalIn: 1, totalOut: 0, in: 1, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 100, apiMs: 100 }),
+        // Outside the aligned window but inside wall-clock 5h
+        JSON.stringify({ at: now - 2 * 3600_000, totalIn: 999, totalOut: 0, in: 999, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 999, apiMs: 999 }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const out = renderTemplate(
+      ["m_sumTokenIn|window|5h|align|true"],
+      ctxFor(
+        fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" }),
+        {
+          pct: 10,
+          resetAt,
+          resetStartAt,
+          resetDurationMs: 5 * 3600_000,
+        },
+        null,
+      ),
+    ).join("\n");
+    // Aligned mode reads only the 30m-window row → in:1. Wall-clock
+    // fallback would have summed to in:1000.
+    assert.equal(strip(out), "in:1");
+  });
+
   it("readAllSamples mtime pre-filter: stale jsonl is skipped even if its row timestamps are recent", () => {
     // Performance contract: when a file's mtime is older than
     // sinceMs, readAllSamples MUST skip it without readFileSync.

@@ -2241,16 +2241,19 @@ function parseWindowScope(
   if (
     alignWanted &&
     w != null &&
-    typeof w.resetStartAt === "number" &&
+    typeof w.resetStartAt === "string" &&
     typeof w.resetDurationMs === "number" &&
     w.resetDurationMs > 0
   ) {
-    return {
-      windowKey,
-      sinceMs: w.resetStartAt,
-      alignActive: true,
-      modelFilter,
-    };
+    const alignedStartMs = Date.parse(w.resetStartAt);
+    if (Number.isFinite(alignedStartMs)) {
+      return {
+        windowKey,
+        sinceMs: alignedStartMs,
+        alignActive: true,
+        modelFilter,
+      };
+    }
   }
   const windowMs = windowKey === "5h" ? 5 * 3600_000 : 7 * 86400_000;
   return {
@@ -2261,8 +2264,15 @@ function parseWindowScope(
   };
 }
 
-// v0.8.x — sum/avg scanning core. The cache key is
-// "stat:<model|"all">:<window>:<align>" with TTL=300s and value
+// v0.8.12 — resetStartAt is an ISO string in Window (see src/types.ts
+// Window.resetStartAt: string | null). Earlier revision of
+// parseWindowScope type-checked `typeof w.resetStartAt === "number"`
+// which never matched; aligned mode silently fell through to the
+// wall-clock fallback (nowMs - 5h / nowMs - 7d), inflating m_sum*
+// totals to the full wall-clock window. Fixed in v0.8.12: parse
+// the ISO string with Date.parse and gate on Number.isFinite so a
+// bad string falls back to wall-clock instead of NaN-poisoning the
+// scan.
 // the StatAggregate dict below. ReadAllSamples is called with the
 // resolved sinceMs and applies a mtime pre-filter to skip stale
 // files before opening them.
