@@ -7,7 +7,7 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -268,5 +268,136 @@ describe("data-processor — concurrent-overlay commit (m_template nesting)", ()
 describe("data-processor — getState throws without beginTick", () => {
   it("getState() with no prior beginTick throws a clear error", () => {
     assert.throws(() => statusStore.getState(), /without beginTick\(\)/);
+  });
+});
+
+// v0.8.15-alpha — stdin-side error guard for context_window.used_percentage.
+// Some stdins from error states surface `used_percentage=0` instead of
+// `null`. The previous pipeline propagated the 0 straight to render,
+// which displayed a misleading "0%". The fix: beginTick's normalizeTick
+// path now substitutes the prev tick's contextUsedPercent when stdin
+// reports exactly 0 AND prev has a usable value. Pinned cases:
+//   - prev=null → stdin=0 stays 0 (no history to lie about)
+//   - prev=null → stdin=null stays null (real "no data")
+//   - prev=N   → stdin=0 substitutes N
+//   - prev=N   → stdin=N keeps N
+//   - prev=null → stdin=N keeps N
+describe("data-processor — contextUsedPercent=0 carry-over (v0.8.15-alpha)", () => {
+  // Wrap validTokens so each test can produce a fresh snapshot with
+  // a chosen contextWindow; the helper spreads overrides cleanly.
+  const tokensWithCw = (cw: { contextWindowSize: number | null; contextUsedPercent: number | null; contextRemainingPercent: number | null } | null): TokenSnapshot =>
+    validTokens({ contextWindow: cw ?? undefined });
+
+  it("first tick: prev=null + stdin=0 → stdin stays 0 (no history to substitute)", () => {
+    // No prior prev tick — the normalization must NOT fabricate a
+    // value. The renderer still surfaces "0%" so the user can see
+    // the upstream probe reported a literal zero.
+    const t = tokensWithCw({ contextWindowSize: 200000, contextUsedPercent: 0, contextRemainingPercent: 100 });
+    statusStore.beginTick("D:\\test", t);
+    assert.equal(t.contextWindow!.contextUsedPercent, 0,
+      "v0.8.15-alpha — no prev → stdin 0 is preserved as-is");
+  });
+
+  it("first tick: prev=null + stdin=null → stdin stays null (real no-data)", () => {
+    const t = tokensWithCw({ contextWindowSize: 200000, contextUsedPercent: null, contextRemainingPercent: null });
+    statusStore.beginTick("D:\\test", t);
+    assert.equal(t.contextWindow!.contextUsedPercent, null);
+  });
+
+  it("first tick: prev=null + stdin=63 → stdin stays 63 (normal)", () => {
+    const t = tokensWithCw({ contextWindowSize: 200000, contextUsedPercent: 63, contextRemainingPercent: 37 });
+    statusStore.beginTick("D:\\test", t);
+    assert.equal(t.contextWindow!.contextUsedPercent, 63);
+  });
+
+  it("carry-over: prev=63 + stdin=0 → tokens mutated to 63 in-place", () => {
+    // Seed prev via writePrevTickStatus so the next beginTick's
+    // loadFromDiskInternal picks it up.
+    statusStore.writePrevTickStatus("D:\\test", {
+      ...statusStore.emptyPrevTickStatus(),
+      totalApiMs: 1000,
+      sessionId: "sess-test",
+      cwd: "D:\\test",
+      model: null,
+      contextUsedPercent: 63,
+    });
+    statusStore.resetTickStateForTest();
+
+    const t = tokensWithCw({ contextWindowSize: 200000, contextUsedPercent: 0, contextRemainingPercent: 100 });
+    statusStore.beginTick("D:\\test", t);
+    assert.equal(t.contextWindow!.contextUsedPercent, 63,
+      "v0.8.15-alpha — stdin 0 substituted by prev 63 (in-place mutate)");
+  });
+
+  it("carry-over: prev=63 + stdin=63 → stdin keeps 63 (no substitution)", () => {
+    statusStore.writePrevTickStatus("D:\\test", {
+      ...statusStore.emptyPrevTickStatus(),
+      totalApiMs: 1000,
+      sessionId: "sess-test",
+      cwd: "D:\\test",
+      model: null,
+      contextUsedPercent: 63,
+    });
+    statusStore.resetTickStateForTest();
+
+    const t = tokensWithCw({ contextWindowSize: 200000, contextUsedPercent: 63, contextRemainingPercent: 37 });
+    statusStore.beginTick("D:\\test", t);
+    assert.equal(t.contextWindow!.contextUsedPercent, 63,
+      "v0.8.15-alpha — normal >0 path bypasses substitution");
+  });
+
+  it("processTick writes the substituted value into PREV_TICK_KEY", () => {
+    // End-to-end: stdin 0 with prev=63 → processTick stamps 63 (the
+    // post-substitution value, not the original stdin 0) into the
+    // pending PREV_TICK_KEY, so the next tick's prev carries 63
+    // again rather than the bad stdin 0.
+    statusStore.writePrevTickStatus("D:\\test", {
+      ...statusStore.emptyPrevTickStatus(),
+      totalApiMs: 1000,
+      sessionId: "sess-test",
+      cwd: "D:\\test",
+      model: null,
+      contextUsedPercent: 63,
+    });
+    statusStore.resetTickStateForTest();
+
+    const t = tokensWithCw({ contextWindowSize: 200000, contextUsedPercent: 0, contextRemainingPercent: 100 });
+    // Bump totalApiMs so the tick is not a regression (otherwise
+    // the regression-reset mark would fire before our read).
+    t.cost = { totalDurationMs: 1000, totalApiDurationMs: 2000, totalLinesAdded: 0, totalLinesRemoved: 0 };
+    statusStore.beginTick("D:\\test", t);
+    statusStore.processTick("D:\\test", t);
+
+    const s = statusStore.getState();
+    const prev = s.pending[statusStore.PREV_TICK_KEY];
+    assert.ok(prev && prev.kind === "prevTickStatus");
+    assert.equal(prev!.value.contextUsedPercent, 63,
+      "v0.8.15-alpha — processTick stamps post-substitution value (63), not raw stdin 0");
+  });
+
+  it("parseStore: legacy on-disk prevTickStatus without contextUsedPercent → null", () => {
+    // Manually write a legacy state.json (a pre-v0.8.15-alpha
+    // prevTickStatus entry that omits the new field) and confirm
+    // loadFromDiskInternal backfills `null` rather than crashing
+    // or synthesizing a number.
+    const path = join(_tmpDir, "status.json");
+    writeFileSync(path, JSON.stringify({
+      [statusStore.PREV_TICK_KEY]: {
+        at: Date.now(),
+        value: {
+          totalApiMs: 500,
+          sessionId: "sess-legacy",
+          cwd: "D:\\test",
+          model: null,
+          // — contextUsedPercent intentionally absent —
+        },
+      },
+    }));
+    statusStore.__resetForTest();
+
+    const loaded = statusStore.readPrevTickStatus("D:\\test");
+    assert.ok(loaded);
+    assert.equal(loaded!.contextUsedPercent, null,
+      "v0.8.15-alpha — missing field on legacy row backfills null");
   });
 });

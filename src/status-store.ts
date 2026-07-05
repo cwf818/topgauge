@@ -67,6 +67,12 @@ export type PrevTickStatusValue = {
   sessionId: string | null;
   cwd: string | null;
   model: string | null;
+  // v0.8.15-alpha — carry-over for stdin `context_window.used_percentage`.
+  // When the next tick arrives with contextUsedPercent===0 (an
+  // observed error from the stdin producer), beginTick falls back
+  // to this prev value rather than surfacing a misleading "0%".
+  // Null when no prior tick has ever observed a non-null value.
+  contextUsedPercent: number | null;
 };
 
 export type LastActiveValue = {
@@ -345,6 +351,12 @@ function parseStore(raw: string): Store {
           sessionId: typeof v.sessionId === "string" ? v.sessionId : null,
           cwd: typeof v.cwd === "string" ? v.cwd : null,
           model: typeof v.model === "string" ? v.model : null,
+          // v0.8.15-alpha — backfill contextUsedPercent for legacy
+          // prev rows. Missing field → null (start of history); a
+          // numeric 0/100 stays 0/100 as parsed.
+          contextUsedPercent: typeof v.contextUsedPercent === "number"
+            ? v.contextUsedPercent
+            : null,
         },
       };
       continue;
@@ -460,6 +472,11 @@ export function emptyPrevTickStatus(): PrevTickStatusValue {
     sessionId: null,
     cwd: null,
     model: null,
+    // v0.8.15-alpha — null = no prior history; beginTick does NOT
+    // substitute when prev is also null (a fresh install or after
+    // `clean` naturally surfaces the first tick's stdin value as-is,
+    // including a 0 from a malformed probe).
+    contextUsedPercent: null,
   };
 }
 
@@ -880,6 +897,38 @@ function resolvePreviousBaseline(
   return { prevTotalApiMs: prev.totalApiMs };
 }
 
+// v0.8.15-alpha — stdin-side error guard for context_window.used_percentage.
+// Observed stdins from error states occasionally surface
+// `used_percentage=0` instead of `null`, which the renderer would
+// display as a literal "0%". When the prev tick carries a usable
+// value (non-null), fall back to it so the line stays consistent.
+// Three-state decision matrix:
+//   stdin === null      → keep null (real "no data")
+//   stdin  > 0          → keep as-is (real percentage)
+//   stdin === 0         → error sentinel: substitute prev IF prev is
+//                         non-null; otherwise leave the 0 for
+//                         transparency (no carry-over to lie about)
+// The substitution target is `tokens.contextWindow.contextUsedPercent`,
+// since `m_contextUsedPercent` reads stdin's path verbatim — no
+// separate propagation through the TickSnapshot / measurement layer.
+function applyContextUsedPercentCarryOver(
+  tokens: TokenSnapshot,
+  prev: PrevTickStatusValue | null,
+): void {
+  const cw = tokens.contextWindow;
+  if (!cw) return;
+  const stdinPct = cw.contextUsedPercent;
+  if (stdinPct === null || stdinPct === undefined) return;
+  if (stdinPct !== 0) return;
+  // stdin reports 0 — only substitute when prev has a real prior value.
+  if (prev && prev.contextUsedPercent !== null) {
+    tokens.contextWindow = {
+      ...cw,
+      contextUsedPercent: prev.contextUsedPercent,
+    };
+  }
+}
+
 // v0.8.11-alpha — regression detection: current.totalApiMs <
 // prev.totalApiMs means the cumulative counter rolled backward
 // (cc process restarted). Triggers a ccsession-slot zero reset.
@@ -891,6 +940,17 @@ function detectRegression(
   if (!tokens?.sessionId || !prev) return false;
   const currentTotalApiMs = tokens.cost.totalApiDurationMs;
   if (currentTotalApiMs == null || !Number.isFinite(currentTotalApiMs)) return false;
+  // v0.8.15-alpha — stdin-side error guard: when the caller observes
+  // `contextUsedPercent===0` AND no carry-over applies (prev null),
+  // `currentTotalApiMs` may roll backward as a side effect of the
+  // malformed probe rather than a real cc restart. Suppress the
+  // regression flag in that case so the ccsession slot doesn't
+  // get zeroed on a noisy probe. When carry-over substitutes a
+  // non-zero prev value, contextUsedPercent is already != 0 by the
+  // time detectRegression runs (normalizeTick applies carry-over
+  // first), so the guard naturally does not fire.
+  const cw = tokens.contextWindow;
+  if (cw && cw.contextUsedPercent === 0) return false;
   return currentTotalApiMs < prev.totalApiMs;
 }
 
@@ -901,6 +961,16 @@ function normalizeTick(
   if (!tokens || !tokens.sessionId || !tokens.cwd) {
     return { snapshot: null, measurement: EMPTY_TICK };
   }
+  // v0.8.15-alpha — stdin-side error guard for context_window.used_percentage.
+  // Observed stdins from error states occasionally surface
+  // `used_percentage=0` instead of `null`, which the renderer would
+  // display as a literal "0%". When the prev tick carries a usable
+  // value (non-null, non-zero error sentinel), fall back to it so
+  // the line stays consistent. This mutation is in-place against
+  // the caller's TokenSnapshot — render reads `tokens.contextWindow.
+  // contextUsedPercent` directly off the same reference, so no
+  // separate propagation path is needed.
+  applyContextUsedPercentCarryOver(tokens, prev);
   const in_ = tokens.current.tokenIn;
   const out_ = tokens.current.tokenOut;
   const totalApiMs = tokens.cost.totalApiDurationMs;
@@ -1187,7 +1257,7 @@ export function setPrevTick(
   _sessionId: string,
   snap: PrevTickSnapshot,
   cwd?: string | null,
-  identity?: { sessionId?: string | null; cwd?: string | null; model?: string | null },
+  identity?: { sessionId?: string | null; cwd?: string | null; model?: string | null; contextUsedPercent?: number | null },
 ): void {
   void _sessionId;
   if (!cwd) return;
@@ -1198,11 +1268,21 @@ export function setPrevTick(
   // mark-only path wrote only to pending, which got clobbered
   // by beginTick's loadFromDiskInternal overwrite.
   const prev = readPrevTickStatus(cwd) ?? emptyPrevTickStatus();
+  // v0.8.15-alpha — caller (processTick) stamps the current
+  // tick's effective contextUsedPercent into identity. We preserve
+  // the prior value when caller omits the field so a future caller
+  // that forgets to thread it doesn't accidentally wipe history
+  // (a wiped prev.contextUsedPercent would silently disable the
+  // carry-over fallback the next tick).
+  const nextContextUsedPercent = identity?.contextUsedPercent !== undefined
+    ? identity.contextUsedPercent
+    : prev.contextUsedPercent;
   writePrevTickStatus(cwd, {
     totalApiMs: snap.totalApiMs,
     sessionId: identity?.sessionId ?? prev.sessionId,
     cwd: identity?.cwd ?? prev.cwd,
     model: identity?.model ?? prev.model,
+    contextUsedPercent: nextContextUsedPercent,
   });
 }
 
@@ -1334,6 +1414,12 @@ export function processTick(
   const prevEntry = s.pending[PREV_TICK_KEY];
   const prev = prevEntry?.kind === "prevTickStatus" ? prevEntry.value : null;
   const { snapshot, measurement } = normalizeTick(tokens, prev);
+  // v0.8.15-alpha — measurement reflects the freshest normalizeTick
+  // result even on invalid ticks. The render path's computeTickDelta
+  // reads r.in / r.out here, gated on r.hasMeasurement; surfacing a
+  // 0-with-hasMeasurement-false on invalid keeps the line consistent
+  // with the prior v1.0 contract (no partial-write visibility to
+  // render) rather than carrying the EMPTY_TICK zeros forward.
   s.snapshot = snapshot;
   s.valid = validateNormalizedTick(snapshot);
   s.measurement = measurement;
@@ -1362,13 +1448,19 @@ export function processTick(
     return;
   }
 
-  // Stage the prev-cursor (totalApiMs only). The next tick reads
-  // `prev.totalApiMs` to compute `apiMs = current - prev`.
+  // Stage the prev-cursor. The next tick reads `prev.totalApiMs`
+  // to compute `apiMs = current - prev`, and `prev.contextUsedPercent`
+  // to substitute a real prior value when stdin mistakenly reports
+  // `used_percentage=0` (see applyContextUsedPercentCarryOver).
+  // `tokens.contextWindow.contextUsedPercent` is already the
+  // post-carry-over value when normalizeTick has run, so reading
+  // it here persists the substituted value to disk.
   mark(PREV_TICK_KEY, {
     totalApiMs: snapshot.totalApiMs,
     sessionId: tokens.sessionId,
     cwd,
     model: tokens.modelDisplayName ?? null,
+    contextUsedPercent: tokens.contextWindow?.contextUsedPercent ?? null,
   });
 
   // Accumulators get the current snapshot values straight — no

@@ -4868,6 +4868,7 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
       statusStore.writePrevTickStatus("D:\\test", {
         totalApiMs: 30_000,
         sessionId: "sess-ccs-api", cwd: "D:\\test", model: null,
+        contextUsedPercent: null,
       });
       // prev=30_000, fakeSnapshot defaults totalApiMs=60_000 →
       // deltaApi=30_000 → ccsession.accApiMs += 30_000.
@@ -4894,6 +4895,7 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
       statusStore.writePrevTickStatus("D:\\test", {
         totalApiMs: 0,
         sessionId: "sess-ccs-reg", cwd: "D:\\test", model: null,
+        contextUsedPercent: null,
       });
       const snap1 = fakeSnapshot({
         sessionId: "sess-ccs-reg",
@@ -4916,6 +4918,7 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
       statusStore.writePrevTickStatus("D:\\test", {
         totalApiMs: 100_000,
         sessionId: "sess-ccs-reg", cwd: "D:\\test", model: null,
+        contextUsedPercent: null,
       });
       const snap2 = fakeSnapshot({
         sessionId: "sess-ccs-reg",
@@ -4943,6 +4946,7 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
       statusStore.writePrevTickStatus("D:\\test", {
         totalApiMs: 0,
         sessionId: "sess-ccs-api-reset", cwd: "D:\\test", model: null,
+        contextUsedPercent: null,
       });
       // Seed ccsession via a normal first tick: totalApiMs=100_000 → deltaApi=100_000
       const snap1 = fakeSnapshot({
@@ -4965,6 +4969,7 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
       statusStore.writePrevTickStatus("D:\\test", {
         totalApiMs: 100_000,
         sessionId: "sess-ccs-api-reset", cwd: "D:\\test", model: null,
+        contextUsedPercent: null,
       });
       const snap2 = fakeSnapshot({
         sessionId: "sess-ccs-api-reset",
