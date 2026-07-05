@@ -941,7 +941,7 @@ describe("renderTemplate — m_token* modules", () => {
 //   m_apiMs = current total_api_duration_ms − prev total_api_duration_ms
 //
 // Gate: hasDelta (deltaApi > 0). Idle tick (current == prev) →
-// "api:--". No stdin or no sessionId → "api:--". The
+// "api:n/a". No stdin or no sessionId → "api:n/a". The
 // writeBack path mirrors m_tokenIn / m_tokenOut: the renderer
 // fires setPrevTick on every call so the next tick has a fresh
 // baseline regardless of which per-turn module appears in the
@@ -1046,7 +1046,7 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
     assert.equal(strip(out), "api:40s");
   });
 
-  it("m_apiMs| idle tick (current == prev → deltaApi=0) → placeholder 'api|--'", () => {
+  it("m_apiMs| idle tick (current == prev → deltaApi=0) → placeholder 'api|n/a'", () => {
     setPrevTick(
       "sess-apims-idle",
       { totalApiMs: 30_000 },
@@ -1061,14 +1061,14 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
         }),
       ),
     ).join("\n");
-    assert.equal(strip(out), "api:--");
+    assert.equal(strip(out), "api:n/a");
     assert.ok(out.includes(STALE), `expected STALE wrap on: ${JSON.stringify(out)}`);
   });
 
   // v0.8.x — m_apiMs cache-fallback: when the current tick is
   // idle (no API call) but the lastActive:apiMs slot in
   // status.json holds a value within the 60s TTL window, render
-  // the cached value STALE_COLORed instead of the "api:--"
+  // the cached value STALE_COLORed instead of the "api:n/a"
   // placeholder. Mirrors m_tokenInSpeed/m_tokenOutSpeed's idle-
   // tick behavior.
   it("m_apiMs| idle tick WITH cached lastActive:apiMs (within TTL) → 'api|1m' (STALE_COLORed)", () => {
@@ -1115,7 +1115,7 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
     assert.ok(out.includes(STALE), `expected STALE wrap on cached fallback: ${JSON.stringify(out)}`);
   });
 
-  it("m_apiMs| idle tick with NO prior cached value → placeholder 'api|--'", () => {
+  it("m_apiMs| idle tick with NO prior cached value → placeholder 'api|n/a'", () => {
     // Fresh session, first tick is idle (prev=current → no delta),
     // AND no lastActive:apiMs has been written yet (beforeEach
     // resets status.json per test). Placeholder must fire.
@@ -1133,7 +1133,7 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
         }),
       ),
     ).join("\n");
-    assert.equal(strip(out), "api:--");
+    assert.equal(strip(out), "api:n/a");
   });
 
   it("m_apiMs| inline |color|red on cached fallback: STALE_COLOR wins over user color (mirror of tps siblings)", () => {
@@ -1177,13 +1177,13 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
     assert.ok(out.includes(STALE), `expected STALE wrap: ${JSON.stringify(out)}`);
   });
 
-  it("m_apiMs| no stdin (tokens=null) → placeholder 'api|--'", () => {
+  it("m_apiMs| no stdin (tokens=null) → placeholder 'api|n/a'", () => {
     const out = renderTemplate(["m_apiMs"], ctxFor(null)).join("\n");
-    assert.equal(strip(out), "api:--");
+    assert.equal(strip(out), "api:n/a");
     assert.ok(out.includes(STALE), `expected STALE wrap on: ${JSON.stringify(out)}`);
   });
 
-  it("m_apiMs| totalApiDurationMs=null on an otherwise-present snapshot → placeholder 'api|--'", () => {
+  it("m_apiMs| totalApiDurationMs=null on an otherwise-present snapshot → placeholder 'api|n/a'", () => {
     // totalApiDurationMs is OPTIONAL in TokenSnapshot.cost. When
     // null but other fields are present, computeAndCacheTickDelta
     // bails to hasDelta=false → placeholder fires.
@@ -1196,7 +1196,7 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
         }),
       ),
     ).join("\n");
-    assert.equal(strip(out), "api:--");
+    assert.equal(strip(out), "api:n/a");
   });
 
   it("m_apiMs| inline |color|brightGreen wraps the chunk in the green SGR", () => {
@@ -1221,7 +1221,7 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
 
   it("m_apiMs| inline |nulldrop|true is a no-op (function never returns null)", () => {
     // The m_apiMs renderer always returns either "api:1m" or
-    // "api:--" placeholder (via wrapPlainDefault /
+    // "api:n/a" placeholder (via wrapPlainDefault /
     // placeholderWithColor, which wrap in STALE_COLOR). Therefore
     // `:nulldrop:true` has no effect — the dispatcher can only
     // short-circuit on a null return. Same property as
@@ -2026,9 +2026,11 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     assert.equal(strip(out), "cache:0");
   });
 
-  it("m_tokenCachedIn|nulldrop|false with cacheRead=null renders 'cache|n/a' (placeholder)", () => {
-    // The placeholder path is reserved for the missing-field case
-    // (cacheRead=null on a present snapshot).
+  it("m_tokenCachedIn|nulldrop|false with cacheRead=null renders 'cache|0' (v0.8.13 zero-fallback)", () => {
+    // v0.8.13 — cacheRead=null (field not shipped by stdin) now
+    // renders as "cache:0", same as the real-zero case. Treats
+    // "field not shipped" as zero so the module always reads
+    // "cache:N" (no placeholder text mixing with the value path).
     const out = renderTemplate(
       ["m_tokenCachedIn|nulldrop|false"],
       ctxFor(
@@ -2037,18 +2039,49 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
         }),
       ),
     ).join("\n");
-    assert.equal(strip(out), "cache:n/a");
+    assert.equal(strip(out), "cache:0");
+  });
+
+  it("m_tokenCachedIn bare form emits PLAIN text (no STALE_COLOR) — matches m_tokenIn / m_tokenOut", () => {
+    // v0.8.13 — color unified with the m_token* sibling family:
+    // bare default is plain (no STALE_COLOR wrap), matching
+    // m_tokenIn / m_tokenOut / m_tokenInTotal / m_tokenTotalOut.
+    // The user's `:color|<c>` inline override still applies.
+    const out = renderTemplate(
+      ["m_tokenCachedIn"],
+      ctxFor(fakeSnapshot()),
+    ).join("\n");
+    assert.equal(strip(out), "cache:163.4k");
+    assert.ok(!out.includes(STALE), `expected no STALE wrap on bare m_tokenCachedIn: ${JSON.stringify(out)}`);
   });
 
   it("m_tokenCachedIn bare form emits 'cache:0' when read=0 (v0.8.6+ dropped pct suffix)", () => {
     // v0.8.6+ — bare m_tokenCachedIn renders "cache:0" without
-    // the `(XX%)` share suffix. Drop is reserved for cacheRead=null
-    // (the missing-field case).
+    // the `(XX%)` share suffix. v0.8.13 — cacheRead=null (field
+    // not shipped) also renders as "cache:0", same as the real-zero
+    // case (see the test below).
     const out = renderTemplate(
       ["m_tokenCachedIn"],
       ctxFor(
         fakeSnapshot({
           current: { tokenIn: 38, tokenOut: 155, tokenCacheCreation: 0, tokenCachedIn: 0 },
+        }),
+      ),
+    ).join("\n");
+    assert.equal(strip(out), "cache:0");
+  });
+
+  it("m_tokenCachedIn bare form emits 'cache:0' when cacheRead=null (v0.8.13 zero-fallback)", () => {
+    // v0.8.13 — cacheRead=null (field not shipped by stdin) on a
+    // present snapshot now renders as "cache:0" instead of the
+    // "cache:n/a" placeholder. The module always reads "cache:N",
+    // and the placeholder path is reserved for the truly missing
+    // case (no tokens at all → still placeholder).
+    const out = renderTemplate(
+      ["m_tokenCachedIn"],
+      ctxFor(
+        fakeSnapshot({
+          current: { tokenIn: 38, tokenOut: 155, tokenCacheCreation: 0, tokenCachedIn: null },
         }),
       ),
     ).join("\n");
@@ -4487,6 +4520,112 @@ describe("renderTemplate — v0.8.0+ labels.* config customization", () => {
       const out = renderTemplate(["m_tokenCachedIn"], ctxFor(fakeSnapshot())).join("\n");
       assert.match(strip(out), /^⚡:/);
     });
+  });
+
+  // v0.8.13+ — four new label axes (labelApi / labelApiCalls /
+  // labelInSpeed / labelOutSpeed) extend the labelFor() resolver
+  // so apiMs / apiCalls / inSpeed / outSpeed family modules are
+  // configurable independently from the in/out token-axis family.
+  // Defaults match today's literal strings ("api:" / "calls:" /
+  // "in:" / "out:") so existing renders stay byte-identical.
+
+  it("labelApi override reaches m_apiMs / m_accApiMs / m_sumApiMs", () => {
+    setStateRoot(() => join(_tmpDir, "labels-labelApi"));
+    withLabels({ labelApi: "ms:" }, () => {
+      // m_apiMs (per-turn) and m_accApiMs both read labelFor("apiMs")
+      // (= labels.labelApi). m_sumApiMs placeholder reads the same.
+      // Seed a tick so m_accApiMs has a non-zero value to render.
+      const aSnap = fakeSnapshot({ sessionId: "label-api" });
+      processTick(aSnap.cwd, aSnap);
+      statusStore.commit();
+      const a = renderTemplate(["m_apiMs"], ctxFor(aSnap)).join("\n");
+      const b = renderTemplate(["m_accApiMs"], ctxFor(aSnap)).join("\n");
+      const c = renderTemplate(
+        ["m_sumApiMs|nulldrop|false"],
+        ctxFor(fakeSnapshot({ sessionId: "label-api-sum", cwd: "D:\\label-api-sum" })),
+      ).join("\n");
+      assert.match(strip(a), /^ms:/);
+      assert.match(strip(b), /^ms:/);
+      assert.match(strip(c), /^ms:n\/a$/);
+    });
+  });
+
+  it("labelApiCalls override reaches m_apiCalls / m_accApiCalls / m_sumApiCalls", () => {
+    setStateRoot(() => join(_tmpDir, "labels-labelApiCalls"));
+    withLabels({ labelApiCalls: "calls²:" }, () => {
+      const aSnap = fakeSnapshot({ sessionId: "label-calls" });
+      processTick(aSnap.cwd, aSnap);
+      statusStore.commit();
+      const a = renderTemplate(["m_apiCalls"], ctxFor(aSnap)).join("\n");
+      const b = renderTemplate(["m_accApiCalls"], ctxFor(aSnap)).join("\n");
+      // m_sumApiCalls placeholder path (no rows in window).
+      const c = renderTemplate(
+        ["m_sumApiCalls|nulldrop|false"],
+        ctxFor(fakeSnapshot({ sessionId: "label-calls-sum", cwd: "D:\\label-calls-sum" })),
+      ).join("\n");
+      assert.match(strip(a), /^calls²:/);
+      assert.match(strip(b), /^calls²:/);
+      assert.match(strip(c), /^calls²:n\/a$/);
+    });
+  });
+
+  it("labelInSpeed override is independent of labelIn", () => {
+    // The speed-axis labels got their own slot in v0.8.13+ so a
+    // user who renames labelIn="In:" can keep speed reading
+    // "in:12.3 t/s" until they explicitly override labelInSpeed.
+    setStateRoot(() => join(_tmpDir, "labels-labelInSpeed"));
+    withLabels({ labelIn: "In:", labelInSpeed: "speed-in:" }, () => {
+      const snap = fakeSnapshot({ sessionId: "label-inspeed" });
+      processTick(snap.cwd, snap);
+      statusStore.commit();
+      const speed = renderTemplate(["m_tokenInSpeed"], ctxFor(snap)).join("\n");
+      const token = renderTemplate(["m_tokenInTotal"], ctxFor(snap)).join("\n");
+      assert.match(strip(speed), /^speed-in:/);
+      assert.match(strip(token), /^In:/);
+      // m_sumTokenInSpeed with empty state should drop (agg.rows===0)
+      // unless `nulldrop:false` forces the placeholder path. We use
+      // a fresh cwd so no state rows from prior tests contaminate
+      // the aggregate.
+      const sumCtx = ctxFor(
+        fakeSnapshot({ sessionId: "label-inspeed-sum", cwd: "D:\\label-inspeed-sum" }),
+      );
+      // m_sumTokenInSpeed with empty state should drop (agg.rows===0)
+      // unless `nulldrop:false` forces the placeholder path. We use
+      // a fresh cwd so no state rows from prior tests contaminate
+      // the aggregate.
+      const sumSpeed = renderTemplate(
+        ["m_sumTokenInSpeed|nulldrop|false"],
+        sumCtx,
+      ).join("\n");
+      assert.match(strip(sumSpeed), /^speed-in:n\/a$/);
+    });
+  });
+
+  it("labelOutSpeed override is independent of labelOut", () => {
+    setStateRoot(() => join(_tmpDir, "labels-labelOutSpeed"));
+    withLabels({ labelOut: "Out:", labelOutSpeed: "speed-out:" }, () => {
+      const snap = fakeSnapshot({ sessionId: "label-outspeed" });
+      processTick(snap.cwd, snap);
+      statusStore.commit();
+      const speed = renderTemplate(["m_tokenOutSpeed"], ctxFor(snap)).join("\n");
+      const token = renderTemplate(["m_tokenTotalOut"], ctxFor(snap)).join("\n");
+      assert.match(strip(speed), /^speed-out:/);
+      assert.match(strip(token), /^Out:/);
+    });
+  });
+
+  it("speed / apiMs / apiCalls label axes default to today's literals byte-identically", () => {
+    // Defaults must reproduce the v0.8.x literal strings exactly so
+    // existing configs render unchanged after upgrade. Reset to
+    // configStore defaults (no overrides) and assert the prefixes.
+    const snap = fakeSnapshot({ sessionId: "label-defaults" });
+    processTick(snap.cwd, snap);
+    statusStore.commit();
+    const ctx0 = ctxFor(snap);
+    assert.match(strip(renderTemplate(["m_apiMs"], ctx0).join("\n")), /^api:/);
+    assert.match(strip(renderTemplate(["m_apiCalls"], ctx0).join("\n")), /^calls:/);
+    assert.match(strip(renderTemplate(["m_tokenInSpeed"], ctx0).join("\n")), /^in:/);
+    assert.match(strip(renderTemplate(["m_tokenOutSpeed"], ctx0).join("\n")), /^out:/);
   });
 });
 

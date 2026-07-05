@@ -68,16 +68,31 @@ function cfg() {
 
 // v0.8.0+ — top-level token-label resolver. Each call reads
 // configStore (same lazy-read pattern as `cfg()`) and returns the
-// configured prefix for the requested axis. The four axes map 1:1
-// to the v0.8.0+ config schema:
-//   "in"      → cfg().labels.labelIn      (per-turn delta, totals, acc, sum, avg-in-speed)
-//   "out"     → cfg().labels.labelOut     (per-turn delta, totals, acc, sum, avg-out-speed)
+// configured prefix for the requested axis. The base four axes
+// (v0.8.0) map 1:1 to the v0.8.0 config schema:
+//   "in"      → cfg().labels.labelIn      (per-turn delta, totals, acc, sum)
+//   "out"     → cfg().labels.labelOut     (per-turn delta, totals, acc, sum)
 //   "cacheIn" → cfg().labels.labelCacheIn (cache-read columns: per-turn, acc, sum)
 //   "totalIn" → cfg().labels.labelTotalIn (session-cumulative total_input / sum-totalIn / acc-totalIn)
-// Defaults reproduce the v0.7.x literal "in:" / "out:" / "cache:"
-// / "Total:" so existing line templates render byte-identical until
-// the user overrides labels.* in config.json.
-type LabelAxis = "in" | "out" | "cacheIn" | "totalIn";
+//
+// v0.8.13+ extended the resolver with four more axes so the
+// downstream speed / apiMs / apiCalls modules no longer share
+// prefixes with the in/out token-axis family:
+//   "inSpeed"   → cfg().labels.labelInSpeed    (m_tokenInSpeed / m_sumTokenInSpeed)
+//   "outSpeed"  → cfg().labels.labelOutSpeed   (m_tokenOutSpeed / m_sumTokenOutSpeed)
+//   "apiMs"     → cfg().labels.labelApi        (m_apiMs / m_accApiMs / m_sumApiMs)
+//   "apiCalls"  → cfg().labels.labelApiCalls   (m_apiCalls / m_accApiCalls / m_sumApiCalls)
+//
+// Defaults reproduce the v0.8.x literal strings ("in:" / "out:"
+// / "cache:" / "Total:" / "api:" / "calls:") so existing line
+// templates render byte-identical until the user overrides labels.*
+// in config.json. Speed defaults are intentionally independent of
+// the corresponding in/out token-axis defaults so a user who
+// renames `labelIn` for the token-axis family can keep the speed
+// axis reading as "in:12.3 t/s" (or override it independently).
+type LabelAxis =
+  | "in" | "out" | "cacheIn" | "totalIn"
+  | "inSpeed" | "outSpeed" | "apiMs" | "apiCalls";
 function labelFor(axis: LabelAxis): string {
   const labels = cfg().labels;
   switch (axis) {
@@ -85,6 +100,10 @@ function labelFor(axis: LabelAxis): string {
     case "out": return labels.labelOut;
     case "cacheIn": return labels.labelCacheIn;
     case "totalIn": return labels.labelTotalIn;
+    case "inSpeed": return labels.labelInSpeed;
+    case "outSpeed": return labels.labelOutSpeed;
+    case "apiMs": return labels.labelApi;
+    case "apiCalls": return labels.labelApiCalls;
   }
 }
 
@@ -1114,10 +1133,16 @@ function computeTickSpeed(
   // v0.8.10-alpha.2 — render reads `getDeltaForRender()` which now
   // returns TickSnapshot ({ hasMeasurement, in, out, ..., apiMs }).
   // No writeBack field — there is no prev-writeBack payload anymore.
+  // v0.8.13+ — speed prefix routes through labelFor
+  // (labels.labelInSpeed / labels.labelOutSpeed) so the per-turn
+  // speed module is independently configurable from the in/out
+  // token-axis labels. Defaults remain "in:" / "out:" matching
+  // today's literal strings byte-for-byte.
+  const prefix = labelFor(direction === "in" ? "inSpeed" : "outSpeed");
   const t = ctx.tokens;
   if (!t || !t.sessionId) {
     return {
-      value: `${direction}:n/a`,
+      value: `${prefix}n/a`,
       active: false,
       tps: null,
     };
@@ -1129,13 +1154,13 @@ function computeTickSpeed(
     const cached = peekLastSpeed(t.sessionId, direction, t.cwd);
     if (cached != null) {
       return {
-        value: `${STALE_COLOR}${direction}:${formatSpeed(cached)}${RESET}`,
+        value: `${STALE_COLOR}${prefix}${formatSpeed(cached)}${RESET}`,
         active: false,
         tps: cached,
       };
     }
     return {
-      value: `${color}${direction}:${formatSpeed(0)}${RESET}`,
+      value: `${color}${prefix}${formatSpeed(0)}${RESET}`,
       active: false,
       tps: 0,
     };
@@ -1143,7 +1168,60 @@ function computeTickSpeed(
   const tok = direction === "in" ? r.in : r.out;
   const tps = (tok / r.apiMs) * 1000;
   return {
-    value: `${color}${direction}:${formatSpeed(tps)}${RESET}`,
+    value: `${color}${prefix}${formatSpeed(tps)}${RESET}`,
+    active: true,
+    tps,
+  };
+}
+
+// v0.8.13+ — m_accTokenInSpeed / m_accTokenOutSpeed helper. Reads
+// from the chosen scope's accumulator (session / project / model /
+// ccsession) and computes the throughput as
+// accToken* / accApiMs * 1000 (t/s). Mirrors the structure of
+// computeTickSpeed (the per-turn twin), but pulls values from
+// peekAcc rather than the per-tick delta. Returns:
+//   - "n/a" placeholder when scope has never been written
+//     (no v from peekAcc) — same `direction:n/a` shape as
+//     the per-turn sibling.
+//   - "0 t/s" plain when accApiMs > 0 but accToken* === 0
+//     (the value-zero rule at [[render-value-zero-rule]]).
+//   - scale-colored "N t/s" when accApiMs > 0 AND the chosen
+//     token accumulator is positive (the active, measurable
+//     case).
+function computeAccSpeed(
+  ctx: RenderContext,
+  scope: "session" | "project" | "model" | "ccsession",
+  direction: "in" | "out",
+  color: string,
+): {
+  value: string;
+  active: boolean;
+  tps: number | null;
+} {
+  // v0.8.13+ — speed prefix routes through labelFor
+  // (labels.labelInSpeed / labels.labelOutSpeed) so the per-acc
+  // speed module is independently configurable from the in/out
+  // token-axis labels. Defaults remain "in:" / "out:" matching
+  // today's literal strings byte-for-byte.
+  const prefix = labelFor(direction === "in" ? "inSpeed" : "outSpeed");
+  const v = peekAcc(scope, ctx);
+  if (!v) {
+    return { value: `${prefix}n/a`, active: false, tps: null };
+  }
+  if (v.accApiMs === 0) {
+    // No API duration accumulated yet → "direction:0 t/s" plain
+    // (the natural zero state — the value-zero rule says count:0
+    // is real data, not a placeholder).
+    return {
+      value: `${prefix}${formatSpeed(0)}`,
+      active: false,
+      tps: 0,
+    };
+  }
+  const tok = direction === "in" ? v.accTokenIn : v.accTokenOut;
+  const tps = (tok / v.accApiMs) * 1000;
+  return {
+    value: `${color}${prefix}${formatSpeed(tps)}${RESET}`,
     active: true,
     tps,
   };
@@ -1275,15 +1353,17 @@ function accBody(
   }
   // v0.8.0+ — acc* family prefixes use the same label axes as their
   // per-turn siblings. m_accTokenIn/Out/CachedIn/TotalIn share
-  // labelIn / labelOut / labelCacheIn / labelTotalIn; m_accApiMs
-  // uses the hardcoded "api:" prefix (the API-ms series is not a
-  // user-facing label axis) and renders via formatRemainingMs so the
-  // accumulator matches m_apiMs's "api:1m" dhms shape rather than
-  // the v0.7.x raw-ms `acc:60.0k` literal. Honors the same
-  // timeFormat.minUnit / maxUnitCount knobs as the per-turn
-  // sibling. Defaults reproduce the v0.7.x literal "acc:" prefix
-  // for the in/out/cached/total fields via the corresponding
-  // label.* defaults.
+  // labelIn / labelOut / labelCacheIn / labelTotalIn;
+  // m_accApiMs routes through labelFor("apiMs") (= labels.labelApi)
+  // and m_accApiCalls through labelFor("apiCalls") (= labels.labelApiCalls).
+  // Both render via formatRemainingMs / String(n) so the accumulator
+  // matches m_apiMs's "api:1m" dhms shape and m_apiCalls's "calls:N"
+  // count shape (rather than the v0.7.x raw-ms `acc:60.0k` literal).
+  // Honors the same timeFormat.minUnit / maxUnitCount knobs as the
+  // per-turn sibling. Defaults reproduce the v0.7.x literal "acc:"
+  // prefix for the in/out/cached/total fields via the corresponding
+  // label.* defaults, and "api:" / "calls:" for the apiMs / apiCalls
+  // fields via labels.labelApi / labels.labelApiCalls.
   let prefix: string;
   let body: string;
   switch (field) {
@@ -1295,11 +1375,17 @@ function accBody(
     // The accumulator value (accApiMs) is session-cumulative
     // totalApiMs, so the formatted string grows monotonically as
     // the session ages (e.g. "api:5m", "api:1h12m").
-    case "apiMs": prefix = "api:"; body = formatRemainingMs(n); break;
+    // v0.8.13+ — prefix is configurable via labels.labelApi
+    // (labelFor("apiMs")); default "api:" preserves the v0.8.x
+    // literal so existing renders stay byte-identical.
+    case "apiMs": prefix = labelFor("apiMs"); body = formatRemainingMs(n); break;
     // v0.8.x — m_accApiCalls mirrors m_apiCalls's `calls:N` shape
     // (the value-zero rule says count:0 still renders, since
     // zero is a real measured count, not a "no data" signal).
-    case "apiCalls": prefix = "calls:"; body = String(n); break;
+    // v0.8.13+ — prefix is configurable via labels.labelApiCalls
+    // (labelFor("apiCalls")); default "calls:" preserves the
+    // v0.8.x literal so existing renders stay byte-identical.
+    case "apiCalls": prefix = labelFor("apiCalls"); body = String(n); break;
   }
   return `${prefix}${body}`;
 }
@@ -1340,19 +1426,20 @@ function placeholderAcc(
   // v0.8.0+ labels.* — the four token-axis fields read their
   // prefix from labelFor so the placeholder matches the user's
   // configured labelIn / labelOut / labelCacheIn / labelTotalIn.
-  // apiMs mirrors m_apiMs's "api:" prefix (not part of the
-  // user-facing axis set). v0.8.x R8 — hitRate mirrors
-  // m_tokenHitRate's "hit:" prefix (was "acc:" before R8) so
-  // the per-turn / acc / sum triple all share the same "hit:n/a%"
-  // placeholder shape.
+  // v0.8.13+ — apiMs / apiCalls also go through labelFor so the
+  // "api:n/a" / "calls:n/a" placeholders follow the configured
+  // labelApi / labelApiCalls defaults. hitRate remains hardcoded
+  // "hit:" (v0.8.x R8 namespace unification: per-turn / acc / sum
+  // hit-rate modules all share "hit:" as a non-configurable prefix
+  // since it's a synthetic ratio, not a user-facing axis).
   let prefix: string;
   switch (field) {
     case "in": prefix = labelFor("in"); break;
     case "out": prefix = labelFor("out"); break;
     case "cached": prefix = labelFor("cacheIn"); break;
     case "total": prefix = labelFor("totalIn"); break;
-    case "apiMs": prefix = "api:"; break;
-    case "apiCalls": prefix = "calls:"; break;
+    case "apiMs": prefix = labelFor("apiMs"); break;
+    case "apiCalls": prefix = labelFor("apiCalls"); break;
     case "hitRate": prefix = "hit:"; break;
   }
   // v0.8.10-alpha.3 — placeholderAcc simplified: no fieldNotShipped
@@ -1623,16 +1710,33 @@ const MODULES: Record<string, Module> = {
   // dedicated m_tokenHitRate module renders the ratio for users who
   // want it, keeping m_tokenCachedIn focused on the raw token count.
   m_tokenCachedIn: (c) => {
-    const t = c.tokens?.current;
-    if (!t) return placeholderBare("m_tokenCachedIn", c);
-    // v6.x: cacheRead=null is now distinct from cacheRead=0.
-    // null (field not shipped by stdin) → "cache:n/a" placeholder;
-    // 0 (real zero cache reads) → "cache:0" — the user can
-    // see "we tracked, nothing cached" vs "no tracking at all".
-    if (t.tokenCachedIn == null) return placeholderBare("m_tokenCachedIn", c);
-    const label = formatCompactToken(t.tokenCachedIn);
+    // v0.8.13 — color unified with the m_token* sibling family:
+    // bare form emits PLAIN text (no STALE_COLOR wrap). Matches
+    // m_tokenIn / m_tokenOut / m_tokenInTotal / m_tokenTotalOut /
+    // m_tokenTotalIn / m_tokenTotal / m_tokenSession, which all
+    // delegate to wrapPlain and render with no SGR by default.
+    // The user's `:color|<c>` inline override still applies.
+    //
+    // v0.8.13 — cacheRead=null (field not shipped by stdin) renders
+    // as "cache:0" (same as the real-zero case). The truly
+    // missing-snapshot case (tokens=null) also returns "cache:0"
+    // (not the placeholder) so the module always reads "cache:N".
+    //
+    // v0.8.13+ — non-zero / non-null default tint: when
+    // cacheRead is a positive number, wrap the chunk in the
+    // brown SGR (DEFAULT_COLORS.m_tokenCachedIn). value=0
+    // stays plain (the value-zero rule); null already collapsed
+    // to "cache:0" above and is also plain.
     const prefix = labelFor("cacheIn");
-    return `${STALE_COLOR}${prefix}${label}${RESET}`;
+    const t = c.tokens?.current;
+    if (!t) return `${prefix}0`;
+    if (t.tokenCachedIn == null) return `${prefix}0`;
+    return wrapValueDefault(
+      "m_tokenCachedIn",
+      t.tokenCachedIn,
+      `${prefix}${formatCompactToken(t.tokenCachedIn)}`,
+      undefined,
+    );
   },
   // v0.4.0+ — per-API-call input speed. Reads the previous-tick
   // snapshot from cache (keyed by sessionId) and computes
@@ -1707,16 +1811,83 @@ const MODULES: Record<string, Module> = {
   // form `m_accTokenIn|scope|...`, that arg beats the passthrough.
   m_accTokenIn: (c) => accBody(c, "in", passThroughScope(c)),
   m_accTokenOut: (c) => accBody(c, "out", passThroughScope(c)),
-  m_accTokenCachedIn: (c) => accBody(c, "cached", passThroughScope(c)),
-  m_accTokenTotalIn: (c) => accBody(c, "total", passThroughScope(c)),
-  m_accApiMs: (c) => accBody(c, "apiMs", passThroughScope(c)),
+  // v0.8.13+ — non-zero, non-null default tint. accBody returns
+  // plain `${prefix}${body}`; the wrap below paints the chunk
+  // brown/blue when the underlying slot is a positive number,
+  // leaves value=0 plain (value-zero rule), and is unreachable
+  // on the null placeholder branch (placeholderAcc already
+  // returned inside accBody).
+  m_accTokenCachedIn: (c) => {
+    const scope = passThroughScope(c);
+    const useScope = scope ?? "ccsession";
+    const v = peekAcc(useScope, c);
+    const n = v ? v.accTokenCachedIn : 0;
+    return wrapValueDefault("m_accTokenCachedIn", n, accBody(c, "cached", scope), undefined);
+  },
+  m_accTokenTotalIn: (c) => {
+    const scope = passThroughScope(c);
+    const useScope = scope ?? "ccsession";
+    const v = peekAcc(useScope, c);
+    // accBody computes total as accTokenIn + accTokenCachedIn;
+    // mirror that here for the wrap decision so the tint
+    // matches the rendered value.
+    const n = v ? v.accTokenIn + v.accTokenCachedIn : 0;
+    return wrapValueDefault("m_accTokenTotalIn", n, accBody(c, "total", scope), undefined);
+  },
+  m_accApiMs: (c) => {
+    const scope = passThroughScope(c);
+    const useScope = scope ?? "ccsession";
+    const v = peekAcc(useScope, c);
+    const n = v ? v.accApiMs : 0;
+    return wrapValueDefault("m_accApiMs", n, accBody(c, "apiMs", scope), undefined);
+  },
   // v0.8.x — m_accApiCalls mirrors m_apiCalls (`calls:N`) but reads
   // the chosen scope's accApiCalls slot from status.json. Default
   // scope is ccsession (per-process, resets only on totalApiMs
   // regression). Inline `m_accApiCalls|scope|project` etc. to widen
   // or narrow. value=0 still renders as `calls:0` (the value-zero
   // rule — count:0 is real data, not a placeholder).
-  m_accApiCalls: (c) => accBody(c, "apiCalls", passThroughScope(c)),
+  // v0.8.13+ — non-zero, non-null default tint wraps the chunk
+  // cyan via DEFAULT_COLORS.m_accApiCalls.
+  m_accApiCalls: (c) => {
+    const scope = passThroughScope(c);
+    const useScope = scope ?? "ccsession";
+    const v = peekAcc(useScope, c);
+    const n = v ? v.accApiCalls : 0;
+    return wrapValueDefault("m_accApiCalls", n, accBody(c, "apiCalls", scope), undefined);
+  },
+  // v0.8.13+ — m_accTokenInSpeed / m_accTokenOutSpeed — session-
+  // cumulative throughput (t/s) computed from the chosen scope's
+  // accumulator: accTokenIn / accApiMs * 1000 (or accTokenOut).
+  // Mirrors the m_tokenInSpeed / m_tokenOutSpeed contract:
+  //   bare form / `:color|scale` / no `:color|` → 5-band scale
+  //   color via speedScaleColor (DEFAULT_SPEED_SCALE_BANDS),
+  //   faster = greener.
+  //   `:color|<shortcut|SGR>` → that exact color.
+  //   passive reading (peekAcc returned null → no scope ever
+  //   primed) → "direction:n/a" placeholder.
+  // Default scope ccsession matches the rest of the m_acc* family;
+  // inline `|scope|project` etc. widens/narrows the rollup.
+  // Two-call pattern (probe + render) mirrors m_tokenInSpeed so
+  // the active case picks the band color from the actual tps.
+  m_accTokenInSpeed: (c) => {
+    const scope = passThroughScope(c) ?? "ccsession";
+    const probe = computeAccSpeed(c, scope, "in", STALE_COLOR);
+    const color = probe.active
+      ? speedScaleColor("in", probe.tps ?? 0)
+      : STALE_COLOR; // unused — computeAccSpeed emits "direction:n/a"
+    const r = computeAccSpeed(c, scope, "in", color);
+    return r.value;
+  },
+  m_accTokenOutSpeed: (c) => {
+    const scope = passThroughScope(c) ?? "ccsession";
+    const probe = computeAccSpeed(c, scope, "out", STALE_COLOR);
+    const color = probe.active
+      ? speedScaleColor("out", probe.tps ?? 0)
+      : STALE_COLOR;
+    const r = computeAccSpeed(c, scope, "out", color);
+    return r.value;
+  },
   // m_accTokenHitRate — session-aggregate formula
   // (accTokenCachedIn / (accTokenCachedIn + accTokenIn) * 100), the v0.4.x semantic
   // that m_tokenHitRate (per-turn) replaced. Coloring uses the
@@ -1758,19 +1929,26 @@ const MODULES: Record<string, Module> = {
     const filter = parseWindowScope(c, c.passThrough ?? {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
-    return agg.rows === 0 ? null : `${labelFor("cacheIn")}${formatCompactToken(agg.sumCached)}`;
+    if (agg.rows === 0) return null;
+    // v0.8.13+ — non-zero, non-null default tint (brown) on
+    // positive sums; value=0 stays plain (value-zero rule).
+    return wrapValueDefault("m_sumTokenCachedIn", agg.sumCached, `${labelFor("cacheIn")}${formatCompactToken(agg.sumCached)}`, undefined);
   },
   m_sumTokenTotalIn: (c) => {
     const filter = parseWindowScope(c, c.passThrough ?? {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
-    return agg.rows === 0 ? null : `${labelFor("totalIn")}${formatCompactToken(agg.sumTotalIn)}`;
+    if (agg.rows === 0) return null;
+    return wrapValueDefault("m_sumTokenTotalIn", agg.sumTotalIn, `${labelFor("totalIn")}${formatCompactToken(agg.sumTotalIn)}`, undefined);
   },
   m_sumApiMs: (c) => {
     const filter = parseWindowScope(c, c.passThrough ?? {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
-    return agg.rows === 0 ? null : `api:${formatRemainingMs(agg.sumApiMs)}`;
+    if (agg.rows === 0) return null;
+    // v0.8.13+ — prefix routes through labelFor(labels.labelApi);
+    // default "api:" preserves the v0.8.x literal.
+    return wrapValueDefault("m_sumApiMs", agg.sumApiMs, `${labelFor("apiMs")}${formatRemainingMs(agg.sumApiMs)}`, undefined);
   },
   // v0.8.x — m_avg* renamed to m_sum* to align the namespace with
   // the cross-project JSONL scan family (m_sumTokenIn/Out/...).
@@ -1795,7 +1973,14 @@ const MODULES: Record<string, Module> = {
     const agg = fetchSumAggregate(filter);
     if (agg.sumApiMs === 0) return null;
     const tps = (agg.sumIn / agg.sumApiMs) * 1000;
-    return `${labelFor("in")}${formatSpeed(tps)}`;
+    // v0.8.13+ — wrap with the 5-band scale color
+    // (DEFAULT_SPEED_SCALE_BANDS.in). Matches the m_tokenInSpeed
+    // convention: faster → green, slower → red.
+    // v0.8.13+ — prefix routes through labelFor(labels.labelInSpeed)
+    // so the speed module is independently configurable from
+    // labels.labelIn (default "in:" preserves today's literal).
+    const color = speedScaleColor("in", tps);
+    return `${color}${labelFor("inSpeed")}${formatSpeed(tps)}${RESET}`;
   },
   m_sumTokenOutSpeed: (c) => {
     const filter = parseWindowScope(c, c.passThrough ?? {});
@@ -1803,7 +1988,10 @@ const MODULES: Record<string, Module> = {
     const agg = fetchSumAggregate(filter);
     if (agg.sumApiMs === 0) return null;
     const tps = (agg.sumOut / agg.sumApiMs) * 1000;
-    return `${labelFor("out")}${formatSpeed(tps)}`;
+    // v0.8.13+ — prefix routes through labelFor(labels.labelOutSpeed);
+    // default "out:" preserves today's literal.
+    const color = speedScaleColor("out", tps);
+    return `${color}${labelFor("outSpeed")}${formatSpeed(tps)}${RESET}`;
   },
   // v0.8.x — total count of API calls (rows with apiMs > 0) in the
   // window. Honors :model|, :window|, :align| like the other
@@ -1815,7 +2003,12 @@ const MODULES: Record<string, Module> = {
     const filter = parseWindowScope(c, c.passThrough ?? {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
-    return agg.calls === 0 ? null : `calls:${agg.calls}`;
+    if (agg.calls === 0) return null;
+    // v0.8.13+ — non-zero, non-null default tint (cyan) on
+    // positive counts; value=0 short-circuits to null above.
+    // v0.8.13+ — prefix routes through labelFor(labels.labelApiCalls);
+    // default "calls:" preserves the v0.8.x literal.
+    return wrapValueDefault("m_sumApiCalls", agg.calls, `${labelFor("apiCalls")}${agg.calls}`, undefined);
   },
   // v0.3.6+ — bare `m_quote` (no inline args). Picks a quote from
   // the hourly window and renders it plain (no SGR wrapper). Opt-in
@@ -1880,13 +2073,14 @@ const MODULES: Record<string, Module> = {
     return ms != null ? wrapPlainDefault("m_sessionApiDuration", formatRemainingMs(ms), undefined) : placeholderBare("m_sessionApiDuration", c);
   },
   // v0.8.0+ — per-turn delta of cost.totalApiDurationMs rendered
-  // as a dhms time string with the "api:" prefix. Reuses the
-  // shared computeAndCacheTickDelta memo (same r.apiMs that
+  // as a dhms time string with the configurable labelApi prefix
+  // (v0.8.13+; default "api:"). Reuses the shared
+  // computeAndCacheTickDelta memo (same r.apiMs that
   // m_tokenIn / m_tokenOut / m_tokenInSpeed read), so the
   // prev-tick baseline is maintained regardless of which
   // per-turn module appears in the user's template.
   //
-  // Gate: hasDelta (deltaApi > 0). Idle ticks → "api:--"
+  // Gate: hasDelta (deltaApi > 0). Idle ticks → "api:n/a"
   // placeholder via PLACEHOLDERS; first tick with prev=0
   // baseline → real value (per the per-turn-delta contract:
   // current_usage IS the per-turn delta, so the safe assumption
@@ -1909,7 +2103,7 @@ const MODULES: Record<string, Module> = {
       // v0.8.x — mirror m_tokenInSpeed/m_tokenOutSpeed: when this
       // tick has no API-call delta, fall back to the last cached
       // deltaApiMs within the 60s TTL window instead of dropping
-      // to "api:--". The cached value is rendered STALE_COLORed
+      // to "api:n/a". The cached value is rendered STALE_COLORed
       // (gray) so the user sees the reading is from a previous
       // API call, not this tick — same convention as the tps
       // siblings. Outside the TTL or with no prior measurement,
@@ -1918,7 +2112,7 @@ const MODULES: Record<string, Module> = {
       if (cached != null) {
         return wrapPlainDefault(
           "m_apiMs",
-          `api:${formatRemainingMs(cached)}`,
+          `${labelFor("apiMs")}${formatRemainingMs(cached)}`,
           STALE_COLOR,
         );
       }
@@ -1926,7 +2120,14 @@ const MODULES: Record<string, Module> = {
     }
     // v1.0 — setLastApiMs moved to status-store.ts:processTick
     // Stage 5. Render is read-only.
-    return wrapPlainDefault("m_apiMs", `api:${formatRemainingMs(r.apiMs)}`, undefined);
+    // v0.8.13+ — non-zero, non-null default tint: when the
+    // per-turn apiMs delta is a positive number the body is
+    // wrapped in the brown SGR (DEFAULT_COLORS.m_apiMs).
+    // value=0 stays plain (value-zero rule); STALE_COLOR still
+    // wins on the cached/idle branch above.
+    // v0.8.13+ — prefix routes through labelFor(labels.labelApi);
+    // default "api:" preserves the v0.8.x literal.
+    return wrapValueDefault("m_apiMs", r.apiMs, `${labelFor("apiMs")}${formatRemainingMs(r.apiMs)}`, undefined);
   },
   // Session-cumulative lines added (stdin.cost.total_lines_added).
   // v6.x: missing field → "+ --" placeholder (was: drop). Zero is
@@ -1966,20 +2167,39 @@ const MODULES: Record<string, Module> = {
   // labelTotalIn label. The bare form below is identical to
   // m_tokenInTotal's data path; the two names exist so callers
   // can pick the family whose label matches their config.
-  m_tokenTotalIn: (c) =>
-    c.tokens?.totals.tokenTotalIn != null
-      ? `${labelFor("totalIn")}${formatCompactToken(c.tokens.totals.tokenTotalIn)}`
-      : placeholderBare("m_tokenTotalIn", c),
+  m_tokenTotalIn: (c) => {
+    const n = c.tokens?.totals.tokenTotalIn;
+    // v0.8.13+ — non-zero, non-null default tint (blue). When
+    // totals.tokenTotalIn is a positive number the body is
+    // wrapped in DEFAULT_COLORS.m_tokenTotalIn; null → placeholder;
+    // 0 stays plain (value-zero rule — same convention as
+    // m_tokenCachedIn).
+    if (n == null) return placeholderBare("m_tokenTotalIn", c);
+    return wrapValueDefault(
+      "m_tokenTotalIn",
+      n,
+      `${labelFor("totalIn")}${formatCompactToken(n)}`,
+      undefined,
+    );
+  },
   // Project-wide count of valid API calls since first tick.
   // v6.x: missing cwd → "calls:n/a" placeholder (was: "calls:0").
   // Calls=0 still renders as "calls:0" — the v0.4.x always-render
-  // design stays intact.
+  // design stays intact. v0.8.13+ — prefix routes through
+  // labelFor(labels.labelApiCalls); default "calls:" preserves
+  // the v0.8.x literal so existing renders are byte-identical.
   m_apiCalls: (c) => {
     const cwd = c.tokens?.cwd;
     if (!cwd) return placeholderBare("m_apiCalls", c);
     const acc = statusStore.readAccumulator("project", { cwd });
-    if (!acc) return wrapPlainDefault("m_apiCalls", "calls:0", undefined);
-    return wrapPlainDefault("m_apiCalls", `calls:${acc.accApiCalls}`, undefined);
+    // v0.8.13+ — non-zero, non-null default tint: when the
+    // project-wide counter is a positive integer the body is
+    // wrapped in DEFAULT_COLORS.m_apiCalls (cyan). "calls:0"
+    // stays plain (the value-zero rule — same as
+    // m_tokenIn/m_tokenOut "in:0"/"out:0"; see
+    // [[render-value-zero-rule]]).
+    if (!acc) return `${labelFor("apiCalls")}0`;
+    return wrapValueDefault("m_apiCalls", acc.accApiCalls, `${labelFor("apiCalls")}${acc.accApiCalls}`, undefined);
   },
   // v0.8.0+ — renamed from `m_contextSize`. The old name now lives
   // at `m_contextSize` with a different source (the cumulative
@@ -2364,32 +2584,55 @@ const DEFAULT_COLORS: Record<string, string> = {
   // Duration / count class (numeric but NOT 5-band / scale)
   m_sessionDuration: NAMED_PALETTE.brown,
   m_sessionApiDuration: NAMED_PALETTE.brown,
-  m_sumApiCalls: NAMED_PALETTE.cyan,
   // v0.8.0+ — per-turn delta of cost.totalApiDurationMs,
   // formatted as a dhms time string ("api:5s" / "api:1m30s").
   // Brown matches the existing time-format family; the "api:"
   // prefix is hardcoded (not part of the labels.* axis set).
+  //
+  // v0.8.13+ — non-zero, non-null default tint: m_apiMs
+  // (per-turn delta), m_accApiMs (session-cumulative), and
+  // m_sumApiMs (cross-project windowed) all share the brown
+  // SGR whenever the underlying value is a positive number;
+  // value=0 stays plain (the value-zero rule at
+  // [[render-value-zero-rule]]), null falls through to the
+  // STALE_COLORed placeholder path.
   m_apiMs: NAMED_PALETTE.brown,
+  m_accApiMs: NAMED_PALETTE.brown,
+  m_sumApiMs: NAMED_PALETTE.brown,
   m_linesAdded: "\x1b[1;38;5;22m",   // bold + dark green (muted git-style added)
   m_linesRemoved: "\x1b[1;38;5;88m", // bold + dim red (muted git-style removed)
+  // m_apiCalls (per-turn project-wide counter), m_accApiCalls
+  // (session/project/model/ccsession accumulator), and
+  // m_sumApiCalls (windowed cross-project count) all share the
+  // cyan SGR on positive values; "calls:0" stays plain.
   m_apiCalls: NAMED_PALETTE.cyan,
+  m_accApiCalls: NAMED_PALETTE.cyan,
+  m_sumApiCalls: NAMED_PALETTE.cyan,
   m_countdown5h: NAMED_PALETTE.teal,
   m_countdown7d: NAMED_PALETTE.teal,
   m_contextSize: NAMED_PALETTE.gray,
   m_contextWindowsSize: NAMED_PALETTE.gray,
   m_contextUsedPercent: NAMED_PALETTE.gray,
   m_contextRemainingPercent: NAMED_PALETTE.gray,
-  // v0.8.0+ — m_acc* family. Plain numeric accumulators get
-  // STALE_COLOR (gray) so they read as "data" rather than
-  // "status"; m_accTokenHitRate is governed by the band-based
-  // cacheHitColor helper, so the DEFAULT_COLORS entry is moot
-  // for the value but keeps the dispatcher / inline path happy.
+  // v0.8.0+ — m_acc* family. The two plain numeric in/out
+  // accumulators remain STALE_COLOR (gray) — they read as "data"
+  // rather than "status". m_accTokenCachedIn / m_accTokenTotalIn
+  // are upgraded to brown / blue (v0.8.13+) for the
+  // non-zero-non-null rule; m_accTokenHitRate is governed by the
+  // band-based cacheHitColor helper, so the DEFAULT_COLORS entry
+  // is moot for the value but keeps the dispatcher / inline path
+  // happy.
   m_accTokenIn: NAMED_PALETTE.stale,
   m_accTokenOut: NAMED_PALETTE.stale,
-  m_accTokenCachedIn: NAMED_PALETTE.stale,
-  m_accTokenTotalIn: NAMED_PALETTE.stale,
-  m_accApiMs: NAMED_PALETTE.stale,
-  m_accApiCalls: NAMED_PALETTE.stale,
+  // v0.8.13+ — non-zero, non-null default tint family. Brown is
+  // the cache-token hue (matches the time-format family); blue
+  // is the total-input hue (sits in the input-family row).
+  m_tokenCachedIn: NAMED_PALETTE.brown,
+  m_tokenTotalIn: NAMED_PALETTE.blue,
+  m_accTokenCachedIn: NAMED_PALETTE.brown,
+  m_accTokenTotalIn: NAMED_PALETTE.blue,
+  m_sumTokenCachedIn: NAMED_PALETTE.brown,
+  m_sumTokenTotalIn: NAMED_PALETTE.blue,
   m_accTokenHitRate: NAMED_PALETTE.stale,
 };
 
@@ -2846,11 +3089,14 @@ type PlaceholderBody = (
   ctx: RenderContext,
 ) => string;
 
-// Label-aware NA placeholder: receives the LabelAxis enum (always
-// one of the four label axes). The body defers label resolution
-// until placeholder-fire time so any subsequent config override
-// is picked up. Defaults reproduce the v0.7.x literal-string
-// behavior exactly because cfg().labels.labelIn === "in:" etc.
+// Label-aware NA placeholder: receives the LabelAxis enum (one
+// of the eight axes — four v0.8.0 token-axis plus four v0.8.13+
+// apiMs / apiCalls / inSpeed / outSpeed). The body defers label
+// resolution until placeholder-fire time so any subsequent config
+// override is picked up. Defaults reproduce the v0.7.x
+// literal-string behavior exactly because cfg().labels.labelIn
+// === "in:" etc., and the v0.8.13+ axes default to today's
+// literals ("api:" / "calls:" / "in:" / "out:" for speed).
 function placeholderLabelOr(axis: LabelAxis): PlaceholderBody {
   return (_p, _c) => `${labelFor(axis)}n/a`;
 }
@@ -2859,24 +3105,43 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   // pure-number — placeholder shape is "<prefix>n/a"
   m_tokenInTotal: placeholderLabelOr("in"),
   m_tokenTotalOut: placeholderLabelOr("out"),
-  m_apiCalls: placeholderNA("calls:"),
+  // v0.8.13+ — m_apiCalls placeholder routes through labelFor
+  // (labels.labelApiCalls) so the prefix matches the user's
+  // configured labelApiCalls default. Was hardcoded "calls:" via
+  // placeholderNA; the live-read variant mirrors the rest of the
+  // label-axis modules (in/out/cache/total).
+  m_apiCalls: placeholderLabelOr("apiCalls"),
   // v0.8.x cwf-tickStatus-v2 — m_totalToken* / m_totalTokenWithCacheIn
   // REMOVED. Use the m_acc* family with scope=ccsession (default).
   // m_acc* — v0.8.0+ labels.*: the four token-axis acc modules
   // (m_accTokenIn/Out/CachedIn/TotalIn) share their prefix with
-  // the per-turn siblings via labelFor. m_accApiMs keeps its
-  // hardcoded "api:" prefix (mirrors m_apiMs). m_accTokenHitRate
-  // (v0.8.x R8) now also mirrors its per-turn sibling — "hit:"
+  // the per-turn siblings via labelFor. m_accTokenHitRate
+  // (v0.8.x R8) also mirrors its per-turn sibling — "hit:"
   // prefix, matching m_tokenHitRate / m_sumTokenHitRate. The
   // :scope: inline arg is ignored at the placeholder level
-  // (placeholderNA returns the same body regardless of scope —
-  // see placeholderAcc comment for the future-extension hook).
+  // (placeholderNA / placeholderLabelOr returns the same body
+  // regardless of scope — see placeholderAcc comment for the
+  // future-extension hook). v0.8.13+ — m_accApiMs / m_accApiCalls
+  // / m_accTokenInSpeed / m_accTokenOutSpeed also route through
+  // labelFor (labels.labelApi / labelApiCalls / labelInSpeed /
+  // labelOutSpeed); defaults preserve today's literal strings.
   m_accTokenIn: placeholderLabelOr("in"),
   m_accTokenOut: placeholderLabelOr("out"),
   m_accTokenCachedIn: placeholderLabelOr("cacheIn"),
   m_accTokenTotalIn: placeholderLabelOr("totalIn"),
-  m_accApiMs: placeholderNA("api:"),
-  m_accApiCalls: placeholderNA("calls:"),
+  // v0.8.13+ — m_accApiMs / m_accApiCalls placeholders route
+  // through labelFor (labels.labelApi / labels.labelApiCalls) so
+  // the prefix follows the configured defaults. Defaults remain
+  // "api:" / "calls:" so existing renders stay byte-identical.
+  m_accApiMs: placeholderLabelOr("apiMs"),
+  m_accApiCalls: placeholderLabelOr("apiCalls"),
+  // v0.8.13+ — m_accTokenInSpeed / m_accTokenOutSpeed placeholders.
+  // Use the dedicated labelInSpeed / labelOutSpeed axis (was:
+  // shared the in/out token-axis labelFor). Defaults remain "in:"
+  // / "out:" so existing renders stay byte-identical until the
+  // user overrides either axis independently.
+  m_accTokenInSpeed: placeholderLabelOr("inSpeed"),
+  m_accTokenOutSpeed: placeholderLabelOr("outSpeed"),
   // v0.8.x R8 — m_accTokenHitRate now mirrors m_tokenHitRate's
   // "hit:" prefix (was "acc:"). The placeholder is therefore
   // "hit:n/a%" — same body as the per-turn sibling, so users
@@ -2885,7 +3150,7 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   // needs a "%" suffix on the placeholder too, matching
   // m_tokenHitRate's placeholderDashesUnit convention.
   m_accTokenHitRate: placeholderDashesUnit("hit:n/a%"),
-  m_tokenCachedIn: placeholderLabelOr("cacheIn"),
+  m_tokenCachedIn: placeholderDashesUnit("cache:0"),
   m_tokenHitRate: placeholderNA("hit:"),
   m_contextSize: placeholderNA("size:"),
   m_contextWindowsSize: placeholderNA("size:"),
@@ -2899,13 +3164,16 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   // "+ --", "-- t/s"). Empty body = bare dash.
   m_sessionDuration: placeholderDashesUnit("--"),
   m_sessionApiDuration: placeholderDashesUnit("--"),
-  // v0.8.0+ — per-turn API-ms delta placeholder. Shape preserves
-  // the "api:" prefix + dashes-unit ("--") so the rendered body
-  // matches the live output ("api:5s" / "api:--"). Note the dash
-  // count stays at "--" (not "5s:--") because the dhms slot
-  // collapses to a single segment when value is absent — there's
-  // no "5h 30m" structure to mirror at placeholder time.
-  m_apiMs: placeholderDashesUnit("api:--"),
+  // v0.8.0+ — per-turn API-ms delta placeholder. Body uses the
+  // shared "n/a" so it lines up with the n/a-family placeholders
+  // (m_sumApiMs → "api:n/a", m_tokenHitRate → "hit:n/a",
+  // m_contextSize → "size:n/a"). v0.8.13+ — prefix routes
+  // through labelFor(labels.labelApi); default "api:" preserves
+  // the v0.8.x literal so existing renders stay byte-identical.
+  // Previously used dashes-unit ("api:--"); R9 unified on n/a so
+  // users composing api-ms alongside sum-api see the same body
+  // for "no reading yet".
+  m_apiMs: placeholderLabelOr("apiMs"),
   m_linesAdded: placeholderDashesUnit("+ --"),
   m_linesRemoved: placeholderDashesUnit("- --"),
   // v0.8.0+ — sum/avg advanced statistics placeholders. Same shape
@@ -2916,11 +3184,19 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   m_sumTokenOut: placeholderLabelOr("out"),
   m_sumTokenCachedIn: placeholderLabelOr("cacheIn"),
   m_sumTokenTotalIn: placeholderLabelOr("totalIn"),
-  m_sumApiMs: placeholderNA("api:"),
+  // v0.8.13+ — m_sumApiMs / m_sumApiCalls route through labelFor
+  // (labels.labelApi / labels.labelApiCalls); defaults remain
+  // "api:" / "calls:" so existing renders stay byte-identical.
+  m_sumApiMs: placeholderLabelOr("apiMs"),
   m_sumTokenHitRate: placeholderNA("hit:"),
-  m_sumTokenInSpeed: placeholderLabelOr("in"),
-  m_sumTokenOutSpeed: placeholderLabelOr("out"),
-  m_sumApiCalls: placeholderNA("calls:"),
+  // v0.8.13+ — speed axes get their own labelFor slot
+  // (labels.labelInSpeed / labels.labelOutSpeed) so a user can
+  // rename speed prefixes independently of the in/out token-axis
+  // family. Defaults remain "in:" / "out:" matching today's
+  // literal strings byte-for-byte.
+  m_sumTokenInSpeed: placeholderLabelOr("inSpeed"),
+  m_sumTokenOutSpeed: placeholderLabelOr("outSpeed"),
+  m_sumApiCalls: placeholderLabelOr("apiCalls"),
   // v0.8.0+ — newly added m_tokenTotalIn (session-cumulative
   // total_input_tokens). Shares the labelTotalIn axis with its
   // sum/avg siblings.
@@ -2947,8 +3223,15 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   // placeholders instead of returning null so layout stays stable.
   m_tokenIn: placeholderLabelOr("in"),
   m_tokenOut: placeholderLabelOr("out"),
-  m_tokenInSpeed: placeholderLabelOr("in"),
-  m_tokenOutSpeed: placeholderLabelOr("out"),
+  // v0.8.13+ — speed axes route through the dedicated
+  // labelInSpeed / labelOutSpeed slot so the prefix can be
+  // configured independently from labels.labelIn / labels.labelOut.
+  // Defaults remain "in:" / "out:" matching the previous literal
+  // strings byte-for-byte; a user who renames labelIn="In:" will
+  // see "In:42" for tokens BUT still "in:12.3 t/s" for the speed
+  // module until they also override labelInSpeed.
+  m_tokenInSpeed: placeholderLabelOr("inSpeed"),
+  m_tokenOutSpeed: placeholderLabelOr("outSpeed"),
   // v6.x: previously drop-by-design modules (no age info / no
   // version / no reset data / no balance). Now also follow the
   // placeholder rule — they occupy their slot so adjacent
@@ -3205,6 +3488,10 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_accTokenTotalIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
   m_accApiMs: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
   m_accApiCalls: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
+  // v0.8.13+ — m_accTokenInSpeed / m_accTokenOutSpeed. Same arg
+  // surface as the other m_acc* modules (color / nulldrop / scope).
+  m_accTokenInSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
+  m_accTokenOutSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
   m_accTokenHitRate: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
   // v0.8.0+ — sum/avg advanced statistics. All 8 accept the same
   // 5 inline args: :model|<active|name|all>, :window|<dhms|all>,
@@ -3329,6 +3616,24 @@ function wrapPlainDefault(
   paramsColor: string | undefined,
 ): string {
   const color = paramsColor ?? DEFAULT_COLORS[modKey];
+  return color ? `${color}${body}${RESET}` : body;
+}
+
+// v0.8.13+ — "non-zero, non-null" default tint. Mirrors
+// wrapPlainDefault but ONLY applies the color when `value` is a
+// finite number and value > 0. The value=0 case emits plain text
+// (matches the value-zero rule at [[render-value-zero-rule]]); the
+// null/undefined case means the caller already took the
+// placeholder path, so this helper is unreachable from there.
+// Use when a module's DEFAULT_COLORS entry should NOT show on the
+// natural 0 render (so "0" stays plain, "163.4k" is tinted).
+function wrapValueDefault(
+  modKey: string,
+  value: number | null | undefined,
+  body: string,
+  paramsColor: string | undefined,
+): string {
+  const color = paramsColor ?? (typeof value === "number" && value > 0 ? DEFAULT_COLORS[modKey] : undefined);
   return color ? `${color}${body}${RESET}` : body;
 }
 
@@ -3609,17 +3914,30 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   // `(XX%)` share suffix was dropped in v0.8.6+ — use m_tokenHitRate
   // for the ratio.
   m_tokenCachedIn: (params, ctx) => {
-    const t = ctx.tokens?.current;
-    if (!t) return placeholderWithColor("m_tokenCachedIn", params, ctx);
-    // v6.x: distinguish cacheRead=null (field not shipped by
-    // stdin) from cacheRead=0 (real zero cache reads).
-    //   null → placeholder "cache:n/a"
-    //   0    → "cache:0" (real zero, not hidden)
-    if (t.tokenCachedIn == null) return placeholderWithColor("m_tokenCachedIn", params, ctx);
-    const label = formatCompactToken(t.tokenCachedIn);
-    const color = (params.color as string | undefined) ?? STALE_COLOR;
+    // v0.8.13 — cacheRead=null renders as "cache:0" (same as
+    // the real-zero case). Treats "field not shipped" as zero so
+    // the inline module always reads "cache:N" (no placeholder text
+    // mixing with the value path).
+    //
+    // v0.8.13 — color unified with the m_token* sibling family:
+    // default is PLAIN (no STALE_COLOR wrap), matching
+    // m_tokenIn / m_tokenOut / m_tokenInTotal / m_tokenTotalOut.
+    // The user's `|color|<c>` override still applies via wrapPlain.
+    //
+    // v0.8.13+ — non-zero / non-null default tint: when the
+    // cacheRead value is a positive number, the chunk is wrapped
+    // in DEFAULT_COLORS.m_tokenCachedIn (brown). value=0
+    // (either explicit or null-as-zero collapse) stays plain.
     const prefix = labelFor("cacheIn");
-    return `${color}${prefix}${label}${RESET}`;
+    const t = ctx.tokens?.current;
+    if (!t) return wrapValueDefault("m_tokenCachedIn", 0, `${prefix}0`, params.color as string | undefined);
+    if (t.tokenCachedIn == null) return wrapValueDefault("m_tokenCachedIn", 0, `${prefix}0`, params.color as string | undefined);
+    return wrapValueDefault(
+      "m_tokenCachedIn",
+      t.tokenCachedIn,
+      `${prefix}${formatCompactToken(t.tokenCachedIn)}`,
+      params.color as string | undefined,
+    );
   },
   // v0.4.0+ — :color|scale (or no :color| at all) → 5-band
   // scale color on the active tick, STALE_COLOR on the
@@ -3672,19 +3990,54 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   },
   m_accTokenCachedIn: (params, ctx) => {
     const scope = passThroughOr<"session" | "project" | "model" | "ccsession">(params, ctx, "scope") ?? "ccsession";
-    return wrapPlainDefault("m_accTokenCachedIn", accBody(ctx, "cached", scope), passThroughOr<string>(params, ctx, "color"));
+    const v = peekAcc(scope, ctx);
+    const n = v ? v.accTokenCachedIn : 0;
+    return wrapValueDefault("m_accTokenCachedIn", n, accBody(ctx, "cached", scope), passThroughOr<string>(params, ctx, "color"));
   },
   m_accTokenTotalIn: (params, ctx) => {
     const scope = passThroughOr<"session" | "project" | "model" | "ccsession">(params, ctx, "scope") ?? "ccsession";
-    return wrapPlainDefault("m_accTokenTotalIn", accBody(ctx, "total", scope), passThroughOr<string>(params, ctx, "color"));
+    const v = peekAcc(scope, ctx);
+    const n = v ? v.accTokenIn + v.accTokenCachedIn : 0;
+    return wrapValueDefault("m_accTokenTotalIn", n, accBody(ctx, "total", scope), passThroughOr<string>(params, ctx, "color"));
   },
   m_accApiMs: (params, ctx) => {
     const scope = passThroughOr<"session" | "project" | "model" | "ccsession">(params, ctx, "scope") ?? "ccsession";
-    return wrapPlainDefault("m_accApiMs", accBody(ctx, "apiMs", scope), passThroughOr<string>(params, ctx, "color"));
+    const v = peekAcc(scope, ctx);
+    const n = v ? v.accApiMs : 0;
+    return wrapValueDefault("m_accApiMs", n, accBody(ctx, "apiMs", scope), passThroughOr<string>(params, ctx, "color"));
   },
   m_accApiCalls: (params, ctx) => {
     const scope = passThroughOr<"session" | "project" | "model" | "ccsession">(params, ctx, "scope") ?? "ccsession";
-    return wrapPlainDefault("m_accApiCalls", accBody(ctx, "apiCalls", scope), passThroughOr<string>(params, ctx, "color"));
+    const v = peekAcc(scope, ctx);
+    const n = v ? v.accApiCalls : 0;
+    return wrapValueDefault("m_accApiCalls", n, accBody(ctx, "apiCalls", scope), passThroughOr<string>(params, ctx, "color"));
+  },
+  // v0.8.13+ — inline m_accTokenInSpeed / m_accTokenOutSpeed.
+  // Mirrors m_tokenInSpeed / m_tokenOutSpeed contract: `:color|scale`
+  // (or no `:color|`) → 5-band scale on the active rollup, the
+  // user's explicit `:color|<c>` wins over the scale, and the
+  // `peekAcc==null` path emits "direction:n/a".
+  m_accTokenInSpeed: (params, ctx) => {
+    const scope = passThroughOr<"session" | "project" | "model" | "ccsession">(params, ctx, "scope") ?? "ccsession";
+    const probe = computeAccSpeed(ctx, scope, "in", STALE_COLOR);
+    const userColor = passThroughOr<string>(params, ctx, "color");
+    const activeColor =
+      userColor === SCALE_COLOR_SENTINEL || userColor == null
+        ? (probe.active ? speedScaleColor("in", probe.tps ?? 0) : STALE_COLOR)
+        : userColor;
+    const r = computeAccSpeed(ctx, scope, "in", activeColor);
+    return r.value;
+  },
+  m_accTokenOutSpeed: (params, ctx) => {
+    const scope = passThroughOr<"session" | "project" | "model" | "ccsession">(params, ctx, "scope") ?? "ccsession";
+    const probe = computeAccSpeed(ctx, scope, "out", STALE_COLOR);
+    const userColor = passThroughOr<string>(params, ctx, "color");
+    const activeColor =
+      userColor === SCALE_COLOR_SENTINEL || userColor == null
+        ? (probe.active ? speedScaleColor("out", probe.tps ?? 0) : STALE_COLOR)
+        : userColor;
+    const r = computeAccSpeed(ctx, scope, "out", activeColor);
+    return r.value;
   },
   // Hit rate is special: ccsession-scoped by default (per-process
   // lifetime). Pass :scope:session/:scope:project/:scope:model to
@@ -3726,7 +4079,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (!filter) return INLINE_BADARG;
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderWithColor("m_sumTokenCachedIn", params, ctx);
-    return wrapPlain(`${labelFor("cacheIn")}${formatCompactToken(agg.sumCached)}`, passThroughOr<string>(params, ctx, "color"));
+    return wrapValueDefault("m_sumTokenCachedIn", agg.sumCached, `${labelFor("cacheIn")}${formatCompactToken(agg.sumCached)}`, passThroughOr<string>(params, ctx, "color"));
   },
   m_sumTokenTotalIn: (params, ctx) => {
     const merged = mergePassThrough(params, ctx);
@@ -3734,7 +4087,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (!filter) return INLINE_BADARG;
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderWithColor("m_sumTokenTotalIn", params, ctx);
-    return wrapPlain(`${labelFor("totalIn")}${formatCompactToken(agg.sumTotalIn)}`, passThroughOr<string>(params, ctx, "color"));
+    return wrapValueDefault("m_sumTokenTotalIn", agg.sumTotalIn, `${labelFor("totalIn")}${formatCompactToken(agg.sumTotalIn)}`, passThroughOr<string>(params, ctx, "color"));
   },
   m_sumApiMs: (params, ctx) => {
     const merged = mergePassThrough(params, ctx);
@@ -3742,7 +4095,9 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (!filter) return INLINE_BADARG;
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderWithColor("m_sumApiMs", params, ctx);
-    return wrapPlain(`api:${formatRemainingMs(agg.sumApiMs)}`, passThroughOr<string>(params, ctx, "color"));
+    // v0.8.13+ — prefix routes through labelFor(labels.labelApi);
+    // default "api:" preserves the v0.8.x literal.
+    return wrapValueDefault("m_sumApiMs", agg.sumApiMs, `${labelFor("apiMs")}${formatRemainingMs(agg.sumApiMs)}`, passThroughOr<string>(params, ctx, "color"));
   },
   m_sumTokenHitRate: (params, ctx) => {
     const merged = mergePassThrough(params, ctx);
@@ -3757,11 +4112,24 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   m_sumTokenInSpeed: (params, ctx) => {
     const merged = mergePassThrough(params, ctx);
     const filter = parseWindowScope(ctx, merged);
+    if (process.env.TOPGAUGE_CC_DEBUG_SUMSPEED) {
+      // eslint-disable-next-line no-console
+      console.error("[diag-renderer] m_sumTokenInSpeed params=", JSON.stringify(params), "filter=", filter);
+    }
     if (!filter) return INLINE_BADARG;
     const agg = fetchSumAggregate(filter);
     if (agg.sumApiMs === 0) return placeholderWithColor("m_sumTokenInSpeed", params, ctx);
     const tps = (agg.sumIn / agg.sumApiMs) * 1000;
-    return wrapPlain(`${labelFor("in")}${formatSpeed(tps)}`, passThroughOr<string>(params, ctx, "color"));
+    // v0.8.13+ — speedScaleColor (`:color|scale` → scale,
+    // `:color|<c>` → that color, no `:color|` → scale default).
+    // v0.8.13+ — prefix routes through labelFor(labels.labelInSpeed);
+    // default "in:" preserves today's literal.
+    const userColor = passThroughOr<string>(params, ctx, "color");
+    const color =
+      userColor === SCALE_COLOR_SENTINEL || userColor == null
+        ? speedScaleColor("in", tps)
+        : userColor;
+    return `${color}${labelFor("inSpeed")}${formatSpeed(tps)}${RESET}`;
   },
   m_sumTokenOutSpeed: (params, ctx) => {
     const merged = mergePassThrough(params, ctx);
@@ -3770,7 +4138,14 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const agg = fetchSumAggregate(filter);
     if (agg.sumApiMs === 0) return placeholderWithColor("m_sumTokenOutSpeed", params, ctx);
     const tps = (agg.sumOut / agg.sumApiMs) * 1000;
-    return wrapPlain(`${labelFor("out")}${formatSpeed(tps)}`, passThroughOr<string>(params, ctx, "color"));
+    // v0.8.13+ — prefix routes through labelFor(labels.labelOutSpeed);
+    // default "out:" preserves today's literal.
+    const userColor = passThroughOr<string>(params, ctx, "color");
+    const color =
+      userColor === SCALE_COLOR_SENTINEL || userColor == null
+        ? speedScaleColor("out", tps)
+        : userColor;
+    return `${color}${labelFor("outSpeed")}${formatSpeed(tps)}${RESET}`;
   },
   // v0.8.x — total count of API calls in window. See MODULES twin.
   m_sumApiCalls: (params, ctx) => {
@@ -3779,7 +4154,9 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (!filter) return INLINE_BADARG;
     const agg = fetchSumAggregate(filter);
     if (agg.calls === 0) return placeholderWithColor("m_sumApiCalls", params, ctx);
-    return wrapPlain(`calls:${agg.calls}`, passThroughOr<string>(params, ctx, "color"));
+    // v0.8.13+ — prefix routes through labelFor(labels.labelApiCalls);
+    // default "calls:" preserves the v0.8.x literal.
+    return wrapValueDefault("m_sumApiCalls", agg.calls, `${labelFor("apiCalls")}${agg.calls}`, passThroughOr<string>(params, ctx, "color"));
   },
   m_quote: (params, ctx) => {
     // Default freq = 1h (per-hour window). The schema resolver
@@ -3880,7 +4257,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
         // choice. See computeTickSpeed.
         return wrapPlainDefault(
           "m_apiMs",
-          `api:${formatRemainingMs(cached)}`,
+          `${labelFor("apiMs")}${formatRemainingMs(cached)}`,
           STALE_COLOR,
         );
       }
@@ -3888,7 +4265,13 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     }
     // v1.0 — setLastApiMs moved to status-store.ts:processTick
     // Stage 5. Render is read-only.
-    return wrapPlainDefault("m_apiMs", `api:${formatRemainingMs(r.apiMs)}`, params.color as string | undefined);
+    // v0.8.13+ — non-zero, non-null default tint: when the
+    // per-turn apiMs delta is a positive number, wrap in
+    // DEFAULT_COLORS.m_apiMs (brown). 0 stays plain (value-zero
+    // rule); STALE_COLOR still wins on the cached/idle branch
+    // above. v0.8.13+ — prefix routes through labelFor
+    // (labels.labelApi); default "api:" preserves the v0.8.x literal.
+    return wrapValueDefault("m_apiMs", r.apiMs, `${labelFor("apiMs")}${formatRemainingMs(r.apiMs)}`, params.color as string | undefined);
   },
   m_linesAdded: (params, ctx) => {
     const n = ctx.tokens?.cost.totalLinesAdded;
@@ -3919,10 +4302,17 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   // v0.8.0+ — total_input_tokens under the labelTotalIn label
   // family. Reads the same input as m_tokenInTotal; the two
   // modules differ in which labels.* axis labels them.
+  //
+  // v0.8.13+ — non-zero, non-null default tint: when
+  // totals.tokenTotalIn is a positive number, wrap in
+  // DEFAULT_COLORS.m_tokenTotalIn (blue). value=0 stays plain;
+  // null → placeholderWithColor.
   m_tokenTotalIn: (params, ctx) => {
     const t = ctx.tokens;
     if (!t || t.totals.tokenTotalIn == null) return placeholderWithColor("m_tokenTotalIn", params, ctx);
-    return wrapPlain(
+    return wrapValueDefault(
+      "m_tokenTotalIn",
+      t.totals.tokenTotalIn,
       `${labelFor("totalIn")}${formatCompactToken(t.totals.tokenTotalIn)}`,
       params.color as string | undefined,
     );
@@ -3934,12 +4324,20 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   // uninitialized. (`:nulldrop|` is a no-op here — the function
   // never returns null, same as m_tokenIn / m_tokenOut via
   // computeTickDelta.)
+  //
+  // v0.8.13+ — non-zero, non-null default tint wraps the chunk
+  // cyan via DEFAULT_COLORS.m_apiCalls when the value is a
+  // positive count. value=0 → plain "calls:0" (value-zero rule),
+  // and any explicit user `:color|<c>` ALWAYS applies even on
+  // the zero path (override wins over the natural plain emit).
   m_apiCalls: (params, ctx) => {
     const cwd = ctx.tokens?.cwd;
-    if (!cwd) return wrapPlainDefault("m_apiCalls", "calls:0", params.color as string | undefined);
+    // v0.8.13+ — prefix routes through labelFor(labels.labelApiCalls);
+    // default "calls:" preserves the v0.8.x literal.
+    if (!cwd) return wrapPlainDefault("m_apiCalls", `${labelFor("apiCalls")}0`, params.color as string | undefined);
     const acc = statusStore.readAccumulator("project", { cwd });
-    if (!acc) return wrapPlainDefault("m_apiCalls", "calls:0", params.color as string | undefined);
-    return wrapPlainDefault("m_apiCalls", `calls:${acc.accApiCalls}`, params.color as string | undefined);
+    if (!acc) return wrapPlainDefault("m_apiCalls", `${labelFor("apiCalls")}0`, params.color as string | undefined);
+    return wrapValueDefault("m_apiCalls", acc.accApiCalls, `${labelFor("apiCalls")}${acc.accApiCalls}`, params.color as string | undefined);
   },
   // v0.8.0+ — inline form of m_contextWindowsSize (capacity).
   m_contextWindowsSize: (params, ctx) => {
@@ -4264,6 +4662,18 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         // m_accTokenTotalIn → skip prefix+pipe (18 chars). Listed
         // before m_accTokenIn / m_accTokenOut to avoid prefix-shadow.
         inline = expandInlineToken(tok, "m_accTokenTotalIn", 18, ctx);
+      } else if (tok.startsWith("m_accTokenInSpeed|")) {
+        // v0.8.13+ — m_accTokenInSpeed → skip prefix+pipe (18).
+        // MUST be listed BEFORE m_accTokenIn (13) so the longer
+        // literal wins — otherwise `m_accTokenInSpeed|color|red`
+        // would match the m_accTokenIn branch and parse-fail.
+        inline = expandInlineToken(tok, "m_accTokenInSpeed", 18, ctx);
+      } else if (tok.startsWith("m_accTokenOutSpeed|")) {
+        // v0.8.13+ — m_accTokenOutSpeed → skip prefix+pipe (19).
+        // MUST be listed BEFORE m_accTokenOut (14) so the longer
+        // literal wins — `m_accTokenOutSpeed|...|xxx` would
+        // otherwise match the m_accTokenOut branch and parse-fail.
+        inline = expandInlineToken(tok, "m_accTokenOutSpeed", 19, ctx);
       } else if (tok.startsWith("m_accTokenOut|")) {
         // m_accTokenOut → skip prefix+pipe (14 chars).
         inline = expandInlineToken(tok, "m_accTokenOut", 14, ctx);
@@ -4289,12 +4699,14 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         inline = expandInlineToken(tok, "m_accTokenHitRate", 18, ctx);
       } else if (tok.startsWith("m_sumTokenOutSpeed|")) {
         // v0.8.x — m_avgTokenOutSpeed renamed to m_sumTokenOutSpeed.
-        // 19 chars; shares length with m_sumTokenCachedIn (19)
+        // "m_sumTokenOutSpeed" is 18 chars + "|" = 19 chars of
+        // prefix. Shares length with m_sumTokenCachedIn (19)
         // but diverges at position 14 ('O' vs 'C'). MUST be
         // listed before m_sumTokenOut (14) to avoid the
         // m_sumTokenOutSpeed|...|xxx token being matched by
         // startsWith("m_sumTokenOut|").
-        inline = expandInlineToken(tok, "m_sumTokenOutSpeed", 20, ctx);
+        // v0.8.13+ — fixed skipLen from buggy 20 to 19 (off-by-one).
+        inline = expandInlineToken(tok, "m_sumTokenOutSpeed", 19, ctx);
       } else if (tok.startsWith("m_sumTokenCachedIn|")) {
         // 19 chars; siblings m_sumTokenIn (12) / m_sumTokenOut (13) /
         // m_sumTokenTotalIn (17) / m_sumApiMs (10) /
@@ -4303,12 +4715,16 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         inline = expandInlineToken(tok, "m_sumTokenCachedIn", 19, ctx);
       } else if (tok.startsWith("m_sumTokenInSpeed|")) {
         // v0.8.x — m_avgTokenInSpeed renamed to m_sumTokenInSpeed.
-        // 18 chars; shares length with m_sumTokenTotalIn (18) and
+        // "m_sumTokenInSpeed" is 17 chars + "|" = 18 chars of prefix.
+        // Shares length with m_sumTokenTotalIn (18) and
         // m_sumTokenHitRate (18) but diverges at position 14 ('I' vs
         // 'T' / 'H'). MUST be listed before m_sumTokenIn (13) to
         // avoid the m_sumTokenInSpeed|...|xxx token being matched
         // by startsWith("m_sumTokenIn|").
-        inline = expandInlineToken(tok, "m_sumTokenInSpeed", 19, ctx);
+        // v0.8.13+ — fixed skipLen from buggy 19 to 18 (the prior
+        // off-by-one caused parseInlineArgs to slice the leading
+        // 'n' off 'nulldrop|false' and return params=null).
+        inline = expandInlineToken(tok, "m_sumTokenInSpeed", 18, ctx);
       } else if (tok.startsWith("m_sumTokenTotalIn|")) {
         inline = expandInlineToken(tok, "m_sumTokenTotalIn", 18, ctx);
       } else if (tok.startsWith("m_sumTokenHitRate|")) {

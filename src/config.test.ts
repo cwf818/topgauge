@@ -636,16 +636,30 @@ describe("loadConfig — modeLabels.balance (v0.2.17)", () => {
   });
 });
 
-// v0.8.0+ — top-level `labels` overrides for the four token-stat
-// prefix axes (labelIn / labelOut / labelCacheIn / labelTotalIn).
-// Partial-merge semantics match modeLabels: each field optional,
-// invalid type → warn + default retained.
+// v0.8.0+ — top-level `labels` overrides for the token-stat
+// prefix axes. v0.8.0 had four axes (labelIn / labelOut /
+// labelCacheIn / labelTotalIn); v0.8.13+ extended the resolver
+// with four more (labelApi / labelApiCalls / labelInSpeed /
+// labelOutSpeed) so the apiMs / apiCalls / inSpeed / outSpeed
+// module families are independently configurable. Partial-merge
+// semantics match modeLabels: each field optional, invalid type
+// → warn + default retained.
 describe("loadConfig — labels (v0.8.0+ token-stat prefix customization)", () => {
-  it("defaults reproduce v0.7.x literal-string behavior", () => {
+  it("defaults reproduce v0.7.x literal-string behavior for the four base axes", () => {
     assert.equal(__testing.DEFAULT_CONFIG.labels.labelIn, "in:");
     assert.equal(__testing.DEFAULT_CONFIG.labels.labelOut, "out:");
     assert.equal(__testing.DEFAULT_CONFIG.labels.labelCacheIn, "cache:");
     assert.equal(__testing.DEFAULT_CONFIG.labels.labelTotalIn, "total:");
+  });
+
+  // v0.8.13+ — four new axes (apiMs / apiCalls / inSpeed / outSpeed)
+  // default to today's literal strings so existing renders stay
+  // byte-identical until the user overrides.
+  it("v0.8.13+ defaults for labelApi / labelApiCalls / labelInSpeed / labelOutSpeed match v0.8.x literals", () => {
+    assert.equal(__testing.DEFAULT_CONFIG.labels.labelApi, "api:");
+    assert.equal(__testing.DEFAULT_CONFIG.labels.labelApiCalls, "calls:");
+    assert.equal(__testing.DEFAULT_CONFIG.labels.labelInSpeed, "in:");
+    assert.equal(__testing.DEFAULT_CONFIG.labels.labelOutSpeed, "out:");
   });
 
   it("accepts a custom labelIn; other axes keep defaults", async () => {
@@ -657,15 +671,26 @@ describe("loadConfig — labels (v0.8.0+ token-stat prefix customization)", () =
     assert.equal(cfg.labels.labelOut, "out:");
     assert.equal(cfg.labels.labelCacheIn, "cache:");
     assert.equal(cfg.labels.labelTotalIn, "total:");
+    // v0.8.13+ axes keep their defaults when only labelIn is set.
+    assert.equal(cfg.labels.labelApi, "api:");
+    assert.equal(cfg.labels.labelApiCalls, "calls:");
+    assert.equal(cfg.labels.labelInSpeed, "in:");
+    assert.equal(cfg.labels.labelOutSpeed, "out:");
   });
 
-  it("accepts overrides for all four axes simultaneously", async () => {
+  it("accepts overrides for all eight axes simultaneously", async () => {
     writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
       labels: {
         labelIn: "In:",
         labelOut: "Out:",
         labelCacheIn: "Cache:",
         labelTotalIn: "Total:",
+        // v0.8.13+ four new axes — partial-merge follows the same
+        // pattern: each is optional and invalid types warn + drop.
+        labelApi: "ms:",
+        labelApiCalls: "calls²:",
+        labelInSpeed: "speed-in:",
+        labelOutSpeed: "speed-out:",
       },
     }));
     const cfg = await loadConfig();
@@ -673,6 +698,10 @@ describe("loadConfig — labels (v0.8.0+ token-stat prefix customization)", () =
     assert.equal(cfg.labels.labelOut, "Out:");
     assert.equal(cfg.labels.labelCacheIn, "Cache:");
     assert.equal(cfg.labels.labelTotalIn, "Total:");
+    assert.equal(cfg.labels.labelApi, "ms:");
+    assert.equal(cfg.labels.labelApiCalls, "calls²:");
+    assert.equal(cfg.labels.labelInSpeed, "speed-in:");
+    assert.equal(cfg.labels.labelOutSpeed, "speed-out:");
   });
 
   it("rejects a non-string label field and warns", async () => {
@@ -682,6 +711,18 @@ describe("loadConfig — labels (v0.8.0+ token-stat prefix customization)", () =
     const cfg = await loadConfig();
     assert.equal(cfg.labels.labelIn, "in:");
     assert.match(capturedStderr, /labels\.labelIn/);
+  });
+
+  // v0.8.13+ — same warn shape applies to the new axes.
+  it("rejects non-string v0.8.13+ label fields and warns", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      labels: { labelApi: 42, labelApiCalls: 99 },
+    }));
+    const cfg = await loadConfig();
+    assert.equal(cfg.labels.labelApi, "api:");
+    assert.equal(cfg.labels.labelApiCalls, "calls:");
+    assert.match(capturedStderr, /labels\.labelApi/);
+    assert.match(capturedStderr, /labels\.labelApiCalls/);
   });
 
   it("rejects labels as a non-object and warns", async () => {

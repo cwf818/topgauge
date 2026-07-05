@@ -500,15 +500,26 @@ const DEFAULT_CONFIG: {
   modeLabels: { used: string; remaining: string; balance: string };
   // v0.8.0+ — top-level prefix labels for the four token-stat axes
   // used across all three module families (per-turn / acc /
-  // sum-avg / totals). Each value already includes its trailing
-  // colon (e.g. "In:") so the renderer can just concat. Defaults
-  // reproduce the v0.7.x literal-string behavior exactly so
-  // existing line templates render byte-identical.
+  // sum-avg / totals). v0.8.13+ extended to also cover the
+  // per-turn / acc / sum-avg api-ms, api-calls, in-speed, and
+  // out-speed axes (apiMs / apiCalls / inSpeed / outSpeed). Each
+  // value already includes its trailing colon (e.g. "In:") so the
+  // renderer can just concat. Defaults reproduce the v0.7.x
+  // literal-string behavior exactly so existing line templates
+  // render byte-identical until the user overrides labels.* in
+  // config.json.
   labels: {
     labelIn: string;
     labelOut: string;
     labelCacheIn: string;
     labelTotalIn: string;
+    // v0.8.13+ — four new axes exposed via labelFor(). Defaults
+    // match the v0.8.x hardcoded literal strings (api: / calls: /
+    // in: / out:) so existing renders are byte-identical.
+    labelApi: string;
+    labelApiCalls: string;
+    labelInSpeed: string;
+    labelOutSpeed: string;
   };
   colors: typeof DEFAULT_COLORS;
   cacheHitColors: typeof DEFAULT_CACHE_HIT_COLORS;
@@ -545,7 +556,20 @@ const DEFAULT_CONFIG: {
   // so the m_modeLabel module for the DeepSeek path can pick it up. Defaults
   // to "Balance:" to preserve the v0.2.16 hardcoded literal.
   modeLabels: { used: "Usage:", remaining: "Remain:", balance: "Balance:" },
-  labels: { labelIn: "in:", labelOut: "out:", labelCacheIn: "cache:", labelTotalIn: "total:" },
+  // v0.8.13+ — extends the four-axis labels.* set with apiMs /
+  // apiCalls / inSpeed / outSpeed defaults that match the
+  // v0.8.x hardcoded literals so existing renders are byte-
+  // identical until the user overrides them via config.json.
+  labels: {
+    labelIn: "in:",
+    labelOut: "out:",
+    labelCacheIn: "cache:",
+    labelTotalIn: "total:",
+    labelApi: "api:",
+    labelApiCalls: "calls:",
+    labelInSpeed: "in:",
+    labelOutSpeed: "out:",
+  },
   colors: DEFAULT_COLORS,
   cacheHitColors: DEFAULT_CACHE_HIT_COLORS,
   thresholds: DEFAULT_THRESHOLDS,
@@ -829,6 +853,16 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
         "labelOut",
         "labelCacheIn",
         "labelTotalIn",
+        // v0.8.13+ — four new axes exposed via labelFor(): apiMs
+        // (per-turn / acc / sum-avg), apiCalls (per-turn / acc /
+        // sum-avg), inSpeed (per-turn / sum-avg), outSpeed
+        // (per-turn / sum-avg). Defaults match the v0.8.x
+        // hardcoded literals so existing renders stay byte-
+        // identical until the user overrides.
+        "labelApi",
+        "labelApiCalls",
+        "labelInSpeed",
+        "labelOutSpeed",
       ];
       for (const f of fields) {
         if (typeof lm[f] === "string") {
