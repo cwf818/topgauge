@@ -1,5 +1,68 @@
 # Changelog
 
+## v0.8.14
+
+### Changed (BREAKING)
+
+- `statuslineTemplate` is **array-only**. Legacy bare-string
+  preset-name values (`"1line"`, `"standard"`, etc., from
+  v0.4.0–v0.8.13) auto-migrate to the equivalent `["m_template|_X"]`
+  form with a one-shot stderr warning. To silence the warning,
+  write the array form directly:
+  ```diff
+  - "statuslineTemplate": "standard",
+  + "statuslineTemplate": ["m_template|_standard"],
+  ```
+- **Balance-provider default render is now silent.** Pre-v0.8.14,
+  `statuslineTemplate: "1line"` on a DeepSeek (BALANCE) provider
+  silently fell back to `BALANCE_PRESETS["simple"]`. This
+  provider-type-aware fallback is GONE — v0.8.14+ requires explicit
+  opt-in:
+  ```diff
+  - "statuslineTemplate": "1line", // used to render BALANCE_PRESETS["simple"]
+  + "statuslineTemplate": ["m_template|_balance_simple|mode|balance"],
+  ```
+  This matches the project's "user is explicit, framework doesn't
+  guess" philosophy (cf. v0.8.13's literal `api:` / `calls:` /
+  `in:` / `out:` defaults).
+
+### Added
+
+- Built-in presets are now first-class entries in `lineTemplates`
+  with `_`-prefixed keys. Plan: `_1line`, `_simple`,
+  `_simple-alone`, `_standard`, `_standard-alone`, `_abundant`,
+  `_complete`. Balance: `_balance_simple`, `_balance_simple-alone`.
+  Reference them via `m_template|_X` (with optional
+  `|mode|plan|balance` to constrain dispatch — default `mode:plan`).
+- `m_template`'s `mode` filter is now the explicit
+  provider-type-aware dispatch mechanism.
+- User `lineTemplates` entries whose names start with `_` and
+  collide with a built-in preset are warned + skipped (the
+  built-in wins). Use a different key for your own presets.
+
+### Removed
+
+- `PLAN_PRESETS` and `BALANCE_PRESETS` exported constants are
+  gone — their contents moved into `DEFAULT_LINE_TEMPLATES` with
+  `_`-prefixed keys (and the bodies preserved byte-for-byte).
+
+## v0.8.13
+
+### Added
+
+- Extended `labelFor()` resolver with four new axes
+  (`labelApi` / `labelApiCalls` / `labelInSpeed` / `labelOutSpeed`)
+  so the apiMs / apiCalls / inSpeed / outSpeed module families are
+  independently configurable. Defaults match the v0.8.x literal
+  strings (`api:` / `calls:` / `in:` / `out:`) so existing renders
+  stay byte-identical until the user overrides via config.json
+  `labels.*`.
+- Fixed two pre-existing off-by-one dispatcher skipLen bugs in
+  `src/render.ts`: `m_sumTokenInSpeed` was 19 (correct: 18),
+  `m_sumTokenOutSpeed` was 20 (correct: 19). Both caused the
+  `|nulldrop|false` inline form to silently drop with an
+  "unknown lineTemplate module" warning.
+
 ## v0.7.0
 
 ### Renamed

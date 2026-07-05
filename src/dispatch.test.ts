@@ -36,6 +36,20 @@ const pinDefaults = () =>
       ageEmoji: { healthy: "🔗", broken: "⛓️‍💥" },
     },
     timeFormat: { minUnit: "m", maxUnitCount: 2 },
+    // v0.8.14 — `statuslineTemplate` is array-only. The default
+    // `["m_template|_1line"]` defaults to `mode:plan` and silently
+    // drops on a BALANCE provider (DeepSeek). Tests that exercise
+    // DeepSeek rendering need the balance preset explicitly. We
+    // pin both: the plan default (for minimax tests that don't
+    // override) and the balance default (for deepseek tests that
+    // don't override). Each test that wants a different template
+    // overrides `statuslineTemplate` directly via the second arg
+    // to `__resetForTest`.
+    statuslineTemplate: [
+      "m_template|_balance_simple|mode|balance",
+      "s_newline",
+      "m_template|_1line",
+    ],
   });
 
 describe("buildProviderLine — fresh (no age suffix; data just arrived)", () => {

@@ -9,6 +9,8 @@ import {
   applyProviderOverrides,
   configStore,
   loadConfig,
+  DEFAULT_STATUSLINE_TEMPLATE,
+  LEGACY_PRESET_NAMES,
 } from "./config.ts";
 
 const { DEFAULT_CONFIG, setPathResolver, resetPathResolver } = __testing;
@@ -265,30 +267,35 @@ describe("loadConfig — countdown.resetArrows", () => {
   });
 });
 
-describe("loadConfig — statuslineTemplate preset name (v0.4.0+)", () => {
-  // The preset names accepted by statuslineTemplate are the same fixed
-  // list that the v0.3.x `lineTemplate.plan` / `.balance` accepted.
-  // The validator only confirms the name is known — the actual array
-  // resolution is in src/render.ts (renderProviderLine) and is covered
-  // by renderTemplate end-to-end tests in lineTemplate.test.ts.
+describe("loadConfig — statuslineTemplate string→array auto-migration (v0.8.14+)", () => {
+  // v0.8.14 — `statuslineTemplate` is array-only. The legacy string-
+  // form preset-name values from v0.4.0–v0.8.13 are auto-migrated
+  // to the equivalent `["m_template|_X"]` form with a one-shot warn.
+  // Users should write the array form directly to silence the warn.
+  //
+  // The validator confirms the name is a known legacy preset
+  // (LEGACY_PRESET_NAMES = 7 plan + 2 balance names); the actual
+  // array resolution is in src/render.ts (renderProviderLine) and
+  // is covered by renderTemplate end-to-end tests in
+  // lineTemplate.test.ts.
 
-  it("plan presets ('1line', 'simple', 'simple-alone', 'standard', 'standard-alone', 'abundant', 'complete') are all accepted", async () => {
-    for (const name of ["1line", "simple", "simple-alone", "standard", "standard-alone", "abundant", "complete"] as const) {
+  it("all 9 LEGACY_PRESET_NAMES auto-migrate to the equivalent m_template|_X form", async () => {
+    for (const name of LEGACY_PRESET_NAMES) {
+      // Each test uses its own file (writeFileSync is destructive).
+      // Reset stderr capture so the loop's previous iteration's warn
+      // doesn't bleed into the next assertion.
+      capturedStderr = "";
       writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
         statuslineTemplate: name,
       }));
       const cfg = await loadConfig();
-      assert.equal(cfg.statuslineTemplate, name);
-    }
-  });
-
-  it("balance presets ('simple', 'simple-alone') are accepted", async () => {
-    for (const name of ["simple", "simple-alone"] as const) {
-      writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
-        statuslineTemplate: name,
-      }));
-      const cfg = await loadConfig();
-      assert.equal(cfg.statuslineTemplate, name);
+      assert.deepEqual(
+        cfg.statuslineTemplate,
+        [`m_template|_${name}`],
+        `legacy preset "${name}" should migrate to ["m_template|_${name}"]`,
+      );
+      // One warn per migration (not per token — single line).
+      assert.match(capturedStderr, /auto-migrating to/);
     }
   });
 
@@ -297,7 +304,7 @@ describe("loadConfig — statuslineTemplate preset name (v0.4.0+)", () => {
       statuslineTemplate: "totally-made-up",
     }));
     const cfg = await loadConfig();
-    assert.equal(cfg.statuslineTemplate, "1line");
+    assert.deepEqual(cfg.statuslineTemplate, DEFAULT_STATUSLINE_TEMPLATE.slice());
     assert.match(capturedStderr, /not a known preset/);
     // The warn message lists the valid preset names so the user can
     // fix the typo without reading the docs.
@@ -309,8 +316,8 @@ describe("loadConfig — statuslineTemplate preset name (v0.4.0+)", () => {
       statuslineTemplate: 42,
     }));
     const cfg = await loadConfig();
-    assert.equal(cfg.statuslineTemplate, "1line");
-    assert.match(capturedStderr, /statuslineTemplate must be a preset string or string\[\]/);
+    assert.deepEqual(cfg.statuslineTemplate, DEFAULT_STATUSLINE_TEMPLATE.slice());
+    assert.match(capturedStderr, /statuslineTemplate must be a string\[\]/);
   });
 });
 
@@ -498,12 +505,15 @@ describe("loadConfig — separators (top-level)", () => {
   });
 });
 
-describe("loadConfig — lineTemplates + statuslineTemplate (v0.4.0+)", () => {
-  it("defaults: lineTemplates has {plan, balance}; statuslineTemplate is the '1line' preset name", () => {
+describe("loadConfig — lineTemplates + statuslineTemplate (v0.4.0+, presets flattened v0.8.14+)", () => {
+  it("defaults: lineTemplates has {plan, balance} + 9 _-prefixed presets; statuslineTemplate defaults to [m_template|_1line]", () => {
     // v0.4.x — the default template uses NAMED ALIASES (s_space,
-    // s_dot) so it works with the empty default separators
-    // array. Visual output is byte-for-byte identical to the
-    // v0.4.0 release's `s_0` + `s_1` + `s_0` composition.
+    // s_dot) so it works with the empty default separators array.
+    // v0.8.14+ — the 7 plan + 2 balance presets are now first-class
+    // entries in lineTemplates with `_`-prefix; the default
+    // `statuslineTemplate` is the array ["m_template|_1line"]
+    // (auto-resolved through `m_template` to the byte-identical
+    // body of the v0.4.0–v0.8.13 PLAN_PRESETS["1line"]).
     const cfg = __testing.DEFAULT_CONFIG;
     assert.deepEqual(cfg.lineTemplates.plan, [
       "m_modeLabel", "s_space",
@@ -512,27 +522,32 @@ describe("loadConfig — lineTemplates + statuslineTemplate (v0.4.0+)", () => {
       "m_window7d", "s_space", "m_countdown7d",
     ]);
     assert.deepEqual(cfg.lineTemplates.balance, ["m_modeLabel", "s_space", "m_balance"]);
-    assert.equal(cfg.statuslineTemplate, "1line");
+    // The 9 built-in presets are present with `_`-prefix.
+    assert.ok(cfg.lineTemplates._1line);
+    assert.ok(cfg.lineTemplates._simple);
+    assert.ok(cfg.lineTemplates._simple_alone);
+    assert.ok(cfg.lineTemplates._standard);
+    assert.ok(cfg.lineTemplates._standard_alone);
+    assert.ok(cfg.lineTemplates._abundant);
+    assert.ok(cfg.lineTemplates._complete);
+    assert.ok(cfg.lineTemplates._balance_simple);
+    assert.ok(cfg.lineTemplates._balance_simple_alone);
+    // _1line and _simple must be byte-identical (the alias).
+    assert.deepEqual(cfg.lineTemplates._1line, cfg.lineTemplates._simple);
+    assert.deepEqual(cfg.statuslineTemplate, ["m_template|_1line"]);
   });
 
-  it("statuslineTemplate string preset resolves to a known PLAN preset", async () => {
+  it("statuslineTemplate string 'standard' auto-migrates to ['m_template|_standard']", async () => {
+    capturedStderr = "";
     writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
       statuslineTemplate: "standard",
     }));
     const cfg = await loadConfig();
-    assert.equal(cfg.statuslineTemplate, "standard");
-    // The render-time lookup against PLAN_PRESETS["standard"] is
-    // covered by lineTemplate.test.ts; here we just confirm the
-    // string survives the validator.
-  });
-
-  it("statuslineTemplate string unknown preset warns + falls back to default", async () => {
-    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
-      statuslineTemplate: "totally-made-up",
-    }));
-    const cfg = await loadConfig();
-    assert.equal(cfg.statuslineTemplate, "1line");
-    assert.match(capturedStderr, /not a known preset/);
+    assert.deepEqual(cfg.statuslineTemplate, ["m_template|_standard"]);
+    assert.match(capturedStderr, /auto-migrating to/);
+    // The render-time lookup against cfg().lineTemplates._standard
+    // is covered by lineTemplate.test.ts; here we just confirm the
+    // migration produces the expected array form.
   });
 
   it("statuslineTemplate array form is passed through verbatim", async () => {
@@ -544,14 +559,14 @@ describe("loadConfig — lineTemplates + statuslineTemplate (v0.4.0+)", () => {
     assert.deepEqual(cfg.statuslineTemplate, tokens);
   });
 
-  it("statuslineTemplate balance presets (simple, simple-alone) are accepted", async () => {
-    for (const name of ["simple", "simple-alone"] as const) {
-      writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
-        statuslineTemplate: name,
-      }));
-      const cfg = await loadConfig();
-      assert.equal(cfg.statuslineTemplate, name);
-    }
+  it("statuslineTemplate balance preset 'simple' auto-migrates to ['m_template|_balance_simple']", async () => {
+    capturedStderr = "";
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      statuslineTemplate: "balance_simple",
+    }));
+    const cfg = await loadConfig();
+    assert.deepEqual(cfg.statuslineTemplate, ["m_template|_balance_simple"]);
+    assert.match(capturedStderr, /auto-migrating to/);
   });
 
   it("lineTemplates user-defined key is preserved verbatim", async () => {
@@ -594,6 +609,51 @@ describe("loadConfig — lineTemplates + statuslineTemplate (v0.4.0+)", () => {
     assert.match(capturedStderr, /lineTemplates\.foo is empty after cleaning/);
   });
 
+  // v0.8.14+ — `_`-prefix is reserved for built-in presets. Loader
+  // rejects user `lineTemplates._*` entries whose name collides with
+  // a built-in key (warn + skip). User-defined `_custom` entries
+  // that don't collide with a built-in key are preserved.
+  it("lineTemplates._1line collides with built-in preset and is rejected", async () => {
+    capturedStderr = "";
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      lineTemplates: { _1line: ["m_window5h"] },
+    }));
+    const cfg = await loadConfig();
+    // The user's `_1line` entry is dropped; the built-in `_1line`
+    // body from DEFAULT_LINE_TEMPLATES survives.
+    assert.deepEqual(cfg.lineTemplates._1line, __testing.DEFAULT_CONFIG.lineTemplates._1line);
+    assert.notDeepEqual(cfg.lineTemplates._1line, ["m_window5h"]);
+    assert.match(capturedStderr, /reserved for built-in presets/);
+  });
+
+  it("lineTemplates._balance_simple collides with built-in preset and is rejected", async () => {
+    capturedStderr = "";
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      lineTemplates: { _balance_simple: ["m_window5h"] },
+    }));
+    const cfg = await loadConfig();
+    // The user's `_balance_simple` entry is dropped; the built-in
+    // body (BALANCE_PRESETS["simple"] body, "Balance: <balance>")
+    // survives.
+    assert.deepEqual(
+      cfg.lineTemplates._balance_simple,
+      __testing.DEFAULT_CONFIG.lineTemplates._balance_simple,
+    );
+    assert.match(capturedStderr, /reserved for built-in presets/);
+  });
+
+  it("lineTemplates._custom (non-builtin _-prefix) is preserved", async () => {
+    capturedStderr = "";
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      lineTemplates: { _custom: ["m_window5h"] },
+    }));
+    const cfg = await loadConfig();
+    assert.deepEqual(cfg.lineTemplates._custom, ["m_window5h"]);
+    // No warn — the collision check only fires for keys that
+    // actually exist in DEFAULT_LINE_TEMPLATES.
+    assert.doesNotMatch(capturedStderr, /reserved for built-in/);
+  });
+
   it("legacy lineTemplate warns once and is ignored (hard break)", async () => {
     writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
       lineTemplate: {
@@ -603,7 +663,9 @@ describe("loadConfig — lineTemplates + statuslineTemplate (v0.4.0+)", () => {
     }));
     const cfg = await loadConfig();
     // Defaults remain; the legacy field did NOT auto-migrate.
-    assert.equal(cfg.statuslineTemplate, "1line");
+    // (v0.8.14 — default is the array ["m_template|_1line"], not
+    // the v0.4.0–v0.8.13 string "1line".)
+    assert.deepEqual(cfg.statuslineTemplate, ["m_template|_1line"]);
     assert.ok(cfg.lineTemplates.plan.includes("m_window5h"));
     assert.ok(cfg.lineTemplates.balance.includes("m_balance"));
     assert.match(capturedStderr, /lineTemplate is removed in v0\.4\.0/);
@@ -1023,8 +1085,11 @@ describe("applyProviderOverrides — three-layer precedence", () => {
     assert.equal(cfg.colors.brightGreen, DEFAULT_CONFIG.colors.brightGreen);
   });
 
-  it("provider.config can override statuslineTemplate (array form)", () => {
+  it("provider.config can override statuslineTemplate (v0.8.14+ string[] form)", () => {
     __resetForTest();
+    // v0.8.14+ — `statuslineTemplate` is always `string[]`. Test
+    // passes an array via provider.config override; the only form
+    // the loader accepts at the provider-config layer is also `string[]`.
     const tokens = ["m_modeLabel", "s_0", "m_window5h"];
     applyProviderOverrides({
       statuslineTemplate: tokens,

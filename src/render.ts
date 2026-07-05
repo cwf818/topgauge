@@ -16,7 +16,6 @@
 
 import { configStore, warn } from "./config.ts";
 import { providerTypeFor } from "./providers.ts";
-import { PLAN_PRESETS, BALANCE_PRESETS } from "./config.ts";
 import {
   getDeltaForRender,
   peekLastSpeed,
@@ -4924,14 +4923,17 @@ export function renderProviderLine(
   // TOKEN_PLAN at "plan" and BALANCE at "balance" — but the
   // indirection lets a third provider slot in without code changes.
   //
-  // v0.4.0+ — the template is now resolved from `cfg().statuslineTemplate`,
-  // which is a top-level rendered-template field. String form is
-  // looked up against PLAN_PRESETS / BALANCE_PRESETS (whichever
-  // contains the name); array form is passed through unchanged and
-  // may include `m_template` references that pull from
-  // `cfg().lineTemplates`. The provider type is threaded through to
-  // the full ctx so per-module `type` filters can compare against it.
-  // v0.4.x — providerTypeFor returns "plan" / "balance" / "unknown"
+  // v0.8.14+ — `statuslineTemplate` is always `string[]`. The legacy
+  // preset-name lookup against PLAN_PRESETS / BALANCE_PRESETS (v0.4.0
+  // –v0.8.13) is gone — the seven plan + two balance presets are now
+  // first-class entries in `cfg().lineTemplates` with `_`-prefixed
+  // keys, and the user references them via `m_template|_X` (with
+  // optional `|mode|plan|balance` to constrain dispatch to one
+  // provider type — `m_template` defaults to `mode:plan`).
+  //
+  // The provider type is still threaded through to the full ctx so
+  // per-module `type` filters can compare against it.
+  // providerTypeFor returns "plan" / "balance" / "unknown"
   // (replaces the older templateKeyForProvider name).
   const providerType = providerTypeFor(provider);
   const cfgSnap = cfg();
@@ -4954,38 +4956,11 @@ export function renderProviderLine(
     // m_age in multiple places.
     ageEmittedRef: { value: false },
   };
-  const statuslineRaw = cfgSnap.statuslineTemplate;
-  let template: string[];
-  if (typeof statuslineRaw === "string") {
-    // Provider-aware resolution: a balance provider looks up its
-    // preset name against BALANCE_PRESETS (currently "simple" /
-    // "simple-alone"); a plan provider looks up against PLAN_PRESETS
-    // ("1line", "simple", "standard", …). Each table is searched
-    // independently — there is no cross-table fallback, because the
-    // two tables hold DIFFERENT shapes (plan = 5h/7d windows;
-    // balance = m_balance). Falling back across tables would silently
-    // render a plan preset on a balance provider (no m_balance) or
-    // a balance preset on a plan provider (no 5h/7d).
-    let resolved: string[];
-    if (providerType === "balance") {
-      resolved = Object.prototype.hasOwnProperty.call(
-        BALANCE_PRESETS,
-        statuslineRaw,
-      )
-        ? BALANCE_PRESETS[statuslineRaw].slice()
-        : BALANCE_PRESETS["simple"].slice();
-    } else {
-      resolved = Object.prototype.hasOwnProperty.call(
-        PLAN_PRESETS,
-        statuslineRaw,
-      )
-        ? PLAN_PRESETS[statuslineRaw].slice()
-        : PLAN_PRESETS["1line"].slice();
-    }
-    template = resolved;
-  } else {
-    template = statuslineRaw;
-  }
+  // v0.8.14+ — `statuslineTemplate` is always a `string[]` after
+  // loader-side auto-migration. `.slice()` keeps the snapshot-
+  // defensive pattern (we don't want subsequent external mutations
+  // to leak into the render).
+  const template = cfgSnap.statuslineTemplate.slice();
   const lines = renderTemplate(template, fullCtx);
   // Forced visibility for the age annotation (stale-only fallback):
   // when the user did NOT put m_age in their lineTemplate AND the

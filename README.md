@@ -393,8 +393,8 @@ A reference with every field is at [config.example.json](./config.example.json).
     // balance templates.
     "header": ["m_modeLabel", "s_0"]
   },
-  "statuslineTemplate": "1line",  // or a raw array, e.g.:
-  // ["m_template:header:mode:plan", "s_0", "m_window5h"],
+  "statuslineTemplate": ["m_template|_1line"],  // or a raw token array, e.g.:
+  // ["m_template|_standard", "m_window5h", "s_0", "m_window7d"],
 
   // v0.4.0+ replaces the v0.3.x `lineTemplate: { plan, balance }`
   // shape with the two fields above. See the "Upgrading to v0.4.0"
@@ -665,10 +665,10 @@ The `balances` slot is array-typed; the parser iterates `balance_infos[]` and ap
 
 ### Module tokens
 
-The line layout is declared as `statuslineTemplate` (v0.4.0+). It accepts a **preset name** (e.g. `"1line"`, `"standard"`, `"abundant"`) OR a raw token array. The default is `"1line"` — the same shape v0.3.x rendered with its default `lineTemplate.plan`.
+The line layout is declared as `statuslineTemplate` (v0.4.0+). **v0.8.14+ — `statuslineTemplate` is array-only.** The default is `["m_template|_1line"]` — the same single-line shape v0.3.x / v0.4.x / … / v0.8.13 rendered with the default `1line` preset. Use `m_template|_X` to reference a built-in preset (see [Built-in presets (v0.8.14+)](#built-in-presets-v0814) below), or write a raw token array.
 
-- For shared / reusable fragments, register them under `lineTemplates` and pull them into `statuslineTemplate` with `m_template:<key>[:mode:<plan|balance>]`. See [`m_template`](#mtemplatekeymodenulldrop-v040) below.
-- String-form `statuslineTemplate` only accepts the FIXED preset names (the renderer looks them up in the bundled `PLAN_PRESETS` / `BALANCE_PRESETS` tables; the table to search is chosen by the provider's TYPE — TOKEN_PLAN → `PLAN_PRESETS`, BALANCE → `BALANCE_PRESETS`). Arbitrary `lineTemplates` keys are NOT accepted as preset names; use the array form with `m_template:<key>` instead.
+- For shared / reusable fragments, register them under `lineTemplates` and pull them into `statuslineTemplate` with `m_template|<key>[|mode|<plan|balance>]`. See [`m_template`](#mtemplatekeymodenulldrop-v040) below.
+- **v0.8.14+ auto-migration:** legacy string-form `statuslineTemplate` values (`"1line"`, `"standard"`, etc., from v0.4.0–v0.8.13) are auto-migrated to the equivalent `["m_template|_X"]` form with a one-shot stderr warning. To silence the warn, write the array form directly.
 
 Three token shapes:
 
@@ -869,6 +869,36 @@ Pulls a registered fragment from `lineTemplates` into the rendered template. Use
 }
 ```
 
+### Built-in presets (v0.8.14+)
+
+The seven plan + two balance presets are now first-class entries in `lineTemplates` with `_`-prefixed keys. Use `m_template|_X` (with an optional `|mode|<plan|balance>` to constrain dispatch) to reference them from your `statuslineTemplate` array.
+
+| Key                       | Lines | Description                                                                           | Default mode |
+| ------------------------- | ----- | ------------------------------------------------------------------------------------- | ------------ |
+| `_1line` / `_simple`      | 1     | Token-plan only, single line (aliases of each other — byte-identical)                 | `plan`       |
+| `_simple-alone`           | 1     | Single line with an explicit `"Usage:"` label prefix (for solo use, no upstream)      | `plan`       |
+| `_standard`               | 2     | Line 0 = token-plan, line 1 = context + tokens (no session line — pair with upstream) | `plan`       |
+| `_standard-alone`         | 3     | Adds session info on line 0 (for solo use, no upstream chain)                         | `plan`       |
+| `_abundant`               | 4     | Line 0 = session + git (deep git workflow)                                            | `plan`       |
+| `_complete`               | 5     | Adds totals on line 3 (verbose — not recommended)                                     | `plan`       |
+| `_balance_simple`         | 1     | Default balance render (`"Balance: <balance>"`)                                       | `balance`    |
+| `_balance_simple-alone`   | 1     | Balance render with explicit `"Balance:"` label prefix (for solo use)                 | `balance`    |
+
+**Provider-aware dispatch (v0.8.14+):** `m_template` takes an optional `|mode|<plan|balance>` second arg. `m_template|_standard` (the default — `mode:plan`) silently drops on a BALANCE provider (DeepSeek) — use `m_template|_balance_simple|mode|balance` instead. Pick the preset matching your provider's TYPE.
+
+**`_`-prefix is reserved:** user-defined `lineTemplates._*` entries whose name collides with a built-in key are rejected with a warning (the built-in wins). Use a different key for user presets (e.g. `my1line`).
+
+### Upgrading to v0.8.14 from v0.8.13
+
+`statuslineTemplate` is now **array-only**. Pre-v0.8.14 string-form preset-name values (`"1line"`, `"standard"`, etc.) auto-migrate to the equivalent `["m_template|_X"]` form with a one-shot stderr warning:
+
+```diff
+- "statuslineTemplate": "standard",
++ "statuslineTemplate": ["m_template|_standard"],
+```
+
+To silence the warn, write the array form directly. **Balance-provider users on the default render** (DeepSeek) need an explicit migration — pre-v0.8.14, `statuslineTemplate: "1line"` silently fell back to the balance preset on a BALANCE provider; v0.8.14+ drops the chunk instead. Set `statuslineTemplate: ["m_template|_balance_simple|mode|balance"]` for a DeepSeek render.
+
 ### Upgrading to v0.4.0 from v0.3.x
 
 The `lineTemplate: { plan, balance }` config field is **removed** in v0.4.0. The loader emits one `topgauge-cc: config lineTemplate is removed in v0.4.0; use lineTemplates + statuslineTemplate. See CHANGELOG.md for the upgrade path. Ignoring the legacy field.` warning per config load and ignores the legacy field — there is **no auto-promotion** of `lineTemplate.plan` → `lineTemplates.plan`.
@@ -892,7 +922,7 @@ To migrate a customized `lineTemplate`:
 + ]
 ```
 
-The default `statuslineTemplate` is `"1line"`, which reproduces the v0.3.6 default rendering — only customized configs require manual migration. To switch presets, set `"statuslineTemplate": "standard"` / `"abundant"` / `"complete"` (the full list lives in `PLAN_PRESETS` / `BALANCE_PRESETS` at the top of `src/config.ts`).
+The default `statuslineTemplate` is `["m_template|_1line"]`, which reproduces the v0.3.6 default rendering — only customized configs require manual migration. To switch presets, set `"statuslineTemplate": ["m_template|_standard"]` / `["m_template|_abundant"]` / `["m_template|_complete"]` (the full list lives in `DEFAULT_LINE_TEMPLATES` at the top of `src/config.ts` with `_`-prefixed keys; see [Built-in presets (v0.8.14+)](#built-in-presets-v0814)).
 
 ### `m_quote` (v0.3.6+)
 

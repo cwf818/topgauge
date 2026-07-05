@@ -233,6 +233,43 @@ upstream statusline.
 
 ---
 
+## 7.5. Built-in presets (v0.8.14+)
+
+The seven plan + two balance presets are first-class entries in
+`lineTemplates` with `_`-prefixed keys. Use `m_template|_X` to reference
+them from your `statuslineTemplate` array. With the optional
+`|mode|<plan|balance>` second arg, you can constrain dispatch to one
+provider type — the default is `mode:plan` (so `_balance_*` presets
+silently drop on a TOKEN_PLAN provider, and PLAN presets silently drop
+on a BALANCE provider if you don't override).
+
+| Key                       | Lines | Description                                                                           | Default mode |
+| ------------------------- | ----- | ------------------------------------------------------------------------------------- | ------------ |
+| `_1line` / `_simple`      | 1     | Token-plan only, single line (byte-identical aliases)                                 | `plan`       |
+| `_simple-alone`           | 1     | Single line with `"Usage:"` label prefix (for solo use, no upstream)                  | `plan`       |
+| `_standard`               | 2     | Line 0 = token-plan, line 1 = context + tokens (no session line)                      | `plan`       |
+| `_standard-alone`         | 3     | Adds session info on line 0 (for solo use, no upstream chain)                         | `plan`       |
+| `_abundant`               | 4     | Line 0 = session + git (deep git workflow)                                            | `plan`       |
+| `_complete`               | 5     | Adds totals on line 3 (verbose — not recommended)                                     | `plan`       |
+| `_balance_simple`         | 1     | Default balance render (`"Balance: <balance>"`)                                       | `balance`    |
+| `_balance_simple-alone`   | 1     | Balance render with explicit `"Balance:"` label prefix (for solo use)                 | `balance`    |
+
+Usage:
+
+```jsonc
+{
+  "statuslineTemplate": ["m_template|_standard"],
+  // Or, for a DeepSeek (BALANCE) provider, the explicit form:
+  // "statuslineTemplate": ["m_template|_balance_simple|mode|balance"],
+}
+```
+
+The `_`-prefix marks a built-in preset — user-defined
+`lineTemplates.<_*>` entries that collide with a built-in key are
+rejected (warn + skip). Use a different key for your own presets.
+
+---
+
 ## 8. Quick example templates
 
 ```jsonc

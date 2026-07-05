@@ -73,76 +73,119 @@ const DEFAULT_LINE_TEMPLATE: {
 // time so nesting is impossible.
 //
 // Keys are user-chosen (e.g. `foo`, `myWorkload`). The renderer reads
-// from this registry when it encounters an `m_template:<key>` token
-// inside `statuslineTemplate`. `statuslineTemplate` (string form) does
-// NOT accept arbitrary `lineTemplates` keys — it accepts only the
-// fixed PLAN_PRESETS / BALANCE_PRESETS names. This split is intentional:
-// `statuslineTemplate` is "the rendered template", which the plugin
-// ships a curated set of presets for; `lineTemplates` is "the user's
-// personal reusable-fragment registry".
+// from this registry when it encounters an `m_template|<key>` token
+// inside `statuslineTemplate`. The legacy `PLAN_PRESETS` /
+// `BALANCE_PRESETS` tables (v0.4.0–v0.8.13) are GONE in v0.8.14 — the
+// seven plan + two balance presets are now first-class entries in
+// this registry with `_`-prefixed keys. Plan presets
+// (`_1line` / `_simple` / `_simple-alone` / `_standard` /
+// `_standard-alone` / `_abundant` / `_complete`) target TOKEN_PLAN
+// providers; balance presets (`_balance_simple` /
+// `_balance_simple-alone`) target BALANCE providers (DeepSeek). The
+// user references them via `m_template|_X` (with optional
+// `|mode|plan|balance` to constrain dispatch to one provider type —
+// `m_template` defaults to `mode:plan`).
+//
+// `_`-prefix = built-in preset, NOT overridable by user. The loader
+// rejects user `lineTemplates._*` entries whose name collides with a
+// built-in key (warn + skip). Use a different key for user-defined
+// presets.
 //
 // Default entries point at the same arrays DEFAULT_LINE_TEMPLATE uses,
 // so the legacy "plan" / "balance" key names continue to resolve for
-// backward-compatible lookups. Plugin presets are NOT auto-registered
-// here (the preset table lookups happen directly against PLAN_PRESETS
-// / BALANCE_PRESETS at statuslineTemplate-resolution time).
+// backward-compatible lookups via `m_template:plan` / `:balance`.
 type LineTemplates = Record<string, string[]>;
 
+
+// v0.8.14+ — `statuslineTemplate` is array-only. The legacy string-form
+// preset-name value (`"1line"`, `"standard"`, etc.) is auto-migrated
+// by `applyOverrides` to the equivalent `["m_template|_X"]` form with
+// a one-shot stderr warning. Use the array form directly to silence
+// the warning. The PLAN_PRESETS / BALANCE_PRESETS tables (v0.4.0–
+// v0.8.13) are gone — presets are now first-class entries in
+// `DEFAULT_LINE_TEMPLATES` with `_`-prefixed keys.
+type StatuslineTemplate = string[];
+
+// Default render = `["m_template|_1line"]`. The `_1line` body is the
+// byte-identical rename of the v0.4.0–v0.8.13 `PLAN_PRESETS["1line"]`
+// body, so existing users with no config.json see the same render
+// they did before v0.8.14 (TOKEN_PLAN provider — the default mode of
+// `m_template` matches).
+export const DEFAULT_STATUSLINE_TEMPLATE: StatuslineTemplate = ["m_template|_1line"];
+
+// v0.8.14 — Set of all legacy preset names (with the `_` prefix
+// stripped). `applyOverrides` uses this to detect legacy string-form
+// `statuslineTemplate` values and auto-migrate them to the equivalent
+// `["m_template|_X"]` form. `balance_simple` and `balance_simple-alone`
+// include the `_balance_` infix (e.g. `balance_simple` becomes the
+// `_balance_simple` key). Order matches the bodies above; do not add
+// names here without adding the corresponding key to
+// DEFAULT_LINE_TEMPLATES.
+export const LEGACY_PRESET_NAMES: ReadonlyArray<string> = [
+  "1line", "simple", "simple-alone", "standard",
+  "standard-alone", "abundant", "complete",
+  "balance_simple", "balance_simple-alone",
+];
+
+// v0.8.14 — built-in presets are now first-class entries in
+// DEFAULT_LINE_TEMPLATES with `_`-prefix. Bodies were migrated
+// byte-for-byte from the v0.4.0–v0.8.13 PLAN_PRESETS /
+// BALANCE_PRESETS tables; the bodies themselves are unchanged.
+//
+// Naming convention (carried over from the legacy PLAN_PRESETS /
+// BALANCE_PRESETS tables):
+//
+//   TOKEN_PLAN presets (default mode of `m_template` is "plan", so
+//   no `|mode|plan` arg needed):
+//     _1line / _simple       : tokenplan only, single line, compact
+//                              (_simple is an alias of _1line — same body)
+//     _simple-alone          : single line with "Usage:" label prefix
+//                              (for the user running this plugin as
+//                              the SOLE statusline — no upstream chain)
+//     _standard              : 2 lines (tokenplan on line 0, context
+//                              & token on line 1). Companion: this
+//                              plugin chains an upstream statusline
+//                              for session info.
+//     _standard-alone        : 3 lines (adds session on line 0).
+//     _abundant              : 4 lines (adds git on line 0).
+//     _complete              : 5 lines (adds totals on line 3).
+//
+//   BALANCE presets (use `m_template|_X|mode|balance` to constrain
+//   dispatch to BALANCE providers — the default `m_template` mode of
+//   "plan" would silently drop these on a TOKEN_PLAN provider):
+//     _balance_simple        : default balance render
+//                              ("Balance: <balance>")
+//     _balance_simple-alone  : balance render with explicit
+//                              "Balance:" label prefix for solo use.
+//
+// Per-module coloring is omitted from the presets (no `:color:` arg)
+// — the user can override per module by inlining the preset into
+// their own array if they want.
 export const DEFAULT_LINE_TEMPLATES: LineTemplates = {
+  // Legacy "plan" / "balance" entries — preserved for back-compat
+  // with pre-v0.8.14 configs that referenced `m_template:plan` /
+  // `:balance`. Bodies match DEFAULT_LINE_TEMPLATE (the `s_space +
+  // s_dot + s_space` composition that produces " · " between
+  // windows).
   plan: DEFAULT_LINE_TEMPLATE.plan,
   balance: DEFAULT_LINE_TEMPLATE.balance,
-};
 
-// v0.4.0+ — the template actually rendered by the plugin. String form
-// is resolved against the FIXED PLAN_PRESETS / BALANCE_PRESETS tables
-// (NOT against lineTemplates). Array form is a raw token list, which
-// may include the new `m_template` module that pulls chunks from
-// lineTemplates.
-type StatuslineTemplate = string | string[];
-
-// Default = the existing minimal plan preset. New users who do nothing
-// get the same byte-for-byte v0.2.16 default render that v0.3.x users
-// saw.
-export const DEFAULT_STATUSLINE_TEMPLATE: StatuslineTemplate = "1line";
-
-// v0.4.0+ — named presets for `lineTemplate.plan` / `lineTemplate.balance`.
-// Users can write `lineTemplate.plan: "standard"` instead of the full
-// token array; we resolve the string to the matching array at load time
-// so the renderer never sees strings (it always iterates over the
-// resolved array). Unknown preset names warn once + fall back to the
-// hardcoded default. Per-module coloring is omitted from the presets
-// (no :color: suffix) — the user can override per module by inlining
-// the preset into their own array if they want.
-//
-// Naming convention:
-//   - "1line" / "simple": tokenplan only, single line, compact
-//   - "simple-alone": same as "simple" but with an m_label prefix so
-//     the line reads as a labeled statusline when the user is NOT
-//     chaining another statusline upstream
-//   - "standard": 2 lines (line 1 = tokenplan, line 2 = context & token)
-//   - "standard-alone": adds session info on line 0; for use as the
-//     sole statusline (no upstream chain)
-//   - "abundant": 3 lines; adds git info on line 0
-//   - "complete": 4 lines; everything including line counts (not
-//     recommended — verbose)
-export const PLAN_PRESETS: Record<string, string[]> = {
-  // tokenplan only, single line, no label (assumes upstream chain)
-  "1line": [
+  // ----- Built-in presets (v0.8.14+) -----
+  _1line: [
     "m_modeLabel", "s_space",
     "m_window5h", "s_space", "m_countdown5h",
     "s_space", "s_dot", "s_space",
     "m_window7d", "s_space", "m_countdown7d",
   ],
-  // alias of "1line" — same shape, more discoverable name
-  simple: [
+  // alias of _1line — same shape, more discoverable name
+  _simple: [
     "m_modeLabel", "s_space",
     "m_window5h", "s_space", "m_countdown5h",
     "s_space", "s_dot", "s_space",
     "m_window7d", "s_space", "m_countdown7d",
   ],
-  // tokenplan only, single line, with m_label so the user sees
-  // "Usage: <5h> ..." explicitly when running solo (no upstream chain)
-  "simple-alone": [
+  // single line with "Usage:" label prefix
+  _simple_alone: [
     "m_label:Usage:color:yellow", "s_newline",
     "m_window5h:nulldrop:false", "s_space",
     "m_countdown5h:nulldrop:false",
@@ -150,9 +193,8 @@ export const PLAN_PRESETS: Record<string, string[]> = {
     "m_window7d:nulldrop:false", "s_space",
     "m_countdown7d:nulldrop:false",
   ],
-  // line 1 = tokenplan, line 2 = context & token. No session line.
-  // The "alone" variant assumes upstream chaining for session info.
-  standard: [
+  // 2 lines: line 0 = tokenplan, line 1 = context & token.
+  _standard: [
     "m_modeLabel", "s_space",
     "m_window5h", "s_space", "m_countdown5h",
     "s_space", "s_dot", "s_space",
@@ -166,10 +208,8 @@ export const PLAN_PRESETS: Record<string, string[]> = {
     "m_ctx:nulldrop:false", "s_space",
     "m_tokenHitRate:nulldrop:false",
   ],
-  // line 0 = session info, line 1 = tokenplan, line 2 = context & token.
-  // For the user running this plugin as the SOLE statusline (no
-  // upstream chain to fill the session slot).
-  "standard-alone": [
+  // 3 lines: line 0 = session, line 1 = tokenplan, line 2 = context.
+  _standard_alone: [
     "m_label:Session:color:yellow", "s_space",
     "m_session:nulldrop:false", "s_space",
     "m_model:nulldrop:false", "s_space",
@@ -191,9 +231,9 @@ export const PLAN_PRESETS: Record<string, string[]> = {
     "m_ctx:nulldrop:false", "s_space",
     "m_tokenHitRate:nulldrop:false",
   ],
-  // line 0 = session + git, line 1 = tokenplan, line 2 = context & token.
-  // For users with a deeper-git-workflow statusline.
-  abundant: [
+  // 4 lines: line 0 = session + git, line 1 = tokenplan, line 2 =
+  // context, line 3 = (none — see _complete for the 5-line form).
+  _abundant: [
     "m_label:Session:color:yellow", "s_space",
     "m_session:nulldrop:false", "s_space",
     "m_model:nulldrop:false", "s_space",
@@ -217,10 +257,9 @@ export const PLAN_PRESETS: Record<string, string[]> = {
     "m_ctx:nulldrop:false", "s_space",
     "m_tokenHitRate:nulldrop:false",
   ],
-  // 4 lines: adds line counts (m_linesAdded / m_linesRemoved) and
-  // totals (m_totalToken*) on a 4th line. NOT recommended — verbose;
-  // included for completeness.
-  complete: [
+  // 5 lines: line 0 = session + git, line 1 = tokenplan, line 2 =
+  // context, line 3 = totals. NOT recommended — verbose.
+  _complete: [
     "m_label:Session:color:yellow", "s_space",
     "m_session:nulldrop:false", "s_space",
     "m_model:nulldrop:false", "s_space",
@@ -251,17 +290,11 @@ export const PLAN_PRESETS: Record<string, string[]> = {
     "m_linesAdded:nulldrop:false", "s_space",
     "m_linesRemoved:nulldrop:false",
   ],
-};
-
-// v0.4.0+ — named presets for `lineTemplate.balance` (DeepSeek path).
-// Same string-or-array shape as plan. The balance path is much
-// simpler (one number, no windows), so only two presets.
-export const BALANCE_PRESETS: Record<string, string[]> = {
-  // Default — same as today's hardcoded `["m_modeLabel", "s_space", "m_balance"]`
-  simple: ["m_modeLabel", "s_space", "m_balance"],
-  // For users running this plugin as the sole statusline: prepend
-  // a "Balance:" label so the line reads as a labeled statusline.
-  "simple-alone": [
+  // ----- BALANCE presets (use |mode|balance when dispatching) -----
+  // Default balance render — "Balance: <balance>".
+  _balance_simple: ["m_modeLabel", "s_space", "m_balance"],
+  // Balance render with explicit "Balance:" label prefix for solo use.
+  _balance_simple_alone: [
     "m_label:Balance:color:yellow", "s_space",
     "m_balance:nulldrop:false",
   ],
@@ -533,13 +566,13 @@ const DEFAULT_CONFIG: {
   // v0.4.0+ — registry of reusable template fragments consumed by
   // the m_template module's first argument.
   lineTemplates: typeof DEFAULT_LINE_TEMPLATES;
-  // v0.4.0+ — the template actually rendered. String form = a fixed
-  // preset name from PLAN_PRESETS / BALANCE_PRESETS; array form = a
-  // raw token list (may include m_template). Widened to a union here
-  // because typeof on the default literal narrows too aggressively
-  // (the default is just "1line", so typeof becomes "1line" — too
-  // narrow to accept the array-form assignment in applyOverrides).
-  statuslineTemplate: string | string[];
+  // v0.8.14+ — array-only. The template actually rendered is
+  // always a `string[]` of tokens (may include `m_template|_X`
+  // references that pull chunks from `lineTemplates`). Legacy
+  // string-form values from v0.4.0–v0.8.13 configs are
+  // auto-migrated by `applyOverrides` to the equivalent
+  // `["m_template|_X"]` form with a one-shot warn.
+  statuslineTemplate: string[];
   tokenFormat: typeof DEFAULT_TOKEN_FORMAT;
   // Plugin version, populated at startup by index.ts from
   // .claude-plugin/plugin.json. The m_version display module reads
@@ -1258,6 +1291,25 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
       const ltm = lt as Record<string, unknown>;
       const merged: LineTemplates = { ...out.lineTemplates };
       for (const [name, value] of Object.entries(ltm)) {
+        // v0.8.14+ — `_`-prefix is reserved for built-in presets.
+        // Loader rejects user `lineTemplates._*` entries whose name
+        // collides with a key in DEFAULT_LINE_TEMPLATES (the built-in
+        // wins, user's entry is dropped with a warn). User-defined
+        // `_custom` entries that don't collide with a built-in key
+        // are preserved (the `_` is just a naming convention, not
+        // ownership). The built-in `_balance_simple`,
+        // `_balance_simple-alone`, `_1line`, etc. are protected.
+        if (
+          name.startsWith("_") &&
+          Object.prototype.hasOwnProperty.call(DEFAULT_LINE_TEMPLATES, name)
+        ) {
+          warn(
+            `lineTemplates.${name}: the \`_\`-prefix is reserved for ` +
+            `built-in presets; skipping user override. Use a ` +
+            `different key (e.g. drop the underscore).`,
+          );
+          continue;
+        }
         if (!Array.isArray(value)) {
           warn(`lineTemplates.${name} must be an array of strings; skipping`);
           continue;
@@ -1284,41 +1336,55 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
     }
   }
 
-  // v0.4.0+ — `statuslineTemplate` is the template the renderer
-  // actually walks. String form resolves to a fixed PLAN_PRESETS /
-  // BALANCE_PRESETS name (NOT to lineTemplates keys — those are
-  // reserved for the m_template module's first argument). Array
-  // form is a raw token list and may include m_template. Anything
-  // else warns and falls back to the default ("1line").
+  // v0.8.14+ — `statuslineTemplate` is array-only. The legacy
+  // string-form value (one of LEGACY_PRESET_NAMES) auto-migrates to
+  // the equivalent `["m_template|_X"]` form with a one-shot stderr
+  // warning. Users should write the array form directly to silence
+  // the warning. PLAN_PRESETS / BALANCE_PRESETS (v0.4.0–v0.8.13) are
+  // gone — presets are now first-class entries in DEFAULT_LINE_TEMPLATES
+  // with `_`-prefixed keys.
+  //
+  // Loader-side migration does NOT do provider-type-aware routing —
+  // `"1line"` always migrates to `["m_template|_1line"]` (which uses
+  // the default `m_template` mode of "plan" and silently drops on a
+  // BALANCE provider). Users on a balance provider must explicitly
+  // set `["m_template|_balance_simple|mode|balance"]`. Rationale:
+  // the project's "user is explicit, framework doesn't guess"
+  // philosophy — mirrors v0.8.13's literal-default labels.
   if ("statuslineTemplate" in raw) {
     const st = raw.statuslineTemplate;
     if (typeof st === "string") {
-      const isPlanPreset = Object.prototype.hasOwnProperty.call(
-        PLAN_PRESETS,
-        st,
-      );
-      const isBalancePreset = Object.prototype.hasOwnProperty.call(
-        BALANCE_PRESETS,
-        st,
-      );
-      if (isPlanPreset || isBalancePreset) {
-        out.statuslineTemplate = st;
+      // Bare name lookup against LEGACY_PRESET_NAMES. A bare name
+      // is migrated to `["m_template|<_name>"]` (the `_` prefix is
+      // applied here, since user configs wrote the un-prefixed name).
+      // `balance_simple` / `balance_simple-alone` map to the
+      // `_balance_simple` / `_balance_simple-alone` entries which
+      // include the `_balance_` infix in the key.
+      if (LEGACY_PRESET_NAMES.includes(st)) {
+        warn(
+          `statuslineTemplate: "${st}" is a v0.8.x preset name; ` +
+          `auto-migrating to ["m_template|_${st}"]. Write the array ` +
+          `form directly to silence this warning.`,
+        );
+        out.statuslineTemplate = [`m_template|_${st}`];
       } else {
         warn(
           `statuslineTemplate "${st}" is not a known preset ` +
-          `(plan: ${Object.keys(PLAN_PRESETS).join(", ")}; ` +
-          `balance: ${Object.keys(BALANCE_PRESETS).join(", ")}); using default`,
+          `(valid: ${LEGACY_PRESET_NAMES.join(", ")}); ` +
+          `using default ["m_template|_1line"]`,
         );
+        out.statuslineTemplate = DEFAULT_STATUSLINE_TEMPLATE.slice();
       }
     } else if (Array.isArray(st)) {
       const cleaned: string[] = [];
       for (const item of st) {
         if (typeof item === "string") cleaned.push(item);
       }
-      out.statuslineTemplate = cleaned.length > 0 ? cleaned : "1line";
+      out.statuslineTemplate =
+        cleaned.length > 0 ? cleaned : DEFAULT_STATUSLINE_TEMPLATE.slice();
     } else {
       warn(
-        "statuslineTemplate must be a preset string or string[]; using default",
+        "statuslineTemplate must be a string[]; using default",
       );
     }
   }
