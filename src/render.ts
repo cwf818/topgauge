@@ -1913,38 +1913,51 @@ const MODULES: Record<string, Module> = {
   // "all"}) with TTL=300s. sinceMs is derived but not part of the
   // key, capping the cache at 12 entries.
   m_sumTokenIn: (c) => {
+    // v0.8.7+ — bare m_sum* reads passThrough from ctx (set by an
+    // outer `m_template|<key>|window|...|model|...|align|...`)
+    // so the outer axes reach the inner modules without per-token
+    // re-declaration. v0.8.14+ — zero-row aggregate renders the
+    // "in:n/a" placeholder (was: drop) to mirror m_accTokenIn's
+    // placeholderAcc. Empty filter (bad window key) still drops
+    // (NOT placeholder — the whole axis is unusable).
     const filter = parseWindowScope(c, c.passThrough ?? {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
-    return agg.rows === 0 ? null : `${labelFor("in")}${formatCompactToken(agg.sumIn)}`;
+    if (agg.rows === 0) return placeholderBare("m_sumTokenIn", c);
+    return `${labelFor("in")}${formatCompactToken(agg.sumIn)}`;
   },
   m_sumTokenOut: (c) => {
+    // v0.8.7+ — bare m_sum* reads c.passThrough (forwarded by an outer m_template); v0.8.14+ — zero-row renders placeholder (was: drop)
     const filter = parseWindowScope(c, c.passThrough ?? {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
-    return agg.rows === 0 ? null : `${labelFor("out")}${formatCompactToken(agg.sumOut)}`;
+    if (agg.rows === 0) return placeholderBare("m_sumTokenOut", c);
+    return `${labelFor("out")}${formatCompactToken(agg.sumOut)}`;
   },
   m_sumTokenCachedIn: (c) => {
+    // v0.8.7+ — bare m_sum* reads c.passThrough (forwarded by an outer m_template); v0.8.14+ — zero-row renders placeholder (was: drop)
     const filter = parseWindowScope(c, c.passThrough ?? {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
-    if (agg.rows === 0) return null;
+    if (agg.rows === 0) return placeholderBare("m_sumTokenCachedIn", c);
     // v0.8.13+ — non-zero, non-null default tint (brown) on
     // positive sums; value=0 stays plain (value-zero rule).
     return wrapValueDefault("m_sumTokenCachedIn", agg.sumCached, `${labelFor("cacheIn")}${formatCompactToken(agg.sumCached)}`, undefined);
   },
   m_sumTokenTotalIn: (c) => {
+    // v0.8.7+ — bare m_sum* reads c.passThrough (forwarded by an outer m_template); v0.8.14+ — zero-row renders placeholder (was: drop)
     const filter = parseWindowScope(c, c.passThrough ?? {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
-    if (agg.rows === 0) return null;
+    if (agg.rows === 0) return placeholderBare("m_sumTokenTotalIn", c);
     return wrapValueDefault("m_sumTokenTotalIn", agg.sumTotalIn, `${labelFor("totalIn")}${formatCompactToken(agg.sumTotalIn)}`, undefined);
   },
   m_sumApiMs: (c) => {
+    // v0.8.7+ — bare m_sum* reads c.passThrough (forwarded by an outer m_template); v0.8.14+ — zero-row renders placeholder (was: drop)
     const filter = parseWindowScope(c, c.passThrough ?? {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
-    if (agg.rows === 0) return null;
+    if (agg.rows === 0) return placeholderBare("m_sumApiMs", c);
     // v0.8.13+ — prefix routes through labelFor(labels.labelApi);
     // default "api:" preserves the v0.8.x literal.
     return wrapValueDefault("m_sumApiMs", agg.sumApiMs, `${labelFor("apiMs")}${formatRemainingMs(agg.sumApiMs)}`, undefined);
@@ -1958,19 +1971,21 @@ const MODULES: Record<string, Module> = {
   // m_avg* names are REMOVED with no alias (consistent with the
   // v0.8.0 major-bump).
   m_sumTokenHitRate: (c) => {
+    // v0.8.7+ — bare m_sum* reads c.passThrough (forwarded by an outer m_template); v0.8.14+ — zero-row renders placeholder (was: drop)
     const filter = parseWindowScope(c, c.passThrough ?? {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
     const denom = agg.sumIn + agg.sumCached;
-    if (agg.rows === 0 || denom === 0) return null;
+    if (agg.rows === 0 || denom === 0) return placeholderBare("m_sumTokenHitRate", c);
     const pct = (agg.sumCached / denom) * 100;
     return `${cacheHitColor(pct)}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;
   },
   m_sumTokenInSpeed: (c) => {
+    // v0.8.7+ — bare m_sum* reads c.passThrough (forwarded by an outer m_template); v0.8.14+ — zero-row renders placeholder (was: drop)
     const filter = parseWindowScope(c, c.passThrough ?? {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
-    if (agg.sumApiMs === 0) return null;
+    if (agg.sumApiMs === 0) return placeholderBare("m_sumTokenInSpeed", c);
     const tps = (agg.sumIn / agg.sumApiMs) * 1000;
     // v0.8.13+ — wrap with the 5-band scale color
     // (DEFAULT_SPEED_SCALE_BANDS.in). Matches the m_tokenInSpeed
@@ -1982,10 +1997,11 @@ const MODULES: Record<string, Module> = {
     return `${color}${labelFor("inSpeed")}${formatSpeed(tps)}${RESET}`;
   },
   m_sumTokenOutSpeed: (c) => {
+    // v0.8.7+ — bare m_sum* reads c.passThrough (forwarded by an outer m_template); v0.8.14+ — zero-row renders placeholder (was: drop)
     const filter = parseWindowScope(c, c.passThrough ?? {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
-    if (agg.sumApiMs === 0) return null;
+    if (agg.sumApiMs === 0) return placeholderBare("m_sumTokenOutSpeed", c);
     const tps = (agg.sumOut / agg.sumApiMs) * 1000;
     // v0.8.13+ — prefix routes through labelFor(labels.labelOutSpeed);
     // default "out:" preserves today's literal.
@@ -1999,10 +2015,11 @@ const MODULES: Record<string, Module> = {
   // m_sum prefix because the rendering path is the same
   // (windowed cross-project JSONL scan → single cached aggregate).
   m_sumApiCalls: (c) => {
+    // v0.8.7+ — bare m_sum* reads c.passThrough (forwarded by an outer m_template); v0.8.14+ — zero-row renders placeholder (was: drop)
     const filter = parseWindowScope(c, c.passThrough ?? {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
-    if (agg.calls === 0) return null;
+    if (agg.calls === 0) return placeholderBare("m_sumApiCalls", c);
     // v0.8.13+ — non-zero, non-null default tint (cyan) on
     // positive counts; value=0 short-circuits to null above.
     // v0.8.13+ — prefix routes through labelFor(labels.labelApiCalls);
@@ -3187,7 +3204,11 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   // (labels.labelApi / labels.labelApiCalls); defaults remain
   // "api:" / "calls:" so existing renders stay byte-identical.
   m_sumApiMs: placeholderLabelOr("apiMs"),
-  m_sumTokenHitRate: placeholderNA("hit:"),
+  // v0.8.14 — ratio gets the `%` suffix to mirror m_accTokenHitRate's
+  // `hit:n/a%` placeholderAcc shape (was `hit:n/a`; the % was
+  // missing in the v0.8.13 PLACEHOLDERS entry despite the inline
+  // comment claiming otherwise).
+  m_sumTokenHitRate: (_p, _c) => "hit:n/a%",
   // v0.8.13+ — speed axes get their own labelFor slot
   // (labels.labelInSpeed / labels.labelOutSpeed) so a user can
   // rename speed prefixes independently of the in/out token-axis

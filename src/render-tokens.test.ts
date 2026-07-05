@@ -3157,6 +3157,161 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
     const out = renderTemplate(["m_template|foo"], ctxFor(null, { pct: 10 })).join("\n");
     assert.match(strip(out), /10%/);
   });
+
+  it("m_template|stat|window|all forwards window into bare m_sumTokenIn (passthrough axis reach)", () => {
+    // v0.8.14 doc test — `m_template|<key>|window|<w>|model|<m>|align|<a>`
+    // must forward window/model/align into a BARE m_sum* child.
+    //
+    // Since v0.8.7 (commit 9549770) the bare MODULES path reads
+    // `c.passThrough ?? {}` for its parseWindowScope call, so the
+    // passthrough feature is ALREADY wired for m_sum* — this test
+    // exists as a regression guard so a future refactor that
+    // drops the `?? {}` to a hard `{}` (which would silently
+    // break passthrough) is caught.
+    //
+    // Diagnostic strategy: pick a window value that DIFFERS from
+    // the default `5h`. We use `window|all` so a recent-row-only
+    // seed (1h old) produces "in:100" under window=5h AND a
+    // different sum (here, both rows) under window=all — except
+    // the rows are co-located to make the comparison
+    // unambiguous: 2 rows totalling 300 across window=all vs 1
+    // row totalling 100 across window=5h. If the passthrough
+    // breaks, the renderer falls back to the default 5h and
+    // returns 100 (not 300).
+    //
+    // NOTE: window=all also turns OFF align-reset (parseWindowScope
+    // line 2452 returns alignActive:false), so the test doesn't
+    // need to inject ctx.fiveHour.resetStartAt.
+    const stateRootDir = join(_tmpDir, "sum-pt-all");
+    setStateRoot(() => stateRootDir);
+    const projHash = "d--sum-pt";
+    const sess = "sess-sum-pt";
+    const cwd = "D:\\sum-pt";
+    const sessionFile = join(stateRootDir, projHash, `${sess}.jsonl`);
+    mkdirSync(dirname(sessionFile), { recursive: true });
+    const now = 1_700_000_000_000;
+    // Two rows: one recent-1h (in: 100), one 10h-old (in: 200).
+    // With window=5h → only the 100 row → sumIn=100 → "in:100".
+    // With window=all → both → sumIn=300 → "in:300".
+    writeFileSync(
+      sessionFile,
+      [
+        JSON.stringify({ at: now - 3600_000, totalIn: 100, totalOut: 0, in: 100, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 0, apiMs: 0 }),
+        JSON.stringify({ at: now - 10 * 3600_000, totalIn: 200, totalOut: 0, in: 200, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 0, apiMs: 0 }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    __resetForTest({
+      lineTemplates: { stat: ["m_sumTokenIn"] },
+    });
+    const tokens = fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" });
+    const outAll = renderTemplate(
+      ["m_template|stat|window|all"],
+      { ...ctxFor(tokens), nowMs: now },
+    ).join("\n");
+    // v0.8.7+ passthrough: window=all is forwarded into the bare
+    // m_sumTokenIn → both rows counted → "in:300".
+    assert.equal(strip(outAll), "in:300",
+      `expected window=all passthrough to include both rows (sum=300); ` +
+      `if this returns 100 the bare MODULES path is reading params from its own ` +
+      `(empty) params object instead of c.passThrough — v0.8.7 regression. ` +
+      `Actual: ${JSON.stringify(strip(outAll))}`);
+
+    // Control: bare m_template|stat (no args) → defaults to
+    // window=5h → recent row alone → "in:100". This is the
+    // expected behavior, and importantly it MUST still match
+    // after the v0.8.14 placeholder change for consistency.
+    const outDefault = renderTemplate(
+      ["m_template|stat"],
+      { ...ctxFor(tokens), nowMs: now },
+    ).join("\n");
+    assert.equal(strip(outDefault), "in:100",
+      `expected default window=5h to count only the recent row, got: ${JSON.stringify(strip(outDefault))}`);
+
+    // Sanity: m_template|stat|window|5h (explicit passthrough
+    // matching the default) must match the default control.
+    const out5h = renderTemplate(
+      ["m_template|stat|window|5h"],
+      { ...ctxFor(tokens), nowMs: now },
+    ).join("\n");
+    assert.equal(strip(out5h), "in:100",
+      `expected explicit window=5h passthrough to match default, got: ${JSON.stringify(strip(out5h))}`);
+  });
+
+  it("m_template|stat|model|all forwards model into bare m_sumTokenIn", () => {
+    // Parallel to the window test above but for the model axis.
+    // Seed 2 rows: one for the active model (MiniMax-M3) and one
+    // for a different model (M2.7). Bare m_sumTokenIn defaults
+    // to model=active → only MiniMax-M3 row → sumIn=100. The
+    // forwarded `model|all` must include both → sumIn=300.
+    const stateRootDir = join(_tmpDir, "sum-pt-model");
+    setStateRoot(() => stateRootDir);
+    const projHash = "d--sum-pt-m";
+    const sess = "sess-sum-pt-m";
+    const cwd = "D:\\sum-pt-m";
+    const sessionFile = join(stateRootDir, projHash, `${sess}.jsonl`);
+    mkdirSync(dirname(sessionFile), { recursive: true });
+    const now = 1_700_000_000_000;
+    writeFileSync(
+      sessionFile,
+      [
+        JSON.stringify({ at: now - 60_000, totalIn: 100, totalOut: 0, in: 100, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 0, apiMs: 0 }),
+        JSON.stringify({ at: now - 60_000, totalIn: 200, totalOut: 0, in: 200, out: 0, cacheIn: 0, cacheCreation: 0, model: "OtherModel", totalApiMs: 0, apiMs: 0 }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    __resetForTest({
+      lineTemplates: { stat: ["m_sumTokenIn"] },
+    });
+    const tokens = fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" });
+    const out = renderTemplate(
+      ["m_template|stat|model|all"],
+      { ...ctxFor(tokens), nowMs: now },
+    ).join("\n");
+    assert.equal(strip(out), "in:300",
+      `expected model|all passthrough to include both models (sum=300), ` +
+      `got: ${JSON.stringify(strip(out))}`);
+  });
+
+  it("m_template — bare key with NO inner args (default 5h/active/true) matches the user's reported case", () => {
+    // The user reported `m_template|tokens_stat|window|5h` doesn't
+    // appear to do anything different from `m_template|tokens_stat`
+    // alone. That's the EXPECTED behavior — window=5h IS the
+    // default. This test is a diagnostic guard confirming the
+    // two produce identical output so future readers don't
+    // mistake the "default equals default" observation for a bug.
+    const stateRootDir = join(_tmpDir, "sum-pt-default");
+    setStateRoot(() => stateRootDir);
+    const projHash = "d--sum-pt-d";
+    const sess = "sess-sum-pt-d";
+    const cwd = "D:\\sum-pt-d";
+    const sessionFile = join(stateRootDir, projHash, `${sess}.jsonl`);
+    mkdirSync(dirname(sessionFile), { recursive: true });
+    const now = 1_700_000_000_000;
+    writeFileSync(
+      sessionFile,
+      JSON.stringify({ at: now - 60_000, totalIn: 42, totalOut: 0, in: 42, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 0, apiMs: 0 }) + "\n",
+      "utf8",
+    );
+    __resetForTest({
+      lineTemplates: { stat: ["m_sumTokenIn"] },
+    });
+    const tokens = fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" });
+    const outBare = renderTemplate(["m_template|stat"], { ...ctxFor(tokens), nowMs: now }).join("\n");
+    const outExplicit5h = renderTemplate(["m_template|stat|window|5h"], { ...ctxFor(tokens), nowMs: now }).join("\n");
+    const outExplicitActive = renderTemplate(["m_template|stat|model|active"], { ...ctxFor(tokens), nowMs: now }).join("\n");
+    const outAll3 = renderTemplate(
+      ["m_template|stat|window|5h|model|active|align|true"],
+      { ...ctxFor(tokens), nowMs: now },
+    ).join("\n");
+    assert.equal(strip(outBare), "in:42");
+    assert.equal(strip(outExplicit5h), strip(outBare),
+      `expected window|5h to match bare default; user reports "passthrough doesn't work" — this guards against future drift`);
+    assert.equal(strip(outExplicitActive), strip(outBare),
+      `expected model|active to match bare default; same guard`);
+    assert.equal(strip(outAll3), strip(outBare),
+      `expected all three default axes to match bare default; same guard`);
+  });
 });
 
 // v0.4.x+ — Per-Project cache isolation. Two snapshots with the
@@ -4045,10 +4200,10 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
   // ----- parseDhms / parseWindowScope basics -----
 
   it("m_sumTokenIn with no samples anywhere → 'in:n/a' placeholder", () => {
-    // Empty state root → no rows → agg.rows=0. The bare
-    // MODULES path returns null (drops the chunk); the inline
-    // form with the default nulldrop:false renders the
-    // placeholder.
+    // Empty state root → no rows → agg.rows=0. Both the bare
+    // MODULES path and the inline form render the placeholder
+    // (v0.8.14+ — bare form now mirrors m_acc* / m_accTokenIn's
+    // placeholderAcc behavior; use |nulldrop|true to opt out).
     setStateRoot(() => join(_tmpDir, "sum-empty"));
     const out = renderTemplate(
       ["m_sumTokenIn|nulldrop|false"],
@@ -4293,9 +4448,12 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
         nowMs: now,
       },
     ).join("\n");
-    // mtime pre-filter drops the whole file → rows=0 → module
-    // drops (null) → renders empty.
-    assert.equal(out, "");
+    // mtime pre-filter drops the whole file → rows=0 → bare
+    // module renders the "in:n/a" placeholder wrapped in
+    // STALE_COLOR (v0.8.14+ — mirrors m_accTokenIn's
+    // placeholderAcc behavior). The inline form
+    // `m_sumTokenIn|nulldrop|true` is the opt-out.
+    assert.equal(strip(out), "in:n/a");
   });
 
   it("m_sumTokenInSpeed| sum(in) / sum(apiMs) * 1000 in t/s", () => {
@@ -4395,9 +4553,13 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     assert.equal(strip(out), "calls:2");
   });
 
-  it("m_sumApiCalls| no rows in window → drops (renders empty)", () => {
-    // Isolate stateRoot to a fresh tmp subdir so we don't pick up
-    // the user's real on-disk samples (289+ rows in production).
+  it("m_sumApiCalls| no rows in window → 'calls:n/a' placeholder", () => {
+    // v0.8.14+ — bare m_sum* mirrors m_acc*: empty aggregate
+    // renders the STALE_COLOR-wrapped "calls:n/a" placeholder
+    // (was: drop / render empty). The inline form
+    // `m_sumApiCalls|nulldrop|true` is the opt-out. Isolates
+    // stateRoot to a fresh tmp subdir so we don't pick up the
+    // user's real on-disk samples (289+ rows in production).
     const stateRootDir = join(_tmpDir, "avg-fixture-apicalls-empty");
     setStateRoot(() => stateRootDir);
     const out = renderTemplate(
@@ -4410,7 +4572,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
         }),
       ),
     ).join("\n");
-    assert.equal(out, "");
+    assert.equal(strip(out), "calls:n/a");
   });
 
   it("m_sumApiCalls| inline args (|window|7d, |model|all) are honored", () => {
