@@ -22,22 +22,12 @@
 //      `renderProviderLine` → `ctx.quoteBodies`, and the sync
 //      renderer reads it via `ctx.quoteBodies.get(address)`.
 
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { openSync, readFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as cache from "./cache.ts";
 import { configStore } from "./config.ts";
 import * as diagnostics from "./diagnostics.ts";
-
-// POSIX-style shell quoting for an arbitrary URL string, used to
-// safe-pass the address to `curl -sSf --max-time 5 …`. Wraps the
-// value in single quotes, escaping any embedded single quote as
-// the standard `'\''` sequence. Sufficient for the URL grammar
-// (which forbids shell metacharacters in the host / path), so we
-// don't need fancier escaping.
-function shellQuote(s: string): string {
-  return `'${s.replace(/'/g, "'\\''")}'`;
-}
 
 // v0.8.21+ — fixed cache key. Shared across processes / projects
 // so all readers see the same body. No per-project prefix.
@@ -89,14 +79,26 @@ function fetchOne(
   // filename: `<tmpdir>/topgauge-cc-curl-<pid>.log` — unique per
   // process so concurrent ticks (rare but possible) don't clobber
   // each other's stderr. Cleaned in catch / finally.
+  //
+  // v0.8.21 — use execFileSync("curl", argvArray) instead of
+  // execSync("curl … <shellQuote(addr)>"). Node spawns curl
+  // directly without an intermediate shell, so the URL arg is
+  // passed verbatim — no risk of cmd.exe treating the single
+  // quotes as a string wrapper (Windows would silently strip
+  // them) or MSYS2 path-mangling the URL. argv length is also
+  // uncapped by the shell's MAX_ARG_STRS limit on old Windows.
   const stderrPath = `${tmpdir()}/topgauge-cc-curl-${process.pid}.log`;
   let body: string;
   try {
-    body = execSync(`curl -sSf --max-time 5 -S ${shellQuote(address)}`, {
-      encoding: "utf8",
-      windowsHide: true,
-      stdio: ["ignore", "pipe", openSync(stderrPath, "w")],
-    });
+    body = execFileSync(
+      "curl",
+      ["-sSf", "--max-time", "5", "-S", address],
+      {
+        encoding: "utf8",
+        windowsHide: true,
+        stdio: ["ignore", "pipe", openSync(stderrPath, "w")],
+      },
+    );
     // Success — drop the temp file quietly.
     try { unlinkSync(stderrPath); } catch { /* benign */ }
   } catch (e) {
