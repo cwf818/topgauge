@@ -37,6 +37,13 @@ import {
   projectHash,
 } from "./status-store.ts";
 import * as statusStore from "./status-store.ts";
+import {
+  __resetStatCacheForTest,
+  setStatCacheAtForTest,
+  setStatCacheForTest,
+  setStatCachePathResolver,
+} from "./status-store.ts";
+import * as cacheMod from "./cache.ts";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -127,6 +134,12 @@ beforeEach(() => {
   // too so the cache module's leftover disk shadow doesn't leak
   // across tests.
   setStatusPathResolver(() => join(_tmpDir, "status.json"));
+  // v0.8.16 — stat cache (m_sum* + m_statTtlStatus backing) lives
+  // in cache.stat.json; tests must point that resolver at a tmp
+  // file so the cache module's leftover disk shadow doesn't leak
+  // across tests.
+  setStatCachePathResolver(() => join(_tmpDir, "cache.stat.json"));
+  __resetStatCacheForTest();
   resetCacheForTest(); // clears in-memory Map + lazy-load guard
   resetStatusForTest(); // clears status-store in-memory cache
   // v0.9.x — render functions now read/write through tick-state;
@@ -2869,15 +2882,17 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
 
 // ----- v0.4.0+ m_template module -----
 //
-// Direct coverage of `m_template:<key>[:mode:<plan|balance>]` against
+// Direct coverage of `m_template:<key>[:type:<plan|balance>]` against
 // `renderTemplate` (no provider dispatch — ctx.providerType is
 // set explicitly). The end-to-end "minimax renders the chunk" path
 // is in lineTemplate.test.ts; this file exercises the renderer in
 // isolation so a missing-key warn is easier to capture.
 //
-// The inline `:mode:` arg keeps the OLD name for back-compat with
-// existing config.json files; the comparison target inside the
-// renderer is now ctx.providerType (renamed from providerModeKey).
+// v0.8.15+ — the inline intrinsic arg is renamed to `type` (was
+// `mode`); the legacy `mode` arg is still accepted for back-compat.
+// The renderer-side check prefers `type` when both are present on
+// the same token. The comparison target inside the renderer is
+// ctx.providerType (a TYPE discriminator, not a mode).
 describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
   beforeEach(() => __resetForTest());
 
@@ -2891,31 +2906,140 @@ describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
     assert.match(out.map(strip).join("\n"), /42%/);
   });
 
-  it("m_template|foo with ctx.providerType='balance' wants mode|plan → drops", () => {
+  it("m_template|foo with ctx.providerType='balance' wants type|plan → drops", () => {
     __resetForTest({
       lineTemplates: { foo: ["m_window5h"] },
     });
     const out = renderTemplate(
-      ["m_template|foo|mode|plan"],
+      ["m_template|foo|type|plan"],
       ctxFor(null, null, null, "balance"),
     );
-    // Dropped because providerType=balance but mode wants plan.
+    // Dropped because providerType=balance but type wants plan.
     // The dropped chunk leaves an empty array (separators are also
     // skipped when their neighbors drop).
     assert.deepEqual(out, []);
   });
 
-  it("m_template|foo with ctx.providerType='plan' wants mode|plan → renders", () => {
+  it("m_template|foo with ctx.providerType='plan' wants type|plan → renders", () => {
     __resetForTest({
       lineTemplates: { foo: ["m_window5h"] },
     });
     const out = renderTemplate(
-      ["m_template|foo|mode|plan"],
+      ["m_template|foo|type|plan"],
       ctxFor(null, { pct: 42 }, null, "plan"),
     );
     assert.match(out.map(strip).join("\n"), /42%/);
   });
 
+  it("m_template|foo|mode|plan (legacy mode arg, v0.8.15+ back-compat) → same as type|plan", () => {
+    // v0.8.15 — legacy `mode` arg is still accepted (same resolver,
+    // same semantics). Pre-v0.8.15 configs that wrote
+    // `m_template|<key>|mode|plan` keep rendering byte-for-byte.
+    __resetForTest({
+      lineTemplates: { foo: ["m_window5h"] },
+    });
+    const outLegacy = renderTemplate(
+      ["m_template|foo|mode|plan"],
+      ctxFor(null, { pct: 42 }, null, "plan"),
+    );
+    const outType = renderTemplate(
+      ["m_template|foo|type|plan"],
+      ctxFor(null, { pct: 42 }, null, "plan"),
+    );
+    assert.equal(
+      outLegacy.map(strip).join("\n"),
+      outType.map(strip).join("\n"),
+      "legacy mode|plan must render identically to type|plan",
+    );
+    assert.match(outLegacy.map(strip).join("\n"), /42%/);
+  });
+
+  it("m_template|foo|type|X|mode|Y (both present) — type wins (recommendation: prefer type)", () => {
+    // v0.8.15+ — when both `type` and `mode` are present on the
+    // same token, the renderer-side check prefers `type`. A user
+    // who accidentally writes both has a typo in one of them;
+    // preferring the newer name keeps the renderer consistent.
+    __resetForTest({
+      lineTemplates: { foo: ["m_window5h"] },
+    });
+    // type=plan, mode=balance → plan wins (m_window5h renders
+    // because the inner ctx.providerType is "plan" which matches).
+    const outPlanWins = renderTemplate(
+      ["m_template|foo|type|plan|mode|balance"],
+      ctxFor(null, { pct: 42 }, null, "plan"),
+    );
+    assert.match(outPlanWins.map(strip).join("\n"), /42%/);
+    // type=balance, mode=plan → balance wins (the plan context
+    // is filtered out, chunk drops).
+    const outBalanceWins = renderTemplate(
+      ["m_template|foo|type|balance|mode|plan"],
+      ctxFor(null, null, null, "plan"),
+    );
+    assert.deepEqual(outBalanceWins, []);
+  });
+
+  it("m_template|foo — bare key (no type/mode) defaults to type=plan", () => {
+    // Both `type` and `mode` are absent → renderer falls back to
+    // "plan" (the default intrinsic value). A bare key in a
+    // BALANCE ctx drops silently, same behavior as the legacy
+    // bare-key path.
+    __resetForTest({
+      lineTemplates: { foo: ["m_window5h"] },
+    });
+    const outPlan = renderTemplate(
+      ["m_template|foo"],
+      ctxFor(null, { pct: 42 }, null, "plan"),
+    );
+    assert.match(outPlan.map(strip).join("\n"), /42%/);
+    const outBalance = renderTemplate(
+      ["m_template|foo"],
+      ctxFor(null, null, null, "balance"),
+    );
+    assert.deepEqual(outBalance, []);
+  });
+
+  it("m_template — passthrough excludes both `type` and `mode` (intrinsics never leak)", () => {
+    // v0.8.15+ — the passThrough build loops over Object.entries
+    // and skips every key in the intrinsic-exclusion set:
+    // ["key", "type", "mode"]. Confirming that an intrinsic arg
+    // does NOT get pushed to inner modules as `passThrough.type`
+    // (which would shadow `ctx.providerType` semantics and confuse
+    // inner modules that look at the type field by accident).
+    //
+    // Mechanism: render `m_template|<key>|type|plan` (intrinsic
+    // consumed) and `m_template|<key>` (bare). Both must produce
+    // byte-identical output, proving `type` had no effect on the
+    // inner module. The inner m_session has no `sessionName` so
+    // it renders its `n/a` placeholder in both cases.
+    __resetForTest({
+      lineTemplates: {
+        probe: ["m_session"],
+      },
+    });
+    const outWithType = renderTemplate(
+      ["m_template|probe|type|plan"],
+      ctxFor(fakeSnapshot(), null, null, "plan"),
+    );
+    const outBare = renderTemplate(
+      ["m_template|probe"],
+      ctxFor(fakeSnapshot(), null, null, "plan"),
+    );
+    assert.equal(
+      outWithType.map(strip).join("\n"),
+      outBare.map(strip).join("\n"),
+      "m_template|probe|type|plan must render identically to m_template|probe (type is consumed by m_template, not forwarded)",
+    );
+    // Same identity check for the legacy `mode` alias.
+    const outWithMode = renderTemplate(
+      ["m_template|probe|mode|plan"],
+      ctxFor(fakeSnapshot(), null, null, "plan"),
+    );
+    assert.equal(
+      outWithMode.map(strip).join("\n"),
+      outBare.map(strip).join("\n"),
+      "m_template|probe|mode|plan must render identically to m_template|probe (mode is also consumed by m_template)",
+    );
+  });
   it("m_template|nonexistent (missing key) warns and drops", () => {
     let captured = "";
     const err = process.stderr as unknown as { write: (chunk: string) => boolean };
@@ -5192,5 +5316,153 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
       assert.equal(prov.accApiMs, 35_000,
         "model-slot accApiMs accumulates deltaApiMs: 15_000 (tick1) + 20_000 (tick2) = 35_000");
     });
+  });
+});
+
+// ----- v0.8.16 — m_cacheTtlStatus + m_statTtlStatus -----
+//
+// Both modules display the TTL of their respective backing cache
+// (cache.ts response cache + status-store stat cache) as a single
+// character from the palette █▇▆▅▄▃▂▁, colored green (max TTL) →
+// red (min TTL) by a 5-band scale. Missing entry / no-ttlMs → gray
+// ▆ placeholder wrapped in STALE_COLOR.
+
+describe("render — m_cacheTtlStatus", () => {
+  it("no entry → STALE_COLOR-wrapped '▆' placeholder", () => {
+    resetCacheForTest();
+    const out = renderTemplate(["m_cacheTtlStatus"], ctxFor(fakeSnapshot())).join("");
+    assert.equal(strip(out), "▆");
+    assert.ok(out.includes(STALE), `expected STALE SGR, got: ${JSON.stringify(out)}`);
+  });
+
+  it("fresh entry (age=0 of 60s ttl) → '█' in brightGreen", () => {
+    resetCacheForTest();
+    cacheMod.set("minimax", { x: 1 }, 60_000);
+    const out = renderTemplate(["m_cacheTtlStatus"], ctxFor(fakeSnapshot())).join("");
+    assert.equal(strip(out), "█");
+    assert.ok(out.includes(GREEN), `expected brightGreen SGR, got: ${JSON.stringify(out)}`);
+  });
+
+  it("half-aged entry (age=30s of 60s) → middle char '▄' in yellow", () => {
+    resetCacheForTest();
+    cacheMod.set("minimax", { x: 1 }, 60_000);
+    // Backdate `at` so ageMs reads as 30s on render (no Date.now
+    // override — the render path uses real wall-clock time, so
+    // backdating the entry is enough).
+    (cacheMod as any).store.set("minimax", {
+      at: Date.now() - 30_000,
+      value: { x: 1 },
+      ttlMs: 60_000,
+    });
+    const out = renderTemplate(["m_cacheTtlStatus"], ctxFor(fakeSnapshot())).join("");
+    assert.equal(strip(out), "▄");
+    assert.ok(out.includes(YELLOW), `expected yellow SGR, got: ${JSON.stringify(out)}`);
+  });
+
+  it("expired entry (age=90s of 60s) → '▁' in red", () => {
+    resetCacheForTest();
+    cacheMod.set("minimax", { x: 1 }, 60_000);
+    // Backdate to age=90s (> ttlMs=60s) so the entry is past TTL.
+    // Render should still emit a glyph (TTL-IGNORING peek) — the
+    // red char reflects remainingFraction ≈ (60 - 90) / 60 < 0.
+    (cacheMod as any).store.set("minimax", {
+      at: Date.now() - 90_000,
+      value: { x: 1 },
+      ttlMs: 60_000,
+    });
+    const out = renderTemplate(["m_cacheTtlStatus"], ctxFor(fakeSnapshot())).join("");
+    assert.equal(strip(out), "▁");
+    assert.ok(out.includes(RED), `expected red SGR, got: ${JSON.stringify(out)}`);
+  });
+
+  it("inline m_cacheTtlStatus|color|orange overrides scale", () => {
+    resetCacheForTest();
+    cacheMod.set("minimax", { x: 1 }, 60_000);
+    const out = renderTemplate(
+      ["m_cacheTtlStatus|color|orange"],
+      ctxFor(fakeSnapshot()),
+    ).join("");
+    assert.equal(strip(out), "█");
+    assert.ok(out.includes(ORANGE), `expected orange SGR, got: ${JSON.stringify(out)}`);
+  });
+
+  it("inline m_cacheTtlStatus|nulldrop|true → drops when no entry", () => {
+    resetCacheForTest();
+    const out = renderTemplate(
+      ["m_cacheTtlStatus|nulldrop|true"],
+      ctxFor(fakeSnapshot()),
+    );
+    // nulldrop:true + null data → renderer returns null → the
+    // separator-adjacent-skip logic drops the chunk entirely so
+    // the output array is empty.
+    assert.equal(out.length, 0);
+  });
+});
+
+describe("render — m_statTtlStatus", () => {
+  it("no entry → STALE_COLOR-wrapped '▆' placeholder", () => {
+    __resetStatCacheForTest();
+    const out = renderTemplate(["m_statTtlStatus"], ctxFor(fakeSnapshot())).join("");
+    assert.equal(strip(out), "▆");
+    assert.ok(out.includes(STALE), `expected STALE SGR, got: ${JSON.stringify(out)}`);
+  });
+
+  it("fresh entry (age=0 of 300s ttl) → '█' in brightGreen", () => {
+    __resetStatCacheForTest();
+    setStatCacheForTest("stat:all:5h:true", { sumIn: 1, rows: 1, sumOut: 0, sumCached: 0, sumTotalIn: 1, sumApiMs: 0, calls: 1, lastAt: Date.now(), generatedAt: Date.now() }, 300_000);
+    const out = renderTemplate(["m_statTtlStatus"], ctxFor(fakeSnapshot())).join("");
+    assert.equal(strip(out), "█");
+    assert.ok(out.includes(GREEN), `expected brightGreen SGR, got: ${JSON.stringify(out)}`);
+  });
+
+  it("half-aged entry (age=150s of 300s) → middle char '▄' in yellow", () => {
+    __resetStatCacheForTest();
+    setStatCacheForTest(
+      "stat:all:5h:true",
+      { sumIn: 1, rows: 1, sumOut: 0, sumCached: 0, sumTotalIn: 1, sumApiMs: 0, calls: 1, lastAt: Date.now(), generatedAt: Date.now() },
+      300_000,
+    );
+    // Backdate `at` so ageMs reads as 150s on render (no Date.now
+    // override — render uses real wall-clock time, so backdating
+    // the entry alone produces the expected ageMs).
+    setStatCacheAtForTest("stat:all:5h:true", Date.now() - 150_000);
+    const out = renderTemplate(["m_statTtlStatus"], ctxFor(fakeSnapshot())).join("");
+    assert.equal(strip(out), "▄");
+    assert.ok(out.includes(YELLOW), `expected yellow SGR, got: ${JSON.stringify(out)}`);
+  });
+
+  it("expired entry (age=400s of 300s) → '▁' in red", () => {
+    __resetStatCacheForTest();
+    setStatCacheForTest(
+      "stat:all:5h:true",
+      { sumIn: 1, rows: 1, sumOut: 0, sumCached: 0, sumTotalIn: 1, sumApiMs: 0, calls: 1, lastAt: Date.now(), generatedAt: Date.now() },
+      300_000,
+    );
+    setStatCacheAtForTest("stat:all:5h:true", Date.now() - 400_000);
+    const out = renderTemplate(["m_statTtlStatus"], ctxFor(fakeSnapshot())).join("");
+    assert.equal(strip(out), "▁");
+    assert.ok(out.includes(RED), `expected red SGR, got: ${JSON.stringify(out)}`);
+  });
+
+  it("inline m_statTtlStatus|color|orange overrides scale", () => {
+    __resetStatCacheForTest();
+    setStatCacheForTest("stat:all:5h:true", { sumIn: 1, rows: 1, sumOut: 0, sumCached: 0, sumTotalIn: 1, sumApiMs: 0, calls: 1, lastAt: Date.now(), generatedAt: Date.now() }, 300_000);
+    const out = renderTemplate(
+      ["m_statTtlStatus|color|orange"],
+      ctxFor(fakeSnapshot()),
+    ).join("");
+    assert.equal(strip(out), "█");
+    assert.ok(out.includes(ORANGE), `expected orange SGR, got: ${JSON.stringify(out)}`);
+  });
+
+  it("inline m_statTtlStatus|nulldrop|true → drops when no entry", () => {
+    __resetStatCacheForTest();
+    const out = renderTemplate(
+      ["m_statTtlStatus|nulldrop|true"],
+      ctxFor(fakeSnapshot()),
+    );
+    // nulldrop:true + null data → renderer returns null → the
+    // separator-adjacent-skip logic drops the chunk entirely.
+    assert.equal(out.length, 0);
   });
 });

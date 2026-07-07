@@ -88,6 +88,94 @@ describe("peekWithAge", () => {
   });
 });
 
+// ----- v0.8.16 — TTL-aware peeks for m_cacheTtlStatus -----
+//
+// peekWithTtl / peekFreshestWithTtl return {ageMs, ttlMs} and are
+// TTL-IGNORING (the renderer needs to render the gauge even when
+// the entry is past TTL — that's the "will refresh next tick" case).
+// They expose the entry's stored ttlMs so the renderer can compute
+// remainingFraction = (ttlMs - ageMs) / ttlMs.
+
+describe("peekWithTtl", () => {
+  it("returns null on miss", () => {
+    clear("ttl-miss");
+    assert.equal((cache as any).peekWithTtl("ttl-miss"), null);
+  });
+
+  it("returns { ageMs, ttlMs } on hit, ttlMs reflects the value passed to set()", () => {
+    clear("ttl-set");
+    set("ttl-set", { x: 1 }, 60_000);
+    const r = (cache as any).peekWithTtl("ttl-set");
+    assert.ok(r);
+    assert.equal(r!.ttlMs, 60_000);
+    assert.ok(r!.ageMs >= 0);
+    assert.ok(r!.ageMs < 1_000);
+  });
+
+  it("returns ttlMs=0 for entries written without a ttlMs argument", () => {
+    // Legacy callers (cache.set(key, value) without ttlMs) produce
+    // entries with no recorded ttl. peekWithTtl surfaces ttlMs=0 so
+    // the renderer can detect "no TTL configured" and drop / placehold.
+    clear("ttl-legacy");
+    set("ttl-legacy", "legacy");
+    const r = (cache as any).peekWithTtl("ttl-legacy");
+    assert.ok(r);
+    assert.equal(r!.ttlMs, 0);
+  });
+
+  it("ignores TTL — returns the entry even when past ttlMs", () => {
+    clear("ttl-stale");
+    set("ttl-stale", "still-here", 1_000);
+    (cache as any).store.set("ttl-stale", {
+      at: Date.now() - 10_000,
+      value: "still-here",
+      ttlMs: 1_000,
+    });
+    assert.equal(get("ttl-stale", 1_000), null); // expired for get
+    const r = (cache as any).peekWithTtl("ttl-stale");
+    assert.ok(r);
+    assert.equal(r!.ttlMs, 1_000);
+    assert.ok(r!.ageMs >= 10_000);
+  });
+});
+
+describe("peekFreshestWithTtl", () => {
+  it("returns null on empty store", () => {
+    clear();
+    assert.equal((cache as any).peekFreshestWithTtl(), null);
+  });
+
+  it("returns the freshest entry's { ageMs, ttlMs } when multiple keys exist", () => {
+    clear("fresh-a");
+    clear("fresh-b");
+    clear("fresh-c");
+    // Write three entries with descending freshness.
+    (cache as any).store.set("fresh-a", {
+      at: Date.now() - 30_000,
+      value: "older",
+      ttlMs: 60_000,
+    });
+    (cache as any).store.set("fresh-b", {
+      at: Date.now() - 5_000,
+      value: "newest",
+      ttlMs: 60_000,
+    });
+    (cache as any).store.set("fresh-c", {
+      at: Date.now() - 15_000,
+      value: "middle",
+      ttlMs: 60_000,
+    });
+    const r = (cache as any).peekFreshestWithTtl();
+    assert.ok(r);
+    assert.equal(r!.ttlMs, 60_000);
+    // fresh-b has the smallest ageMs (~5s); tolerate ±1s drift.
+    assert.ok(
+      r!.ageMs >= 4_000 && r!.ageMs < 7_000,
+      `expected ageMs≈5000, got ${r!.ageMs}`,
+    );
+  });
+});
+
 describe("getWithAge", () => {
   it("returns null on miss", () => {
     clear("g1");

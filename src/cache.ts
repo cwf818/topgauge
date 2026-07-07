@@ -252,6 +252,34 @@ export function peekWithAge<T>(key: string): { value: T; ageMs: number } | null 
   return { value: e.value, ageMs: Date.now() - e.at };
 }
 
+// v0.8.16 — Sibling of peekWithAge that ALSO returns the entry's ttlMs.
+// TTL-IGNORING (returns null only on miss, NEVER on expiry) so the
+// renderer can show "cache is past TTL, will refresh next tick" rather
+// than dropping the line entirely. Used by m_cacheTtlStatus to render
+// the TTL gauge without coupling display to freshness.
+export function peekWithTtl(key: string): { ageMs: number; ttlMs: number } | null {
+  loadFromDisk();
+  const e = store.get(key) as Entry<unknown> | undefined;
+  if (!e) return null;
+  return { ageMs: Date.now() - e.at, ttlMs: e.ttlMs ?? 0 };
+}
+
+// v0.8.16 — Iterates all entries and returns the freshest one's
+// {ageMs, ttlMs}. Used by m_cacheTtlStatus because the response cache
+// can hold multiple provider keys (minimax, deepseek, …) and we
+// display the freshest so the user always sees the most-recently-
+// active cache row. TTL-IGNORING (same as peekWithTtl).
+export function peekFreshestWithTtl(): { ageMs: number; ttlMs: number } | null {
+  loadFromDisk();
+  let best: { at: number; ageMs: number; ttlMs: number } | null = null;
+  for (const e of store.values()) {
+    if (best == null || e.at > best.at) {
+      best = { at: e.at, ageMs: Date.now() - e.at, ttlMs: e.ttlMs ?? 0 };
+    }
+  }
+  return best ? { ageMs: best.ageMs, ttlMs: best.ttlMs } : null;
+}
+
 export function clear(key?: string): void {
   loadFromDisk();
   if (key === undefined) store.clear();

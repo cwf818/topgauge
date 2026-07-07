@@ -827,6 +827,52 @@ function setStatCache<T>(key: string, value: T, ttlMs: number): void {
   flushStatCacheToDisk();
 }
 
+// v0.8.16 — TTL-IGNORING peek for a specific stat-cache key.
+// Mirrors cache.peekWithTtl: returns null on miss, NEVER on expiry,
+// so the renderer can show "cache is past TTL, will refresh next
+// tick". Used by m_statTtlStatus's per-key variant.
+export function peekStatAgeMs(key: string): { ageMs: number; ttlMs: number } | null {
+  loadStatCacheFromDisk();
+  const e = _statCacheStore.get(key) as StatCacheEntry<unknown> | undefined;
+  if (!e) return null;
+  return { ageMs: Date.now() - e.at, ttlMs: e.ttlMs ?? 0 };
+}
+
+// v0.8.16 — TTL-IGNORING peek for the freshest entry across all
+// stat-cache keys. Used by m_statTtlStatus because the stat cache
+// can hold many keys (one per model/window/align combination) and
+// we display the freshest so the user always sees the most-recently-
+// scanned entry.
+export function peekFreshestStatAgeMs(): { ageMs: number; ttlMs: number } | null {
+  loadStatCacheFromDisk();
+  let best: { at: number; ageMs: number; ttlMs: number } | null = null;
+  for (const e of _statCacheStore.values()) {
+    if (best == null || e.at > best.at) {
+      best = { at: e.at, ageMs: Date.now() - e.at, ttlMs: e.ttlMs ?? 0 };
+    }
+  }
+  return best ? { ageMs: best.ageMs, ttlMs: best.ttlMs } : null;
+}
+
+// v0.8.16 — Test seam for m_statTtlStatus tests. Exposes the
+// private setStatCache so tests can seed rows without going
+// through getStatAggregate's full readAllSamples scan path.
+// Mirrors the `__resetCacheForTest` pattern in cache.ts.
+export function setStatCacheForTest<T>(key: string, value: T, ttlMs: number): void {
+  setStatCache(key, value, ttlMs);
+}
+
+// v0.8.16 — Test seam for backdating an already-seeded stat-cache
+// row. Used by m_statTtlStatus tests to simulate aged entries
+// without monkey-patching Date.now (which would also break
+// setStatCache's internal `at` stamping). Mirrors the backdate
+// pattern cache tests use via `(cache as any).store.set(…)`.
+export function setStatCacheAtForTest(key: string, at: number): void {
+  const e = _statCacheStore.get(key);
+  if (!e) throw new Error(`setStatCacheAtForTest: key "${key}" not found`);
+  _statCacheStore.set(key, { at, value: e.value, ttlMs: e.ttlMs });
+}
+
 export function __resetStatCacheForTest(): void {
   _statCacheStore.clear();
   _statCacheLoaded = false;

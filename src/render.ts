@@ -36,6 +36,7 @@ import {
 } from "./quotes.ts";
 import { readGitInfo } from "./git-info.ts";
 import * as statusStore from "./status-store.ts";
+import * as cache from "./cache.ts";
 export type { PrevTickSnapshot, AvgSnapshot };
 
 export type Window = {
@@ -2252,6 +2253,25 @@ const MODULES: Record<string, Module> = {
   // rule preserves the natural 0-value render path).
   m_windowContext: (c) =>
     c.contextWindow ? formatOneChunk(c.contextWindow, c.mode, cfg().bar.width, c.stale) : placeholderBare("m_windowContext", c),
+  // v0.8.16 — TTL gauge modules. Each picks the freshest entry
+  // from its respective cache (response cache for m_cacheTtlStatus,
+  // stat cache for m_statTtlStatus), computes remainingFraction =
+  // (ttlMs - ageMs) / ttlMs, and emits one of TTL_BAR_CHARS picked
+  // by the fraction. Color is computed by ttlStatusColor (5-band
+  // palette). Missing / no-ttlMs entries fall through to the
+  // placeholder (single ▆ in STALE_COLOR).
+  m_cacheTtlStatus: (c) => {
+    const entry = cache.peekFreshestWithTtl();
+    if (!entry || entry.ttlMs <= 0) return placeholderBare("m_cacheTtlStatus", c);
+    const remaining = (entry.ttlMs - entry.ageMs) / entry.ttlMs;
+    return `${ttlStatusColor(remaining)}${ttlStatusChar(remaining)}${RESET}`;
+  },
+  m_statTtlStatus: (c) => {
+    const entry = statusStore.peekFreshestStatAgeMs();
+    if (!entry || entry.ttlMs <= 0) return placeholderBare("m_statTtlStatus", c);
+    const remaining = (entry.ttlMs - entry.ageMs) / entry.ttlMs;
+    return `${ttlStatusColor(remaining)}${ttlStatusChar(remaining)}${RESET}`;
+  },
 };
 
 // Cap unknown-module warnings to once per process so a template typo
@@ -2330,6 +2350,32 @@ export function speedScaleColor(
 
 function cachePctPrecision(): number {
   return cfg().tokenFormat.cachePctPrecision;
+}
+
+// v0.8.16 — 8-char TTL gauge palette. Index 0 = full TTL, index 7
+// = empty. Picked by remainingFraction ∈ [0, 1] via
+// `floor((1 - fraction) * 8)` so the visual matches a "filling up"
+// bar (top char at max TTL, bottom char at zero TTL).
+const TTL_BAR_CHARS = ["█", "▇", "▆", "▅", "▄", "▃", "▂", "▁"] as const;
+
+function ttlStatusChar(remainingFraction: number): string {
+  if (!Number.isFinite(remainingFraction) || remainingFraction <= 0) return TTL_BAR_CHARS[7]!;
+  if (remainingFraction >= 1) return TTL_BAR_CHARS[0]!;
+  const idx = Math.min(7, Math.floor((1 - remainingFraction) * 8));
+  return TTL_BAR_CHARS[idx]!;
+}
+
+// v0.8.16 — 5-band palette matching speedScaleColor's vocabulary.
+// Reuses cfg().colors.* so user config overrides (e.g. redefining
+// brightGreen / darkGreen / yellow / orange / red) take effect.
+function ttlStatusColor(remainingFraction: number): string {
+  const c = cfg().colors;
+  if (!Number.isFinite(remainingFraction) || remainingFraction <= 0) return c.red;
+  if (remainingFraction > 0.8) return c.brightGreen;
+  if (remainingFraction > 0.6) return c.darkGreen;
+  if (remainingFraction > 0.4) return c.yellow;
+  if (remainingFraction > 0.2) return c.orange;
+  return c.red;
 }
 
 // 3-band cache-hit color picker (good / warn / bad) using
@@ -3225,6 +3271,14 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   m_window5h: placeholderGauge,
   m_window7d: placeholderGauge,
   m_windowContext: placeholderGauge,
+  // v0.8.16 — TTL gauge placeholders. Custom shape: single ▆ char
+  // (NOT "ttl:n/a"). Returns PLAIN text (no SGR); the STALE_COLOR
+  // wrap is applied by placeholderBare / placeholderWithColor,
+  // matching every other module's contract. Inline
+  // `m_cacheTtlStatus|color|gray` overrides to the user's color of
+  // choice.
+  m_cacheTtlStatus: () => "▆",
+  m_statTtlStatus: () => "▆",
   // bare-string (no prefix to recover from; just "n/a")
   m_session: placeholderNA(""),
   m_model: placeholderNA(""),
@@ -3567,9 +3621,16 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_contextUsedPercent: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_contextRemainingPercent: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_windowContext: { named: { ...COLOR_PARAM.named, ...DISPLAY_PARAM.named, ...NULDROP_PARAM.named } },
+  // v0.8.16 — TTL gauge inline-args. Same shape as the rest of
+  // the named-args family (color + nulldrop). `:color|<c>` REPLACES
+  // the 5-band scale color; there is no `:scale|` opt-back-in
+  // sentinel because TTL is binary "data vs missing" and forcing
+  // green-on-fresh / red-on-stale is the natural rendering.
+  m_cacheTtlStatus: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_statTtlStatus: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   // v0.4.0+ — sub-template reference. First argument is the key
   // into cfg().lineTemplates (the user's reusable-fragment
-  // registry). Optional `:mode|<plan|balance>` filter (default
+  // registry). Optional `:type|<plan|balance>` filter (default
   // "plan"): when the current provider's mode key does not match,
   // the chunk drops so adjacent separators are skipped. We do
   // NOT accept `:color|` here — propagating a color across an
@@ -3577,6 +3638,13 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   // expansion's internal modules would need to inherit or be
   // re-styled). Users wanting per-chunk color put `:color|` on
   // the inner modules inside their lineTemplates entry.
+  //
+  // v0.8.15+ — `type` is the recommended name (matches
+  // ctx.providerType semantics — TYPE discriminator, not mode).
+  // The legacy `mode` arg is still accepted for back-compat with
+  // pre-v0.8.15 configs (`m_template:plan:mode|plan`). When both
+  // are present on the same token, `type` wins (it's the newer
+  // name; users with both likely have a typo).
   m_template: {
     implicit: {
       name: "key",
@@ -3584,9 +3652,15 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
         typeof raw === "string" && raw !== "" ? raw : null,
     },
     named: {
-      // Intrinsic — providerType filter. NOT forwarded via
-      // passThrough (it's a m_template-local concern, not an
-      // arg value to push to inner modules).
+      // Intrinsic — providerType filter (recommended name). NOT
+      // forwarded via passThrough (it's a m_template-local
+      // concern, not an arg value to push to inner modules).
+      type: (raw) => (raw === "plan" || raw === "balance" ? raw : null),
+      // Intrinsic alias — same resolver as `type`. Accepted for
+      // back-compat with pre-v0.8.15 configs that used
+      // `m_template:plan:mode|plan`. New templates should write
+      // `type`; `mode` is deprecated and will be removed in a
+      // future major release. NOT forwarded via passThrough either.
       mode: (raw) => (raw === "plan" || raw === "balance" ? raw : null),
       // v0.8.7+ — passthrough whitelist. Each of these named
       // params is accepted on `m_template` and forwarded to the
@@ -3606,15 +3680,18 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   },
 };
 
-// NOTE: the `mode:` named arg on `m_template` keeps the OLD name for
-// back-compat with existing config.json files that reference
-// `m_template:plan:mode|plan`. Internally the renderer now uses
-// `ctx.providerType` (a TYPE discriminator, not a mode), but the
-// inline-arg syntax is unchanged. The param value still parses
-// "plan" / "balance" (the renderer-side filter only matches the
-// registered TYPE values, not the new "unknown" — unknown providers
-// never reach this branch because dispatch wires a default
-// lineTemplate that doesn't reference m_template).
+// NOTE: the `mode:` named arg on `m_template` is the legacy name
+// preserved for back-compat with existing config.json files that
+// reference `m_template:plan:mode|plan`. The recommended name is
+// `type` (v0.8.15+) — same resolver, same semantics, matches
+// ctx.providerType (a TYPE discriminator, not a mode). When both
+// `type` and `mode` are present on the same token, `type` wins
+// (the renderer-side check is `(params.type ?? params.mode) ?? "plan"`).
+// The param value still parses "plan" / "balance" (the renderer-side
+// filter only matches the registered TYPE values, not the new
+// "unknown" — unknown providers never reach this branch because
+// dispatch wires a default lineTemplate that doesn't reference
+// m_template).
 
 // Pure helper: wrap a plain-text body in `<color>…<RESET>`. Returns
 // the body unchanged when `color` is undefined. Safe ONLY for bodies
@@ -4386,14 +4463,34 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // always wins, so explicit user color stays sticky even on stale.
     return formatOneChunk(ctx.contextWindow, mode, cfg().bar.width, ctx.stale);
   },
+  // v0.8.16 — TTL gauge inline-args renderer. Mirror of the bare
+  // MODULES entry but with the user's |color|<c> override applied
+  // before the scale color (override always wins; matches the
+  // wrapPlainDefault contract for every other module).
+  m_cacheTtlStatus: (params, ctx) => {
+    const entry = cache.peekFreshestWithTtl();
+    if (!entry || entry.ttlMs <= 0) return placeholderWithColor("m_cacheTtlStatus", params, ctx);
+    const remaining = (entry.ttlMs - entry.ageMs) / entry.ttlMs;
+    const userColor = params.color as string | undefined;
+    const color = userColor ?? ttlStatusColor(remaining);
+    return `${color}${ttlStatusChar(remaining)}${RESET}`;
+  },
+  m_statTtlStatus: (params, ctx) => {
+    const entry = statusStore.peekFreshestStatAgeMs();
+    if (!entry || entry.ttlMs <= 0) return placeholderWithColor("m_statTtlStatus", params, ctx);
+    const remaining = (entry.ttlMs - entry.ageMs) / entry.ttlMs;
+    const userColor = params.color as string | undefined;
+    const color = userColor ?? ttlStatusColor(remaining);
+    return `${color}${ttlStatusChar(remaining)}${RESET}`;
+  },
   // v0.4.0+ — expand a registered lineTemplates fragment. The
   // loader strips any `m_template:` tokens from lineTemplates
   // arrays (config.ts applyOverrides), so the recursive call below
   // cannot itself reach an `m_template:` token. We `.slice()` the
   // inner array to defend against any future in-place mutation.
   // Missing key → warn + drop (renderer null path, same as bare
-  // MODULES drop). Mode mismatch → silent drop (no warn; the user
-  // explicitly asked for a mode filter).
+  // MODULES drop). Type mismatch → silent drop (no warn; the user
+  // explicitly asked for a type filter).
   m_template: (params, ctx) => {
     const key = params.key as string;
     const inner = cfg().lineTemplates[key];
@@ -4403,23 +4500,28 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
       );
       return null;
     }
-    const want = (params.mode as "plan" | "balance" | undefined) ?? "plan";
-    // v0.4.x — the inline-arg name `mode` is preserved for back-compat
-    // with existing config.json files (e.g. `m_template:plan:mode|plan`).
-    // The comparison target is now ctx.providerType. "unknown" never
-    // matches an inline `mode:plan|balance` arg, so unknown providers
-    // silently drop m_template references — same behavior as before.
+    // v0.8.15+ — `type` is the recommended intrinsic name; `mode`
+    // is the legacy alias. When both are present, `type` wins (the
+    // user likely typo'd one of them — prefer the newer name). The
+    // comparison target is ctx.providerType. "unknown" never matches
+    // either arg, so unknown providers silently drop m_template
+    // references — same behavior as before.
+    const want =
+      ((params.type as "plan" | "balance" | undefined) ??
+        (params.mode as "plan" | "balance" | undefined)) ??
+      "plan";
     if (ctx.providerType !== want) return null;
     // v0.8.7+ — passthrough: build a passThrough view from every
-    // param except the two intrinsics (`key` is the lookup target,
-    // `mode` is the providerType filter — both are m_template-local
-    // concerns, not values to push to inner modules). Nested
-    // m_template is impossible because config.ts strips them at
-    // load time, so we don't need to merge with a pre-existing
-    // passThrough on the outer context.
+    // param except the THREE intrinsics (`key` is the lookup target;
+    // `type` + `mode` are the providerType filter, both names of the
+    // same intrinsic — both are m_template-local concerns, NOT
+    // values to push to inner modules). Nested m_template is
+    // impossible because config.ts strips them at load time, so we
+    // don't need to merge with a pre-existing passThrough on the
+    // outer context.
     const passThrough: Record<string, ResolvedValue> = {};
     for (const [k, v] of Object.entries(params)) {
-      if (k === "key" || k === "mode") continue;
+      if (k === "key" || k === "type" || k === "mode") continue;
       passThrough[k] = v as ResolvedValue;
     }
     const innerCtx: RenderContext = { ...ctx, passThrough };
@@ -4817,9 +4919,19 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
       } else if (tok.startsWith("m_windowContext|")) {
         inline = expandInlineToken(tok, "m_windowContext", 16, ctx);
       } else if (tok.startsWith("m_template|")) {
-        // m_template|<key>[|mode|<plan|balance>][|nulldrop|<bool>]
-        // → skip "m_template|" (length 11).
+        // m_template|<key>[|type|<plan|balance>][|nulldrop|<bool>]
+        // → skip "m_template|" (length 11). v0.8.15+ — `type` is
+        // the recommended intrinsic name; legacy `mode` arg is
+        // still accepted (parseInlineArgs goes through both
+        // resolvers; the renderer-side check prefers `type` when
+        // both are present).
         inline = expandInlineToken(tok, "m_template", 11, ctx);
+      } else if (tok.startsWith("m_cacheTtlStatus|")) {
+        // m_cacheTtlStatus → 16 chars + "|" = 17 skipLen.
+        inline = expandInlineToken(tok, "m_cacheTtlStatus", 17, ctx);
+      } else if (tok.startsWith("m_statTtlStatus|")) {
+        // m_statTtlStatus → 15 chars + "|" = 16 skipLen.
+        inline = expandInlineToken(tok, "m_statTtlStatus", 16, ctx);
       }
       // Parse failure (bad |color|, unknown param, odd segment count)
       // → warn + drop. Renderer returning null for valid args (e.g.
