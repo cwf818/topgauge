@@ -145,6 +145,24 @@ if [ ! -f "$DIST_JS" ]; then
   fi
 fi
 
+# Soft-runtime check: the v0.8.21 `m_quote|address|…` fetcher runs
+# `curl` via `node:child_process.execFileSync`, which resolves
+# `curl` on the GUI shell's PATH (NOT the user's interactive shell).
+# Coverage by OS:
+#   - macOS   : /usr/bin/curl ships since 10.6 ✓
+#   - Linux   : present on every major distro ✓
+#   - Windows : C:\Windows\System32\curl.exe ships since Win10 1803 ✓
+#                (Windows 7/8 lacks it — users on those editions need
+#                to install curl separately)
+# We don't gate install on this — the plugin renders correctly
+# without curl — but a heads-up helps users on locked-down or
+# legacy systems notice the failure mode (m_quote stays blank
+# and a diagnostics warning fires).
+if ! command -v curl >/dev/null 2>&1; then
+  echo "install.sh: WARNING: curl not found on PATH; m_quote|address|... will fall back to local QUOTES" >&2
+  echo "install.sh: WARNING: install curl from https://curl.se and ensure curl.exe is on PATH" >&2
+fi
+
 # --- Uninstall path: delegate to scripts/uninstall.sh ----------------------
 # Self-contained uninstaller is the source of truth; install.sh just
 # forwards for backwards compatibility. Strip the --uninstall flag
