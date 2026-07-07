@@ -1,170 +1,244 @@
-# ToPGauge-CC — Display Modules Manual
+# ToPGauge-CC — Display Modules Manual (v0.8.14)
 
-This file documents every token you can write inside `statuslineTemplate` and
-inside entries of `lineTemplates.<key>` (consumed via `m_template:<key>...`).
+This file documents every token you can write inside `statuslineTemplate`
+and inside entries of `lineTemplates.<key>` (consumed via
+`m_template|<key>…`). All paths, presets, and module names below reflect
+**v0.8.14** (provider `MiniMax-M3` for `ANTHROPIC_BASE_URL=https://api.minimaxi.com/anthropic`,
+`BALANCE` provider for DeepSeek).
 
-A template is a JSON array of tokens. Two kinds of tokens exist:
+A template is a JSON array of tokens. Two kinds exist:
 
-| Kind  | Shape                                                    | Meaning                                                              |
-| ----- | -------------------------------------------------------- | -------------------------------------------------------------------- |
-| `m_*` | Display module — produces a colored value segment.       | See the per-module table below.                                      |
-| `s_*` | Separator reference — produces a literal string.         | See the separator table below.                                       |
+| Kind  | Shape                            | Meaning                                              |
+| ----- | -------------------------------- | ---------------------------------------------------- |
+| `m_*` | Display module — colored chunk.  | See the per-module table below.                      |
+| `s_*` | Separator reference — literal.   | See the separator table below.                       |
 
-Tokens can be written in **bare form** (`"m_window5h"`) or **inline-arg form**
-(`"m_window5h:color:red"`). Bare form falls back to global config;
-inline-arg form overrides per-token. A module that accepts inline args
-takes its arguments as `name:value` pairs separated by colons.
+Tokens can be written in **bare form** (`"m_window5h"`) or **inline-arg
+form** (`"m_window5h|color|red|display|remaining"`). Inline args
+override per-token; bare form falls back to global config.
+
+> **Inline-arg separator is `|` (pipe) since v0.7.1.** The older
+> `:` form (`"m_window5h:color:red"`) is NOT recognized by the
+> dispatcher — `parseInlineArgs` splits on `|` only. This is
+> intentional: `:` collides with rendered text (e.g. `Usage:`,
+> `api:5s`, `5h:--`). The first `|` separates the prefix from the
+> arg list; subsequent `|` separate `name` and `value` segments.
 
 ---
 
-## 1. Inline-arg syntax (applies to all `m_*` modules and `s_*`)
+## 1. Inline-arg syntax
 
 ```
-<token>[:<name>:<value>]*
+<token>|<name>|<value>|<name>|<value>…
 ```
 
-- `:` is the separator — every module's parser splits the token on `:`.
-- The first segment is the module name. Everything after is `name:value`
-  pairs.
-- Order of pairs doesn't matter; duplicates keep the last value.
-- Unknown `name` or malformed `value` → the dispatcher warns to stderr and
-  drops the token.
-- Numeric `s_<n>` separators take a single argument that is **either** a
-  numeric index (`s_0`, `s_1`, …) **or** a named alias (`s_space`,
-  `s_dot`, `s_newline`, `s_tab`, `s_colon`).
+- The first segment is the module name (or implicit param value).
+- Order of `name:value` pairs doesn't matter; duplicates keep the last.
+- Unknown `name` or malformed `value` → dispatcher warns to stderr and
+  drops the token (no partial render).
+- For modules that take an **implicit** value (`m_label`, `s_<n>` /
+  `s_<alias>`), the first segment IS the value; remaining segments form
+  `name:value` pairs.
 
 ### 1.1 Shared named parameters
 
-Every `m_*` module that takes inline args accepts a common subset. Per-module
+Every `m_*` that takes inline args accepts a common subset. Per-module
 exceptions are called out in §3.
 
-| Name        | Accepted values                                                 | Default            | Effect                                                                                                                |
-| ----------- | --------------------------------------------------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------------- |
-| `color`     | SGR string OR a shortcut (`red`, `green`, `yellow`, `blue`, `cyan`, `magenta`, `white`, `gray`, `orange`, `purple`) | module's natural palette color | Replaces the module's band color. WINS over stale-color / placeholder-color.                                            |
-| `nulldrop`  | `true` \| `false`                                              | `false`            | `false` → keep the placeholder slot even when data is missing (gray `n/a` / `-- unit` / empty gauge). `true` → drop on null (v0.3.x legacy behavior). |
-| `display`   | `used` \| `remaining`                                          | global `display` config | **Window modules only** (`m_window5h`, `m_window7d`, `m_windowContext`). Switch between "show used %" and "show remaining %". Inline wins over config. |
-| `mode`      | `plan` \| `balance`                                            | (none)             | **`m_template` only.** Filter sub-template by provider TYPE.                                                          |
+| Name        | Accepted values                                                                | Default            | Effect                                                                                                                                              |
+| ----------- | ------------------------------------------------------------------------------ | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `color`     | SGR string OR shortcut (`red`, `green`, `yellow`, `blue`, `cyan`, `magenta`, `white`, `gray`, `orange`, `purple`, plus `rainbow`/`rand-rainbow`/`hue` for `m_quote`) | module's natural palette | Replaces the module's band color. WINS over stale-color / placeholder-color.                                                       |
+| `nulldrop`  | `true` \| `false`                                                              | `false`            | `false` → keep placeholder slot when data is missing (`STALE_COLOR`-wrapped `n/a` / `-- <unit>` / empty gauge). `true` → drop the chunk (adjacent separators trimmed). |
+| `display`   | `used` \| `remaining`                                                          | global `display`   | **Window modules only** (`m_window5h`, `m_window7d`). Flip between "show used %" and "show remaining %". Inline wins over config.                  |
+| `type`      | `plan` \| `balance`                                                            | `plan`             | **`m_template` only.** Filter sub-template by provider `TYPE`. **Recommended name (v0.8.15+).** The legacy alias `mode` is still accepted; when both are present on the same token, `type` wins. Neither arg is forwarded via `passThrough` (§1.2). |
+| `scope`     | `ccsession` \| `session` \| `project` \| `model`                              | `ccsession`        | **`m_acc*` only.** Pick which slot of the four-layer accumulator to read. See §3.                                                                  |
+| `model`     | `active` \| `all` \| `<name>`                                                  | `active`           | **`m_sum*` only.** Narrow the JSONL scan to one model identity or every row.                                                                       |
+| `window`    | `<dhms>` (e.g. `5h`, `7d`, `1h30m`) \| `all`                                   | `5h`               | **`m_sum*` only.** Time window for the JSONL scan.                                                                                                  |
+| `align`     | `true` \| `false`                                                              | `true`             | **`m_sum*` only.** When `true` AND window ∈ {5h, 7d} AND `ctx.fiveHour/weekly.resetStartAt` is set, use the plan-aligned window.                   |
+| `freq`      | `s` \| `m` \| `h` \| `d` \| `<digits><unit>`                                   | `h`                | **`m_quote` only.** Bucket size for quote rotation.                                                                                                 |
+| `repeat`    | `<1..8>` (integer)                                                             | `1`                | **`s_*` only (v0.7.2+).** Multiply the separator body.                                                                                             |
+| `wrap`      | `true` \| `false`                                                              | `true`             | **`s_*` only (v0.7.2+).** When `true` and the body is printable, pad with one space on each side (so `s_dot|wrap|true` → `" · "`).               |
 
-### 1.2 Special: `m_quote` extras
+### 1.2 `m_template` passthrough (v0.8.7+)
 
-`m_quote` extends the color parameter with three additional shortcuts:
+When an outer `m_template|<key>|…` expansion receives extra named args
+beyond the intrinsics `key`, `type`, and `mode` (the latter two are
+different names for the SAME intrinsic — the providerType filter;
+only one is typically present, but both are excluded from
+passthrough just in case), those args are pushed down to the inner
+modules as a **passthrough** view. Inner-explicit-wins: if the inner
+token uses the same arg explicitly (e.g. `m_accTokenIn|scope|project`
+inside the template body), the inner value beats the passthrough.
+`key`, `type`, and `mode` are NEVER pushed down — they are
+`m_template`-local concerns.
 
-- `rainbow` — cycles through band colors
-- `rand-rainbow` — randomized rainbow
-- `hue` — continuous hue based on wall-clock
-
-It also accepts `freq:<unit-or-number-unit>` (default `h`):
-
-| Form        | Bucket size     |
-| ----------- | --------------- |
-| `freq:s`    | 1 second        |
-| `freq:m`    | 1 minute        |
-| `freq:h`    | 1 hour (default)|
-| `freq:d`    | 1 day           |
-| `freq:30s`  | 30 seconds      |
-| `freq:5m`   | 5 minutes       |
-| …           | up to multi-digit counts (no leading zero) |
+```jsonc
+// Outer scope|project → bare m_accTokenIn inside reads project scope.
+// Inner explicit |scope|session → wins; m_accTokenIn reads session scope.
+{
+  "statuslineTemplate": ["m_template|acc|scope|project"],
+  "lineTemplates": {
+    "acc": [
+      "m_accTokenIn",
+      "s_space",
+      "m_accTokenIn|scope|session"  // explicit beats passthrough
+    ]
+  }
+}
+```
 
 ---
 
 ## 2. Separators (`s_*`)
 
-Reference a literal from `cfg().separators`, or one of the five built-in aliases.
+Reference a literal from `cfg().separators[]` (numeric form) or one of
+six built-in aliases (named form).
 
 ### 2.1 Numeric form: `s_<n>`
 
-- `s_0` … `s_<N-1>` — index into the `separators` array in `config.json`.
-- Default `separators: [" ", "·", "\n", "\t", ":"]` so `s_0` is a space, `s_1`
-  is "·", etc.
+- `s_0` … `s_<N-1>` — index into `separators` array in `config.json`.
+- v0.4.x+ default `separators: []` — the array is empty out of the
+  box, so bare `s_0`/`s_1` warn + drop unless the user fills the
+  array. Migrate templates to named aliases (below) to keep working.
 - Out-of-range index → token dropped (stderr warn).
 - Multiple bare `s_0` are NOT collapsed; both render.
 
 ### 2.2 Named alias form (always literal, ignores `separators` array)
 
-| Token         | Literal     | Notes                       |
-| ------------- | ----------- | --------------------------- |
-| `s_space`     | `" "`       | Always a single space.      |
-| `s_dot`       | `"·"`       | Middle dot (U+00B7).        |
-| `s_newline`   | `"\n"`      | Line break — only useful in multi-line layouts. |
-| `s_tab`       | `"\t"`      | Tab character.              |
-| `s_colon`     | `":"`       | Colon.                      |
+| Token         | Literal     | Notes                                              |
+| ------------- | ----------- | -------------------------------------------------- |
+| `s_space`     | `" "`       | Always a single space.                             |
+| `s_dot`       | `"·"`       | Middle dot (U+00B7).                               |
+| `s_newline`   | `"\n"`      | Line break — splits render into "above / below".   |
+| `s_tab`       | `"\t"`      | Tab character.                                     |
+| `s_colon`     | `":"`       | Colon.                                             |
+| `s_pipe`      | `"\|"`      | Pipe (added v0.7.1+; mirrors the inline-args delimiter). |
 
-**Rule**: the named form always renders the built-in character, even if
-the user has overridden array index 0 to be `"x"`. This makes
-self-documenting templates (e.g. `["m_window5h", "s_space",
-"m_countdown5h"]`) immune to user-config reshuffles.
+**Rule**: the named form always renders the built-in character, even
+if the user has overridden `separators[0]` to `"x"`. This makes
+self-documenting templates (e.g.
+`["m_window5h", "s_space", "m_countdown5h"]`) immune to user-config
+reshuffles.
 
 ### 2.3 Separator placement rules
 
-- Adjacent separators around a dropped module are **skipped** — so a
-  `null` `m_ctx` won't leave `… · · …` artifacts.
+- Adjacent separators around a dropped module are **skipped** — a
+  null `m_ctx` won't leave `… · · …` artifacts.
 - Leading/trailing separators are trimmed at the renderer level.
-- Newlines (`s_newline`) act as hard breaks: output above the break is the
-  upstream section, the break itself goes into composition, and output
-  below is appended.
+- Newlines (`s_newline`) act as hard breaks: output above the break
+  is the upstream section, the break itself goes into composition,
+  output below is appended.
+
+### 2.4 `repeat` and `wrap` (v0.7.2+)
+
+```
+s_dot|repeat|3          → "···"
+s_dot|repeat|3|wrap|true → " · · · "
+s_space|repeat|4        → "    "   (whitespace body skips wrap padding)
+s_newline|repeat|2      → "\n\n"  (control body skips wrap padding)
+```
+
+- `repeat` is an integer 1..8; out-of-range → drop.
+- `wrap=true` pads printable bodies with one space on each side;
+  whitespace / control bodies (newlines, tabs, the `s_space` /
+  `s_tab` / `s_newline` aliases, plus any `separators[]` entry that
+  matches `isControlBody`) skip the padding.
 
 ---
 
 ## 3. Module reference (`m_*`)
 
-The table below covers every module the renderer recognizes. The `Type`
-column tells you which provider TYPE the module is gated to — modules
-with no entry apply to every provider (and to provider-less ticks via
-the `unknown` TYPE fallback).
+The table covers every module the renderer recognizes as of v0.8.14.
+**Type filter** tells you which provider TYPE the module is gated
+to; modules with no entry apply to every provider (and to
+provider-less ticks via the `unknown` TYPE fallback).
 
-| Module                   | What it renders                                                                            | Source field                                                | Type filter        | Inline args                              | Notes |
-| ------------------------ | ------------------------------------------------------------------------------------------ | ----------------------------------------------------------- | ------------------ | ---------------------------------------- | ----- |
-| `m_modeLabel`            | `Usage:` (plan provider) or `Balance:` (balance provider).                                | derived from `providerType`                                 | (always emits)     | `color`                                   | First item in default line templates.    |
-| `m_window5h`             | Bar + colored % of 5-hour window: `▓░░░░░░░ 9%`.                                            | `fiveHour.pct` / `fiveHour.resetAt`                         | plan               | `color`, `display`, `nulldrop`            | On `stale=true`, bar dims to `STALE_COLOR`. `display:remaining` flips the % sign. |
-| `m_window7d`             | Same shape for the 7-day window.                                                           | `weekly.pct` / `weekly.resetAt`                              | plan               | `color`, `display`, `nulldrop`            | Same stale / display semantics as `m_window5h`. |
-| `m_countdown5h`          | `(4h47m🕔 5h)` reset countdown, with fill-state arrow.                                     | `fiveHour.resetAt`, `fiveHour.resetStartAt`, `fiveHour.resetDurationMs` | plan | `color`, `nulldrop`                        | Arrow glyph picked from `resetArrows` array by remaining-time ratio. Drops if no resetAt. |
-| `m_countdown7d`          | `(2d8h🕔 7d)` reset countdown for 7-day window.                                             | `weekly.resetAt`, `weekly.resetStartAt`, `weekly.resetDurationMs` | plan | `color`, `nulldrop`                        | Same arrow semantics as `m_countdown5h`.  |
-| `m_windowContext`        | Bar + colored % of context window usage (input tokens vs context_window_size).            | `tokens.contextWindow`                                       | agnostic           | `color`, `display`, `nulldrop`            | `display:used` shows how full the context is. |
-| `m_balance`              | Multi-currency balance line: `Balance: CNY 110.00 · USD 5.00`.                            | `balance.entries[]`                                          | balance            | `color`, `nulldrop`                        | Color band driven by the LOWEST `totalBalance`. |
-| `m_age`                  | Stale-age suffix: `🔗 5m ago` (fresh) or `⛓️‍💥 5m ago` (stale).                                | `ageMs`, `stale`                                             | agnostic           | `color`, `nulldrop`                        | Always emits once per render (ref-deduped across `m_template:` recursion). |
-| `m_version`              | `v0.7.0` plugin version.                                                                   | `version` (from `.claude-plugin/plugin.json`)                | agnostic           | `color`, `nulldrop`                        | Emits nothing when version string is empty. |
-| `m_label:<text>`         | Literal `<text>`.                                                                          | inline                                                      | agnostic           | (implicit text), `color`, `nulldrop`       | Single colon (`:`) inside the text is a separator — use it carefully. |
-| `m_template:<key>[:mode:plan\|balance]` | Inserts the array under `lineTemplates.<key>` in place. Recursively expanded. | inline key                                                  | filtered by mode   | `mode`, `nulldrop`                         | Sub-template may itself contain `m_template:` (recursive). `mode:plan` skips for balance providers and vice versa. |
-| `m_tokenIn`              | This-tick input tokens, e.g. `in:154`.                                                     | `tokens.current.inputTokens`                                 | agnostic           | `color`, `nulldrop`                        | Drops when no input tokens on this turn. |
-| `m_tokenOut`             | This-tick output tokens, e.g. `out:135`.                                                    | `tokens.current.outputTokens`                                | agnostic           | `color`, `nulldrop`                        | Same as above for output.                |
-| `m_tokenTotal`           | This-tick in+out, e.g. `total:289`.                                                        | `tokens.current.inputTokens + outputTokens`                 | agnostic           | `color`, `nulldrop`                        | Alias: `m_tokenSession`.                |
-| `m_tokenSession`         | Same shape as `m_tokenTotal` (alias).                                                     | same                                                         | agnostic           | `color`, `nulldrop`                        | Kept for backward compatibility.         |
-| `m_ctx`                  | Context usage e.g. `ctx:31.4k`.                                                            | `tokens.contextWindow.total_input_tokens`                   | agnostic           | `color`, `nulldrop`                        | Human-readable with k/M suffix.         |
-| `m_tokenHitRate`         | Cache hit rate e.g. `hit:99%`.                                                             | derived from `tokens.current.cacheRead / (cacheRead + cacheCreation + input)` | agnostic | `color`, `nulldrop`                        | Drops on 0 cache activity.               |
-| `m_cacheRead`            | Cache-read tokens this tick, e.g. `cache:62k`.                                             | `tokens.current.cacheReadTokens`                             | agnostic           | `color`, `nulldrop`                        |                                         |
-| `m_token5h`              | Cross-tick cumulative input tokens within the last 5h window, e.g. `5h:42k`.                | `state/<projectHash>/<sid>.jsonl`                            | agnostic           | `color`, `nulldrop`                        | Requires on-disk JSONL state — older ticks before state existed show `5h:--`. |
-| `m_token7d`              | Same as `m_token5h` for the 7-day window, e.g. `7d:240k`.                                   | `state/<projectHash>/<sid>.jsonl`                            | agnostic           | `color`, `nulldrop`                        | Same caveat as `m_token5h`.             |
-| `m_tokenInSpeed`         | Tokens/sec over the last active tick, e.g. `in:42 t/s`.                                     | `status.json.lastActive.in` + `tickStatus.in`                | agnostic           | `color`, `nulldrop`                        | Idle tick (no current tick data) → STALE_COLOR, uses last-active cached value. |
-| `m_tokenOutSpeed`        | Same for output, e.g. `out:18 t/s`.                                                         | `status.json.lastActive.out`                                 | agnostic           | `color`, `nulldrop`                        | Same idle semantics as `m_tokenInSpeed`. |
-| `m_tokenInAvg`           | Session-wide average input tokens per tick.                                                | `tokens.totals.input / apiCalls`                            | agnostic           | `color`, `nulldrop`                        | Drops when apiCalls is 0.                |
-| `m_tokenOutAvg`          | Session-wide average output tokens per tick.                                                | `tokens.totals.output / apiCalls`                           | agnostic           | `color`, `nulldrop`                        | Drops when apiCalls is 0.                |
-| `m_totalTokenIn`         | Cumulative input tokens for the entire session.                                             | `tokens.totals.input`                                        | agnostic           | `color`, `nulldrop`                        |                                         |
-| `m_totalTokenOut`        | Cumulative output tokens for the entire session.                                            | `tokens.totals.output`                                       | agnostic           | `color`, `nulldrop`                        |                                         |
-| `m_totalTokenWithCacheIn`| Cumulative input + cache reads, e.g. `withCache:1.2M`.                                      | `tokens.totals.input + cacheReadTokens`                     | agnostic           | `color`, `nulldrop`                        |                                         |
-| `m_quote[:freq:...][:color:...]` | A rotating quote, frequency-bucketed.                                                  | `quotes.json` (bundled)                                     | agnostic           | `freq`, `color`, `nulldrop`                | Picks a quote per bucket — `freq:h` rotates hourly, `freq:30s` rotates every 30 s. |
-| `m_session`              | User-defined session name (e.g. `fix-bar-color-regressions`).                              | `tokens.sessionName`                                         | agnostic           | `color`, `nulldrop`                        | Drops when sessionName is empty.         |
-| `m_model`                | Display name of the active model, e.g. `kimi-k2.6`.                                         | `tokens.modelDisplayName`                                    | agnostic           | `color`, `nulldrop`                        |                                         |
-| `m_effort`               | Effort level: `low`, `medium`, `high`, `max`.                                              | `tokens.effort`                                              | agnostic           | `color`, `nulldrop`                        |                                         |
-| `m_repo`                 | `host/owner/name`, e.g. `github.com/cwf818/topgauge-cc`.                                   | `tokens.workspace.repo`                                      | agnostic           | `color`, `nulldrop`                        | Drops when no repo.                      |
-| `m_branch`               | Current git branch.                                                                        | `git info from cwd`                                          | agnostic           | `color`, `nulldrop`                        | Drops when not a git repo.               |
-| `m_gitStatus`            | Git dirty/clean indicator.                                                                 | `git status`                                                 | agnostic           | `color`, `nulldrop`                        |                                         |
-| `m_ccVersion`            | Claude Code version, e.g. `cc:2.1.191`.                                                    | `tokens.ccversion`                                            | agnostic           | `color`, `nulldrop`                        | Alias: `m_ccversion` (lowercase v).      |
-| `m_sessionDuration`      | Wall-clock duration of the session, e.g. `2h 15m`.                                          | `tokens.cost.total_duration_ms`                              | agnostic           | `color`, `nulldrop`                        |                                         |
-| `m_sessionApiDuration`   | API-only duration, e.g. `api:1m 23s`.                                                       | `tokens.cost.total_api_duration_ms`                          | agnostic           | `color`, `nulldrop`                        |                                         |
-| `m_linesAdded`           | Lines added in the session, e.g. `+1.2k`.                                                  | `tokens.cost.total_lines_added`                              | agnostic           | `color`, `nulldrop`                        |                                         |
-| `m_linesRemoved`         | Lines removed in the session, e.g. `-340`.                                                 | `tokens.cost.total_lines_removed`                            | agnostic           | `color`, `nulldrop`                        |                                         |
-| `m_tokenInTotal`         | Cumulative input tokens including cache reads.                                              | `tokens.totals.input + cacheRead`                            | agnostic           | `color`, `nulldrop`                        |                                         |
-| `m_tokenTotalOut`       | Session-cumulative output tokens, e.g. `out:155`.                                           | `tokens.totals.output`                                       | agnostic           | `color`, `nulldrop`                        | v0.8.0+ renamed from `m_tokenOutTotal`. |
-| `m_apiCalls`             | Number of API calls made in this session, e.g. `calls:42`.                                  | `tokens.apiCount` (derived)                                  | agnostic           | `color`, `nulldrop`                        | null → `calls:0` (`:nulldrop:` is a no-op — never returns null) |
-| `m_contextSize`          | Context window size, e.g. `size:200k`.                                                      | `tokens.contextWindow.context_window_size`                   | agnostic           | `color`, `nulldrop`                        |                                         |
-| `m_contextUsed`          | Currently used context tokens (input+output+cache), e.g. `used:163.5k`.                    | derived                                                       | agnostic           | `color`, `nulldrop`                        |                                         |
+| Module                             | Renders (shape example)                                                              | Source field                                              | Type filter        | Inline args                            | Notes |
+| ---------------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------- | ------------------ | -------------------------------------- | ----- |
+| **Provider data (plan / balance)** |                                                                                      |                                                           |                    |                                        |       |
+| `m_modeLabel`                      | `Usage:` (plan) / `Remain:` (plan-display="remaining") / `Balance:` (balance).       | derived from `providerType` + global `display`            | (always emits)     | `color`, `nulldrop`                    | First item in default line templates.   |
+| `m_window5h`                       | Bar + colored % of 5-hour window: `▓░░░░░░░ 9%`.                                    | `fiveHour.pct` / `fiveHour.resetAt`                       | plan               | `color`, `display`, `nulldrop`         | `stale=true` dims bar + tail to `STALE_COLOR`. `display|remaining` flips the % sign. |
+| `m_window7d`                       | Same shape for 7-day window.                                                         | `weekly.pct` / `weekly.resetAt`                           | plan               | `color`, `display`, `nulldrop`         | Same stale / display semantics as `m_window5h`. |
+| `m_countdown5h`                    | `(4h47m🕔 5h)` reset countdown with fill-state arrow.                                | `fiveHour.resetAt`, `fiveHour.resetStartAt`, `fiveHour.resetDurationMs` | plan    | `color`, `nulldrop`                    | Arrow from `resetArrows` indexed by `remainingMs / resetDurationMs`. Drops if no `resetAt`. |
+| `m_countdown7d`                    | `(2d8h🕔 7d)` for 7-day window.                                                      | `weekly.resetAt`, …                                       | plan               | `color`, `nulldrop`                    | Same arrow semantics as `m_countdown5h`. |
+| `m_balance`                        | `CNY 110.00 · USD 5.00`.                                                            | `balance.entries[]`                                       | balance            | `color`, `nulldrop`                    | Color band driven by the LOWEST `totalBalance`. |
+| `m_age`                            | `🔗 5m ago` (fresh) / `⛓️‍💥 5m ago` (stale).                                                | `ageMs`, `stale`                                          | agnostic           | `color`, `nulldrop`                    | Emits at most once per render (ref-deduped across `m_template|` recursion). Forced-visibility fallback appends `⛓️‍💥 X ago` only when the user did NOT list `m_age` and `stale=true`. |
+| `m_version`                        | `v0.8.14` plugin version.                                                            | `version` from `.claude-plugin/plugin.json`               | agnostic           | `color`, `nulldrop`                    | Emits nothing when version string is empty. |
+| `m_label|<text>`                   | Literal `<text>`.                                                                    | inline                                                    | agnostic           | `color`, `nulldrop`                    | `<text>` is the implicit first segment — anything `|` in the value goes into the `name:value` parse. |
+| `m_template|<key>[|type|plan\|balance]` | Inserts `lineTemplates.<key>` in place. Recursively expanded (loader strips nested `m_template` at load time). | inline key                                  | filtered by `type` | `type` (legacy alias: `mode`), plus any other args get **passthrough** (§1.2) | `type|plan` skips on a BALANCE provider and vice versa. Default `type=plan`. Legacy `mode` is still accepted (same resolver, same semantics); when both `type` and `mode` are present on the same token, `type` wins. Built-in presets use the `_` prefix — see §4. |
+| **Per-turn tokens (stdin-only)**   |                                                                                      |                                                           |                    |                                        |       |
+| `m_tokenIn`                        | Per-turn input tokens, `in:154`.                                                    | `tokens.current.tokenIn`                                  | agnostic           | `color`, `nulldrop`                    | Drops when stdin carries no `current.input_tokens`. value=0 renders as `in:0` (value-zero rule, NOT a placeholder). |
+| `m_tokenOut`                       | Per-turn output tokens, `out:135`.                                                   | `tokens.current.tokenOut`                                 | agnostic           | `color`, `nulldrop`                    | Same as above. |
+| `m_tokenTotal`                     | Per-turn in+out, `total:289`.                                                       | `tokens.current.tokenIn + tokenOut`                       | agnostic           | `color`, `nulldrop`                    | Alias: `m_tokenSession` (kept for back-compat). |
+| `m_tokenSession`                   | Same shape as `m_tokenTotal` (alias).                                               | same                                                      | agnostic           | `color`, `nulldrop`                    | |
+| `m_tokenCachedIn`                  | Per-turn cache reads, `cache:62k`.                                                   | `tokens.current.tokenCachedIn`                            | agnostic           | `color`, `nulldrop`                    | Renamed from `m_cacheRead` / `m_cachedTokenIn` in v0.8.0. |
+| `m_tokenHitRate`                   | Per-turn cache hit rate, `hit:99%`.                                                  | `tokens.current.tokenCachedIn / (tokenCachedIn + tokenIn)` | agnostic          | `color`, `nulldrop`                    | v0.8.x: TTL gate disabled — idle tick surfaces cached value `STALE_COLOR`ed, never expires. Drops on 0 cache activity. |
+| `m_tokenInSpeed`                   | Per-turn tps, `in:42 t/s`.                                                          | `status.json.lastActive.in` + `tickStatus.tokenIn`        | agnostic           | `color`, `nulldrop`                    | Idle tick → cached value, `STALE_COLOR`ed. `color|scale` (or bare) maps tps to green→red across 5 bands. |
+| `m_tokenOutSpeed`                  | Per-turn output tps, `out:18 t/s`.                                                   | `status.json.lastActive.out`                              | agnostic           | `color`, `nulldrop`                    | Same idle semantics as `m_tokenInSpeed`. |
+| `m_apiMs`                          | Per-turn API duration, `api:5s` / `api:1m` / `api:<1m`.                              | `tokens.cost.totalApiDurationMs` (delta)                  | agnostic           | `color`, `nulldrop`                    | Idle tick → cached value, `STALE_COLOR`ed (no `api:n/a` placeholder after the v0.8.x R9 unify). Honors `timeFormat.minUnit`. |
+| `m_apiCalls`                       | Per-turn project-wide API call counter, `calls:42`.                                  | `status.json` `accApiCalls` slot                          | agnostic           | `color`, `nulldrop`                    | `calls:0` is real data (value-zero rule) — `nulldrop` is a no-op for this module. |
+| `m_contextSize`                    | Cumulative context input tokens, `size:163.5k`.                                      | `tokens.totals.tokenTotalIn`                              | agnostic           | `color`, `nulldrop`                    | Renamed from `m_ctx` in v0.8.0. |
+| `m_contextWindowsSize`             | Capacity of the context window, `size:200k`. (typo in name preserved.)              | `context_window.size`                                     | agnostic           | `color`, `nulldrop`                    | |
+| `m_contextUsedPercent`             | Percentage of capacity used, `used:82%`.                                            | `context_window.usedPct`                                  | agnostic           | `color`, `nulldrop`                    | Renamed from `m_contextUsed` in v0.8.0. |
+| `m_contextRemainingPercent`        | Percentage of capacity remaining, `remain:18%`.                                     | `context_window.remainingPct`                             | agnostic           | `color`, `nulldrop`                    | v0.8.0+ sibling of `m_contextUsedPercent`. |
+| **Session-cumulative totals**      |                                                                                      |                                                           |                    |                                        |       |
+| `m_tokenInTotal`                   | Session cumulative input (excludes cache reads), `in:42k`.                          | `tokens.totals.tokenTotalIn`                              | agnostic           | `color`, `nulldrop`                    | v0.8.0+ family. |
+| `m_tokenTotalOut`                  | Session cumulative output, `out:155`.                                                | `tokens.totals.tokenTotalOut`                             | agnostic           | `color`, `nulldrop`                    | v0.8.0+ renamed from `m_tokenOutTotal`; sits in the `totalOut` family. |
+| `m_tokenTotalIn`                   | Session cumulative input + cache reads, `Total:1.2M`.                                | `tokens.totals.tokenTotalIn + tokenCachedIn`              | agnostic           | `color`, `nulldrop`                    | v0.8.0+ sibling of `m_tokenInTotal`. |
+| **Acc family (three-layer in-memory accumulator)** |                                                              |                                                           |                    |                                        |       |
+| `m_accTokenIn`                     | Session-cumulative input within chosen scope, `acc(ccs):163.5k`.                   | `status.json` `accTokenIn[scope]`                         | agnostic           | `color`, `nulldrop`, `scope`           | Default scope `ccsession` (per-claude-code-process; resets only on `totalApiMs` regression). |
+| `m_accTokenOut`                    | Same for output.                                                                    | `status.json` `accTokenOut[scope]`                        | agnostic           | `color`, `nulldrop`, `scope`           | |
+| `m_accTokenCachedIn`               | Same for cache reads.                                                               | `status.json` `accTokenCachedIn[scope]`                   | agnostic           | `color`, `nulldrop`, `scope`           | |
+| `m_accTokenTotalIn`                | `accTokenIn + accTokenCachedIn` within scope.                                       | derived                                                   | agnostic           | `color`, `nulldrop`, `scope`           | |
+| `m_accApiMs`                       | `api:<dhms>` shape matching `m_apiMs`.                                               | `status.json` `accApiMs[scope]`                           | agnostic           | `color`, `nulldrop`, `scope`           | |
+| `m_accApiCalls`                    | `calls:N` shape matching `m_apiCalls`.                                              | `status.json` `accApiCalls[scope]`                        | agnostic           | `color`, `nulldrop`, `scope`           | |
+| `m_accTokenInSpeed`                | In-speed within scope, `in:<tps> t/s`.                                              | derived                                                   | agnostic           | `color`, `nulldrop`, `scope`           | v0.8.13+. |
+| `m_accTokenOutSpeed`               | Out-speed within scope.                                                             | derived                                                   | agnostic           | `color`, `nulldrop`, `scope`           | v0.8.13+. |
+| `m_accTokenHitRate`                | `hit:N%` (cache reads / total in) within scope.                                     | derived                                                   | agnostic           | `color`, `nulldrop`, `scope`           | v0.8.x R8: prefix unified with `m_tokenHitRate` / `m_sumTokenHitRate`. |
+| **Sum/avg family (cross-project JSONL scan, TTL=300s)** |                                                              |                                                           |                    |                                        |       |
+| `m_sumTokenIn`                     | Sum of `tokenIn` over the window, `in:240k`.                                         | `state/<projectHash>/<sid>.jsonl`                         | agnostic           | `color`, `nulldrop`, `model`, `window`, `align` | Reads `state/cache.json` cross-project TTL slot; falls back to JSONL scan on miss. |
+| `m_sumTokenOut`                    | Sum of `tokenOut` over the window.                                                   | same                                                      | agnostic           | `color`, `nulldrop`, `model`, `window`, `align` | |
+| `m_sumTokenCachedIn`               | Sum of cache reads over the window.                                                  | same                                                      | agnostic           | `color`, `nulldrop`, `model`, `window`, `align` | |
+| `m_sumTokenTotalIn`                | Sum of (in + cache reads) over the window.                                           | derived                                                   | agnostic           | `color`, `nulldrop`, `model`, `window`, `align` | |
+| `m_sumApiMs`                       | `api:<dhms>` over the window.                                                        | derived                                                   | agnostic           | `color`, `nulldrop`, `model`, `window`, `align` | |
+| `m_sumApiCalls`                    | `calls:N` over the window.                                                           | derived                                                   | agnostic           | `color`, `nulldrop`, `model`, `window`, `align` | |
+| `m_sumTokenHitRate`                | `hit:N%` over the window.                                                            | derived                                                   | agnostic           | `color`, `nulldrop`, `model`, `window`, `align` | v0.8.14: ratio suffix `%` added to mirror `m_accTokenHitRate`. |
+| `m_sumTokenInSpeed`                | `sumTokenIn / sumApiMs * 1000` (t/s) over the window.                                | derived                                                   | agnostic           | `color`, `nulldrop`, `model`, `window`, `align` | v0.8.13+. |
+| `m_sumTokenOutSpeed`               | Same for output.                                                                     | derived                                                   | agnostic           | `color`, `nulldrop`, `model`, `window`, `align` | v0.8.13+. |
+| **Misc / session metadata**        |                                                                                      |                                                           |                    |                                        |       |
+| `m_session`                        | User-defined session name, e.g. `fix-bar-color-regressions`.                        | `tokens.sessionName`                                      | agnostic           | `color`, `nulldrop`                    | Drops when `sessionName` empty. |
+| `m_model`                          | Display name of active model, e.g. `MiniMax-M3`.                                     | `tokens.modelDisplayName`                                 | agnostic           | `color`, `nulldrop`                    | |
+| `m_effort`                         | Effort level: `low` / `medium` / `high` / `max`.                                    | `tokens.effort`                                           | agnostic           | `color`, `nulldrop`                    | |
+| `m_repo`                           | `host/owner/name`, e.g. `github.com/cwf818/topgauge-cc`.                           | `tokens.workspace.repo`                                   | agnostic           | `color`, `nulldrop`                    | Drops when no repo. |
+| `m_branch`                         | Current git branch.                                                                  | `git info from cwd`                                       | agnostic           | `color`, `nulldrop`                    | Drops when not a git repo. |
+| `m_gitStatus`                      | Git dirty / clean indicator: `dirty` / `clean`.                                      | `git status`                                              | agnostic           | `color`, `nulldrop`                    | |
+| `m_ccVersion`                      | Claude Code version, e.g. `2.1.191`.                                                 | `tokens.ccversion`                                        | agnostic           | `color`, `nulldrop`                    | Lowercase alias `m_ccversion` also accepted (legacy). |
+| `m_sessionDuration`                | Wall-clock duration of session, `2h 15m`.                                            | `tokens.cost.totalDurationMs`                             | agnostic           | `color`, `nulldrop`                    | |
+| `m_sessionApiDuration`             | API-only duration, `1m 23s`.                                                         | `tokens.cost.totalApiDurationMs`                          | agnostic           | `color`, `nulldrop`                    | |
+| `m_linesAdded`                     | Lines added in the session, `+ 1.2k`.                                                | `tokens.cost.totalLinesAdded`                             | agnostic           | `color`, `nulldrop`                    | |
+| `m_linesRemoved`                   | Lines removed in the session, `- 340`.                                               | `tokens.cost.totalLinesRemoved`                           | agnostic           | `color`, `nulldrop`                    | |
+| `m_quote`                          | A rotating quote, frequency-bucketed.                                                | `quotes.json` (bundled)                                   | agnostic           | `freq`, `color`, `nulldrop`            | Color shortcuts: `rainbow` (cycles bands), `rand-rainbow` (random per render), `hue` (continuous from wall-clock). |
+
+### Removed in v0.8.0 (no alias)
+
+`m_token5h`, `m_token7d`, `m_tokenInAvg`, `m_tokenOutAvg`, `m_ctx`
+(→ `m_contextSize`), `m_cachedTokenIn` / `m_cacheRead`
+(→ `m_tokenCachedIn`), `m_contextUsed` (→ `m_contextUsedPercent`),
+`m_totalTokenIn`, `m_totalTokenOut`, `m_totalTokenWithCacheIn`
+(→ `m_accTokenIn` / `m_accTokenOut` / `m_accTokenCachedIn` with
+`scope|ccsession`).
+
+> **Note:** the built-in `_complete` preset (see §4) still references
+> a few of these removed module names. If you copy `_complete` into
+> your `statuslineTemplate`, manually translate them to the
+> `m_accToken*` family with `scope|ccsession` — see §5.
 
 ---
 
 ## 4. Per-module type filters
 
 The renderer tags each module with a `type` value. A module's emit is
-skipped if the active provider's TYPE doesn't match.
+skipped when the active provider's TYPE doesn't match.
 
 | TYPE value | Active when                                       |
 | ---------- | ------------------------------------------------- |
@@ -179,28 +253,32 @@ tick.
 
 ## 5. Drop semantics & `nulldrop` recap
 
-| Form                                  | Behavior when underlying data is `null`                                  |
-| ------------------------------------- | ------------------------------------------------------------------------ |
-| `m_*` (bare)                          | DROP — module skipped, adjacent separators trimmed.                      |
-| `m_*:nulldrop:false` (default inline) | PLACEHOLDER — module renders a fixed `STALE_COLOR`-wrapped body so the layout stays stable. |
-| `m_*:nulldrop:true`                   | DROP — same as bare form (v0.3.x behavior preserved).                   |
+| Form                                       | Behavior when underlying data is `null`                              |
+| ------------------------------------------ | -------------------------------------------------------------------- |
+| `m_*` (bare)                               | DROP — module skipped, adjacent separators trimmed.                  |
+| `m_*|nulldrop|false` (default inline)      | PLACEHOLDER — module renders a fixed `STALE_COLOR`-wrapped body so the layout stays stable. |
+| `m_*|nulldrop|true`                        | DROP — same as bare form.                                            |
 
-Placeholder shapes per module:
+Placeholder shapes per module class:
 
-| Module class           | Placeholder body                          |
-| ---------------------- | ----------------------------------------- |
-| pure number            | `<prefix>n/a` (e.g. `in:n/a`)             |
-| number + unit          | `-- <unit>` (e.g. `5h:--`)                |
-| gauge (window)         | `░░░░░░░░ 0%` (gray)                       |
-| bare string            | `n/a`                                     |
+| Module class                  | Placeholder body                          |
+| ----------------------------- | ----------------------------------------- |
+| pure number                   | `<prefix>n/a` (e.g. `in:n/a`)             |
+| number + unit                 | `-- <unit>` (e.g. `5h:--`)                |
+| gauge (window)                | `░░░░░░░░ 0%` (gray)                       |
+| bare string                   | `n/a`                                     |
+| ratio (hit-rate family)       | `<prefix>n/a%` (e.g. `hit:n/a%`)          |
 
-`m_window5h`, `m_window7d`, and `m_windowContext` always render the gauge
-shape with the `STALE_COLOR` band when stale, regardless of `display`
-mode.
+`m_window5h`, `m_window7d` always render the gauge shape with the
+`STALE_COLOR` band when stale, regardless of `display` mode.
+
+**Value-zero rule** (since v0.8.x): when the module's data path yields
+the literal number `0` (not `null`), the module renders the value as
+`0` (e.g. `in:0`, `calls:0`). Divide-by-zero renders as `--`.
 
 ---
 
-## 6. Color values accepted by `:color:`
+## 6. Color values accepted by `|color|`
 
 Anything `resolveColor()` accepts. Three categories:
 
@@ -208,8 +286,7 @@ Anything `resolveColor()` accepts. Three categories:
    `magenta`, `white`, `gray`, `orange`, `purple`) — expands to a
    built-in 256-color SGR.
 2. **Raw SGR escape** (any string starting with `\x1b[`).
-3. **Quote-only extras** (`m_quote` only): `rainbow`, `rand-rainbow`,
-   `hue`.
+3. **`m_quote` extras**: `rainbow`, `rand-rainbow`, `hue`.
 
 `STALE_COLOR` (`\x1b[90m` = bright black) and `BROKEN_COLOR`
 (`\x1b[31m` = red) are the two implicit fallback colors used when a
@@ -227,32 +304,32 @@ the rendered output into "above the break" and "below the break" chunks:
   output (whatever `TOPGAUGE_CC_UPSTREAM` contains).
 - Everything BELOW is **appended** after the upstream.
 
-This is how `["m_template:plan:mode:plan", "\n", "m_template:balance:mode:balance"]`
-renders: plan-section + newline + balance-section, sandwiched around the
-upstream statusline.
+This is how `["m_template|_standard", "s_newline", "m_template|_balance_simple|type|balance"]`
+renders: a multi-line plan section + a multi-line balance section,
+sandwiched around the upstream statusline.
 
 ---
 
-## 7.5. Built-in presets (v0.8.14+)
+## 8. Built-in presets (v0.8.14+)
 
 The seven plan + two balance presets are first-class entries in
-`lineTemplates` with `_`-prefixed keys. Use `m_template|_X` to reference
-them from your `statuslineTemplate` array. With the optional
-`|mode|<plan|balance>` second arg, you can constrain dispatch to one
-provider type — the default is `mode:plan` (so `_balance_*` presets
-silently drop on a TOKEN_PLAN provider, and PLAN presets silently drop
-on a BALANCE provider if you don't override).
+`cfg().lineTemplates` with `_`-prefixed keys. Reference them from your
+`statuslineTemplate` array via `m_template|_X`. The optional
+`|type|plan|balance` second arg constrains dispatch to one provider
+TYPE — default is `type|plan`, so a `_balance_*` preset silently
+drops on a TOKEN_PLAN provider unless overridden. (The legacy
+`|mode|…` form is still accepted.)
 
-| Key                       | Lines | Description                                                                           | Default mode |
-| ------------------------- | ----- | ------------------------------------------------------------------------------------- | ------------ |
-| `_1line` / `_simple`      | 1     | Token-plan only, single line (byte-identical aliases)                                 | `plan`       |
-| `_simple-alone`           | 1     | Single line with `"Usage:"` label prefix (for solo use, no upstream)                  | `plan`       |
-| `_standard`               | 2     | Line 0 = token-plan, line 1 = context + tokens (no session line)                      | `plan`       |
-| `_standard-alone`         | 3     | Adds session info on line 0 (for solo use, no upstream chain)                         | `plan`       |
-| `_abundant`               | 4     | Line 0 = session + git (deep git workflow)                                            | `plan`       |
-| `_complete`               | 5     | Adds totals on line 3 (verbose — not recommended)                                     | `plan`       |
-| `_balance_simple`         | 1     | Default balance render (`"Balance: <balance>"`)                                       | `balance`    |
-| `_balance_simple-alone`   | 1     | Balance render with explicit `"Balance:"` label prefix (for solo use)                 | `balance`    |
+| Key                       | Lines | Description                                                                          | Default `type` |
+| ------------------------- | ----- | ------------------------------------------------------------------------------------ | -------------- |
+| `_1line` / `_simple`      | 1     | Token-plan only, single line (byte-identical aliases).                               | `plan`         |
+| `_simple-alone`           | 1     | Single line with explicit `"Usage:"` label prefix (for solo use, no upstream).       | `plan`         |
+| `_standard`               | 2     | Line 0 = token-plan, line 1 = context + tokens (no session line).                    | `plan`         |
+| `_standard-alone`         | 3     | Adds session info on line 0 (for solo use, no upstream chain).                       | `plan`         |
+| `_abundant`               | 4     | Line 0 = session + git (deep git workflow).                                          | `plan`         |
+| `_complete`               | 5     | Adds totals on line 3 (verbose — not recommended; see Note below).                  | `plan`         |
+| `_balance_simple`         | 1     | Default balance render (`"Balance: <balance>"`).                                     | `balance`      |
+| `_balance_simple-alone`   | 1     | Balance render with explicit `"Balance:"` label prefix (for solo use).               | `balance`      |
 
 Usage:
 
@@ -260,48 +337,62 @@ Usage:
 {
   "statuslineTemplate": ["m_template|_standard"],
   // Or, for a DeepSeek (BALANCE) provider, the explicit form:
-  // "statuslineTemplate": ["m_template|_balance_simple|mode|balance"],
+  // "statuslineTemplate": ["m_template|_balance_simple|type|balance"]
 }
 ```
 
-The `_`-prefix marks a built-in preset — user-defined
+The `_` prefix marks a built-in preset — user-defined
 `lineTemplates.<_*>` entries that collide with a built-in key are
-rejected (warn + skip). Use a different key for your own presets.
+**rejected** (warn + skip). Use a different key for your own presets.
+
+> **Note on `_complete`:** the built-in body still references a few
+> modules removed in v0.8.0 (`m_totalTokenIn`, `m_totalTokenOut`,
+> `m_totalTokenWithCacheIn`). Treat `_complete` as **deprecated** and
+> either pick `_abundant` or hand-roll a 5-line variant that uses
+> `m_accTokenIn|scope|ccsession`, `m_accTokenOut|scope|ccsession`,
+> `m_accTokenCachedIn|scope|ccsession`.
 
 ---
 
-## 8. Quick example templates
+## 9. Quick example templates
 
 ```jsonc
 // Minimal: just the mode label and 5h window.
-"statuslineTemplate": ["m_modeLabel", "s_0", "m_window5h"]
+"statuslineTemplate": ["m_modeLabel", "s_space", "m_window5h"]
 
-// Default-style (with upstream separators between modules).
+// Default-style (with named separators between modules).
 "statuslineTemplate": [
-  "m_modeLabel:color:yellow",
-  "s_0",
+  "m_modeLabel|color|yellow",
+  "s_space",
   "m_window5h",
-  "s_1",
+  "s_dot",
+  "s_space",
   "m_window7d",
-  "s_0",
-  "m_age:color:gray"
+  "s_space",
+  "m_age|color|gray"
 ]
 
-// Plan-only with custom 5h color override:
+// Plan-only with custom 5h color override + plan-aligned sum:
 "statuslineTemplate": [
-  "m_template:plan:mode:plan",
+  "m_template|plan|type|plan",
   "s_newline",
-  "m_template:balance:mode:balance"
+  "m_template|balance|type|balance"
 ],
 "lineTemplates": {
   "plan": [
-    "m_window5h:color:red:display:remaining",
+    "m_window5h|color|red|display|remaining",
     "s_space",
     "m_countdown5h",
-    "s_1",
+    "s_dot",
+    "s_space",
     "m_window7d",
     "s_space",
-    "m_countdown7d"
+    "m_countdown7d",
+    "s_newline",
+    "m_sumTokenIn|window|5h|align|true",
+    "s_dot",
+    "s_space",
+    "m_sumTokenHitRate|window|5h"
   ],
   "balance": [
     "m_balance",
@@ -309,4 +400,13 @@ rejected (warn + skip). Use a different key for your own presets.
     "m_age"
   ]
 }
+
+// Compose with the upstream statusline via the standard preset:
+"statuslineTemplate": ["m_template|_standard"]
 ```
+
+> **Migration tip:** if you have a pre-v0.7.1 config written with `:`,
+> the easiest path is a global replace `s/:/|/g` on every token
+> inside `statuslineTemplate` and `lineTemplates.*`. The dispatcher
+> only recognizes `|`, so any leftover `:` will silently route the
+> token through the bare-MODULES path and warn "unknown module".
