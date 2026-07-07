@@ -25,6 +25,7 @@
 import * as cache from "./cache.ts";
 import { configStore } from "./config.ts";
 import * as diagnostics from "./diagnostics.ts";
+import { Agent, fetch as undiciFetch } from "undici";
 
 // v0.8.21+ — fixed cache key. Shared across processes / projects
 // so all readers see the same body. No per-project prefix.
@@ -70,24 +71,53 @@ async function fetchOne(
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     return { ok: false, reason: "unsupported scheme" };
   }
+  // v0.8.21+ — opt-in insecure-TLS relaxation gated by
+  // `cfg().quoteInsecureTls` (env var
+  // `TOPGAUGE_CC_QUOTE_INSECURE_TLS=1` OR an explicit
+  // `quoteInsecureTls: true` in config.json — see config.ts
+  // loadConfig). When ON, attach an undici Agent that skips the
+  // standard certificate chain / expiry verification so the
+  // user can keep using self-hosted quote endpoints whose cert
+  // has expired. ONLY applies to m_quote fetches — the provider
+  // fetch (src/api.ts, src/api.deepseek.ts) is unaffecte and
+  // keeps validating TLS as normal. We use undici.fetch + a
+  // per-call dispatcher rather than setGlobalDispatcher to keep
+  // the relaxation scoped to THIS fetch only.
+  const insecureTls =
+    url.protocol === "https:" && configStore.get().quoteInsecureTls;
+  const dispatcher = insecureTls
+    ? new Agent({ connect: { rejectUnauthorized: false } })
+    : undefined;
   let res: Response;
   try {
-    res = await fetch(address, {
+    // undici.fetch's return type is structurally identical to
+    // globalThis.Response at runtime — the type-level mismatch
+    // is the `ReadableStream<Uint8Array>` vs `<any>` generic
+    // parameter. We only call .ok / .status / .text() which are
+    // identical on both, so the cast is safe.
+    res = (await undiciFetch(address, {
       headers: { Accept: "application/json" },
       signal: AbortSignal.timeout(5000),
       redirect: "manual",
-    });
+      dispatcher,
+    })) as unknown as Response;
   } catch (e) {
+    if (dispatcher) dispatcher.close();
     return {
       ok: false,
       reason: e instanceof Error ? e.message : String(e),
     };
   }
-  if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` };
+  if (!res.ok) {
+    if (dispatcher) dispatcher.close();
+    return { ok: false, reason: `HTTP ${res.status}` };
+  }
   try {
     const body = await res.text();
+    if (dispatcher) dispatcher.close();
     return { ok: true, body };
   } catch (e) {
+    if (dispatcher) dispatcher.close();
     return {
       ok: false,
       reason: e instanceof Error ? e.message : String(e),

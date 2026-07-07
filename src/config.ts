@@ -586,6 +586,17 @@ const DEFAULT_CONFIG: {
   // v0.2.21: declarative provider registry. See DEFAULT_PROVIDERS
   // above and src/providers.ts for the matcher / dispatcher.
   providers: Record<string, ProviderEntry>;
+  // v0.8.21+ — opt-in TLS relaxation for `m_quote|address|<url>`
+  // https:// endpoints. When `true`, the fetcher attaches an
+  // undici `Agent({ connect: { rejectUnauthorized: false } })` so
+  // self-hosted quote endpoints with expired certs (or Dev
+  // environments behind an intercepting proxy) can still be
+  // pulled. Also gated on the `TOPGAUGE_CC_QUOTE_INSECURE_TLS=1`
+  // env var at config-load time — the env var OR an explicit
+  // truthy `quoteInsecureTls: true` in config.json turns it on.
+  // The provider fetcher (src/api.ts, src/api.deepseek.ts) is
+  // UNAFFECTED by this flag.
+  quoteInsecureTls: boolean;
 } = {
   cacheTtlMs: 60_000,
   fetchTimeoutMs: 5_000,
@@ -623,6 +634,7 @@ const DEFAULT_CONFIG: {
   tokenFormat: DEFAULT_TOKEN_FORMAT,
   version: "",
   providers: DEFAULT_PROVIDERS,
+  quoteInsecureTls: false,
 };
 
 export type Config = typeof DEFAULT_CONFIG;
@@ -670,8 +682,18 @@ export async function loadConfig(): Promise<Config> {
   // Cheap existence probe — the common case is no config file, no need
   // to even open the file descriptor.
   diagnostics.logFsRead(path, "config.loadConfig");
+  // v0.8.21+ — seed the env-var-only defaults BEFORE the file
+  // exists/no-config path. `TOPGAUGE_CC_QUOTE_INSECURE_TLS=1`
+  // turns on `quoteInsecureTls` when the user's config.json
+  // doesn't pin the field explicitly; the explicit
+  // `quoteInsecureTls: true` in config.json still wins because
+  // applyOverrides runs on top of this seed.
+  const envSeed: Record<string, unknown> = {};
+  if (process.env.TOPGAUGE_CC_QUOTE_INSECURE_TLS === "1") {
+    envSeed.quoteInsecureTls = true;
+  }
   if (!existsSync(path)) {
-    _current = DEFAULT_CONFIG;
+    _current = mergeConfig(envSeed);
     return _current;
   }
 
@@ -680,7 +702,7 @@ export async function loadConfig(): Promise<Config> {
     raw = readFileSync(path, "utf8");
   } catch (e) {
     warn(`read failed (${(e as Error).message}); using defaults`);
-    _current = DEFAULT_CONFIG;
+    _current = mergeConfig(envSeed);
     return _current;
   }
 
@@ -689,17 +711,22 @@ export async function loadConfig(): Promise<Config> {
     parsed = JSON.parse(raw);
   } catch (e) {
     warn(`invalid JSON (${(e as Error).message}); using defaults`);
-    _current = DEFAULT_CONFIG;
+    _current = mergeConfig(envSeed);
     return _current;
   }
 
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     warn("root must be a JSON object; using defaults");
-    _current = DEFAULT_CONFIG;
+    _current = mergeConfig(envSeed);
     return _current;
   }
 
-  _current = mergeConfig(parsed as Record<string, unknown>);
+  // Env-seed keys that the user's config.json does NOT pin are
+  // threaded through here so a partial override (e.g. user
+  // toggles one knob but relies on env for the TLS opt-out)
+  // composes correctly. mergeConfig preserves both layers.
+  const merged = { ...envSeed, ...(parsed as Record<string, unknown>) };
+  _current = mergeConfig(merged);
   return _current;
 }
 
@@ -841,6 +868,20 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
       out.fetchTimeoutMs = raw.fetchTimeoutMs;
     } else {
       warn("fetchTimeoutMs must be a positive number; using default");
+    }
+  }
+
+  // v0.8.21+ — quoteInsecureTls (m_quote|address| TLS opt-out)
+  // Reads from config.json (this branch) AND seeds from the
+  // `TOPGAUGE_CC_QUOTE_INSECURE_TLS=1` env var when the file
+  // doesn't pin the field explicitly. See loadConfig() below
+  // for the env-var seeding step; this branch handles the
+  // config.json side.
+  if ("quoteInsecureTls" in raw) {
+    if (typeof raw.quoteInsecureTls === "boolean") {
+      out.quoteInsecureTls = raw.quoteInsecureTls;
+    } else {
+      warn("quoteInsecureTls must be a boolean; using default");
     }
   }
 
