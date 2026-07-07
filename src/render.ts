@@ -31,7 +31,8 @@ import {
   buildRainbow,
   buildHue,
   parseFreq,
-  pickQuote,
+  pickQuoteEntry,
+  pickQuoteEntryFiltered,
   quoteIndex,
   type QuoteFreq,
 } from "./quotes.ts";
@@ -821,6 +822,14 @@ type RenderContext = {
   // m_template invocation; nested m_template is impossible because
   // config.ts strips them at load time.
   passThrough?: Record<string, ResolvedValue>;
+  // v0.8.21+ — quote bodies pre-fetched by `preFetchQuotes` in
+  // `index.ts:main()` (see `src/api.quote.ts`). Keyed by raw
+  // address string. A missing key (or undefined map) means the
+  // fetch failed / was skipped / the active template had no
+  // `m_quote|address|…` token — the renderer's address-mode path
+  // falls back to local QUOTES in that case. Lifetime is one tick;
+  // built fresh by `preFetchQuotes` and threaded into ctx here.
+  quoteBodies?: Map<string, string>;
 };
 
 // v0.4.x — modules may declare a `type` filter so they only render
@@ -2087,10 +2096,15 @@ const MODULES: Record<string, Module> = {
   // v0.3.6+ — bare `m_quote` (no inline args). Picks a quote from
   // the hourly window and renders it plain (no SGR wrapper). Opt-in
   // — the default plan / balance templates do NOT include it.
+  //
+  // v0.8.21+ — also renders the entry's `author` as a
+  // `--<author>` suffix when one is supplied. Plain `<quote>` is
+  // the no-author case.
   m_quote: (c) => {
     const freq = parseFreq("h");
     if (!freq) return null; // unreachable — "h" is always valid
-    return pickQuote(freq, c.nowMs);
+    const entry = pickQuoteEntry(freq, c.nowMs);
+    return entry.author ? `${entry.quote}--${entry.author}` : entry.quote;
   },
 
   // ----- v0.4.0+ session-info / metadata modules -----
@@ -3000,6 +3014,22 @@ const COLOR_PARAM = {
 //                                "░░░░░░░░ 0%" (parallel to the
 //                                natural 0-value render)
 //   bare-string modules        → STALE_COLOR wrap on "n/a"
+// v0.8.21+ — m_quote `wrap` param. Default true. When true, the
+// walked value (and only the walked value, never the local
+// QUOTES fallback) is bracketed with `~` characters on both
+// ends. `~<value>~` is the visual signature of an address-mode
+// quote — users can tell at a glance whether the line came from
+// a remote endpoint or from the local in-memory list. Set
+// `wrap|false` to opt out (e.g. when the remote value will be
+// embedded into a larger structured output where the tildes
+// would be visually noisy).
+const QUOTE_WRAP_PARAM = {
+  named: {
+    wrap: (raw: string): ResolvedValue | null =>
+      raw === "true" || raw === "false" ? raw : null,
+  },
+} as const;
+
 const NULDROP_PARAM = {
   named: {
     nulldrop: (raw: string): ResolvedValue | null =>
@@ -3526,34 +3556,63 @@ const QUOTE_ADDRESS_PARAM = {
   },
 } as const;
 
-// v0.8.19+ — m_quote `fields` param. Comma-separated list of
-// dot-separated paths: `a.b,quotes.0.quotestring,from_who`. Each
-// path is independently walked against the fetched JSON; the
-// collected strings are rendered as `field1: field2: field3:`
-// (a single colon-terminated segment per path). v0.8.18's `field`
-// (singular, single path) is REMOVED — the upgrade is strict.
-// Per the spec: each path is evaluated against the same root
-// (the fetched JSON), independently. A path that misses returns
-// an empty string for that slot; if ALL paths miss, the remote
-// fetch is considered failed and we fall back to local QUOTES.
-const QUOTE_FIELDS_PARAM = {
+// v0.8.21+ — m_quote `quote` param (was `field` in v0.8.20+).
+// A single dot-separated path into the fetched JSON: `a.b`,
+// `quotes.0.quotestring`, `hitokoto`. The walked value is the
+// quote text rendered between the `~` brackets.
+//
+// An empty `quote` is a legal "no walk" marker (v0.8.18
+// backwards-compat: a plain-text body returned by the endpoint
+// is rendered verbatim when no path is supplied). The renderer
+// distinguishes the two by checking `params.quote !== undefined`
+// — missing arg vs empty arg.
+const QUOTE_QUOTE_PARAM = {
   named: {
-    fields: (raw: string) => {
-      if (raw.length === 0) return null;
-      const paths = raw.split(",");
-      for (const p of paths) {
-        const trimmed = p.trim();
-        if (trimmed.length === 0) return null; // empty segment
-        // Reject leading / trailing dots, empty segments.
-        if (
-          trimmed.startsWith(".") ||
-          trimmed.endsWith(".") ||
-          trimmed.includes("..")
-        ) {
-          return null;
-        }
+    quote: (raw: string) => {
+      if (raw.length === 0) return raw;
+      if (raw.startsWith(".") || raw.endsWith(".") || raw.includes("..")) {
+        return null;
       }
       return raw;
+    },
+  },
+} as const;
+
+// v0.8.21+ — m_quote `author` param. A single dot-separated path
+// into the fetched JSON (e.g. `from_who`). The walked value is
+// the author rendered as the `--<author>` half of the
+// `~<quote>--<author>~` output. Missing arg OR a walk that
+// yields null/empty means "no author suffix" — the renderer
+// emits the bare `~<quote>~` instead.
+const QUOTE_AUTHOR_PARAM = {
+  named: {
+    author: (raw: string) => {
+      if (raw.length === 0) return null;
+      if (raw.startsWith(".") || raw.endsWith(".") || raw.includes("..")) {
+        return null;
+      }
+      return raw;
+    },
+  },
+} as const;
+
+// v0.8.21+ — m_quote `lang` param. A CSV list of language codes
+// (matches `QuoteEntry.lang` — currently "en" and "zh").
+// Restricts local-quote rotation to the listed languages. Empty
+// arg or all-unknown codes fall back to "no filter".
+const QUOTE_LANG_PARAM = {
+  named: {
+    lang: (raw: string) => {
+      const parts = raw
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      if (parts.length === 0) return null;
+      // Drop anything not in the known set — better to silently
+      // filter than to reject the whole token for a typo.
+      const known = parts.filter((p) => p === "en" || p === "zh");
+      if (known.length === 0) return null;
+      return known.join(",");
     },
   },
 } as const;
@@ -3625,44 +3684,50 @@ export function getFieldByPath(value: unknown, path: string): string | null {
 // 60s in-process dedupe in diagnostics.append keeps a sustained
 // network outage from drowning the file.
 //
-// Returns the joined string when at least one path produced a
-// non-empty result; returns null only when:
-//   - curl exit non-zero (network / 4xx / 5xx / timeout)
-//   - body is not valid JSON AND no path is empty
-//   - ALL paths produced empty results (caller treats this as
-//     "remote path miss" and falls back to local QUOTES)
+// v0.8.21+ — read a pre-fetched quote body from `ctx.quoteBodies`
+// (populated by `preFetchQuotes` in `src/api.quote.ts`) and walk
+// the user's `quote` (and optional `author`) path. Pure sync; no
+// IO at render time. The fetch + disk-cache all happen ahead of
+// `buildProviderLine` in `index.ts:main()`; by the time the
+// renderer runs, the body is either present in the Map (and we
+// produce {quote, author}) or absent (and the caller falls back
+// to local QUOTES).
+//
+// Returns the walked strings when found; returns null only when:
+//   - ctx.quoteBodies is undefined or the address key is missing
+//   - body is not valid JSON AND quote is the empty marker
+//   - quote walk yields null (the author's miss is tolerated —
+//     the renderer still produces `~<quote>~` without the
+//     `--<author>` suffix).
+//
+// `author` may be undefined (no author arg in the token); in that
+// case the author slot is left null and the caller emits
+// `~<quote>~`.
 function fetchQuoteFromAddress(
   address: string,
-  paths: readonly string[],
+  quote: string,
+  author: string | undefined,
   ctx: RenderContext,
-): string | null {
-  let body: string;
-  try {
-    body = execSync(`curl -sSf --max-time 5 ${shellQuote(address)}`, {
-      encoding: "utf8",
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-  } catch {
+): { quote: string; author: string | null } | null {
+  const body = ctx.quoteBodies?.get(address);
+  if (body === undefined) {
     diagnostics.append(
       "warning",
       "m_quote",
-      `address fetch failed (curl exit): ${truncateForLog(address)}`,
+      `address fetch failed (no body): ${truncateForLog(address)}`,
       ctx.nowMs,
     );
     return null;
   }
-  // Try JSON parse first. If body is a plain string AND the user
-  // supplied an empty fields list (e.g. just one empty path that
-  // resolves to the whole body), return it directly.
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);
   } catch {
-    if (paths.length === 1 && paths[0] === "") {
-      // Trim trailing colons so the output is bare body, not
-      // `body:` (the join below would tack on ":" unconditionally).
-      return body;
+    if (quote === "") {
+      // v0.8.18 short-circuit — a plain-text body is rendered
+      // verbatim when no quote path is supplied. author slot is
+      // null (no path-walk succeeded on a non-JSON body).
+      return { quote: body, author: null };
     }
     diagnostics.append(
       "warning",
@@ -3672,23 +3737,22 @@ function fetchQuoteFromAddress(
     );
     return null;
   }
-  const parts: string[] = [];
-  for (const path of paths) {
-    parts.push(getFieldByPath(parsed, path) ?? "");
-  }
-  // If every path is empty, treat as a miss and return null so the
-  // caller can fall back. (We don't render an empty `" : : "` —
-  // that's a no-op masquerading as data.)
-  if (parts.every((p) => p === "")) {
+  const q = getFieldByPath(parsed, quote);
+  if (q === null) {
     diagnostics.append(
       "warning",
       "m_quote",
-      `address fetch OK but all paths miss: ${truncateForLog(address)} (paths=${paths.join(",")})`,
+      `address fetch OK but quote miss: ${truncateForLog(address)} (quote=${quote})`,
       ctx.nowMs,
     );
     return null;
   }
-  return parts.join(": ") + ":";
+  let a: string | null = null;
+  if (author && author.length > 0) {
+    const aw = getFieldByPath(parsed, author);
+    a = aw ?? null;
+  }
+  return { quote: q, author: a };
 }
 
 // v0.8.20+ — truncate a user-supplied address for diagnostic
@@ -3697,14 +3761,6 @@ function fetchQuoteFromAddress(
 // identify which endpoint failed.
 function truncateForLog(s: string): string {
   return s.length > 120 ? s.slice(0, 119) + "…" : s;
-}
-
-// v0.8.18+ — POSIX shell-quote a single argument. Wraps in single
-// quotes and escapes any embedded single quotes. Used for the
-// curl address to defeat shell injection from a user-supplied
-// URL that contains `;` or `$(...)`.
-function shellQuote(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
 // v0.8.18+ — small string hash for color-band seeding when the
@@ -3882,7 +3938,10 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
       ...QUOTE_FREQ_PARAM.named,
       ...QUOTE_COLOR_PARAM.named,
       ...QUOTE_ADDRESS_PARAM.named,
-      ...QUOTE_FIELDS_PARAM.named,
+      ...QUOTE_QUOTE_PARAM.named,
+      ...QUOTE_AUTHOR_PARAM.named,
+      ...QUOTE_LANG_PARAM.named,
+      ...QUOTE_WRAP_PARAM.named,
       ...NULDROP_PARAM.named,
     },
   },
@@ -4110,6 +4169,46 @@ const INLINE_TYPE_FILTERS: Partial<Record<string, "plan" | "balance" | "unknown"
   m_countdown7d: "plan",
   m_balance: "balance",
 };
+
+// v0.8.21+ — local QUOTES picker shared by the `m_quote` inline
+// renderer and its bare MODULES twin. Honors `freq` (default
+// 1h) + optional `lang` CSV filter. Returns null when the
+// schema rejects the freq arg so the caller can fall through
+// to `INLINE_BADARG` (or surface the placeholder path).
+function pickLocalQuote(
+  params: Readonly<Record<string, ResolvedValue>>,
+  langRaw: string | undefined,
+  ctx: RenderContext,
+): string | null {
+  const raw = params.freq as string | undefined;
+  const parsed: QuoteFreq | null = parseFreq(raw ?? "h");
+  if (!parsed) return null;
+  const langs = (langRaw ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  const entry = langs.length > 0
+    ? pickQuoteEntryFiltered(parsed, ctx.nowMs, langs)
+    : pickQuoteEntry(parsed, ctx.nowMs);
+  const author = entry.author;
+  return author ? `${entry.quote}--${author}` : entry.quote;
+}
+
+// v0.8.21+ — deterministic seed for the color shortcut helpers
+// (rainbow / hue) used by the local QUOTES path. Mirrors the
+// bucket index so the same `freq` + `nowMs` lands on the same
+// color band. Falls back to 0 when the freq arg is malformed.
+function quoteLocalSeed(
+  params: Readonly<Record<string, ResolvedValue>>,
+  langRaw: string | undefined,
+  ctx: RenderContext,
+): number {
+  const raw = params.freq as string | undefined;
+  const parsed: QuoteFreq | null = parseFreq(raw ?? "h");
+  if (!parsed) return 0;
+  void langRaw;
+  return quoteIndex(parsed, ctx.nowMs);
+}
 
 // Per-prefix renderer. Returns the chunk text (or null to drop).
 const INLINE_RENDERERS: Record<string, InlineRenderer> = {
@@ -4552,58 +4651,71 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     return wrapValueDefault("m_sumApiCalls", agg.calls, `${labelFor("apiCalls")}${agg.calls}`, passThroughOr<string>(params, ctx, "color"));
   },
   m_quote: (params, ctx) => {
-    // v0.8.19+ — when `address` is non-empty, fetch the remote
-    // payload via curl and walk the comma-separated `fields`
-    // paths to extract strings. On any failure (curl exit,
-    // non-JSON body, all paths miss) we FALL BACK to the local
-    // QUOTES path so the user always sees something. Pass
-    // |nulldrop|true to drop the chunk on local-quote miss instead
-    // of surfacing the placeholder.
+    // v0.8.21+ — when `address` is non-empty, fetch the remote
+    // payload (pre-fetched by `preFetchQuotes`, see
+    // `src/api.quote.ts`) and walk the `quote` (+ optional
+    // `author`) paths to extract strings. On any failure
+    // (no body, non-JSON body where `quote` is non-empty, or
+    // quote path miss) we FALL BACK to the local QUOTES path.
+    // Pass |nulldrop|true (default) to drop the chunk on
+    // local-quote miss instead of surfacing the placeholder.
     //
-    // The fetch path IGNORES `freq` (remote payloads are not
-    // window-bucketed — the user is responsible for picking an
-    // endpoint that returns stable strings or rotates on its own
-    // schedule).
+    // Output format:
+    //   - remote: `~<quote>~` (no author) or `~<quote>--<author>~`
+    //     — opt out with |wrap|false
+    //   - local fallback: `<quote>` plus `--<author>` only when
+    //     the picked entry has one — no `~` brackets
+    //
+    // The fetch path IGNORES `freq` / `lang` for rotation
+    // (remote payloads are not window-bucketed — the user picks
+    // an endpoint that returns stable strings or rotates on its
+    // own schedule).
     const address = params.address as string | undefined;
-    const fieldsRaw = (params.fields as string | undefined) ?? "";
-    const paths = fieldsRaw
-      .split(",")
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
+    const quoteRaw = (params.quote as string | undefined) ?? "";
+    const authorRaw = params.author as string | undefined;
+    const langRaw = params.lang as string | undefined;
+    // `quote` arg present (even if empty) → user opted into the
+    // address-mode branch. Missing arg → local QUOTES.
+    const hasQuote = (params.quote as string | undefined) !== undefined;
+    // wrap defaults to "true"; passThroughOr lets an outer
+    // m_template|<key>|wrap|<bool> set it for nested m_quote
+    // instances that don't supply their own wrap arg.
+    const wrap =
+      passThroughOr<string>(params, ctx, "wrap") !== "false";
     let text: string;
     let seed: number;
-    if (address && address.length > 0 && paths.length > 0) {
-      const remote = fetchQuoteFromAddress(address, paths, ctx);
+    if (address && address.length > 0 && hasQuote) {
+      const remote = fetchQuoteFromAddress(address, quoteRaw, authorRaw, ctx);
       if (remote !== null) {
-        text = remote;
-        // Seed for the color shortcut helpers (rainbow / hue) —
-        // use a stable hash of the text so each distinct remote
-        // quote gets its own deterministic color band.
-        seed = stringHash(remote);
+        const authorSuffix = remote.author ? `--${remote.author}` : "";
+        const inner = `${remote.quote}${authorSuffix}`;
+        const walkedJson = quoteRaw.length > 0;
+        // Wrap brackets only when the user walked JSON; the
+        // v0.8.18 bare-body short-circuit returns raw text (the
+        // user opted out of walking) and is un-wrapped so the
+        // exact body appears verbatim.
+        text = wrap && walkedJson ? `~${inner}~` : inner;
+        // Seed for the color shortcut helpers (rainbow / hue).
+        seed = stringHash(remote.quote);
       } else {
-        // Fetch / parse / path failure → fall back to local
-        // QUOTES (v0.8.19 default; v0.8.18 dropped here).
-        const raw = params.freq as string | undefined;
-        const parsed: QuoteFreq | null = parseFreq(raw ?? "h");
-        if (!parsed) return INLINE_BADARG;
-        seed = quoteIndex(parsed, ctx.nowMs);
-        text = pickQuote(parsed, ctx.nowMs);
-        if (text === "") return null;
+        // Fetch / parse / quote-miss → fall back to local QUOTES.
+        const local = pickLocalQuote(params, langRaw, ctx);
+        if (local === null) return INLINE_BADARG;
+        text = local;
+        seed = quoteLocalSeed(params, langRaw, ctx);
       }
     } else {
       // Local QUOTES path. Default freq = 1h. The schema resolver
       // already shape-validated the raw string; we now parse it
-      // into a QuoteFreq {count, unit, ms} object that quoteIndex
-      // and pickQuote need. params.freq is undefined when the
-      // token is just `m_quote` or `m_quote|color|red`. On a
-      // malformed-but-shape-valid string we INLINE_BADARG here;
-      // in practice parseFreq rejects the same set the resolver.
-      const raw = params.freq as string | undefined;
-      const parsed: QuoteFreq | null = parseFreq(raw ?? "h");
-      if (!parsed) return INLINE_BADARG;
-      seed = quoteIndex(parsed, ctx.nowMs);
-      text = pickQuote(parsed, ctx.nowMs);
-      if (text === "") return null;
+      // into a QuoteFreq {count, unit, ms} object that the picker
+      // needs. params.freq is undefined when the token is just
+      // `m_quote` or `m_quote|color|red`. On a malformed-but-
+      // shape-valid string we INLINE_BADARG here; in practice
+      // parseFreq rejects the same set the resolver.
+      const local = pickLocalQuote(params, langRaw, ctx);
+      if (local === null) return INLINE_BADARG;
+      text = local;
+      seed = quoteLocalSeed(params, langRaw, ctx);
     }
     const color = decodeColorParam(params.color as string | undefined);
     return applyColor(text, color, seed);
@@ -5387,6 +5499,12 @@ export function renderProviderLine(
     // v0.4.0+ — optional. Synthesized from tokens.contextWindow.contextUsedPercent
     // when omitted. Only read by m_windowContext.
     contextWindow?: Window | null;
+    // v0.8.21+ — optional. Pre-fetched quote bodies from
+    // `preFetchQuotes` (see `src/api.quote.ts`). The m_quote
+    // address-mode renderer reads this map; absent means "no
+    // pre-fetched bodies for this tick" and the renderer falls
+    // back to local QUOTES.
+    quoteBodies?: Map<string, string>;
   },
 ): string {
   // v0.4.0+ — synthesize the contextWindow Window from
@@ -5436,6 +5554,9 @@ export function renderProviderLine(
     // emits ⛓️‍💥/🔗 at most once even when the user's template contains
     // m_age in multiple places.
     ageEmittedRef: { value: false },
+    // v0.8.21+ — per-tick quote body map from preFetchQuotes.
+    // Undefined when no address-mode m_quote token is active.
+    quoteBodies: ctx.quoteBodies,
   };
   // v0.8.14+ — `statuslineTemplate` is always a `string[]` after
   // loader-side auto-migration. `.slice()` keeps the snapshot-

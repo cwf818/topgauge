@@ -37,134 +37,164 @@
 // quote + the rest of the statusline still fits on a single
 // terminal row at 80 cols (e.g. with the default 5h/7d windows + a
 // 60-char quote = 88 chars, within typical wrap tolerance).
-export const QUOTES: readonly string[] = [
+//
+// v0.8.21+ — quote record. `author` is optional; when null or
+// blank, the renderer emits `~<quote>~` with no `--<author>`
+// suffix. `lang` lets the user filter rotation to one language
+// via the inline `|lang|<csv>` arg; an empty/missing `lang`
+// filter means "no filter, any language is eligible".
+export interface QuoteEntry {
+  readonly author: string | null;
+  readonly quote: string;
+  readonly lang: string;
+}
+
+// v0.8.21+ — defaults. English (lang="en") and 中文 (lang="zh").
+// `author` is left null for the bulk of the table — most of the
+// quotes are folk wisdom / untraceable, and the renderer drops
+// the `--<author>` suffix when the value is null/blank. Add an
+// explicit author where the source is well-known and useful
+// (Shakespeare, Lincoln, MLK, …) so the user can see it in the
+// statusline output.
+const EN = (q: string, author: string | null = null): QuoteEntry => ({
+  author,
+  quote: q,
+  lang: "en",
+});
+const ZH = (q: string, author: string | null = null): QuoteEntry => ({
+  author,
+  quote: q,
+  lang: "zh",
+});
+
+export const QUOTES: readonly QuoteEntry[] = [
   // English (1-60)
-  "Stay hungry, stay foolish.",
-  "The only way out is through.",
-  "Done is better than perfect.",
-  "Move fast and fix things.",
-  "Make it work, make it right, make it fast.",
-  "Premature optimization is the root of all evil.",
-  "Talk is cheap. Show me the code.",
-  "Simplicity is the ultimate sophistication.",
-  "Programs must be written for people to read.",
-  "First, solve the problem. Then, write the code.",
-  "It's not a bug, it's an undocumented feature.",
-  "Two hard things: cache invalidation, naming things.",
-  "Weeks of coding can save you hours of planning.",
-  "The best error message is the one that never shows up.",
-  "If you can dream it, you can do it.",
-  "Believe you can and you're halfway there.",
-  "The harder you work, the luckier you get.",
-  "Quality is not an act, it is a habit.",
-  "Action is the foundational key to all success.",
-  "What we think, we become.",
-  "Well done is better than well said.",
-  "The future depends on what you do today.",
-  "Discipline is the bridge between goals and accomplishment.",
-  "Do the hard jobs first. The easy jobs will take care of themselves.",
-  "Don't watch the clock; do what it does. Keep going.",
-  "Success is the sum of small efforts repeated day in and day out.",
-  "Start where you are. Use what you have. Do what you can.",
-  "It always seems impossible until it's done.",
-  "Focus on being productive instead of busy.",
-  "The secret of getting ahead is getting started.",
-  "Don't let yesterday take up too much of today.",
-  "You learn more from failure than from success.",
-  "It's not whether you get knocked down, it's whether you get up.",
-  "If you are working on something exciting, it will keep you motivated.",
-  "Success is not in what you have, but who you are.",
-  "The way to get started is to quit talking and begin doing.",
-  "Innovation distinguishes between a leader and a follower.",
-  "Life is what happens when you're busy making other plans.",
-  "The mind is everything. What you think you become.",
-  "Strive not to be a success, but rather to be of value.",
-  "Two roads diverged in a wood, and I took the one less traveled.",
-  "That which does not kill us makes us stronger.",
-  "Be the change that you wish to see in the world.",
-  "The best time to plant a tree: 20 years ago. Second best: now.",
-  "An unexamined life is not worth living.",
-  "I think, therefore I am.",
-  "The unexamined life is not worth living.",
-  "Knowledge is power.",
-  "To be or not to be, that is the question.",
-  "I have a dream.",
-  "The only thing we have to fear is fear itself.",
-  "Float like a butterfly, sting like a bee.",
-  "I'll be back.",
-  "Houston, we have a problem.",
-  "May the Force be with you.",
-  "Elementary, my dear Watson.",
-  "Eureka!",
-  "Veni, vidi, vici.",
-  "Carpe diem.",
-  "Memento mori.",
-  "Cogito ergo sum.",
+  EN("Stay hungry, stay foolish."),
+  EN("The only way out is through."),
+  EN("Done is better than perfect."),
+  EN("Move fast and fix things."),
+  EN("Make it work, make it right, make it fast."),
+  EN("Premature optimization is the root of all evil."),
+  EN("Talk is cheap. Show me the code."),
+  EN("Simplicity is the ultimate sophistication."),
+  EN("Programs must be written for people to read."),
+  EN("First, solve the problem. Then, write the code."),
+  EN("It's not a bug, it's an undocumented feature."),
+  EN("Two hard things: cache invalidation, naming things."),
+  EN("Weeks of coding can save you hours of planning."),
+  EN("The best error message is the one that never shows up."),
+  EN("If you can dream it, you can do it."),
+  EN("Believe you can and you're halfway there."),
+  EN("The harder you work, the luckier you get."),
+  EN("Quality is not an act, it is a habit."),
+  EN("Action is the foundational key to all success."),
+  EN("What we think, we become."),
+  EN("Well done is better than well said."),
+  EN("The future depends on what you do today."),
+  EN("Discipline is the bridge between goals and accomplishment."),
+  EN("Do the hard jobs first. The easy jobs will take care of themselves."),
+  EN("Don't watch the clock; do what it does. Keep going."),
+  EN("Success is the sum of small efforts repeated day in and day out."),
+  EN("Start where you are. Use what you have. Do what you can."),
+  EN("It always seems impossible until it's done."),
+  EN("Focus on being productive instead of busy."),
+  EN("The secret of getting ahead is getting started."),
+  EN("Don't let yesterday take up too much of today."),
+  EN("You learn more from failure than from success."),
+  EN("It's not whether you get knocked down, it's whether you get up."),
+  EN("If you are working on something exciting, it will keep you motivated."),
+  EN("Success is not in what you have, but who you are."),
+  EN("The way to get started is to quit talking and begin doing."),
+  EN("Innovation distinguishes between a leader and a follower."),
+  EN("Life is what happens when you're busy making other plans."),
+  EN("The mind is everything. What you think you become."),
+  EN("Strive not to be a success, but rather to be of value."),
+  EN("Two roads diverged in a wood, and I took the one less traveled."),
+  EN("That which does not kill us makes us stronger."),
+  EN("Be the change that you wish to see in the world."),
+  EN("The best time to plant a tree: 20 years ago. Second best: now."),
+  EN("An unexamined life is not worth living."),
+  EN("I think, therefore I am."),
+  EN("The unexamined life is not worth living."),
+  EN("Knowledge is power."),
+  EN("To be or not to be, that is the question."),
+  EN("I have a dream."),
+  EN("The only thing we have to fear is fear itself."),
+  EN("Float like a butterfly, sting like a bee."),
+  EN("I'll be back."),
+  EN("Houston, we have a problem."),
+  EN("May the Force be with you."),
+  EN("Elementary, my dear Watson."),
+  EN("Eureka!"),
+  EN("Veni, vidi, vici."),
+  EN("Carpe diem."),
+  EN("Memento mori."),
+  EN("Cogito ergo sum."),
   // 中文 (61-110)
-  "千里之行，始于足下。",
-  "行胜于言。",
-  "学而时习之，不亦说乎。",
-  "天行健，君子以自强不息。",
-  "地势坤，君子以厚德载物。",
-  "路漫漫其修远兮，吾将上下而求索。",
-  "不积跬步，无以至千里；不积小流，无以成江海。",
-  "工欲善其事，必先利其器。",
-  "业精于勤，荒于嬉；行成于思，毁于随。",
-  "宝剑锋从磨砺出，梅花香自苦寒来。",
-  "少壮不努力，老大徒伤悲。",
-  "一寸光阴一寸金，寸金难买寸光阴。",
-  "三人行，必有我师焉。",
-  "知之为知之，不知为不知，是知也。",
-  "温故而知新，可以为师矣。",
-  "学而不思则罔，思而不学则殆。",
-  "己所不欲，勿施于人。",
-  "得道多助，失道寡助。",
-  "生于忧患，死于安乐。",
-  "富贵不能淫，贫贱不能移，威武不能屈。",
-  "苟利国家生死以，岂因祸福避趋之。",
-  "天下兴亡，匹夫有责。",
-  "人生自古谁无死，留取丹心照汗青。",
-  "海纳百川，有容乃大；壁立千仞，无欲则刚。",
-  "一万年太久，只争朝夕。",
-  "数风流人物，还看今朝。",
-  "星星之火，可以燎原。",
-  "没有调查就没有发言权。",
-  "实事求是。",
-  "实践是检验真理的唯一标准。",
-  "世上无难事，只要肯登攀。",
-  "为中华之崛起而读书。",
-  "我自横刀向天笑，去留肝胆两昆仑。",
-  "与天地兮比寿，与日月兮齐光。",
-  "莫愁前路无知己，天下谁人不识君。",
-  "长风破浪会有时，直挂云帆济沧海。",
-  "会当凌绝顶，一览众山小。",
-  "天生我材必有用，千金散尽还复来。",
-  "仰天大笑出门去，我辈岂是蓬蒿人。",
-  "人生如逆旅，我亦是行人。",
-  "此心安处是吾乡。",
-  "纸上得来终觉浅，绝知此事要躬行。",
-  "问渠那得清如许，为有源头活水来。",
-  "少年辛苦终身事，莫向光阴惰寸功。",
-  "博观而约取，厚积而薄发。",
-  "沉舟侧畔千帆过，病树前头万木春。",
-  "山重水复疑无路，柳暗花明又一村。",
-  "不畏浮云遮望眼，自缘身在最高层。",
-  "咬定青山不放松，立根原在破岩中。",
-  "Stay weird, stay hungry.",
-  "Make today count.",
-  "Less talk, more code.",
-  "Ship it.",
-  "Fail fast, learn faster.",
-  "Code is read more than written.",
-  "Refactor early, refactor often.",
-  "Tests are a love letter to future you.",
-  "Every expert was once a beginner.",
-  "Move fast, fix things.",
-  "The best time to start was yesterday.",
-  "今天最好的表现，是明天最低的要求。",
-  "越努力，越幸运。",
-  "不怕慢，就怕站。",
-  "一万小时定律。",
+  ZH("千里之行，始于足下。"),
+  ZH("行胜于言。"),
+  ZH("学而时习之，不亦说乎。"),
+  ZH("天行健，君子以自强不息。"),
+  ZH("地势坤，君子以厚德载物。"),
+  ZH("路漫漫其修远兮，吾将上下而求索。"),
+  ZH("不积跬步，无以至千里；不积小流，无以成江海。"),
+  ZH("工欲善其事，必先利其器。"),
+  ZH("业精于勤，荒于嬉；行成于思，毁于随。"),
+  ZH("宝剑锋从磨砺出，梅花香自苦寒来。"),
+  ZH("少壮不努力，老大徒伤悲。"),
+  ZH("一寸光阴一寸金，寸金难买寸光阴。"),
+  ZH("三人行，必有我师焉。"),
+  ZH("知之为知之，不知为不知，是知也。"),
+  ZH("温故而知新，可以为师矣。"),
+  ZH("学而不思则罔，思而不学则殆。"),
+  ZH("己所不欲，勿施于人。"),
+  ZH("得道多助，失道寡助。"),
+  ZH("生于忧患，死于安乐。"),
+  ZH("富贵不能淫，贫贱不能移，威武不能屈。"),
+  ZH("苟利国家生死以，岂因祸福避趋之。"),
+  ZH("天下兴亡，匹夫有责。"),
+  ZH("人生自古谁无死，留取丹心照汗青。"),
+  ZH("海纳百川，有容乃大；壁立千仞，无欲则刚。"),
+  ZH("一万年太久，只争朝夕。"),
+  ZH("数风流人物，还看今朝。"),
+  ZH("星星之火，可以燎原。"),
+  ZH("没有调查就没有发言权。"),
+  ZH("实事求是。"),
+  ZH("实践是检验真理的唯一标准。"),
+  ZH("世上无难事，只要肯登攀。"),
+  ZH("为中华之崛起而读书。"),
+  ZH("我自横刀向天笑，去留肝胆两昆仑。"),
+  ZH("与天地兮比寿，与日月兮齐光。"),
+  ZH("莫愁前路无知己，天下谁人不识君。"),
+  ZH("长风破浪会有时，直挂云帆济沧海。"),
+  ZH("会当凌绝顶，一览众山小。"),
+  ZH("天生我材必有用，千金散尽还复来。"),
+  ZH("仰天大笑出门去，我辈岂是蓬蒿人。"),
+  ZH("人生如逆旅，我亦是行人。"),
+  ZH("此心安处是吾乡。"),
+  ZH("纸上得来终觉浅，绝知此事要躬行。"),
+  ZH("问渠那得清如许，为有源头活水来。"),
+  ZH("少年辛苦终身事，莫向光阴惰寸功。"),
+  ZH("博观而约取，厚积而薄发。"),
+  ZH("沉舟侧畔千帆过，病树前头万木春。"),
+  ZH("山重水复疑无路，柳暗花明又一村。"),
+  ZH("不畏浮云遮望眼，自缘身在最高层。"),
+  ZH("咬定青山不放松，立根原在破岩中。"),
+  EN("Stay weird, stay hungry."),
+  EN("Make today count."),
+  EN("Less talk, more code."),
+  EN("Ship it."),
+  EN("Fail fast, learn faster."),
+  EN("Code is read more than written."),
+  EN("Refactor early, refactor often."),
+  EN("Tests are a love letter to future you."),
+  EN("Every expert was once a beginner."),
+  EN("Move fast, fix things."),
+  EN("The best time to start was yesterday."),
+  ZH("今天最好的表现，是明天最低的要求。"),
+  ZH("越努力，越幸运。"),
+  ZH("不怕慢，就怕站。"),
+  ZH("一万小时定律。"),
 ];
 
 // ----- Frequency → bucket size -----
@@ -294,7 +324,38 @@ export function quoteIndex(freq: QuoteFreq, nowMs: number): number {
 // Pick a quote for the given freq + now. Convenience wrapper that
 // returns the string. Stable per window.
 export function pickQuote(freq: QuoteFreq, nowMs: number): string {
+  return QUOTES[quoteIndex(freq, nowMs)]!.quote;
+}
+
+// v0.8.21+ — pick the full QuoteEntry record for the current
+// window. Used by the `m_quote` inline renderer to also surface
+// an `author` suffix (`~<quote>--<author>~`); `author === null`
+// means the renderer elides the `--<author>` half.
+export function pickQuoteEntry(
+  freq: QuoteFreq,
+  nowMs: number,
+): QuoteEntry {
   return QUOTES[quoteIndex(freq, nowMs)]!;
+}
+
+// v0.8.21+ — language-filtered picker. Used by `m_quote|lang|<csv>`
+// to restrict rotation to the listed `lang` values (e.g. "en" or
+// "zh"). Walks forward from the current window index until one of
+// the listed languages is found, bounded to one full table to
+// guarantee termination. Empty / unknown lang list falls back to
+// `pickQuoteEntry`.
+export function pickQuoteEntryFiltered(
+  freq: QuoteFreq,
+  nowMs: number,
+  langs: readonly string[],
+): QuoteEntry {
+  if (langs.length === 0) return pickQuoteEntry(freq, nowMs);
+  const start = quoteIndex(freq, nowMs);
+  for (let off = 0; off < QUOTES.length; off++) {
+    const entry = QUOTES[(start + off) % QUOTES.length]!;
+    if (langs.includes(entry.lang)) return entry;
+  }
+  return QUOTES[start]!;
 }
 
 // ----- Color helpers -----

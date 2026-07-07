@@ -127,6 +127,7 @@ function renderDataLine(
   ageMs: number,
   stale: boolean,
   tokens: TokenSnapshot | null,
+  quoteBodies?: Map<string, string>,
 ): string | null {
   const entry = getProviderEntry(provider);
   const mode = resolveDisplayMode();
@@ -156,6 +157,7 @@ function renderDataLine(
       stale,
       version: configStore.get().version,
       tokens,
+      quoteBodies,
     });
   }
   if (entry.TYPE === "TOKEN_PLAN") {
@@ -180,6 +182,7 @@ function renderDataLine(
       stale,
       version: configStore.get().version,
       tokens,
+      quoteBodies,
     });
   }
   if (entry.TYPE === "BALANCE") {
@@ -191,6 +194,7 @@ function renderDataLine(
       stale,
       version: configStore.get().version,
       tokens,
+      quoteBodies,
     });
   }
   return null;
@@ -218,6 +222,7 @@ export function buildProviderLine(
   provider: Provider,
   result: FetchResult<unknown>,
   tokens?: TokenSnapshot | null,
+  quoteBodies?: Map<string, string>,
 ): string | null {
   // v0.4.x — the "no provider configured" early-return was removed
   // here on purpose. Previously the plugin was purely a TOKEN_PLAN or
@@ -269,6 +274,7 @@ export function buildProviderLine(
         stale: true,
         version: configStore.get().version,
         tokens,
+        quoteBodies,
       });
       // Empty-output guard: the template ran but every module dropped
       // (no provider + no module-bearing tokens), leaving just
@@ -290,6 +296,7 @@ export function buildProviderLine(
     result.ageMs,
     result.kind === "stale",
     tokens ?? null,
+    quoteBodies,
   );
   // Empty-output guard. Two paths land here:
   //   (a) renderDataLine returned the literal null (provider has

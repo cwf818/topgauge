@@ -50,7 +50,6 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, utimesSync, readFileSync
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { execFileSync } from "node:child_process";
-import { createServer } from "node:http";
 import { __resetGitInfoCacheForTest } from "./git-info.ts";
 import type { TokenSnapshot } from "./types.ts";
 import type { Window } from "./render.ts";
@@ -120,6 +119,18 @@ const ctxFor = (
   // passthrough block at the end of the file mutates this field
   // directly to verify non-leakage.
   passThrough: undefined as Record<string, string | number> | undefined,
+});
+
+// v0.8.21+ — quoteBodies-injecting ctx factory. Mirrors ctxFor but
+// attaches a pre-fetched body map so m_quote|address|… tests can
+// exercise the renderer without spinning an HTTP server (the fetch
+// + cache layer is covered separately in src/api.quote.ts tests).
+const ctxWithQuoteBodies = (
+  bodies: Map<string, string>,
+  tokens: TokenSnapshot | null = fakeSnapshot(),
+) => ({
+  ...ctxFor(tokens),
+  quoteBodies: bodies,
 });
 
 // v0.4.0+ — the speed/delta/avg cache helpers (peekPrevTick /
@@ -345,249 +356,217 @@ describe("getFieldByPath (v0.8.18+ m_quote field resolver)", () => {
   });
 });
 
-describe("renderTemplate — m_quote address+fields (v0.8.19+)", () => {
-  // End-to-end: spin up a local HTTP server, point the user's
-  // m_quote|address|<url>|fields|<path1>,<path2>,… at it, assert
-  // the walked strings render in `field1: field2:` colon-joined
-  // form. Mirrors the per-tick curl-out pattern from m_memUsage's
-  // vm_stat path.
+describe("renderTemplate — m_quote address+field (v0.8.21+)", () => {
+  // v0.8.21+ — fetch lives in src/api.quote.ts (preFetchQuotes,
+  // Node 18+ native fetch, disk-shadowed cache, simple "quote"
+  // key shared across processes). Tests here exercise the
+  // sync renderer in src/render.ts:fetchQuoteFromAddress, which
+  // is a pure reader over ctx.quoteBodies. We inject the Map
+  // directly via ctxWithQuoteBodies — no HTTP server, no curl
+  // binary, no skip() gates.
   //
-  // v0.8.19 upgrade: `field` (singular, single path) is REMOVED.
-  // The user-facing arg is now `fields` — comma-separated path
-  // list. Each path is walked independently; the joined body is
-  // `path1: path2: … pathN:`. On any failure (curl exit, non-JSON
-  // body, all paths miss), the renderer falls back to the local
-  // QUOTES list so the user always sees something.
+  // Arg shape: `m_quote|address|<url>|field|<single-path>`.
+  // `fields` (plural, comma list) was removed in v0.8.21 — the
+  // upgrade is strict; existing v0.8.19 configs need a manual
+  // `fields` → `field` rename and a hand-pick of one path.
   //
-  // NOTE: this describe block is gated on a `curl` smoke probe.
-  // In sandboxed CI environments (e.g. GitHub Actions runners
-  // without network egress, or this dev box where Git Bash curl
-  // can't reach Node-bound localhost) the execSync curl returns
-  // exit 7 / 28 immediately. We probe once at suite start and
-  // skip the network-touching tests if curl can't reach a local
-  // server — the in-process `getFieldByPath` tests already cover
-  // the path-walking logic, and the renderer shape is verified
-  // by the failure-path tests below.
+  // v0.8.21 wrap default: `~<value>~` brackets the walked
+  // string in the address-mode JSON path. `wrap|false` opts out;
+  // the local QUOTES path never wraps (the tilde is the visual
+  // signature that says "this came from a remote endpoint").
 
-  let curlWorks = false;
-  beforeEach(async () => {
-    if (curlWorks) return;
-    // Probe: spin a server, curl it, see if we get a response.
-    const { createServer } = await import("node:http");
-    const probe = createServer((_req, res) => {
-      res.writeHead(200, { "content-type": "text/plain" });
-      res.end("ok");
-    });
-    const url = await new Promise<string>((resolve) => {
-      probe.listen(0, "127.0.0.1", () => {
-        const a = probe.address();
-        resolve(typeof a === "object" && a ? `http://127.0.0.1:${a.port}/` : "");
-      });
-    });
-    try {
-      execFileSync("curl", ["-sSf", "--max-time", "3", url], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-      });
-      curlWorks = true;
-    } catch {
-      curlWorks = false;
-    } finally {
-      probe.close();
-    }
+  it("address|fetched JSON + quote|hitokoto → wrapped value (wrap default true)", () => {
+    const url = "https://v1.hitokoto.cn/";
+    const bodies = new Map<string, string>([
+      [url, JSON.stringify({ hitokoto: "生如夏花之绚烂" })],
+    ]);
+    const out = renderTemplate(
+      [`m_quote|address|${url}|quote|hitokoto`],
+      ctxWithQuoteBodies(bodies),
+    ).join("\n");
+    assert.equal(strip(out), "~生如夏花之绚烂~");
   });
 
-  // Helper: start a server that responds to every path with the
-  // given JSON body. Returns the base URL + a close() function.
-  function startJsonServer(body: unknown): Promise<{ url: string; close: () => void }> {
-    return new Promise((resolve) => {
-      const srv = createServer((_req, res) => {
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify(body));
-      });
-      srv.listen(0, "127.0.0.1", () => {
-        const addr = srv.address();
-        if (addr && typeof addr === "object") {
-          resolve({
-            url: `http://127.0.0.1:${addr.port}/`,
-            close: () => srv.close(),
-          });
-        }
-      });
-    });
-  }
+  it("address|quote|with author|from_who → ~<quote>--<author>~", () => {
+    // v0.8.21+ — both `quote` and `author` paths walk the same
+    // body. The author is rendered as the `--<author>` suffix
+    // inside the tilde brackets.
+    const url = "https://v1.hitokoto.cn/";
+    const bodies = new Map<string, string>([
+      [url, JSON.stringify({ hitokoto: "stay hungry stay foolish", from_who: "Steve Jobs" })],
+    ]);
+    const out = renderTemplate(
+      [`m_quote|address|${url}|quote|hitokoto|author|from_who`],
+      ctxWithQuoteBodies(bodies),
+    ).join("\n");
+    assert.equal(strip(out), "~stay hungry stay foolish--Steve Jobs~");
+  });
 
-  function startStringServer(text: string): Promise<{ url: string; close: () => void }> {
-    return new Promise((resolve) => {
-      const srv = createServer((_req, res) => {
-        res.writeHead(200, { "content-type": "text/plain" });
-        res.end(text);
-      });
-      srv.listen(0, "127.0.0.1", () => {
-        const addr = srv.address();
-        if (addr && typeof addr === "object") {
-          resolve({
-            url: `http://127.0.0.1:${addr.port}/`,
-            close: () => srv.close(),
-          });
-        }
-      });
-    });
-  }
+  it("address|quote with author path MISS → ~<quote>~ (no author suffix)", () => {
+    // v0.8.21+ — author walks tolerate misses; the renderer
+    // elides the `--<author>` half when the walk yields null.
+    const url = "https://v1.hitokoto.cn/";
+    const bodies = new Map<string, string>([
+      [url, JSON.stringify({ hitokoto: "stay hungry stay foolish" })],
+    ]);
+    const out = renderTemplate(
+      [`m_quote|address|${url}|quote|hitokoto|author|from_who`],
+      ctxWithQuoteBodies(bodies),
+    ).join("\n");
+    assert.equal(strip(out), "~stay hungry stay foolish~");
+  });
 
-  it("address|fetched JSON + fields|quotes.0.quotestring → string", async (t) => {
-    if (!curlWorks) return t.skip("curl can't reach local server in this sandbox");
-    const { url, close } = await startJsonServer({
-      quotes: [
-        { id: 1, quotestring: "remote quote one" },
-        { id: 2, quotestring: "remote quote two" },
-      ],
-    });
-    try {
-      const out = renderTemplate(
-        [
-          `m_quote|address|${url}|fields|quotes.0.quotestring`,
+  it("address|quote|hitokoto + wrap|false → bare value (no tildes)", () => {
+    // Opt out of the wrap. Useful for embedding the remote
+    // value into a structured template where `~…~` would be
+    // visually noisy.
+    const url = "https://v1.hitokoto.cn/";
+    const bodies = new Map<string, string>([
+      [url, JSON.stringify({ hitokoto: "stay hungry stay foolish" })],
+    ]);
+    const out = renderTemplate(
+      [`m_quote|address|${url}|quote|hitokoto|wrap|false`],
+      ctxWithQuoteBodies(bodies),
+    ).join("\n");
+    assert.equal(strip(out), "stay hungry stay foolish");
+  });
+
+  it("address|quote|quotes.0.quotestring → walked value (array index path)", () => {
+    // Path walker supports object keys and array indices. The
+    // v0.8.18 / v0.8.19 contract for getFieldByPath is preserved
+    // — only the wrapping & comma-join semantics changed.
+    const url = "http://127.0.0.1:9999/quotes";
+    const bodies = new Map<string, string>([
+      [url, JSON.stringify({
+        quotes: [
+          { id: 1, quotestring: "remote quote one" },
+          { id: 2, quotestring: "remote quote two" },
         ],
-        ctxFor(fakeSnapshot()),
-      ).join("\n");
-      // applyColor wraps with default 'hue' shortcut (or random);
-      // strip ANSI and assert the body.
-      assert.equal(strip(out), "remote quote one:");
-    } finally {
-      close();
-    }
+      })],
+    ]);
+    const out = renderTemplate(
+      [`m_quote|address|${url}|quote|quotes.0.quotestring`],
+      ctxWithQuoteBodies(bodies),
+    ).join("\n");
+    assert.equal(strip(out), "~remote quote one~");
   });
 
-  it("address|fetched JSON + fields|multi path → 'field1: field2:' joined", async (t) => {
-    // v0.8.19+ — the canonical hitokoto.cn shape: each path is
-    // walked independently and the joined body is `<v1>: <v2>: <v3>:`.
-    // Mirrors the user's example: `m_quote|address|https://v1.hitokoto.cn/|fields|hitokoto,from,from_who`
-    // responding with `{hitokoto: "a", from: "b", from_who: "c"}`
-    // → `"a: b: c:"`.
-    if (!curlWorks) return t.skip("curl can't reach local server in this sandbox");
-    const { url, close } = await startJsonServer({
-      hitokoto: "生如夏花之绚烂",
-      from: "飞鸟集",
-      from_who: "泰戈尔",
-    });
-    try {
-      const out = renderTemplate(
-        [
-          `m_quote|address|${url}|fields|hitokoto,from,from_who`,
-        ],
-        ctxFor(fakeSnapshot()),
-      ).join("\n");
-      assert.equal(strip(out), "生如夏花之绚烂: 飞鸟集: 泰戈尔:");
-    } finally {
-      close();
-    }
+  it("address|quote miss → fallback to local QUOTES (no tildes)", () => {
+    // Path miss → renderer logs a warning and falls back to the
+    // local QUOTES list. The fallback path is NOT tilde-wrapped
+    // (the wrap is address-mode specific). Diagnostic row is
+    // asserted in the v0.8.20+ describe below.
+    const url = "http://127.0.0.1:9999/";
+    const bodies = new Map<string, string>([
+      [url, JSON.stringify({ other: "nope" })],
+    ]);
+    const out = renderTemplate(
+      [`m_quote|address|${url}|quote|missing.key`],
+      ctxWithQuoteBodies(bodies),
+    ).join("\n");
+    assert.ok(out.length > 0, "expected fallback to local QUOTES");
+    assert.ok(!out.includes("~"), "local QUOTES fallback should not be tilde-wrapped");
   });
 
-  it("address|fetched JSON + fields|mixed resolved/missed → non-empty wins", async (t) => {
-    // v0.8.19+ — when SOME paths miss but at least one resolves,
-    // the renderer still emits a colon-joined body with empty
-    // slots for the misses. The convention is `resolved1: : resolved3:`
-    // (the missed path contributes an empty segment, so you see
-    // a doubled colon). This matches `getFieldByPath` returning
-    // null → coerced to "" → joined with ": ".
-    if (!curlWorks) return t.skip("curl can't reach local server in this sandbox");
-    const { url, close } = await startJsonServer({
-      hitokoto: "only-this-resolved",
-    });
-    try {
-      const out = renderTemplate(
-        [
-          `m_quote|address|${url}|fields|hitokoto,from,from_who`,
-        ],
-        ctxFor(fakeSnapshot()),
-      ).join("\n");
-      assert.equal(strip(out), "only-this-resolved: : :");
-    } finally {
-      close();
-    }
+  it("address|non-JSON body + empty quote → bare body (no wrap)", () => {
+    // The v0.8.18 backwards-compat: when the body is plain text
+    // AND the user supplies `quote|` (empty marker), the body
+    // is returned verbatim. The tilde wrap is part of the
+    // address-mode contract that the JSON path establishes, so
+    // the plain-text short-circuit is unwrapped — the user opted
+    // out of JSON walking and the bare body is what they asked
+    // for.
+    const url = "http://127.0.0.1:9999/plain";
+    const bodies = new Map<string, string>([
+      [url, "just a plain string body"],
+    ]);
+    const out = renderTemplate(
+      [`m_quote|address|${url}|quote|`],
+      ctxWithQuoteBodies(bodies),
+    ).join("\n");
+    assert.equal(strip(out), "just a plain string body");
   });
 
-  it("address|plain string body (no JSON parse) + fields|empty → string body", async (t) => {
-    // v0.8.19+ — when the body is a plain string AND the user
-    // supplied NO `fields` arg (empty after split), the renderer
-    // returns the bare body. With a non-empty fields list, a
-    // non-JSON body falls back to local QUOTES (see test below).
-    if (!curlWorks) return t.skip("curl can't reach local server in this sandbox");
-    const { url, close } = await startStringServer("a bare string body");
-    try {
-      const out = renderTemplate(
-        [`m_quote|address|${url}`],
-        ctxFor(fakeSnapshot()),
-      ).join("\n");
-      assert.equal(strip(out), "a bare string body");
-    } finally {
-      close();
-    }
+  it("address|non-JSON body + non-empty quote → fallback local QUOTES", () => {
+    // Body isn't JSON and the user did supply a non-empty
+    // quote — we can't walk. Fallback to local QUOTES, no
+    // tilde wrap.
+    const url = "http://127.0.0.1:9999/plain";
+    const bodies = new Map<string, string>([
+      [url, "plain text body"],
+    ]);
+    const out = renderTemplate(
+      [`m_quote|address|${url}|quote|hitokoto`],
+      ctxWithQuoteBodies(bodies),
+    ).join("\n");
+    assert.ok(out.length > 0);
+    assert.ok(!out.includes("~"), "local fallback should not be tilde-wrapped");
+    assert.ok(!out.includes("plain text body"), "should not surface the un-walkable body");
   });
 
-  it("address|fetched JSON + fields|all commas/empty segments → schema rejects, drops", () => {
-    // v0.8.19+ — `m_quote|address|...|fields|,` (all-empty path
-    // segments) is rejected by the QUOTE_FIELDS_PARAM resolver
-    // (each segment must be non-empty). The whole token is then
-    // dropped by the schema layer (`unknown lineTemplate module`
-    // warning), which is the documented behavior for any inline
-    // arg that fails validation. The renderer doesn't try to
-    // "fall back to local" here because the input is malformed
-    // in a way that's distinguishable from "address works but
-    // paths miss" — the user clearly intended multi-path but
-    // typoed. A drop + warn is more helpful than silent fallback
-    // because the user gets a stderr signal pointing at the
-    // offending config.
-    const lines = renderTemplate(
-      [`m_quote|address|http://127.0.0.1:1/|fields|,`],
-      ctxFor(fakeSnapshot()),
+  it("address|missing ctx.quoteBodies entry → fallback local QUOTES", () => {
+    // When preFetchQuotes didn't run OR didn't populate a row
+    // for this address (e.g. fetch error with no recoverable
+    // cache), the renderer sees `undefined` and falls back.
+    const out = renderTemplate(
+      ["m_quote|address|http://127.0.0.1:9999/|quote|x"],
+      ctxWithQuoteBodies(new Map()),
+    ).join("\n");
+    assert.ok(out.length > 0, "expected fallback to local QUOTES");
+    assert.ok(!out.includes("~"), "local fallback should not be tilde-wrapped");
+  });
+
+  it("address|quote with leading/trailing dot → schema rejects, drops", () => {
+    // v0.8.21 — `quote|.x` / `quote|x.` / `quote|x..y` is
+    // rejected by the QUOTE_QUOTE_PARAM resolver. The whole
+    // token is dropped by the schema layer (`unknown
+    // lineTemplate module` warning). The renderer never sees
+    // the token, so no fallback to local QUOTES fires and the
+    // template output is empty.
+    const url = "http://127.0.0.1:9999/";
+    const bodies = new Map<string, string>([
+      [url, JSON.stringify({ hitokoto: "x" })],
+    ]);
+    const out = renderTemplate(
+      [`m_quote|address|${url}|quote|.x`],
+      ctxWithQuoteBodies(bodies),
     );
-    assert.equal(lines.join("\n"), "");
+    assert.equal(out.length, 0, "schema-rejected token should drop");
   });
 
-  it("address|fetched JSON + fields|all miss → fallback to local QUOTES", async (t) => {
-    // v0.8.19+ — every path misses → fetchQuoteFromAddress
-    // returns null → renderer falls back to local QUOTES. Asserts
-    // the fallback fires (non-empty output) and that no remote
-    // payload leaks through.
-    if (!curlWorks) return t.skip("curl can't reach local server in this sandbox");
-    const { url, close } = await startJsonServer({ foo: "bar" });
-    try {
+  it("local QUOTES path with lang|en → only English entries", () => {
+    // v0.8.21+ — `lang|<csv>` filters the local QUOTES rotation
+    // to the listed languages. All entries in the table are
+    // lang="en" or lang="zh"; the picker walks forward from
+    // the current bucket until a matching entry lands.
+    const ctx = ctxFor(fakeSnapshot());
+    const enTexts: string[] = [];
+    for (let off = 0; off < 30; off++) {
       const out = renderTemplate(
-        [`m_quote|address|${url}|fields|missing.key,also.missing`],
-        ctxFor(fakeSnapshot()),
+        ["m_quote|lang|en"],
+        { ...ctx, nowMs: ctx.nowMs + off * 60_000 },
       ).join("\n");
-      assert.ok(out.length > 0, "expected fallback to local QUOTES");
-    } finally {
-      close();
+      enTexts.push(strip(out));
+    }
+    // All 30 sampled entries come from the English table — their
+    // bodies contain ASCII letters / spaces / punctuation only.
+    for (const t of enTexts) {
+      assert.ok(
+        /^[\x20-\x7e]*$/.test(t),
+        `lang|en entry contains non-ASCII: ${JSON.stringify(t)}`,
+      );
     }
   });
 
-  it("address|unreachable URL → fallback to local QUOTES (graceful)", () => {
-    // Port 1 is reserved and not listening — curl fails with
-    // connection refused, which the catch translates to null.
-    // v0.8.19: instead of dropping the chunk, the renderer falls
-    // back to local QUOTES so the user always sees something.
-    // Asserts the fallback fired (non-empty output).
+  it("local QUOTES path (no address) → not tilde-wrapped", () => {
+    // Baseline: when no `address` arg is supplied, the m_quote
+    // module reads from the local QUOTES list. No tilde wrap.
     const out = renderTemplate(
-      ["m_quote|address|http://127.0.0.1:1/|fields|x"],
+      ["m_quote"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
-    assert.ok(out.length > 0, "expected fallback to local QUOTES");
-  });
-
-  it("address|shell-injection attempt is shell-quoted (no exec of payload)", () => {
-    // The user supplies a URL with `;` + `$(...)` — shellQuote
-    // wraps in single quotes, defeating injection. The execSync
-    // tries to curl the literal malicious URL, which fails (no
-    // such host), and returns null → fallback to local QUOTES.
-    // We just need to assert no shell command runs (no test crash)
-    // and the renderer falls through cleanly.
-    const out = renderTemplate(
-      ["m_quote|address|http://127.0.0.1:1/'%3Brm%20-rf%20/|fields|x"],
-      ctxFor(fakeSnapshot()),
-    ).join("\n");
-    assert.ok(out.length > 0, "expected fallback to local QUOTES");
+    assert.ok(out.length > 0);
+    assert.ok(!out.includes("~"), "local QUOTES should not be tilde-wrapped");
   });
 });
 
@@ -653,9 +632,15 @@ describe("renderTemplate — m_quote fetch-failure diagnostics (v0.8.20+)", () =
     return out;
   }
 
-  it("address|unreachable URL → appends curl-exit warning to diagnostics.jsonl", () => {
+  it("address|unreachable URL → appends no-body warning to diagnostics.jsonl", () => {
+    // v0.8.21+ — with the per-tick ctx.quoteBodies pre-fetch model,
+    // an unreachable URL means the body never lands in the Map;
+    // the renderer sees the missing key and logs (no body). The
+    // fetch-error reason is logged earlier in preFetchQuotes
+    // (covered separately); this test pins the renderer's
+    // fallback + warning contract.
     const out = renderTemplate(
-      ["m_quote|address|http://127.0.0.1:1/|fields|x"],
+      ["m_quote|address|http://127.0.0.1:1/|quote|x"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
     assert.ok(out.length > 0, "expected fallback to local QUOTES");
@@ -663,7 +648,7 @@ describe("renderTemplate — m_quote fetch-failure diagnostics (v0.8.20+)", () =
     const mq = rows.find((r) => r.source === "m_quote");
     assert.ok(mq, "expected an m_quote diagnostic row");
     assert.equal(mq!.level, "warning");
-    assert.match(String(mq!.msg), /curl exit/);
+    assert.match(String(mq!.msg), /no body/);
     assert.match(String(mq!.msg), /http:\/\/127\.0\.0\.1:1\//);
     assert.equal(mq!.cwd, "D:\\test");
   });
@@ -674,7 +659,7 @@ describe("renderTemplate — m_quote fetch-failure diagnostics (v0.8.20+)", () =
     process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE = "";
     diagnostics.__resetDedupeForTest();
     const out = renderTemplate(
-      ["m_quote|address|http://127.0.0.1:1/|fields|x"],
+      ["m_quote|address|http://127.0.0.1:1/|quote|x"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
     assert.ok(out.length > 0, "expected fallback to local QUOTES");

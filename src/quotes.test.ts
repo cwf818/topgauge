@@ -59,17 +59,18 @@ describe("quotes — pool", () => {
 
   it("every entry is a non-empty string ≤ 70 chars", () => {
     for (let i = 0; i < QUOTES.length; i++) {
-      const q = QUOTES[i]!;
-      assert.ok(q.length > 0, `entry ${i} is empty`);
+      const e = QUOTES[i]!;
+      assert.ok(e.quote.length > 0, `entry ${i} is empty`);
       assert.ok(
-        q.length <= 70,
-        `entry ${i} too long (${q.length} chars): ${JSON.stringify(q)}`,
+        e.quote.length <= 70,
+        `entry ${i} too long (${e.quote.length} chars): ${JSON.stringify(e.quote)}`,
       );
+      assert.ok(e.lang === "en" || e.lang === "zh", `entry ${i} bad lang: ${e.lang}`);
     }
   });
 
   it("entries are unique", () => {
-    const seen = new Set(QUOTES);
+    const seen = new Set(QUOTES.map((e) => e.quote));
     assert.equal(seen.size, QUOTES.length, "duplicate quotes found");
   });
 });
@@ -367,7 +368,7 @@ describe("lineTemplate — m_quote inline-args", () => {
       stale: false,
       version: "",
     });
-    assert.ok(QUOTES.includes(line), `got: ${line}`);
+    assert.ok(QUOTES.some((e) => line === e.quote || line === `${e.quote}--${e.author}` || (e.author === null && line === e.quote)), `got: ${line}`);
     // No SGR wraps in the bare form.
     assert.ok(!line.includes("\x1b["), `bare m_quote should not include SGR, got: ${line}`);
   });
@@ -388,9 +389,14 @@ describe("lineTemplate — m_quote inline-args", () => {
     });
     assert.ok(line.startsWith("\x1b[38;5;196m"), `got: ${line}`);
     assert.ok(line.endsWith(RESET), `got: ${line}`);
-    // The wrapped text should still be a known quote.
+    // The wrapped text should still be a known quote (or `--<author>` suffix).
     const inner = line.slice("\x1b[38;5;196m".length, -RESET.length);
-    assert.ok(QUOTES.includes(inner), `inner: ${JSON.stringify(inner)}`);
+    assert.ok(
+      QUOTES.some(
+        (e) => inner === e.quote || inner === `${e.quote}--${e.author}`,
+      ),
+      `inner: ${JSON.stringify(inner)}`,
+    );
   });
 
   it("m_quote|color|rainbow produces per-character multi-color output", () => {

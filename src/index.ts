@@ -41,6 +41,7 @@ import {
 } from "./providers.ts";
 import { parseTokenSnapshot } from "./session-parse.ts";
 import * as diagnostics from "./diagnostics.ts";
+import { preFetchQuotes } from "./api.quote.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -235,7 +236,13 @@ async function main(): Promise<void> {
   // back to a null line so the upstream wrapper still falls through
   // when no agnostic modules fired either.
   if (provider === null) {
-    const line = buildProviderLine(null, { kind: "fresh", data: null, ageMs: 0 }, tokens);
+    const quoteBodies = await preFetchQuotes(tokens?.cwd ?? null, Date.now());
+    const line = buildProviderLine(
+      null,
+      { kind: "fresh", data: null, ageMs: 0 },
+      tokens,
+      quoteBodies,
+    );
     process.stdout.write(compose(upstream, line));
     return;
   }
@@ -261,7 +268,14 @@ async function main(): Promise<void> {
   // empty env would silently break that flow.
   const envToken = process.env.ANTHROPIC_AUTH_TOKEN;
   const result = await fetchProviderData(provider, envToken ?? "");
-  const line = buildProviderLine(provider, result, tokens);
+  // v0.8.21+ — pre-fetch m_quote|address|… bodies (Node fetch,
+  // per-(freqMs,address) disk cache keyed by binIndex). See
+  // src/api.quote.ts. Runs after fetchProviderData so the user
+  // never sees a statusline where a stale provider value blocks
+  // a fresh quote, and before buildProviderLine so the renderer
+  // can read the populated Map via ctx.quoteBodies.
+  const quoteBodies = await preFetchQuotes(tokens?.cwd ?? null, Date.now());
+  const line = buildProviderLine(provider, result, tokens, quoteBodies);
 
   process.stdout.write(compose(upstream, line));
   // v1.0 — tickStateCommit() moved up (before the null-provider
