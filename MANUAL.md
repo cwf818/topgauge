@@ -198,6 +198,22 @@ provider-less ticks via the `unknown` TYPE fallback).
 | `m_linesRemoved`                   | Lines removed in the session, `- 340`.                                               | `tokens.cost.totalLinesRemoved`                           | agnostic           | `color`, `nulldrop`                    | |
 | `m_quote`                          | A rotating quote, frequency-bucketed (local) or strings from a remote endpoint (v0.8.19+). | `quotes.json` (bundled) by default; or `<address>` response when `\|address\|<url>` is set | agnostic           | `freq`, `color`, `address`, `fields`, `nulldrop` | Color shortcuts: `rainbow` (cycles bands), `rand-rainbow` (random per render), `hue` (continuous from wall-clock). When `address` is set, the body is fetched via `curl -sSf --max-time 5`; `fields` is a comma-separated list of dot-paths (e.g. `hitokoto,from,from_who`) — each path is walked independently against the JSON response (object key / array index; a string leaf terminates the walk). The collected strings are rendered as `field1: field2: … fieldN:`. On any fetch / parse / walk failure (curl exit, non-JSON body, all paths miss), the renderer falls back to the local `quotes.json` list **and appends a `warning` row to `diagnostics.jsonl`** (gated on `TOPGAUGE_CC_DIAGNOSTICS_ENABLE=1`) with `source = "m_quote"` and a reason-tokenized `msg`. v0.8.18's singular `field` is REMOVED. |
 
+#### `m_quote` online endpoint examples (v0.8.21+)
+
+Three ready-to-paste `m_quote` tokens that pull from public quote
+APIs. The `quote` + `author` named-args each walk a dot-path into
+the JSON body; both walks happen in one fetch, and the rendered
+output is `~<quote>~` (no author) or `~<quote>--<author>~` (with
+author). Wrap with `~…~` by default; pass `wrap|false` to opt
+out. On fetch / parse / walk failure the renderer silently falls
+back to the bundled local QUOTES list.
+
+```text
+m_quote|address|https://v1.hitokoto.cn/|quote|hitokoto|author|from_who
+m_quote|address|https://api.quotable.io/random|quote|content|author|author
+m_quote|address|https://api.xygeng.cn/one|quote|data.content|author|data.name
+```
+
 ### Removed in v0.8.0 (no alias)
 
 `m_token5h`, `m_token7d`, `m_tokenInAvg`, `m_tokenOutAvg`, `m_ctx`
