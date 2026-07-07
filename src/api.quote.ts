@@ -24,10 +24,83 @@
 
 import { execFileSync } from "node:child_process";
 import { openSync, readFileSync, unlinkSync } from "node:fs";
+import { request as httpsRequest } from "node:https";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import * as cache from "./cache.ts";
 import { configStore } from "./config.ts";
 import * as diagnostics from "./diagnostics.ts";
+
+// v0.8.21+ — single-error classification: a curl `Command failed:`
+// thrown by Node's child_process carries an embedded `code` (string)
+// for errno-style failures. ENOENT means "binary not on PATH" —
+// that's our trigger to fall back to node:https/http. EPERM /
+// EACCES / ENOEXEC also qualify as "binary unusable"; we treat the
+// whole `ENO*` + `EPERM`/`EACCES` family the same way. Other
+// failures (timeouts, non-2xx exits, DNS) come from curl itself
+// and are surfaced unchanged so a postmortem can attribute them
+// to the network, not the spawn.
+function isBinaryMissing(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (typeof code !== "string") return false;
+  if (code === "ENOENT" || code === "ENOTDIR" || code === "EPERM" ||
+      code === "EACCES" || code === "ENOEXEC") return true;
+  // Some Node errors nest the code inside the message; not worth a
+  // regex here — ENOENT covers the common case.
+  return false;
+}
+
+// Run an HTTP(S) GET via node:http(s) core — no extra deps. `insecure`
+// maps to `rejectUnauthorized: false` on the https path so the
+// same `insecureTls` opt-in stays honored across both paths. 5s
+// timeout; rejects on non-2xx (status ≥ 400) so a missing/wrong
+// endpoint still produces a clean diagnostics row, matching curl
+// `-f` semantics.
+function fetchViaCore(
+  url: URL,
+  insecure: boolean,
+): Promise<{ ok: true; body: string } | { ok: false; reason: string }> {
+  return new Promise((resolve) => {
+    const lib = url.protocol === "https:" ? httpsRequest : httpRequest;
+    const req = lib(
+      {
+        method: "GET",
+        protocol: url.protocol,
+        hostname: url.hostname,
+        port: url.port || (url.protocol === "https:" ? 443 : 80),
+        path: url.pathname + url.search,
+        headers: { Accept: "application/json" },
+        ...(url.protocol === "https:"
+          ? { rejectUnauthorized: !insecure }
+          : {}),
+      },
+      (res) => {
+        let data = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk: string) => {
+          data += chunk;
+        });
+        res.on("end", () => {
+          if (res.statusCode && res.statusCode >= 400) {
+            resolve({ ok: false, reason: `HTTP ${res.statusCode}` });
+          } else {
+            resolve({ ok: true, body: data });
+          }
+        });
+        res.on("error", (e) => {
+          resolve({ ok: false, reason: e.message });
+        });
+      },
+    );
+    req.on("error", (e) => {
+      resolve({ ok: false, reason: e.message });
+    });
+    req.setTimeout(5000, () => {
+      req.destroy(new Error("timeout"));
+    });
+    req.end();
+  });
+}
 
 // v0.8.21+ — fixed cache key. Shared across processes / projects
 // so all readers see the same body. No per-project prefix.
@@ -72,10 +145,10 @@ function scanTokens(toks: readonly string[]): QuoteTarget | null {
   return null;
 }
 
-function fetchOne(
+async function fetchOne(
   address: string,
   insecureTls?: boolean,
-): { ok: true; body: string } | { ok: false; reason: string } {
+): Promise<{ ok: true; body: string } | { ok: false; reason: string }> {
   let url: URL;
   try {
     url = new URL(address);
@@ -124,6 +197,7 @@ function fetchOne(
     });
     // Success — drop the temp file quietly.
     try { unlinkSync(stderrPath); } catch { /* benign */ }
+    return { ok: true, body };
   } catch (e) {
     // Read whatever curl wrote to stderr, append to reason so a
     // postmortem can see "exit 6 (DNS)" / "exit 28 (timeout)" /
@@ -134,12 +208,38 @@ function fetchOne(
     } catch { /* file gone or unreadable */ }
     try { unlinkSync(stderrPath); } catch { /* benign */ }
     const base = e instanceof Error ? e.message : String(e);
+
+    // v0.8.21+ — fallback gate. When curl itself failed to LAUNCH
+    // (binary not on PATH — typically legacy Windows without
+    // System32\curl.exe, sandboxed envs that strip /usr/bin,
+    // or PATH-truncated service processes), retry via node:http(s)
+    // core so the user still gets their m_quote content instead
+    // of silently falling back to the local QUOTES pool.
+    //
+    // The guard is intentionally narrow: ANY error curl produced
+    // while actually running (timeout, HTTP>=400 exit 22, DNS exit
+    // 6, TLS exit 60) is treated as a meaningful network problem
+    // and surfaced unchanged — the user wants to see why their
+    // endpoint failed, not have it silently covered up by a
+    // second implementation that might mask the same root cause.
+    if (isBinaryMissing(e)) {
+      const fb = await fetchViaCore(url, insecure);
+      if (fb.ok) return fb;
+      // Fallback also failed — surface BOTH reasons so the
+      // postmortem can tell the two apart (a 1st-stage ENOENT +
+      // a 2nd-stage "ENOTFOUND" means "curl missing AND host
+      // unreachable"; an ENOENT + "HTTP 500" means "curl missing
+      // AND endpoint is broken").
+      return {
+        ok: false,
+        reason: `curl missing (${String((e as { code?: unknown })?.code ?? "")}); node:http(s) fallback: ${fb.reason}`,
+      };
+    }
     return {
       ok: false,
       reason: stderrTail.length > 0 ? `${base} | stderr: ${stderrTail}` : base,
     };
   }
-  return { ok: true, body };
 }
 
 // Pre-fetch the first `m_quote|address|…` source referenced by the
@@ -186,7 +286,7 @@ export async function preFetchQuotes(
     return out;
   }
 
-  const result = fetchOne(target.address, target.insecureTls);
+  const result = await fetchOne(target.address, target.insecureTls);
   if (!result.ok) {
     // Stale-on-error: keep the previous entry (peek ignores TTL so
     // a 60s-old entry is still surfaced for this tick). If no entry
