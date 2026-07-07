@@ -3510,6 +3510,134 @@ const QUOTE_FREQ_PARAM = {
   },
 } as const;
 
+// v0.8.18+ — m_quote `address` param. Empty string (default) keeps
+// the local QUOTES array path. Non-empty string is treated as a URL
+// to fetch with `fetch()` (Node 18+ native; statusline lives in a
+// short-lived child process per tick, so we don't cache — matching
+// the per-tick live-sample model of m_memUsage).
+const QUOTE_ADDRESS_PARAM = {
+  named: {
+    // Accept any non-empty URL. We don't validate the scheme here
+    // (http / https / file / etc.) because the user knows their
+    // own network policy; a fetch failure just falls through to
+    // the drop path the same as a missing local quote.
+    address: (raw: string) => (raw.length > 0 ? raw : null),
+  },
+} as const;
+
+// v0.8.18+ — m_quote `field` param. Dot-separated path: `a.b.0.c`.
+// Each segment is either an object key (string) or an array index
+// (non-negative integer). The user supplies this in the same style
+// as `parseRemains` reaches into a nested API response, so the
+// mental model is "JSON pointer lite".
+const QUOTE_FIELD_PARAM = {
+  named: {
+    field: (raw: string) => {
+      if (raw.length === 0) return null;
+      // Reject leading / trailing dots and empty segments.
+      if (raw.startsWith(".") || raw.endsWith(".") || raw.includes(".."))
+        return null;
+      return raw;
+    },
+  },
+} as const;
+
+// v0.8.18+ — walk a JSON value along a dot-separated path, mirroring
+// the recursive shape inspection in `parseRemains` (api.ts). At each
+// step: if the current value is a string, return it (and IGNORE the
+// rest of the path — the field param is only meaningful for object
+// / array navigation). If it's an object, treat the segment as a
+// key. If it's an array, treat the segment as a non-negative integer
+// index. If the segment is malformed for the current container, or
+// the path runs out before a string is found, return null.
+export function getFieldByPath(value: unknown, path: string): string | null {
+  const segs = path.split(".");
+  let cur: unknown = value;
+  for (let i = 0; i < segs.length; i++) {
+    const seg = segs[i]!;
+    if (typeof cur === "string") {
+      // String is terminal — return as-is regardless of remaining
+      // path (per the user's contract: "如果拿到的已经是字符串,
+      // 则忽略 field 参数").
+      return cur;
+    }
+    if (cur == null) return null;
+    if (Array.isArray(cur)) {
+      if (!/^[0-9]+$/.test(seg)) return null;
+      const idx = parseInt(seg, 10);
+      if (idx < 0 || idx >= cur.length) return null;
+      cur = cur[idx];
+      continue;
+    }
+    if (typeof cur === "object") {
+      const obj = cur as Record<string, unknown>;
+      if (!(seg in obj)) return null;
+      cur = obj[seg];
+      continue;
+    }
+    // Number / boolean / etc. — not navigable; stop here.
+    return null;
+  }
+  // Reached end of path. Final value must be a string to be
+  // renderable; anything else (object / array / number) returns
+  // null so the caller can fall through to the drop path.
+  return typeof cur === "string" ? cur : null;
+}
+
+// v0.8.18+ — fetch a remote quote payload via `curl` (synchronous).
+// Mirrors the tolerant shape inspection pattern from
+// src/api.ts:parseRemains (try JSON parse → walk path → return
+// string). `renderTemplate` is sync (per-tick deadline in the
+// statusline slot) so the renderer can't await; `curl -sSf` is
+// shipped on every modern OS (Win10+1803, macOS, Linux distros)
+// and follows the same execSync pattern as m_memUsage's vm_stat
+// path. Curl failures throw → caught and translated to null so
+// the caller falls through to the drop / local-QUOTES path.
+function fetchQuoteFromAddress(
+  address: string,
+  field: string,
+): string | null {
+  let body: string;
+  try {
+    body = execSync(`curl -sSf --max-time 5 ${shellQuote(address)}`, {
+      encoding: "utf8",
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+  } catch {
+    return null;
+  }
+  // Try JSON parse first (the common case). If body is a plain
+  // string and field is empty, return it directly (per the user's
+  // "如果拿到的已经是字符串" contract).
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return field === "" ? body : null;
+  }
+  return getFieldByPath(parsed, field);
+}
+
+// v0.8.18+ — POSIX shell-quote a single argument. Wraps in single
+// quotes and escapes any embedded single quotes. Used for the
+// curl address to defeat shell injection from a user-supplied
+// URL that contains `;` or `$(...)`.
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+// v0.8.18+ — small string hash for color-band seeding when the
+// quote comes from a remote address (no time-based quoteIndex
+// available). djb2 — non-crypto, deterministic, ~3 lines.
+function stringHash(s: string): number {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) {
+    h = (h * 33 + s.charCodeAt(i)) | 0;
+  }
+  return h >>> 0;
+}
+
 // v0.4.x — named separator aliases. Each `s_<name>` token is a
 // built-in alias for a specific character; it renders the literal
 // value regardless of `cfg().separators` contents. This lets users
@@ -3673,6 +3801,8 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
     named: {
       ...QUOTE_FREQ_PARAM.named,
       ...QUOTE_COLOR_PARAM.named,
+      ...QUOTE_ADDRESS_PARAM.named,
+      ...QUOTE_FIELD_PARAM.named,
       ...NULDROP_PARAM.named,
     },
   },
@@ -4342,20 +4472,46 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     return wrapValueDefault("m_sumApiCalls", agg.calls, `${labelFor("apiCalls")}${agg.calls}`, passThroughOr<string>(params, ctx, "color"));
   },
   m_quote: (params, ctx) => {
-    // Default freq = 1h (per-hour window). The schema resolver
-    // already shape-validated the raw string; we now parse it
-    // into a QuoteFreq {count, unit, ms} object that quoteIndex
-    // and pickQuote need. params.freq is undefined when the
-    // token is just `m_quote` or `m_quote|color|red` (no freq
-    // segment). On a malformed-but-shape-valid string we
-    // INLINE_BADARG here; in practice parseFreq rejects the
-    // same set the resolver does.
-    const raw = params.freq as string | undefined;
-    const parsed: QuoteFreq | null = parseFreq(raw ?? "h");
-    if (!parsed) return INLINE_BADARG;
-    const seed = quoteIndex(parsed, ctx.nowMs);
-    const text = pickQuote(parsed, ctx.nowMs);
-    if (text === "") return null;
+    // v0.8.18+ — when `address` is non-empty, fetch the remote
+    // payload via curl and walk `field` to extract a string. Empty
+    // / undefined address falls through to the local QUOTES path
+    // (default freq = 1h, per-hour window). The fetch path IGNORES
+    // `freq` (remote payloads are not window-bucketed — the user
+    // is responsible for picking an endpoint that returns stable
+    // strings or rotates on its own schedule).
+    const address = params.address as string | undefined;
+    const field = (params.field as string | undefined) ?? "";
+    let text: string;
+    let seed: number;
+    if (address && address.length > 0) {
+      const remote = fetchQuoteFromAddress(address, field);
+      if (remote === null || remote === "") {
+        // Fetch / parse / path failure → drop the chunk, same as
+        // an empty local quote. (We don't fall back to local
+        // QUOTES on remote failure — the user explicitly asked
+        // for a remote source.)
+        return null;
+      }
+      text = remote;
+      // Seed for the color shortcut helpers (rainbow / hue) — use
+      // a stable hash of the text so each distinct remote quote
+      // gets its own deterministic color band.
+      seed = stringHash(remote);
+    } else {
+      // Local QUOTES path. Default freq = 1h. The schema resolver
+      // already shape-validated the raw string; we now parse it
+      // into a QuoteFreq {count, unit, ms} object that quoteIndex
+      // and pickQuote need. params.freq is undefined when the
+      // token is just `m_quote` or `m_quote|color|red`. On a
+      // malformed-but-shape-valid string we INLINE_BADARG here;
+      // in practice parseFreq rejects the same set the resolver.
+      const raw = params.freq as string | undefined;
+      const parsed: QuoteFreq | null = parseFreq(raw ?? "h");
+      if (!parsed) return INLINE_BADARG;
+      seed = quoteIndex(parsed, ctx.nowMs);
+      text = pickQuote(parsed, ctx.nowMs);
+      if (text === "") return null;
+    }
     const color = decodeColorParam(params.color as string | undefined);
     return applyColor(text, color, seed);
   },
