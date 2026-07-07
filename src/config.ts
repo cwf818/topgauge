@@ -575,6 +575,14 @@ const DEFAULT_CONFIG: {
     // v0.8.22+ — cache hit-rate ratio (lifted out of the v0.8.x
     // R8 hardcoded "hit:" prefix into the labels namespace).
     labelTokenHitRate: string;
+    // v0.8.23+ — context-window occupancy / capacity / pct
+    // prefixes (were hardcoded "size:" / "size:" / "used:" /
+    // "remain:" in v0.8.22). Defaults preserve the literals so
+    // existing renders stay byte-identical.
+    labelContextSize: string;
+    labelContextWindowsSize: string;
+    labelContextUsedPercent: string;
+    labelContextRemainingPercent: string;
   };
   colors: typeof DEFAULT_COLORS;
   cacheHitColors: typeof DEFAULT_CACHE_HIT_COLORS;
@@ -641,6 +649,13 @@ const DEFAULT_CONFIG: {
     labelTokenOutSpeed: "out:",
     labelMemUsage: "Mem:",
     labelTokenHitRate: "hit:",
+    // v0.8.23+ — context-window prefixes (defaults preserve the
+    // v0.8.22 hardcoded literals so existing renders stay
+    // byte-identical).
+    labelContextSize: "size:",
+    labelContextWindowsSize: "size:",
+    labelContextUsedPercent: "used:",
+    labelContextRemainingPercent: "remain:",
   },
   colors: DEFAULT_COLORS,
   cacheHitColors: DEFAULT_CACHE_HIT_COLORS,
@@ -933,6 +948,10 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
         "labelTokenOutSpeed",
         "labelMemUsage",
         "labelTokenHitRate",
+        "labelContextSize",
+        "labelContextWindowsSize",
+        "labelContextUsedPercent",
+        "labelContextRemainingPercent",
       ];
       for (const f of fields) {
         if (typeof lm[f] === "string") {

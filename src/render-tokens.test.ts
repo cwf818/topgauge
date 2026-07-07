@@ -5415,6 +5415,63 @@ describe("renderTemplate — v0.8.0+ labels.* config customization", () => {
     assert.match(strip(out), /^Mem:(n\/a|\d.*)$/);
   });
 
+  // v0.8.23+ — context-window prefix axes. Defaults preserve the
+  // v0.8.22 hardcoded literals ("size:" / "size:" / "used:" /
+  // "remain:") so existing renders stay byte-identical until the
+  // user overrides labels.labelContext*.
+  it("labelContextSize override reaches m_contextSize prefix", () => {
+    withLabels({ labelContextSize: "Ctx:" }, () => {
+      const out = renderTemplate(
+        ["m_contextSize"],
+        ctxFor(fakeSnapshot()),
+      ).join("\n");
+      assert.match(strip(out), /^Ctx:/);
+    });
+  });
+
+  it("labelContextWindowsSize override reaches m_contextWindowsSize prefix", () => {
+    withLabels({ labelContextWindowsSize: "Cap:" }, () => {
+      const out = renderTemplate(
+        ["m_contextWindowsSize"],
+        ctxFor(fakeSnapshot()),
+      ).join("\n");
+      assert.match(strip(out), /^Cap:/);
+    });
+  });
+
+  it("labelContextUsedPercent override reaches m_contextUsedPercent prefix", () => {
+    withLabels({ labelContextUsedPercent: "fill:" }, () => {
+      const out = renderTemplate(
+        ["m_contextUsedPercent"],
+        ctxFor(fakeSnapshot()),
+      ).join("\n");
+      assert.match(strip(out), /^fill:\d+(\.\d+)?%$/);
+    });
+  });
+
+  it("labelContextRemainingPercent override reaches m_contextRemainingPercent prefix", () => {
+    withLabels({ labelContextRemainingPercent: "free:" }, () => {
+      const out = renderTemplate(
+        ["m_contextRemainingPercent"],
+        ctxFor(fakeSnapshot()),
+      ).join("\n");
+      assert.match(strip(out), /^free:\d+(\.\d+)?%$/);
+    });
+  });
+
+  it("context label defaults reproduce v0.8.22 hardcoded literals byte-identically", () => {
+    // Defaults must reproduce the v0.8.22 hardcoded literals
+    // ("size:" / "size:" / "used:" / "remain:") so existing
+    // renders stay byte-identical after upgrade. The placeholder
+    // path fires when context_window data is null on the fake
+    // snapshot — assert the n/a-family bodies.
+    const ctx = ctxFor(fakeSnapshot());
+    assert.match(strip(renderTemplate(["m_contextSize"], ctx).join("\n")), /^size:/);
+    assert.match(strip(renderTemplate(["m_contextWindowsSize"], ctx).join("\n")), /^size:/);
+    assert.match(strip(renderTemplate(["m_contextUsedPercent"], ctx).join("\n")), /^used:/);
+    assert.match(strip(renderTemplate(["m_contextRemainingPercent"], ctx).join("\n")), /^remain:/);
+  });
+
   it("m_memUsage|nulldrop|true drops the placeholder when getMemUsage() returns null", () => {
     // Force the placeholder path: we can't easily mock getMemUsage()
     // since it's a local function. Instead, override the label to

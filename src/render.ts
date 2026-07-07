@@ -108,7 +108,8 @@ type LabelAxis =
   | "in" | "out" | "cacheIn" | "totalIn"
   | "inSpeed" | "outSpeed" | "apiMs" | "apiCalls"
   | "memUsage"
-  | "hitRate";   // v0.8.22+ — lifted out of hardcoded literal
+  | "hitRate"   // v0.8.22+ — lifted out of hardcoded literal
+  | "contextSize" | "contextWindowsSize" | "contextUsedPercent" | "contextRemainingPercent"; // v0.8.23+
 function labelFor(axis: LabelAxis): string {
   const labels = cfg().labels;
   switch (axis) {
@@ -122,6 +123,12 @@ function labelFor(axis: LabelAxis): string {
     case "apiCalls": return labels.labelApiCalls;
     case "memUsage": return labels.labelMemUsage;
     case "hitRate": return labels.labelTokenHitRate;
+    // v0.8.23+ — context-window prefix knobs (were hardcoded
+    // "size:" / "size:" / "used:" / "remain:" in v0.8.22).
+    case "contextSize": return labels.labelContextSize;
+    case "contextWindowsSize": return labels.labelContextWindowsSize;
+    case "contextUsedPercent": return labels.labelContextUsedPercent;
+    case "contextRemainingPercent": return labels.labelContextRemainingPercent;
   }
 }
 
@@ -1698,10 +1705,14 @@ const MODULES: Record<string, Module> = {
   // v6.x: zero length renders as "size:0" (the user's "0 直接显示"
   // rule). The placeholder path is reserved for the truly
   // missing-data case (no totals.tokenTotalIn at all).
+  // v0.8.23+ — prefix routes through labelFor("contextSize")
+  // (labels.labelContextSize; default "size:") so the user can
+  // override the context-occupancy prefix without touching the
+  // v0.8.22 hardcoded literal.
   m_contextSize: (c) => {
     const total = c.tokens?.totals?.tokenTotalIn;
     if (total == null) return placeholderBare("m_contextSize", c);
-    return `size:${formatCompactToken(total)}`;
+    return `${labelFor("contextSize")}${formatCompactToken(total)}`;
   },
   // v0.8.0+ — semantic change: per-turn hit rate, not session-aggregate.
   // New formula: m_tokenCachedIn / m_tokenTotalIn (per-turn snapshot)
@@ -2311,26 +2322,38 @@ const MODULES: Record<string, Module> = {
   // `Widows` is preserved per user direction.
   //
   // Source: `context_window.context_window_size`. v6.x: size=null →
-  // "size:n/a" placeholder.
+  // "size:n/a" placeholder. v0.8.23+ — prefix routes through
+  // labelFor("contextWindowsSize") (labels.labelContextWindowsSize;
+  // default "size:").
   m_contextWindowsSize: (c) => {
     const sz = c.tokens?.contextWindow?.contextWindowSize;
-    return sz != null ? wrapPlainDefault("m_contextWindowsSize", `size:${formatCompactToken(sz)}`, undefined) : placeholderBare("m_contextWindowsSize", c);
+    return sz != null
+      ? wrapPlainDefault("m_contextWindowsSize", `${labelFor("contextWindowsSize")}${formatCompactToken(sz)}`, undefined)
+      : placeholderBare("m_contextWindowsSize", c);
   },
   // v0.8.0+ — renamed from `m_contextUsed` (the `Percent` suffix
   // makes the unit explicit and matches m_tokenHitRate's % output
   // style). Source: `context_window.used_percentage`. v6.x:
   // contextUsedPercent=null → "n/a%" placeholder. Zero renders as "0%".
+  // v0.8.23+ — prefix routes through labelFor("contextUsedPercent")
+  // (labels.labelContextUsedPercent; default "used:").
   m_contextUsedPercent: (c) => {
     const pct = c.tokens?.contextWindow?.contextUsedPercent;
-    return pct != null ? wrapPlainDefault("m_contextUsedPercent", `used:${pct}%`, undefined) : placeholderBare("m_contextUsedPercent", c);
+    return pct != null
+      ? wrapPlainDefault("m_contextUsedPercent", `${labelFor("contextUsedPercent")}${pct}%`, undefined)
+      : placeholderBare("m_contextUsedPercent", c);
   },
   // v0.8.0+ — new per-turn module. Sibling of m_contextUsedPercent,
   // rendering the inverse: the unused share of the context window.
   // Source: `context_window.remaining_percentage`. Zero renders
-  // as "0%"; null → "remain:n/a%" placeholder.
+  // as "0%"; null → "remain:n/a%" placeholder. v0.8.23+ — prefix
+  // routes through labelFor("contextRemainingPercent")
+  // (labels.labelContextRemainingPercent; default "remain:").
   m_contextRemainingPercent: (c) => {
     const pct = c.tokens?.contextWindow?.contextRemainingPercent;
-    return pct != null ? wrapPlainDefault("m_contextRemainingPercent", `remain:${pct}%`, undefined) : placeholderBare("m_contextRemainingPercent", c);
+    return pct != null
+      ? wrapPlainDefault("m_contextRemainingPercent", `${labelFor("contextRemainingPercent")}${pct}%`, undefined)
+      : placeholderBare("m_contextRemainingPercent", c);
   },
   // Context window bar + 5-band-colored percentage. v6.x: bare
   // form now follows the placeholder rule — when the synthetic
@@ -3338,13 +3361,18 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   m_accTokenHitRate: (_p, _c) => `${labelFor("hitRate")}n/a%`,
   m_tokenCachedIn: placeholderDashesUnit("cache:0"),
   m_tokenHitRate: (_p, _c) => `${labelFor("hitRate")}n/a`,
-  m_contextSize: placeholderNA("size:"),
-  m_contextWindowsSize: placeholderNA("size:"),
+  // v0.8.23+ — context-window placeholders route through the
+  // dedicated labelContext* axes (labels.labelContextSize /
+  // labelContextWindowsSize / labelContextUsedPercent /
+  // labelContextRemainingPercent; defaults "size:" / "size:" /
+  // "used:" / "remain:" preserve the v0.8.22 hardcoded literals).
+  m_contextSize: (_p, _c) => `${labelFor("contextSize")}n/a`,
+  m_contextWindowsSize: (_p, _c) => `${labelFor("contextWindowsSize")}n/a`,
   // m_contextUsedPercent's natural shape is "${pct}%" — the
   // placeholder preserves the unit suffix so users see "used:n/a%"
   // rather than bare "n/a" when usedPct is null.
-  m_contextUsedPercent: placeholderDashesUnit("used:n/a%"),
-  m_contextRemainingPercent: placeholderDashesUnit("remain:n/a%"),
+  m_contextUsedPercent: (_p, _c) => `${labelFor("contextUsedPercent")}n/a%`,
+  m_contextRemainingPercent: (_p, _c) => `${labelFor("contextRemainingPercent")}n/a%`,
   // number+unit — placeholder shape is the module's normal body
   // with "--" swapped in for the numeric value (e.g. "5h:--",
   // "+ --", "-- t/s"). Empty body = bare dash.
@@ -4400,11 +4428,13 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   },
   // v0.8.0+ — inline form of m_contextSize (cumulative occupancy,
   // total_input_tokens). See MODULES entry for the new semantic.
+  // v0.8.23+ — prefix routes through labelFor("contextSize")
+  // (labels.labelContextSize; default "size:").
   m_contextSize: (params, ctx) => {
     const total = ctx.tokens?.totals?.tokenTotalIn;
     if (total == null) return placeholderWithColor("m_contextSize", params, ctx);
     return wrapPlain(
-      `size:${formatCompactToken(total)}`,
+      `${labelFor("contextSize")}${formatCompactToken(total)}`,
       params.color as string | undefined,
     );
   },
@@ -4950,22 +4980,26 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     return wrapValueDefault("m_apiCalls", acc.accApiCalls, `${labelFor("apiCalls")}${acc.accApiCalls}`, params.color as string | undefined);
   },
   // v0.8.0+ — inline form of m_contextWindowsSize (capacity).
+  // v0.8.23+ — context-window inline forms route through the
+  // dedicated labelContext* axes (labels.labelContext*; defaults
+  // "size:" / "size:" / "used:" / "remain:" preserve the v0.8.22
+  // hardcoded literals).
   m_contextWindowsSize: (params, ctx) => {
     const sz = ctx.tokens?.contextWindow?.contextWindowSize;
     if (sz == null) return placeholderWithColor("m_contextWindowsSize", params, ctx);
-    return wrapPlainDefault("m_contextWindowsSize", `size:${formatCompactToken(sz)}`, params.color as string | undefined);
+    return wrapPlainDefault("m_contextWindowsSize", `${labelFor("contextWindowsSize")}${formatCompactToken(sz)}`, params.color as string | undefined);
   },
   // v0.8.0+ — inline form of m_contextUsedPercent.
   m_contextUsedPercent: (params, ctx) => {
     const pct = ctx.tokens?.contextWindow?.contextUsedPercent;
     if (pct == null) return placeholderWithColor("m_contextUsedPercent", params, ctx);
-    return wrapPlainDefault("m_contextUsedPercent", `used:${pct}%`, params.color as string | undefined);
+    return wrapPlainDefault("m_contextUsedPercent", `${labelFor("contextUsedPercent")}${pct}%`, params.color as string | undefined);
   },
   // v0.8.0+ — inline form of m_contextRemainingPercent.
   m_contextRemainingPercent: (params, ctx) => {
     const pct = ctx.tokens?.contextWindow?.contextRemainingPercent;
     if (pct == null) return placeholderWithColor("m_contextRemainingPercent", params, ctx);
-    return wrapPlainDefault("m_contextRemainingPercent", `remain:${pct}%`, params.color as string | undefined);
+    return wrapPlainDefault("m_contextRemainingPercent", `${labelFor("contextRemainingPercent")}${pct}%`, params.color as string | undefined);
   },
   m_windowContext: (params, ctx) => {
     if (!ctx.contextWindow) return placeholderWithColor("m_windowContext", params, ctx);

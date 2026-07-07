@@ -738,6 +738,17 @@ describe("loadConfig — labels (v0.8.22+ unified labelToken* / labelApi* namesp
     assert.equal(__testing.DEFAULT_CONFIG.labels.labelTokenHitRate, "hit:");
   });
 
+  it("v0.8.23+ context-window defaults reproduce the v0.8.22 hardcoded literals", () => {
+    // m_contextSize / m_contextWindowsSize / m_contextUsedPercent
+    // / m_contextRemainingPercent were hardcoded "size:" / "size:"
+    // / "used:" / "remain:" in v0.8.22 — defaults preserve them so
+    // existing renders stay byte-identical.
+    assert.equal(__testing.DEFAULT_CONFIG.labels.labelContextSize, "size:");
+    assert.equal(__testing.DEFAULT_CONFIG.labels.labelContextWindowsSize, "size:");
+    assert.equal(__testing.DEFAULT_CONFIG.labels.labelContextUsedPercent, "used:");
+    assert.equal(__testing.DEFAULT_CONFIG.labels.labelContextRemainingPercent, "remain:");
+  });
+
   it("accepts a custom labelTokenIn; other axes keep defaults", async () => {
     writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
       labels: { labelTokenIn: "Δ:" },
