@@ -3638,6 +3638,25 @@ const QUOTE_MAX_PARAM = {
   },
 } as const;
 
+// v0.8.21+ — `|insecureTls|<b>` per-token override for the m_quote
+// fetcher. Accepts the standard boolean spellings (`true`/`false`/
+// `1`/`0`) so the renderer schema can record the request and pass
+// it down to `preFetchQuotes` in src/api.quote.ts. The TOKEN arg is
+// AUTHORITATIVE — when present it overrides config.json's
+// `quoteInsecureTls` for that fetch — so users can opt into curl
+// `-k` only on specific tokens (e.g. a self-signed dev mirror) and
+// keep strict TLS elsewhere. Omitting the arg means "fall back to
+// the config gate" (cf. fetchOne in api.quote.ts).
+const QUOTE_INSECURE_TLS_PARAM = {
+  named: {
+    insecureTls: (raw: string) => {
+      const v = raw.toLowerCase();
+      if (v === "true" || v === "1" || v === "false" || v === "0") return raw;
+      return null;
+    },
+  },
+} as const;
+
 // v0.8.18+ — walk a JSON value along a dot-separated path, mirroring
 // the recursive shape inspection in `parseRemains` (api.ts). At each
 // step: if the current value is a string, return it (and IGNORE the
@@ -3963,6 +3982,7 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
       ...QUOTE_AUTHOR_PARAM.named,
       ...QUOTE_LANG_PARAM.named,
       ...QUOTE_MAX_PARAM.named,
+      ...QUOTE_INSECURE_TLS_PARAM.named,
       ...QUOTE_WRAP_PARAM.named,
       ...NULDROP_PARAM.named,
     },

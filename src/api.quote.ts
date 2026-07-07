@@ -43,26 +43,38 @@ function truncateForLog(s: string): string {
 // Walk a token list for the first `m_quote|address|<addr>|field|<path>`
 // entry. We only ever cache one body — multiple address tokens in
 // the same template collapse to a single endpoint.
-type QuoteTarget = { address: string };
+//
+// v0.8.21+ — `insecureTls` reflects the `|insecureTls|<b>` inline
+// arg on the token so callers can opt into curl `-k` per-token
+// without touching config.json. When the arg is absent, the value
+// is `undefined` and the global `cfg().quoteInsecureTls` gate is
+// authoritative; an explicit `|insecureTls|true|false` on the
+// token overrides it for that tick.
+type QuoteTarget = { address: string; insecureTls?: boolean };
 
 function scanTokens(toks: readonly string[]): QuoteTarget | null {
   for (const tok of toks) {
     const parts = tok.split("|");
     if (parts[0] !== "m_quote") continue;
     let address = "";
+    let insecureTls: boolean | undefined;
     for (let i = 1; i < parts.length - 1; i++) {
       if (parts[i] === "address") {
         address = parts[i + 1] ?? "";
-        break;
+      } else if (parts[i] === "insecureTls") {
+        const v = (parts[i + 1] ?? "").toLowerCase();
+        if (v === "true" || v === "1") insecureTls = true;
+        else if (v === "false" || v === "0") insecureTls = false;
       }
     }
-    if (address.length > 0) return { address };
+    if (address.length > 0) return { address, insecureTls };
   }
   return null;
 }
 
 function fetchOne(
   address: string,
+  insecureTls?: boolean,
 ): { ok: true; body: string } | { ok: false; reason: string } {
   let url: URL;
   try {
@@ -88,17 +100,28 @@ function fetchOne(
   // them) or MSYS2 path-mangling the URL. argv length is also
   // uncapped by the shell's MAX_ARG_STRS limit on old Windows.
   const stderrPath = `${tmpdir()}/topgauge-cc-curl-${process.pid}.log`;
+  // v0.8.21+ — opt-in TLS skip. Precedence (highest first):
+  //   1. inline `|insecureTls|true|false` on the m_quote token
+  //      (`insecureTls` arg from preFetchQuotes)
+  //   2. `cfg().quoteInsecureTls === true` from config.json
+  //   3. `TOPGAUGE_CC_QUOTE_INSECURE_TLS=1` env var (seeds the
+  //      same config flag at loadConfig time)
+  // When the flag is set we append `-k` / `--insecure` to the curl
+  // argv so self-signed / expired / untrusted-CA HTTPS endpoints
+  // work without modifying the system CA bundle. The flag stays
+  // OFF by default — a misconfigured upstream still surfaces TLS
+  // errors loudly.
+  const insecure = insecureTls ?? configStore.get().quoteInsecureTls === true;
+  const curlArgs = ["-sSf", "--max-time", "5", "-S"];
+  if (insecure) curlArgs.push("-k");
+  curlArgs.push(address);
   let body: string;
   try {
-    body = execFileSync(
-      "curl",
-      ["-sSf", "--max-time", "5", "-S", address],
-      {
-        encoding: "utf8",
-        windowsHide: true,
-        stdio: ["ignore", "pipe", openSync(stderrPath, "w")],
-      },
-    );
+    body = execFileSync("curl", curlArgs, {
+      encoding: "utf8",
+      windowsHide: true,
+      stdio: ["ignore", "pipe", openSync(stderrPath, "w")],
+    });
     // Success — drop the temp file quietly.
     try { unlinkSync(stderrPath); } catch { /* benign */ }
   } catch (e) {
@@ -163,7 +186,7 @@ export async function preFetchQuotes(
     return out;
   }
 
-  const result = fetchOne(target.address);
+  const result = fetchOne(target.address, target.insecureTls);
   if (!result.ok) {
     // Stale-on-error: keep the previous entry (peek ignores TTL so
     // a 60s-old entry is still surfaced for this tick). If no entry

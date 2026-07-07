@@ -586,6 +586,16 @@ const DEFAULT_CONFIG: {
   // v0.2.21: declarative provider registry. See DEFAULT_PROVIDERS
   // above and src/providers.ts for the matcher / dispatcher.
   providers: Record<string, ProviderEntry>;
+  // v0.8.21+ — `m_quote|address|…` fetcher passes `--insecure` /
+  // `-k` to curl so self-signed / expired / untrusted-CA HTTPS
+  // endpoints work without patching the system CA bundle. Always
+  // opt-in (default `false`) so a misconfigured upstream still
+  // surfaces TLS errors loudly. Overridable per-token via the
+  // `|insecureTls|<true|false>` inline arg on `m_quote`. The
+  // `TOPGAUGE_CC_QUOTE_INSECURE_TLS=1` env var seeds the same
+  // boolean at loadConfig time — config.json (file) beats the env
+  // var, matching the v0.8.x `display` precedence.
+  quoteInsecureTls: boolean;
 } = {
   cacheTtlMs: 60_000,
   fetchTimeoutMs: 5_000,
@@ -623,6 +633,7 @@ const DEFAULT_CONFIG: {
   tokenFormat: DEFAULT_TOKEN_FORMAT,
   version: "",
   providers: DEFAULT_PROVIDERS,
+  quoteInsecureTls: false,
 };
 
 export type Config = typeof DEFAULT_CONFIG;
@@ -667,6 +678,23 @@ let _pathResolver: () => string = defaultConfigPath;
 
 export async function loadConfig(): Promise<Config> {
   const path = _pathResolver();
+
+  // v0.8.21+ — env-var seeds. Each entry here is set ONLY if the
+  // user explicitly opted in via the env (strict whitelist — a
+  // truthy/non-"1" value like "true" / "yes" / "0" does NOT count).
+  // Configured as a layered precedence: config.json wins, env falls
+  // back. The spread `{ ...envSeed, ...parsed }` at the bottom of
+  // this function places parsed values on top of envSeed, so any
+  // explicit config.json field overrides the env var.
+  //
+  // We narrow this to bare boolean knobs that would be tedious to
+  // express in config.json — TLS-related lint config lives here
+  // because users typically set it in a shell rc, not a JSON file.
+  const envSeed: Record<string, unknown> = {};
+  if (process.env.TOPGAUGE_CC_QUOTE_INSECURE_TLS === "1") {
+    envSeed.quoteInsecureTls = true;
+  }
+
   // Cheap existence probe — the common case is no config file, no need
   // to even open the file descriptor.
   diagnostics.logFsRead(path, "config.loadConfig");
@@ -699,7 +727,7 @@ export async function loadConfig(): Promise<Config> {
     return _current;
   }
 
-  _current = mergeConfig(parsed as Record<string, unknown>);
+  _current = mergeConfig({ ...envSeed, ...(parsed as Record<string, unknown>) });
   return _current;
 }
 
@@ -1396,6 +1424,22 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
       warn(
         "statuslineTemplate must be a string[]; using default",
       );
+    }
+  }
+
+  // v0.8.21+ — opt-in curl --insecure gate. Default false (TLS
+  // errors surface normally); user opts in via either
+  // `quoteInsecureTls: true` in config.json or
+  // TOPGAUGE_CC_QUOTE_INSECURE_TLS=1 in the env. Any non-boolean
+  // value (string/number/...) is treated as a typo and silently
+  // falls back to the safe default with a stderr warn — the same
+  // lenient pattern as fetchTimeoutMs / cacheTtlMs validation.
+  if ("quoteInsecureTls" in raw) {
+    const v = raw.quoteInsecureTls;
+    if (typeof v === "boolean") {
+      out.quoteInsecureTls = v;
+    } else {
+      warn("quoteInsecureTls must be a boolean; using default");
     }
   }
 
