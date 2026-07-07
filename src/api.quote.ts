@@ -23,6 +23,8 @@
 //      renderer reads it via `ctx.quoteBodies.get(address)`.
 
 import { execSync } from "node:child_process";
+import { openSync, readFileSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import * as cache from "./cache.ts";
 import { configStore } from "./config.ts";
 import * as diagnostics from "./diagnostics.ts";
@@ -81,23 +83,35 @@ function fetchOne(
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     return { ok: false, reason: "unsupported scheme" };
   }
+  // Capture stderr to a temp file so curl's exit-status detail
+  // (e.g. "curl: (6) Could not resolve host") is preserved for
+  // diagnostics instead of swallowed by stdio:[…,"ignore"]. tmp
+  // filename: `<tmpdir>/topgauge-cc-curl-<pid>.log` — unique per
+  // process so concurrent ticks (rare but possible) don't clobber
+  // each other's stderr. Cleaned in catch / finally.
+  const stderrPath = `${tmpdir()}/topgauge-cc-curl-${process.pid}.log`;
   let body: string;
   try {
-    body = execSync(`curl -sSf --max-time 5 ${shellQuote(address)}`, {
+    body = execSync(`curl -sSf --max-time 5 -S ${shellQuote(address)}`, {
       encoding: "utf8",
       windowsHide: true,
-      stdio: ["ignore", "pipe", "ignore"],
+      stdio: ["ignore", "pipe", openSync(stderrPath, "w")],
     });
+    // Success — drop the temp file quietly.
+    try { unlinkSync(stderrPath); } catch { /* benign */ }
   } catch (e) {
-    // `curl -sSf` exits non-zero on HTTP errors, timeouts, DNS
-    // failures, TLS errors, etc. The thrown Error's message starts
-    // with the curl exit summary (e.g. "Command failed: curl …
-    // HTTP 404\n…") — surface the message verbatim so a postmortem
-    // can grep it. timeouts come out as "exit 28", TLS errors as
-    // "exit 60", DNS failures as "exit 6", etc.
+    // Read whatever curl wrote to stderr, append to reason so a
+    // postmortem can see "exit 6 (DNS)" / "exit 28 (timeout)" /
+    // "exit 60 (TLS cert)" / "exit 22 (HTTP >=400)" verbatim.
+    let stderrTail = "";
+    try {
+      stderrTail = readFileSync(stderrPath, "utf8").trim();
+    } catch { /* file gone or unreadable */ }
+    try { unlinkSync(stderrPath); } catch { /* benign */ }
+    const base = e instanceof Error ? e.message : String(e);
     return {
       ok: false,
-      reason: e instanceof Error ? e.message : String(e),
+      reason: stderrTail.length > 0 ? `${base} | stderr: ${stderrTail}` : base,
     };
   }
   return { ok: true, body };
