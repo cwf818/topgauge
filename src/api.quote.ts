@@ -30,6 +30,7 @@ import { tmpdir } from "node:os";
 import * as cache from "./cache.ts";
 import { configStore } from "./config.ts";
 import * as diagnostics from "./diagnostics.ts";
+import { parseFreq } from "./quotes.ts";
 
 // v0.8.21+ — single-error classification: a curl `Command failed:`
 // thrown by Node's child_process carries an embedded `code` (string)
@@ -102,12 +103,19 @@ function fetchViaCore(
   });
 }
 
-// v0.8.21+ — fixed cache key. Shared across processes / projects
-// so all readers see the same body. No per-project prefix.
-const QUOTE_CACHE_KEY = "quote";
-const QUOTE_CACHE_TTL_MS = 60_000;
-
-type QuoteCacheEntry = { address: string; body: string };
+// v0.8.21+ — value stored in `src/cache.ts` under the
+// `<freqMs>:<address>` cache key. `binIndex` is the freq-bucket
+// index from `floor(nowMs / freqMs)` at fetch time; the next tick
+// only reuses this body when the current wall-clock bin still
+// equals `binIndex`. Cross-bin → re-fetch so the address source
+// has a fresh payload (matches the user's `|freq|1h`/`1m`/…
+// semantic: the address itself is treated as a rotating stream).
+type QuoteCacheEntry = {
+  address: string;
+  body: string;
+  freqMs: number;
+  binIndex: number;
+};
 
 function truncateForLog(s: string): string {
   return s.length > 120 ? s.slice(0, 119) + "…" : s;
@@ -123,7 +131,24 @@ function truncateForLog(s: string): string {
 // is `undefined` and the global `cfg().quoteInsecureTls` gate is
 // authoritative; an explicit `|insecureTls|true|false` on the
 // token overrides it for that tick.
-type QuoteTarget = { address: string; insecureTls?: boolean };
+//
+// v0.8.21+ — `freq` reads `|freq|<raw>` (passed through the SAME
+// `parseFreq` the local-quote renderer uses) so a single grammar
+// governs both paths. When absent / unparseable we fall back to
+// `1h` (matching the renderer's default for local QUOTES).
+type QuoteTarget = {
+  address: string;
+  insecureTls?: boolean;
+  // `ms` is the resolved bucket duration; `raw` is the original
+  // inline arg string (used for diagnostics to surface what the
+  // user actually typed — defaults to "1h" when the token omits
+  // a `|freq|` arg).
+  freq: { ms: number; raw: string };
+};
+
+function defaultFreq(): { ms: number; raw: string } {
+  return { ms: 3_600_000, raw: "h" };
+}
 
 function scanTokens(toks: readonly string[]): QuoteTarget | null {
   for (const tok of toks) {
@@ -131,6 +156,7 @@ function scanTokens(toks: readonly string[]): QuoteTarget | null {
     if (parts[0] !== "m_quote") continue;
     let address = "";
     let insecureTls: boolean | undefined;
+    let freqRaw: string | undefined;
     for (let i = 1; i < parts.length - 1; i++) {
       if (parts[i] === "address") {
         address = parts[i + 1] ?? "";
@@ -138,9 +164,17 @@ function scanTokens(toks: readonly string[]): QuoteTarget | null {
         const v = (parts[i + 1] ?? "").toLowerCase();
         if (v === "true" || v === "1") insecureTls = true;
         else if (v === "false" || v === "0") insecureTls = false;
+      } else if (parts[i] === "freq") {
+        freqRaw = parts[i + 1] ?? "";
       }
     }
-    if (address.length > 0) return { address, insecureTls };
+    if (address.length > 0) {
+      const parsed = freqRaw !== undefined ? parseFreq(freqRaw) : null;
+      const freq = parsed !== null
+        ? { ms: parsed.ms, raw: freqRaw! }
+        : defaultFreq();
+      return { address, insecureTls, freq };
+    }
   }
   return null;
 }
@@ -276,12 +310,24 @@ export async function preFetchQuotes(
   }
   if (target === null) return out;
 
-  // Cache-aside: within-TTL hit AND same address → skip fetch.
-  const cached = cache.getWithAge<QuoteCacheEntry>(
-    QUOTE_CACHE_KEY,
-    QUOTE_CACHE_TTL_MS,
-  );
-  if (cached !== null && cached.value.address === target.address) {
+  // v0.8.21+ — bin-rotated cache-aside. The cache key includes
+  // `freqMs` so two tokens addressing the same endpoint with
+  // different freqs (e.g. `|freq|1h` and `|freq|1d`) keep
+  // independent rotation streams. The cache value includes the
+  // bin index at fetch time; we treat `binIndex === currentBin`
+  // as a HIT (skip fetch; reuse body). Cross-bin → MISS; the TTL
+  // is `4 × freqMs` so the cache row expires on its own even
+  // without any tick ever crossing bins, but the binIndex check
+  // is the actual gate.
+  const currentBin = Math.floor(nowMs / target.freq.ms);
+  const cacheKey = `quote:${target.freq.ms}:${target.address}`;
+  const cached = cache.getWithAge<QuoteCacheEntry>(cacheKey, target.freq.ms * 4);
+  if (
+    cached !== null &&
+    cached.value.address === target.address &&
+    cached.value.freqMs === target.freq.ms &&
+    cached.value.binIndex === currentBin
+  ) {
     out.set(target.address, cached.value.body);
     return out;
   }
@@ -289,16 +335,20 @@ export async function preFetchQuotes(
   const result = await fetchOne(target.address, target.insecureTls);
   if (!result.ok) {
     // Stale-on-error: keep the previous entry (peek ignores TTL so
-    // a 60s-old entry is still surfaced for this tick). If no entry
-    // exists at all, log a warning so a postmortem can see the
-    // network failure — but DON'T add to the returned Map; the
-    // renderer will fall back to local QUOTES.
-    const stale = cache.peek<QuoteCacheEntry>(QUOTE_CACHE_KEY);
-    if (stale === null || stale.address !== target.address) {
+    // even a stale row is surfaced for this tick). When the entry
+    // also doesn't MATCH (address/freqMs differ), log a warning so
+    // a postmortem can see the network failure — but DON'T add to
+    // the returned Map; the renderer will fall back to local QUOTES.
+    const stale = cache.peek<QuoteCacheEntry>(cacheKey);
+    if (
+      stale === null ||
+      stale.address !== target.address ||
+      stale.freqMs !== target.freq.ms
+    ) {
       diagnostics.append(
         "warning",
         "m_quote",
-        `address fetch failed (curl exit): ${truncateForLog(target.address)} (reason=${result.reason})`,
+        `address fetch failed (curl exit): ${truncateForLog(target.address)} freq=${target.freq.raw} (reason=${result.reason})`,
         nowMs,
       );
     } else {
@@ -308,9 +358,14 @@ export async function preFetchQuotes(
   }
 
   cache.set(
-    QUOTE_CACHE_KEY,
-    { address: target.address, body: result.body } satisfies QuoteCacheEntry,
-    QUOTE_CACHE_TTL_MS,
+    cacheKey,
+    {
+      address: target.address,
+      body: result.body,
+      freqMs: target.freq.ms,
+      binIndex: currentBin,
+    } satisfies QuoteCacheEntry,
+    target.freq.ms * 4,
   );
   out.set(target.address, result.body);
   return out;
