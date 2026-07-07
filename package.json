@@ -29,8 +29,5 @@
     "esbuild": "^0.24.0",
     "tsx": "^4.7.0",
     "typescript": "^5.5.0"
-  },
-  "dependencies": {
-    "undici": "^7.28.0"
   }
 }
