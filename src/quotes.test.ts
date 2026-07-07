@@ -31,6 +31,8 @@ import {
   pickQuote,
   quoteIndex,
   QUOTES,
+  sanitizeQuote,
+  truncateQuote,
   utcAnchored,
 } from "./quotes.ts";
 
@@ -675,5 +677,73 @@ describe("lineTemplate — m_quote inline-args", () => {
       indices.size >= 5,
       `expected ≥5 unique indices across 24 hours, got ${indices.size}`,
     );
+  });
+});
+
+describe("quotes — sanitizeQuote (v0.8.21+)", () => {
+  it("CR / LF / TAB collapse to single space", () => {
+    assert.equal(sanitizeQuote("a\nb"), "a b");
+    assert.equal(sanitizeQuote("a\rb"), "a b");
+    assert.equal(sanitizeQuote("a\tb"), "a b");
+  });
+  it("consecutive whitespace runs collapse to one space", () => {
+    assert.equal(sanitizeQuote("a\n\nb"), "a b");
+    assert.equal(sanitizeQuote("a\t  b"), "a b");
+  });
+  it("C0 controls + DEL are dropped", () => {
+    // \x00 / \x07 / \x1f / \x7f are stripped; middle latin/digit chars survive
+    assert.equal(sanitizeQuote("a\x00b"), "ab");
+    assert.equal(sanitizeQuote("a\x07b"), "ab");
+    assert.equal(sanitizeQuote("a\x1fb"), "ab");
+    assert.equal(sanitizeQuote("a\x7fb"), "ab");
+  });
+  it("readable text passes through unchanged (no spurious spaces)", () => {
+    assert.equal(sanitizeQuote("Stay hungry, stay foolish."), "Stay hungry, stay foolish.");
+    assert.equal(sanitizeQuote("千里之行，始于足下。"), "千里之行，始于足下。");
+  });
+});
+
+describe("quotes — truncateQuote (v0.8.21+)", () => {
+  it("under cap → no truncation, no ellipsis", () => {
+    assert.equal(truncateQuote("hello", 60), "hello");
+    assert.equal(truncateQuote("千里之行", 30), "千里之行");
+  });
+  it("at exact cap → no ellipsis", () => {
+    // 30 chars × 1 = 30 budget; cap = 30 → fits exactly, no slice.
+    assert.equal(truncateQuote("a".repeat(30), 30), "a".repeat(30));
+    // 15 CJK chars × 2 = 30 budget; cap = 30 → fits exactly.
+    assert.equal(truncateQuote("中".repeat(15), 30), "中".repeat(15));
+  });
+  it("over cap → slice + append three dots", () => {
+    // 61 latin chars at cap=60 → first 60 + "..."
+    const long = "a".repeat(61);
+    const out = truncateQuote(long, 60);
+    assert.equal(out, "a".repeat(60) + "...");
+  });
+  it("CJK-heavy: 31 chars at cap=30 → first 15 chars + ...", () => {
+    // each CJK = 2 budget; cap = 30 → first 15 chars fit, 16th
+    // would push us over (15*2 + 2 = 32 > 30), so cut at index 15.
+    const long = "中".repeat(31);
+    const out = truncateQuote(long, 30);
+    assert.equal(out, "中".repeat(15) + "...");
+  });
+  it("max=0 opts out of truncation (sanitize still runs)", () => {
+    const long = "x".repeat(100);
+    const out = truncateQuote(long, 0);
+    assert.equal(out, "x".repeat(100));
+    // Sanitize pass still runs.
+    const mixed = "a\nb\nc";
+    assert.equal(truncateQuote(mixed, 0), "a b c");
+  });
+  it("CJK weighting: mixed CJK + latin", () => {
+    // "a中a中" budget: a(1) + 中(2) + a(1) + 中(2). cap=5 →
+    // a(1)→1 ok; 中(2)→3 ok; a(1)→4 ok; 中(2)→6 >5 cut at index 3.
+    const out = truncateQuote("a中a中", 5);
+    assert.equal(out, "a中a...");
+  });
+  it("sanitize pass runs before truncation (newline collapses)", () => {
+    // "a\nb\nc" → sanitize to "a b c" (5 chars, budget=5). cap=4 →
+    // a(1)→1, 空格(1)→2, b(1)→3, 空格(1)→4 (cut before c) → "a b " + "..."
+    assert.equal(truncateQuote("a\nb\nc", 4), "a b ...");
   });
 });

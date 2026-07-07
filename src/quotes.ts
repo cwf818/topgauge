@@ -327,6 +327,99 @@ export function pickQuote(freq: QuoteFreq, nowMs: number): string {
   return QUOTES[quoteIndex(freq, nowMs)]!.quote;
 }
 
+// v0.8.21+ — sanitize + truncate a quote string for the
+// statusline. Two passes:
+//
+//   1. Strip CRLF / TAB → single space (so an honest quote with
+//      a literal newline collapses to one separator, NOT a layout
+//      break); strip the rest of C0 controls + DEL.
+//   2. Collapse multiple spaces to one (a stray CR+LF would have
+//      become two spaces after pass 1).
+//
+// Truncation (maxCharBudget, default 60): CJK characters (Unicode
+// `Block=Han / Hangul / Hiragana / Katakana / CJK Unified
+// Ideographs` etc, generic per char weight = 2) count as 2
+// budget, anything else = 1. When the budget is exhausted, the
+// visible body is sliced AND `...` is appended (so the user
+// sees an ellipsis and isn't misled into thinking the long
+// quote is a short one). Pass max=0 to opt out of truncation
+// (sanitize only).
+export function sanitizeQuote(text: string): string {
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!;
+    const code = c.charCodeAt(0);
+    // CRLF / TAB → single space. \v, \f stay as-is (handled below).
+    if (c === "\n" || c === "\r" || c === "\t") {
+      out += " ";
+      continue;
+    }
+    // C0 controls (including \v \f) + DEL: drop.
+    if (code < 32 || code === 127) continue;
+    out += c;
+  }
+  // Collapse multiple whitespace runs to a single space. Done as
+  // a post-pass so the sanitize pass can keep its per-char shape.
+  return out.replace(/ {2,}/g, " ");
+}
+
+// CJK ranges — coarse unicode blocks consumed as 2-char width
+// for the quote-budget heuristic. Each char in one of these
+// ranges uses 2 budget units (matching the user's spec: 中文 30
+// chars vs 英文 60 chars with a 60-budget cap → CJK budget is
+// 2/unit, latin is 1/unit). Anything outside consumes 1.
+export function quoteWeight(code: number): number {
+  // CJK Unified Ideographs + extension blocks
+  if (code >= 0x4e00 && code <= 0x9fff) return 2;
+  if (code >= 0x3400 && code <= 0x4dbf) return 2; // CJK Ext A
+  if (code >= 0x20000 && code <= 0x2a6df) return 2; // CJK Ext B
+  if (code >= 0x2a700 && code <= 0x2b73f) return 2; // CJK Ext C
+  if (code >= 0x2b740 && code <= 0x2b81f) return 2; // CJK Ext D
+  if (code >= 0x2b820 && code <= 0x2ceaf) return 2; // CJK Ext E-F
+  // Hangul Syllables + Jamo
+  if (code >= 0xac00 && code <= 0xd7af) return 2;
+  if (code >= 0x1100 && code <= 0x11ff) return 2; // Hangul Jamo
+  // Hiragana, Katakana, Katakana Phonetic Extensions
+  if (code >= 0x3040 && code <= 0x309f) return 2;
+  if (code >= 0x30a0 && code <= 0x30ff) return 2;
+  if (code >= 0x31f0 && code <= 0x31ff) return 2;
+  // Fullwidth / Halfwidth / punctuation slabs (CJK)
+  if (code >= 0xff00 && code <= 0xffef) return 2;
+  // CJK compatibility ideographs + symbols
+  if (code >= 0xf900 && code <= 0xfaff) return 2;
+  if (code >= 0x2f00 && code <= 0x2fdf) return 2;
+  // Anything else → ASCII or Latin-counts-1.
+  return 1;
+}
+
+// v0.8.21+ — sanitize + truncate a quote to fit the statusline.
+// `max` is the CJK-weighted budget (CJK=2, latin=1, total ≤ max).
+// When `max <= 0` truncation is skipped (sanitize only — useful
+// for testing or for users who want the raw body). When the
+// truncated output is strictly shorter than the sanitized input,
+// append `...` so the user can see the quote was clipped.
+//
+// The slicing walks the string once with an O(1) budget counter
+// over code-point indices — punctuation / combining marks / emoji
+// sit at their own code points and count per spec the same way as
+// any other non-CJK char (so an emoji counts as 1).
+export function truncateQuote(text: string, max: number): string {
+  const clean = sanitizeQuote(text);
+  if (max <= 0) return clean;
+  let budget = 0;
+  let cutAt = -1;
+  for (let i = 0; i < clean.length; i++) {
+    const w = quoteWeight(clean.charCodeAt(i));
+    if (budget + w > max) {
+      cutAt = i;
+      break;
+    }
+    budget += w;
+  }
+  if (cutAt === -1) return clean;
+  return clean.slice(0, cutAt) + "...";
+}
+
 // v0.8.21+ — pick the full QuoteEntry record for the current
 // window. Used by the `m_quote` inline renderer to also surface
 // an `author` suffix (`~<quote>--<author>~`); `author === null`

@@ -34,6 +34,7 @@ import {
   pickQuoteEntry,
   pickQuoteEntryFiltered,
   quoteIndex,
+  truncateQuote,
   type QuoteFreq,
 } from "./quotes.ts";
 import { readGitInfo } from "./git-info.ts";
@@ -2099,12 +2100,16 @@ const MODULES: Record<string, Module> = {
   //
   // v0.8.21+ — also renders the entry's `author` as a
   // `--<author>` suffix when one is supplied. Plain `<quote>` is
-  // the no-author case.
+  // the no-author case. Sanitize + 60-char-budget truncate apply
+  // (mirrors the inline renderer's default) so any local entry
+  // over the cap is clipped + suffixed with `...`.
   m_quote: (c) => {
     const freq = parseFreq("h");
     if (!freq) return null; // unreachable — "h" is always valid
     const entry = pickQuoteEntry(freq, c.nowMs);
-    return entry.author ? `${entry.quote}--${entry.author}` : entry.quote;
+    const quote = truncateQuote(entry.quote, 60);
+    const author = entry.author ? truncateQuote(entry.author, 60) : null;
+    return author ? `${quote}--${author}` : quote;
   },
 
   // ----- v0.4.0+ session-info / metadata modules -----
@@ -3617,6 +3622,22 @@ const QUOTE_LANG_PARAM = {
   },
 } as const;
 
+// v0.8.21+ — m_quote `max` param. The CJK-weighted char budget
+// for the rendered quote (CJK=2, latin=1, default 60 → 30 中文
+// chars or 60 英文 chars). An integer in [0, 999]. `0` opts
+// out of truncation (sanitize still runs). Anything outside the
+// shape is rejected (badarg → warn + drop).
+const QUOTE_MAX_PARAM = {
+  named: {
+    max: (raw: string) => {
+      if (!/^[0-9]+$/.test(raw)) return null;
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < 0 || n > 999) return null;
+      return raw;
+    },
+  },
+} as const;
+
 // v0.8.18+ — walk a JSON value along a dot-separated path, mirroring
 // the recursive shape inspection in `parseRemains` (api.ts). At each
 // step: if the current value is a string, return it (and IGNORE the
@@ -3941,6 +3962,7 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
       ...QUOTE_QUOTE_PARAM.named,
       ...QUOTE_AUTHOR_PARAM.named,
       ...QUOTE_LANG_PARAM.named,
+      ...QUOTE_MAX_PARAM.named,
       ...QUOTE_WRAP_PARAM.named,
       ...NULDROP_PARAM.named,
     },
@@ -4190,8 +4212,11 @@ function pickLocalQuote(
   const entry = langs.length > 0
     ? pickQuoteEntryFiltered(parsed, ctx.nowMs, langs)
     : pickQuoteEntry(parsed, ctx.nowMs);
-  const author = entry.author;
-  return author ? `${entry.quote}--${author}` : entry.quote;
+  const maxRaw = params.max as string | undefined;
+  const max = maxRaw !== undefined ? Number(maxRaw) : 60;
+  const quote = truncateQuote(entry.quote, max);
+  const author = entry.author ? truncateQuote(entry.author, max) : null;
+  return author ? `${quote}--${author}` : quote;
 }
 
 // v0.8.21+ — deterministic seed for the color shortcut helpers
@@ -4687,8 +4712,12 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (address && address.length > 0 && hasQuote) {
       const remote = fetchQuoteFromAddress(address, quoteRaw, authorRaw, ctx);
       if (remote !== null) {
-        const authorSuffix = remote.author ? `--${remote.author}` : "";
-        const inner = `${remote.quote}${authorSuffix}`;
+        const maxRaw = params.max as string | undefined;
+        const max = maxRaw !== undefined ? Number(maxRaw) : 60;
+        const tQuote = truncateQuote(remote.quote, max);
+        const tAuthor = remote.author ? truncateQuote(remote.author, max) : null;
+        const authorSuffix = tAuthor ? `--${tAuthor}` : "";
+        const inner = `${tQuote}${authorSuffix}`;
         const walkedJson = quoteRaw.length > 0;
         // Wrap brackets only when the user walked JSON; the
         // v0.8.18 bare-body short-circuit returns raw text (the
@@ -4696,7 +4725,10 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
         // exact body appears verbatim.
         text = wrap && walkedJson ? `~${inner}~` : inner;
         // Seed for the color shortcut helpers (rainbow / hue).
-        seed = stringHash(remote.quote);
+        // Hash the body INSIDE the wrap brackets so distinct
+        // truncations of the same remote source still get
+        // distinct color bands.
+        seed = stringHash(tQuote);
       } else {
         // Fetch / parse / quote-miss → fall back to local QUOTES.
         const local = pickLocalQuote(params, langRaw, ctx);
