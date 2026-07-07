@@ -205,7 +205,7 @@ describe("formatSpeed", () => {
   });
 });
 
-describe("formatMemBytes (v0.8.17+ m_memUsageStatus)", () => {
+describe("formatMemBytes (v0.8.17+ m_memUsage)", () => {
   // 1024-base, matching ccstatusline / htop / macOS Activity
   // Monitor convention. G tier uses .toFixed(1); M/K tiers use
   // .toFixed(0); null → "n/a" so the renderer can simply
@@ -4950,16 +4950,16 @@ describe("renderTemplate — v0.8.0+ labels.* config customization", () => {
     assert.match(strip(renderTemplate(["m_tokenOutSpeed"], ctx0).join("\n")), /^out:/);
   });
 
-  // v0.8.17+ — m_memUsageStatus label customization. Default is
+  // v0.8.17+ — m_memUsage label customization. Default is
   // "Mem:" (mirrors ccstatusline's hardcoded prefix). Output body
   // is "<label><used>/<total>" where the bytes are sampled live
   // via os.totalmem/os.freemem (Darwin: vm_stat). The prefix
   // assertion is the only stable check — the bytes portion depends
   // on the host's actual RAM and is non-deterministic.
-  it("labelMemUsage override reaches m_memUsageStatus prefix", () => {
+  it("labelMemUsage override reaches m_memUsage prefix", () => {
     withLabels({ labelMemUsage: "RAM:" }, () => {
       const a = renderTemplate(
-        ["m_memUsageStatus"],
+        ["m_memUsage"],
         ctxFor(fakeSnapshot()),
       ).join("\n");
       // Either "RAM:<used>/<total>" on success or "RAM:n/a" if
@@ -4973,24 +4973,24 @@ describe("renderTemplate — v0.8.0+ labels.* config customization", () => {
   it("labelMemUsage defaults to 'Mem:' byte-identically", () => {
     // No override — defaults must reproduce the v0.8.17+ literal
     // "Mem:" so existing v0.8.16 renders stay byte-identical after
-    // upgrade. (m_memUsageStatus is a NEW v0.8.17+ module, so this
+    // upgrade. (m_memUsage is a NEW v0.8.17+ module, so this
     // asserts that the new default is "Mem:" rather than e.g. "mem:"
     // or "memory:").
     const out = renderTemplate(
-      ["m_memUsageStatus"],
+      ["m_memUsage"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
     assert.match(strip(out), /^Mem:(n\/a|\d.*)$/);
   });
 
-  it("m_memUsageStatus|nulldrop|true drops the placeholder when getMemUsage() returns null", () => {
+  it("m_memUsage|nulldrop|true drops the placeholder when getMemUsage() returns null", () => {
     // Force the placeholder path: we can't easily mock getMemUsage()
     // since it's a local function. Instead, override the label to
     // match the placeholderLabelOr pattern and assert the joined
     // template has no "Mem:" token (placeholder is "Mem:n/a";
     // nulldrop|true drops the whole chunk).
     const out = renderTemplate(
-      ["m_memUsageStatus|nulldrop|true"],
+      ["m_memUsage|nulldrop|true"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
     // When getMemUsage() succeeds, output is "Mem:X.XG/Y.YG" and
@@ -5000,9 +5000,9 @@ describe("renderTemplate — v0.8.0+ labels.* config customization", () => {
     assert.doesNotMatch(strip(out), /n\/a/);
   });
 
-  it("m_memUsageStatus|color|red override applies the user's SGR", () => {
+  it("m_memUsage|color|red override applies the user's SGR", () => {
     const out = renderTemplate(
-      ["m_memUsageStatus|color|red"],
+      ["m_memUsage|color|red"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
     // Default tint is cyan (NAMED_PALETTE.cyan). When the user

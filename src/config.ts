@@ -553,7 +553,7 @@ const DEFAULT_CONFIG: {
     labelApiCalls: string;
     labelInSpeed: string;
     labelOutSpeed: string;
-    // v0.8.17+ — system RAM usage label exposed via m_memUsageStatus.
+    // v0.8.17+ — system RAM usage label exposed via m_memUsage.
     // Default "Mem:" mirrors ccstatusline's hardcoded prefix so users
     // migrating from ccstatusline get byte-identical output until they
     // override.
@@ -903,7 +903,7 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
         "labelInSpeed",
         "labelOutSpeed",
         // v0.8.17+ — system RAM usage label exposed via
-        // m_memUsageStatus. Default "Mem:" mirrors ccstatusline
+        // m_memUsage. Default "Mem:" mirrors ccstatusline
         // so the user's existing overrides / templates keep working.
         "labelMemUsage",
       ];

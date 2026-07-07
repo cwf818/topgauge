@@ -37,7 +37,7 @@ import {
 import { readGitInfo } from "./git-info.ts";
 import * as statusStore from "./status-store.ts";
 import * as cache from "./cache.ts";
-// v0.8.17+ — m_memUsageStatus data source. Darwin shells out to
+// v0.8.17+ — m_memUsage data source. Darwin shells out to
 // `vm_stat` for active+wired pages; other platforms fall back to
 // os.totalmem() - os.freemem().
 import * as os from "node:os";
@@ -2336,11 +2336,11 @@ const MODULES: Record<string, Module> = {
   // so the value-zero rule does not apply here. wrapPlainDefault
   // (not wrapValueDefault) because the body is a string, not a
   // numeric value that needs the value-zero/--branching.
-  m_memUsageStatus: (c) => {
+  m_memUsage: (c) => {
     const m = getMemUsage();
-    if (!m) return placeholderBare("m_memUsageStatus", c);
+    if (!m) return placeholderBare("m_memUsage", c);
     return wrapPlainDefault(
-      "m_memUsageStatus",
+      "m_memUsage",
       `${labelFor("memUsage")}${formatMemBytes(m.used)}/${formatMemBytes(m.total)}`,
       undefined,
     );
@@ -2772,7 +2772,7 @@ const DEFAULT_COLORS: Record<string, string> = {
   // v0.8.17+ — system RAM usage. Default cyan matches ccstatusline's
   // "Mem:..." widget hue so users migrating from ccstatusline get
   // a familiar color until they override.
-  m_memUsageStatus: NAMED_PALETTE.cyan,
+  m_memUsage: NAMED_PALETTE.cyan,
 };
 
 // Snapshot of `cfg().colors` + the `brightBlack` input shortcut. Read
@@ -3386,7 +3386,7 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   // v0.8.17+ — system RAM usage. Resolves to "<label>n/a" so the
   // placeholder body stays in lockstep with the user's labels.labelMemUsage
   // override (renaming the label renames the placeholder too).
-  m_memUsageStatus: placeholderLabelOr("memUsage"),
+  m_memUsage: placeholderLabelOr("memUsage"),
   // v6.x: previously drop-by-design modules (no age info / no
   // version / no reset data / no balance). Now also follow the
   // placeholder rule — they occupy their slot so adjacent
@@ -3713,7 +3713,7 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   // of the named-args family (color + nulldrop). No scale / band
   // color for the value itself: the body is a string ("X.XG/Y.YG")
   // and the per-module DEFAULT_COLORS tint applies by default.
-  m_memUsageStatus: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_memUsage: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   // v0.4.0+ — sub-template reference. First argument is the key
   // into cfg().lineTemplates (the user's reusable-fragment
   // registry). Optional `:type|<plan|balance>` filter (default
@@ -4573,11 +4573,11 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   // MODULES entry but with the user's |color|<c> override applied
   // before the default tint (override always wins; matches the
   // wrapPlainDefault contract for every other module).
-  m_memUsageStatus: (params, ctx) => {
+  m_memUsage: (params, ctx) => {
     const m = getMemUsage();
-    if (!m) return placeholderWithColor("m_memUsageStatus", params, ctx);
+    if (!m) return placeholderWithColor("m_memUsage", params, ctx);
     const body = `${labelFor("memUsage")}${formatMemBytes(m.used)}/${formatMemBytes(m.total)}`;
-    return wrapPlainDefault("m_memUsageStatus", body, params.color as string | undefined);
+    return wrapPlainDefault("m_memUsage", body, params.color as string | undefined);
   },
   // v0.4.0+ — expand a registered lineTemplates fragment. The
   // loader strips any `m_template:` tokens from lineTemplates
@@ -5028,9 +5028,9 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
       } else if (tok.startsWith("m_statTtlStatus|")) {
         // m_statTtlStatus → 15 chars + "|" = 16 skipLen.
         inline = expandInlineToken(tok, "m_statTtlStatus", 16, ctx);
-      } else if (tok.startsWith("m_memUsageStatus|")) {
-        // m_memUsageStatus → 16 chars + "|" = 17 skipLen.
-        inline = expandInlineToken(tok, "m_memUsageStatus", 17, ctx);
+      } else if (tok.startsWith("m_memUsage|")) {
+        // m_memUsage → 10 chars + "|" = 11 skipLen.
+        inline = expandInlineToken(tok, "m_memUsage", 11, ctx);
       }
       // Parse failure (bad |color|, unknown param, odd segment count)
       // → warn + drop. Renderer returning null for valid args (e.g.
