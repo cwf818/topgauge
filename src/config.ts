@@ -561,8 +561,6 @@ const DEFAULT_CONFIG: {
     labelTokenCachedIn: string;
     // per-turn / acc / sum-avg of total-IN (input + cache-read)
     labelTokenTotalIn: string;
-    // per-turn / acc / sum-avg of total-OUT
-    labelTokenTotalOut: string;
     // per-turn / acc / sum-avg of API roundtrip time (dhms body)
     labelApiMs: string;
     // per-turn / acc / sum-avg of API call count (integer body)
@@ -637,11 +635,6 @@ const DEFAULT_CONFIG: {
     labelTokenOut: "out:",
     labelTokenCachedIn: "cache:",
     labelTokenTotalIn: "total:",
-    // m_tokenTotalOut shares the "out:" axis (it's session-
-    // cumulative output). Default stays "out:" so existing
-    // renders stay byte-identical; users who want a distinct
-    // totalOut: prefix can override here.
-    labelTokenTotalOut: "out:",
     labelApiMs: "api:",
     labelApiCalls: "calls:",
     labelTokenInSpeed: "in:",
@@ -934,7 +927,6 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
         "labelTokenOut",
         "labelTokenCachedIn",
         "labelTokenTotalIn",
-        "labelTokenTotalOut",
         "labelApiMs",
         "labelApiCalls",
         "labelTokenInSpeed",
@@ -949,59 +941,33 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
           warn(`labels.${f} must be a string; using default`);
         }
       }
-
-      // v0.8.22+ — accept the v0.8.13–v0.8.21 names as deprecated
-      // aliases. New name (labelTokenIn / labelApi / …) wins;
-      // alias is only applied when the new name is absent. Emits
-      // a one-shot warn line per alias used so a postmortem can
-      // see the user's old config and migrate it forward. Old
-      // aliases:
-      //   labelIn         → labelTokenIn
-      //   labelOut        → labelTokenOut
-      //   labelCacheIn    → labelTokenCachedIn
-      //   labelTotalIn    → labelTokenTotalIn
-      //   labelApi        → labelApiMs
-      //   labelInSpeed    → labelTokenInSpeed
-      //   labelOutSpeed   → labelTokenOutSpeed
-      //   labelMemUsage   → labelMemUsage (no rename)
-      //   labelApiCalls   → labelApiCalls (no rename)
-      // Mapping table spelled out so a reader doesn't need to
-      // dig for it. `labelMemUsage` and `labelApiCalls` aliased
-      // to themselves to keep the migration-warning semantics
-      // uniform — users who copy/paste their v0.8.13 block see
-      // "deprecated in v0.8.22" once and migrate forward.
-      const aliases: Record<string, keyof typeof out.labels> = {
-        labelIn: "labelTokenIn",
-        labelOut: "labelTokenOut",
-        labelCacheIn: "labelTokenCachedIn",
-        labelTotalIn: "labelTokenTotalIn",
-        // labelApi was the v0.8.13–v0.8.21 alias for labelApiMs.
-        labelApi: "labelApiMs",
-        // labelApiCalls and labelMemUsage were not renamed —
-        // but mirror them through so the same warn fires.
-        labelApiCalls: "labelApiCalls",
-        labelInSpeed: "labelTokenInSpeed",
-        labelOutSpeed: "labelTokenOutSpeed",
-        labelMemUsage: "labelMemUsage",
-      };
-      for (const [oldName, newName] of Object.entries(aliases)) {
-        if (oldName in lm) {
+      // v0.8.22+ — old v0.8.13–v0.8.21 names (labelIn / labelOut /
+      // labelCacheIn / labelTotalIn / labelApi / labelInSpeed /
+      // labelOutSpeed) are NOT accepted. Users must rename in
+      // their config.json. We intentionally don't mirror values
+      // silently: a stray old name silently adopting a new prefix
+      // would mask config bugs and a noisy warn + drop is the
+      // right failure mode. Also catches the transient v0.8.22
+      // labelTokenTotalOut (reverted before release).
+      // Note: `labelApiCalls` and `labelMemUsage` were not renamed
+      // — they're the SAME identifier in v0.8.13+ and v0.8.22+, so
+      // they remain in `fields` above. We don't list them here.
+      const knownOldNames = [
+        "labelIn",
+        "labelOut",
+        "labelCacheIn",
+        "labelTotalIn",
+        "labelTokenTotalOut",
+        "labelApi",
+        "labelInSpeed",
+        "labelOutSpeed",
+      ];
+      for (const old of knownOldNames) {
+        if (old in lm) {
           warn(
-            `labels.${oldName} is deprecated in v0.8.22; ` +
-            `use labels.${newName} instead`,
+            `labels.${old} is removed in v0.8.22; remove it from ` +
+            `your config.json (see release notes)`,
           );
-          // Only mirror when the user did NOT also set the new
-          // name (new wins, by config-precedence).
-          if (!(newName in lm)) {
-            if (typeof lm[oldName] === "string") {
-              out.labels[newName] = lm[oldName] as string;
-            } else if (typeof lm[oldName] !== "undefined") {
-              warn(
-                `labels.${oldName} must be a string; ` +
-                `using default for ${newName}`,
-              );
-            }
-          }
         }
       }
     } else {

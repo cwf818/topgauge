@@ -5251,21 +5251,19 @@ describe("renderTemplate — v0.8.0+ labels.* config customization", () => {
     });
   });
 
-  it("labelTokenTotalOut override reaches m_tokenTotalOut (independent of labelTokenOut)", () => {
-    // v0.8.22+ — m_tokenTotalOut moved to its own labelFor("totalOut")
-    // axis so users who want a distinct `totalOut:` prefix can override
-    // it independently of the per-turn `labelTokenOut`. Defaults still
-    // match ("out:"), so existing renders stay byte-identical.
-    withLabels({ labelTokenTotalOut: "OutTotal:" }, () => {
+  it("labelTokenOut override reaches m_tokenOut / m_tokenTotalOut (shared axis)", () => {
+    // m_tokenTotalOut shares the per-turn "out" axis (no separate
+    // labelTokenTotalOut field — that transient v0.8.22 axis was
+    // removed before release). Override labelTokenOut and both
+    // modules pick it up; existing renders stay byte-identical.
+    withLabels({ labelTokenOut: "Out:" }, () => {
       const snap = fakeSnapshot();
       processTick(snap.cwd, snap);
       statusStore.commit();
-      const a = renderTemplate(["m_tokenTotalOut"], ctxFor(snap)).join("\n");
-      const b = renderTemplate(["m_tokenOut"], ctxFor(snap)).join("\n");
-      // m_tokenTotalOut picks up the dedicated axis...
-      assert.equal(strip(a), "OutTotal:155");
-      // ...while m_tokenOut keeps its per-turn "out:" default.
-      assert.equal(strip(b), "out:155");
+      const a = renderTemplate(["m_tokenOut"], ctxFor(snap)).join("\n");
+      const b = renderTemplate(["m_tokenTotalOut"], ctxFor(snap)).join("\n");
+      assert.equal(strip(a), "Out:155");
+      assert.equal(strip(b), "Out:155");
     });
   });
 

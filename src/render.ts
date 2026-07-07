@@ -105,7 +105,7 @@ function cfg() {
 // token-axis family can keep the speed axis reading as
 // "in:12.3 t/s" (or override it independently).
 type LabelAxis =
-  | "in" | "out" | "cacheIn" | "totalIn" | "totalOut"
+  | "in" | "out" | "cacheIn" | "totalIn"
   | "inSpeed" | "outSpeed" | "apiMs" | "apiCalls"
   | "memUsage"
   | "hitRate";   // v0.8.22+ — lifted out of hardcoded literal
@@ -116,13 +116,6 @@ function labelFor(axis: LabelAxis): string {
     case "out": return labels.labelTokenOut;
     case "cacheIn": return labels.labelTokenCachedIn;
     case "totalIn": return labels.labelTokenTotalIn;
-    // v0.8.22+ — m_tokenTotalOut sits in the `totalOut` family
-    // alongside `m_accTokenOut` / `m_sumTokenOut` / the jsonl
-    // `totalOut` column. Default "out:" preserves the v0.8.x
-    // literal; users who want a distinct `totalOut:` prefix can
-    // override `labels.labelTokenTotalOut` independently of the
-    // per-turn `labels.labelTokenOut`.
-    case "totalOut": return labels.labelTokenTotalOut;
     case "inSpeed": return labels.labelTokenInSpeed;
     case "outSpeed": return labels.labelTokenOutSpeed;
     case "apiMs": return labels.labelApiMs;
@@ -2267,7 +2260,7 @@ const MODULES: Record<string, Module> = {
   // `m_accTokenOut`'s in-memory accumulator rollup.
   m_tokenTotalOut: (c) =>
     c.tokens?.totals.tokenTotalOut != null
-      ? `${labelFor("totalOut")}${formatCompactToken(c.tokens.totals.tokenTotalOut)}`
+      ? `${labelFor("out")}${formatCompactToken(c.tokens.totals.tokenTotalOut)}`
       : placeholderBare("m_tokenTotalOut", c),
   // v0.8.0+ — new module added to fix the v0.8.0 contract gap.
   // Source: same as m_tokenInTotal (stdin.context_window.
@@ -3296,10 +3289,7 @@ function placeholderLabelOr(axis: LabelAxis): PlaceholderBody {
 const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   // pure-number — placeholder shape is "<prefix>n/a"
   m_tokenInTotal: placeholderLabelOr("in"),
-  // v0.8.22+ — m_tokenTotalOut placeholder routes through
-  // labelFor("totalOut") so the prefix follows
-  // labels.labelTokenTotalOut (independent of labelTokenOut).
-  m_tokenTotalOut: placeholderLabelOr("totalOut"),
+  m_tokenTotalOut: placeholderLabelOr("out"),
   // v0.8.13+ — m_apiCalls placeholder routes through labelFor
   // (labels.labelApiCalls) so the prefix matches the user's
   // configured labelApiCalls default. Was hardcoded "calls:" via
@@ -4915,7 +4905,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const t = ctx.tokens;
     if (!t || t.totals.tokenTotalOut == null) return placeholderWithColor("m_tokenTotalOut", params, ctx);
     return wrapPlain(
-      `${labelFor("totalOut")}${formatCompactToken(t.totals.tokenTotalOut)}`,
+      `${labelFor("out")}${formatCompactToken(t.totals.tokenTotalOut)}`,
       params.color as string | undefined,
     );
   },
