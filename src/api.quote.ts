@@ -22,9 +22,20 @@
 //      `renderProviderLine` → `ctx.quoteBodies`, and the sync
 //      renderer reads it via `ctx.quoteBodies.get(address)`.
 
+import { execSync } from "node:child_process";
 import * as cache from "./cache.ts";
 import { configStore } from "./config.ts";
 import * as diagnostics from "./diagnostics.ts";
+
+// POSIX-style shell quoting for an arbitrary URL string, used to
+// safe-pass the address to `curl -sSf --max-time 5 …`. Wraps the
+// value in single quotes, escaping any embedded single quote as
+// the standard `'\''` sequence. Sufficient for the URL grammar
+// (which forbids shell metacharacters in the host / path), so we
+// don't need fancier escaping.
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`;
+}
 
 // v0.8.21+ — fixed cache key. Shared across processes / projects
 // so all readers see the same body. No per-project prefix.
@@ -58,9 +69,9 @@ function scanTokens(toks: readonly string[]): QuoteTarget | null {
   return null;
 }
 
-async function fetchOne(
+function fetchOne(
   address: string,
-): Promise<{ ok: true; body: string } | { ok: false; reason: string }> {
+): { ok: true; body: string } | { ok: false; reason: string } {
   let url: URL;
   try {
     url = new URL(address);
@@ -70,29 +81,26 @@ async function fetchOne(
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     return { ok: false, reason: "unsupported scheme" };
   }
-  let res: Response;
+  let body: string;
   try {
-    res = await fetch(address, {
-      headers: { Accept: "application/json" },
-      signal: AbortSignal.timeout(5000),
-      redirect: "manual",
+    body = execSync(`curl -sSf --max-time 5 ${shellQuote(address)}`, {
+      encoding: "utf8",
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "ignore"],
     });
   } catch (e) {
+    // `curl -sSf` exits non-zero on HTTP errors, timeouts, DNS
+    // failures, TLS errors, etc. The thrown Error's message starts
+    // with the curl exit summary (e.g. "Command failed: curl …
+    // HTTP 404\n…") — surface the message verbatim so a postmortem
+    // can grep it. timeouts come out as "exit 28", TLS errors as
+    // "exit 60", DNS failures as "exit 6", etc.
     return {
       ok: false,
       reason: e instanceof Error ? e.message : String(e),
     };
   }
-  if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` };
-  try {
-    const body = await res.text();
-    return { ok: true, body };
-  } catch (e) {
-    return {
-      ok: false,
-      reason: e instanceof Error ? e.message : String(e),
-    };
-  }
+  return { ok: true, body };
 }
 
 // Pre-fetch the first `m_quote|address|…` source referenced by the
@@ -139,7 +147,7 @@ export async function preFetchQuotes(
     return out;
   }
 
-  const result = await fetchOne(target.address);
+  const result = fetchOne(target.address);
   if (!result.ok) {
     // Stale-on-error: keep the previous entry (peek ignores TTL so
     // a 60s-old entry is still surfaced for this tick). If no entry
@@ -151,7 +159,7 @@ export async function preFetchQuotes(
       diagnostics.append(
         "warning",
         "m_quote",
-        `address fetch failed (fetch error): ${truncateForLog(target.address)} (reason=${result.reason})`,
+        `address fetch failed (curl exit): ${truncateForLog(target.address)} (reason=${result.reason})`,
         nowMs,
       );
     } else {
