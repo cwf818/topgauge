@@ -553,6 +553,11 @@ const DEFAULT_CONFIG: {
     labelApiCalls: string;
     labelInSpeed: string;
     labelOutSpeed: string;
+    // v0.8.17+ — system RAM usage label exposed via m_memUsageStatus.
+    // Default "Mem:" mirrors ccstatusline's hardcoded prefix so users
+    // migrating from ccstatusline get byte-identical output until they
+    // override.
+    labelMemUsage: string;
   };
   colors: typeof DEFAULT_COLORS;
   cacheHitColors: typeof DEFAULT_CACHE_HIT_COLORS;
@@ -602,6 +607,7 @@ const DEFAULT_CONFIG: {
     labelApiCalls: "calls:",
     labelInSpeed: "in:",
     labelOutSpeed: "out:",
+    labelMemUsage: "Mem:",
   },
   colors: DEFAULT_COLORS,
   cacheHitColors: DEFAULT_CACHE_HIT_COLORS,
@@ -896,6 +902,10 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
         "labelApiCalls",
         "labelInSpeed",
         "labelOutSpeed",
+        // v0.8.17+ — system RAM usage label exposed via
+        // m_memUsageStatus. Default "Mem:" mirrors ccstatusline
+        // so the user's existing overrides / templates keep working.
+        "labelMemUsage",
       ];
       for (const f of fields) {
         if (typeof lm[f] === "string") {

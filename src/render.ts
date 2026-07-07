@@ -37,6 +37,11 @@ import {
 import { readGitInfo } from "./git-info.ts";
 import * as statusStore from "./status-store.ts";
 import * as cache from "./cache.ts";
+// v0.8.17+ — m_memUsageStatus data source. Darwin shells out to
+// `vm_stat` for active+wired pages; other platforms fall back to
+// os.totalmem() - os.freemem().
+import * as os from "node:os";
+import { execSync } from "node:child_process";
 export type { PrevTickSnapshot, AvgSnapshot };
 
 export type Window = {
@@ -92,7 +97,8 @@ function cfg() {
 // axis reading as "in:12.3 t/s" (or override it independently).
 type LabelAxis =
   | "in" | "out" | "cacheIn" | "totalIn"
-  | "inSpeed" | "outSpeed" | "apiMs" | "apiCalls";
+  | "inSpeed" | "outSpeed" | "apiMs" | "apiCalls"
+  | "memUsage";   // v0.8.17+
 function labelFor(axis: LabelAxis): string {
   const labels = cfg().labels;
   switch (axis) {
@@ -104,7 +110,57 @@ function labelFor(axis: LabelAxis): string {
     case "outSpeed": return labels.labelOutSpeed;
     case "apiMs": return labels.labelApi;
     case "apiCalls": return labels.labelApiCalls;
+    case "memUsage": return labels.labelMemUsage;
   }
+}
+
+// v0.8.17+ — system RAM byte formatter. 1024-base (matches
+// ccstatusline / htop / macOS Activity Monitor convention). G tier
+// uses .toFixed(1), M/K tiers use .toFixed(0). Returns "n/a" on
+// null so the call site can simply template-literal concat.
+export function formatMemBytes(bytes: number | null): string {
+  if (bytes == null) return "n/a";
+  const GB = 1024 ** 3;
+  const MB = 1024 ** 2;
+  const KB = 1024;
+  if (bytes >= GB) return `${(bytes / GB).toFixed(1)}G`;
+  if (bytes >= MB) return `${(bytes / MB).toFixed(0)}M`;
+  if (bytes >= KB) return `${(bytes / KB).toFixed(0)}K`;
+  return `${bytes}B`;
+}
+
+// v0.8.17+ — sample system memory. Darwin shells out to `vm_stat`
+// for active+wired pages (matches ccstatusline's htop-style
+// calculation; more accurate than os.freemem on macOS because it
+// includes inactive but reclaimable memory). Other platforms fall
+// back to os.totalmem() - os.freemem(). Returns null only when the
+// vm_stat output cannot be parsed on Darwin (sandbox / restricted
+// shell fall through to the os.* path inside the catch).
+function getMemUsage(): { used: number; total: number } | null {
+  const total = os.totalmem();
+  let used: number;
+  if (os.platform() === "darwin") {
+    try {
+      const out = execSync("vm_stat", {
+        encoding: "utf8",
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      const pageSize = out.match(/page size of (\d+) bytes/);
+      const active = out.match(/Pages active:\s+(\d+)/);
+      const wired = out.match(/Pages wired down:\s+(\d+)/);
+      if (!pageSize || !active || !wired) return null;
+      used =
+        (parseInt(active[1]!, 10) + parseInt(wired[1]!, 10)) *
+        parseInt(pageSize[1]!, 10);
+    } catch {
+      // vm_stat not on PATH or restricted → fall back to os.*
+      used = total - os.freemem();
+    }
+  } else {
+    used = total - os.freemem();
+  }
+  return { used, total };
 }
 
 // Exported so sibling modules (src/dispatch.ts, src/composition.ts) can
@@ -2272,6 +2328,23 @@ const MODULES: Record<string, Module> = {
     const remaining = (entry.ttlMs - entry.ageMs) / entry.ttlMs;
     return `${ttlStatusColor(remaining)}${ttlStatusChar(remaining)}${RESET}`;
   },
+  // v0.8.17+ — system RAM usage. Darwin reads vm_stat; other
+  // platforms fall back to os.totalmem() - os.freemem(). Format
+  // matches ccstatusline's "Mem:15.9G/63.7G" shape. query failure
+  // → "Mem:n/a" placeholder wrapped in STALE_COLOR. value=0 is
+  // impossible (os.totalmem is always > 0 on a real machine),
+  // so the value-zero rule does not apply here. wrapPlainDefault
+  // (not wrapValueDefault) because the body is a string, not a
+  // numeric value that needs the value-zero/--branching.
+  m_memUsageStatus: (c) => {
+    const m = getMemUsage();
+    if (!m) return placeholderBare("m_memUsageStatus", c);
+    return wrapPlainDefault(
+      "m_memUsageStatus",
+      `${labelFor("memUsage")}${formatMemBytes(m.used)}/${formatMemBytes(m.total)}`,
+      undefined,
+    );
+  },
 };
 
 // Cap unknown-module warnings to once per process so a template typo
@@ -2696,6 +2769,10 @@ const DEFAULT_COLORS: Record<string, string> = {
   m_sumTokenCachedIn: NAMED_PALETTE.brown,
   m_sumTokenTotalIn: NAMED_PALETTE.blue,
   m_accTokenHitRate: NAMED_PALETTE.stale,
+  // v0.8.17+ — system RAM usage. Default cyan matches ccstatusline's
+  // "Mem:..." widget hue so users migrating from ccstatusline get
+  // a familiar color until they override.
+  m_memUsageStatus: NAMED_PALETTE.cyan,
 };
 
 // Snapshot of `cfg().colors` + the `brightBlack` input shortcut. Read
@@ -3306,6 +3383,10 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   // module until they also override labelInSpeed.
   m_tokenInSpeed: placeholderLabelOr("inSpeed"),
   m_tokenOutSpeed: placeholderLabelOr("outSpeed"),
+  // v0.8.17+ — system RAM usage. Resolves to "<label>n/a" so the
+  // placeholder body stays in lockstep with the user's labels.labelMemUsage
+  // override (renaming the label renames the placeholder too).
+  m_memUsageStatus: placeholderLabelOr("memUsage"),
   // v6.x: previously drop-by-design modules (no age info / no
   // version / no reset data / no balance). Now also follow the
   // placeholder rule — they occupy their slot so adjacent
@@ -3628,6 +3709,11 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   // green-on-fresh / red-on-stale is the natural rendering.
   m_cacheTtlStatus: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_statTtlStatus: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  // v0.8.17+ — system RAM usage inline-args. Same shape as the rest
+  // of the named-args family (color + nulldrop). No scale / band
+  // color for the value itself: the body is a string ("X.XG/Y.YG")
+  // and the per-module DEFAULT_COLORS tint applies by default.
+  m_memUsageStatus: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   // v0.4.0+ — sub-template reference. First argument is the key
   // into cfg().lineTemplates (the user's reusable-fragment
   // registry). Optional `:type|<plan|balance>` filter (default
@@ -4483,6 +4569,16 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const color = userColor ?? ttlStatusColor(remaining);
     return `${color}${ttlStatusChar(remaining)}${RESET}`;
   },
+  // v0.8.17+ — system RAM usage inline form. Mirror of the bare
+  // MODULES entry but with the user's |color|<c> override applied
+  // before the default tint (override always wins; matches the
+  // wrapPlainDefault contract for every other module).
+  m_memUsageStatus: (params, ctx) => {
+    const m = getMemUsage();
+    if (!m) return placeholderWithColor("m_memUsageStatus", params, ctx);
+    const body = `${labelFor("memUsage")}${formatMemBytes(m.used)}/${formatMemBytes(m.total)}`;
+    return wrapPlainDefault("m_memUsageStatus", body, params.color as string | undefined);
+  },
   // v0.4.0+ — expand a registered lineTemplates fragment. The
   // loader strips any `m_template:` tokens from lineTemplates
   // arrays (config.ts applyOverrides), so the recursive call below
@@ -4932,6 +5028,9 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
       } else if (tok.startsWith("m_statTtlStatus|")) {
         // m_statTtlStatus → 15 chars + "|" = 16 skipLen.
         inline = expandInlineToken(tok, "m_statTtlStatus", 16, ctx);
+      } else if (tok.startsWith("m_memUsageStatus|")) {
+        // m_memUsageStatus → 16 chars + "|" = 17 skipLen.
+        inline = expandInlineToken(tok, "m_memUsageStatus", 17, ctx);
       }
       // Parse failure (bad |color|, unknown param, odd segment count)
       // → warn + drop. Renderer returning null for valid args (e.g.

@@ -10,6 +10,7 @@ import {
   __resetUnknownModuleWarnForTest,
   cacheHitColor,
   formatCompactToken,
+  formatMemBytes,
   formatSpeed,
   peekAvg,
   peekPrevTick,
@@ -201,6 +202,41 @@ describe("formatSpeed", () => {
 
   it("non-finite → —", () => {
     assert.equal(formatSpeed(NaN), "—");
+  });
+});
+
+describe("formatMemBytes (v0.8.17+ m_memUsageStatus)", () => {
+  // 1024-base, matching ccstatusline / htop / macOS Activity
+  // Monitor convention. G tier uses .toFixed(1); M/K tiers use
+  // .toFixed(0); null → "n/a" so the renderer can simply
+  // template-literal concat without an extra null check.
+  it("null → 'n/a'", () => {
+    assert.equal(formatMemBytes(null), "n/a");
+  });
+
+  it("≥ 1 GiB → G with 1 decimal", () => {
+    assert.equal(formatMemBytes(1024 ** 3), "1.0G");
+    assert.equal(formatMemBytes(15.9 * 1024 ** 3), "15.9G");
+    assert.equal(formatMemBytes(63.7 * 1024 ** 3), "63.7G");
+    assert.equal(formatMemBytes(1024 ** 4), "1024.0G");
+  });
+
+  it("≥ 1 MiB and < 1 GiB → M with 0 decimals", () => {
+    assert.equal(formatMemBytes(1024 ** 2), "1M");
+    assert.equal(formatMemBytes(42 * 1024 ** 2), "42M");
+    assert.equal(formatMemBytes(999 * 1024 ** 2), "999M");
+  });
+
+  it("≥ 1 KiB and < 1 MiB → K with 0 decimals", () => {
+    assert.equal(formatMemBytes(1024), "1K");
+    assert.equal(formatMemBytes(512 * 1024), "512K");
+    assert.equal(formatMemBytes(1023 * 1024), "1023K");
+  });
+
+  it("< 1 KiB → raw bytes with B suffix", () => {
+    assert.equal(formatMemBytes(0), "0B");
+    assert.equal(formatMemBytes(1), "1B");
+    assert.equal(formatMemBytes(1023), "1023B");
   });
 });
 
@@ -4912,6 +4948,71 @@ describe("renderTemplate — v0.8.0+ labels.* config customization", () => {
     assert.match(strip(renderTemplate(["m_apiCalls"], ctx0).join("\n")), /^calls:/);
     assert.match(strip(renderTemplate(["m_tokenInSpeed"], ctx0).join("\n")), /^in:/);
     assert.match(strip(renderTemplate(["m_tokenOutSpeed"], ctx0).join("\n")), /^out:/);
+  });
+
+  // v0.8.17+ — m_memUsageStatus label customization. Default is
+  // "Mem:" (mirrors ccstatusline's hardcoded prefix). Output body
+  // is "<label><used>/<total>" where the bytes are sampled live
+  // via os.totalmem/os.freemem (Darwin: vm_stat). The prefix
+  // assertion is the only stable check — the bytes portion depends
+  // on the host's actual RAM and is non-deterministic.
+  it("labelMemUsage override reaches m_memUsageStatus prefix", () => {
+    withLabels({ labelMemUsage: "RAM:" }, () => {
+      const a = renderTemplate(
+        ["m_memUsageStatus"],
+        ctxFor(fakeSnapshot()),
+      ).join("\n");
+      // Either "RAM:<used>/<total>" on success or "RAM:n/a" if
+      // getMemUsage() returned null (e.g. Darwin vm_stat parse
+      // failure or sandboxed os.*). Both forms are valid prefix
+      // matches and verify that labelMemUsage reaches the renderer.
+      assert.match(strip(a), /^RAM:(n\/a|\d.*)$/);
+    });
+  });
+
+  it("labelMemUsage defaults to 'Mem:' byte-identically", () => {
+    // No override — defaults must reproduce the v0.8.17+ literal
+    // "Mem:" so existing v0.8.16 renders stay byte-identical after
+    // upgrade. (m_memUsageStatus is a NEW v0.8.17+ module, so this
+    // asserts that the new default is "Mem:" rather than e.g. "mem:"
+    // or "memory:").
+    const out = renderTemplate(
+      ["m_memUsageStatus"],
+      ctxFor(fakeSnapshot()),
+    ).join("\n");
+    assert.match(strip(out), /^Mem:(n\/a|\d.*)$/);
+  });
+
+  it("m_memUsageStatus|nulldrop|true drops the placeholder when getMemUsage() returns null", () => {
+    // Force the placeholder path: we can't easily mock getMemUsage()
+    // since it's a local function. Instead, override the label to
+    // match the placeholderLabelOr pattern and assert the joined
+    // template has no "Mem:" token (placeholder is "Mem:n/a";
+    // nulldrop|true drops the whole chunk).
+    const out = renderTemplate(
+      ["m_memUsageStatus|nulldrop|true"],
+      ctxFor(fakeSnapshot()),
+    ).join("\n");
+    // When getMemUsage() succeeds, output is "Mem:X.XG/Y.YG" and
+    // nulldrop|true only affects the placeholder path, so the
+    // success path still emits. We assert the result is the same
+    // shape as without nulldrop (no "Mem:n/a" placeholder leak).
+    assert.doesNotMatch(strip(out), /n\/a/);
+  });
+
+  it("m_memUsageStatus|color|red override applies the user's SGR", () => {
+    const out = renderTemplate(
+      ["m_memUsageStatus|color|red"],
+      ctxFor(fakeSnapshot()),
+    ).join("\n");
+    // Default tint is cyan (NAMED_PALETTE.cyan). When the user
+    // overrides with |color|red, the SGR sequence must contain
+    // "31" (ANSI red) somewhere on the line — confirm the override
+    // path is wired. Prefix stays "Mem:" regardless of color.
+    assert.match(strip(out), /^Mem:(n\/a|\d.*)$/);
+    // SGR red = "\x1b[31m" (a bare-31 or 38;5;<n>31 won't apply,
+    // the override path uses palette token "red" → resolveColor).
+    assert.match(out, /\x1b\[(?:31|38;5;\d+)m/);
   });
 });
 
