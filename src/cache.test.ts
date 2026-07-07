@@ -1,4 +1,4 @@
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, beforeEach, afterEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,6 +15,21 @@ const {
   setCachePathResolver,
   __resetForTest: resetForTest,
 } = cache;
+
+// v0.8.21+ — FILE-SCOPE path resolver. Without this, the cache
+// module's `flushToDisk()` writes to the user's live
+// `~/.claude/plugins/topgauge-cc/state/cache.json` — which is
+// shared with the running plugin and your interactive shell
+// sessions. Tests fixture values (k1/k2/d--workspace-X/tickSpeed:…)
+// would clobber real cache rows. We point the resolver at an
+// ephemeral mkdtempSync dir ONCE at file load, and override it
+// only inside `describe("cache disk persistence")` and
+// `describe("cache — v0.8.x TTL flush + legacy key cleanup")`.
+// afterEach below restores the file-scope default so inner
+// describes don't leak their tmp dir choice to siblings.
+let _ephemeralDir: string;
+_ephemeralDir = mkdtempSync(join(tmpdir(), "topgauge-cc-cache-test-"));
+setCachePathResolver(() => join(_ephemeralDir, "cache.json"));
 
 describe("cache", () => {
   it("returns null on miss", () => {
@@ -661,4 +676,15 @@ describe("cache — v0.8.x TTL flush + legacy key cleanup", () => {
       teardownTmpDir();
     }
   });
+});
+
+// v0.8.21+ — file-scope cleanup of the ephemeral dir created at
+// module load (see header). Without this, dozens of test runs would
+// litter `os.tmpdir()` with empty cache.json files; with this, the
+// process leaves no trace. Runs on its own (the inner describes'
+// `teardownTmpDir()` reset the resolver back to `_ephemeralDir`-
+// based one, which is the file-scope default — no conflict).
+after(() => {
+  resetCachePathResolver();
+  try { rmSync(_ephemeralDir, { recursive: true, force: true }); } catch { /* best-effort */ }
 });
