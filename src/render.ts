@@ -3525,18 +3525,33 @@ const QUOTE_ADDRESS_PARAM = {
   },
 } as const;
 
-// v0.8.18+ — m_quote `field` param. Dot-separated path: `a.b.0.c`.
-// Each segment is either an object key (string) or an array index
-// (non-negative integer). The user supplies this in the same style
-// as `parseRemains` reaches into a nested API response, so the
-// mental model is "JSON pointer lite".
-const QUOTE_FIELD_PARAM = {
+// v0.8.19+ — m_quote `fields` param. Comma-separated list of
+// dot-separated paths: `a.b,quotes.0.quotestring,from_who`. Each
+// path is independently walked against the fetched JSON; the
+// collected strings are rendered as `field1: field2: field3:`
+// (a single colon-terminated segment per path). v0.8.18's `field`
+// (singular, single path) is REMOVED — the upgrade is strict.
+// Per the spec: each path is evaluated against the same root
+// (the fetched JSON), independently. A path that misses returns
+// an empty string for that slot; if ALL paths miss, the remote
+// fetch is considered failed and we fall back to local QUOTES.
+const QUOTE_FIELDS_PARAM = {
   named: {
-    field: (raw: string) => {
+    fields: (raw: string) => {
       if (raw.length === 0) return null;
-      // Reject leading / trailing dots and empty segments.
-      if (raw.startsWith(".") || raw.endsWith(".") || raw.includes(".."))
-        return null;
+      const paths = raw.split(",");
+      for (const p of paths) {
+        const trimmed = p.trim();
+        if (trimmed.length === 0) return null; // empty segment
+        // Reject leading / trailing dots, empty segments.
+        if (
+          trimmed.startsWith(".") ||
+          trimmed.endsWith(".") ||
+          trimmed.includes("..")
+        ) {
+          return null;
+        }
+      }
       return raw;
     },
   },
@@ -3584,7 +3599,7 @@ export function getFieldByPath(value: unknown, path: string): string | null {
   return typeof cur === "string" ? cur : null;
 }
 
-// v0.8.18+ — fetch a remote quote payload via `curl` (synchronous).
+// v0.8.19+ — fetch a remote quote payload via `curl` (synchronous).
 // Mirrors the tolerant shape inspection pattern from
 // src/api.ts:parseRemains (try JSON parse → walk path → return
 // string). `renderTemplate` is sync (per-tick deadline in the
@@ -3592,10 +3607,23 @@ export function getFieldByPath(value: unknown, path: string): string | null {
 // shipped on every modern OS (Win10+1803, macOS, Linux distros)
 // and follows the same execSync pattern as m_memUsage's vm_stat
 // path. Curl failures throw → caught and translated to null so
-// the caller falls through to the drop / local-QUOTES path.
+// the caller falls through to the local QUOTES fallback path.
+//
+// `paths` is the parsed list of dot-paths from the `fields` arg.
+// Each path is walked INDEPENDENTLY against the parsed JSON; the
+// collected strings are joined as `path1: path2: path3:` — every
+// path contributes a colon-terminated segment, even if its walk
+// yielded "" (the renderer treats an empty field as "miss").
+//
+// Returns the joined string when at least one path produced a
+// non-empty result; returns null only when:
+//   - curl exit non-zero (network / 4xx / 5xx / timeout)
+//   - body is not valid JSON AND no path is empty
+//   - ALL paths produced empty results (caller treats this as
+//     "remote path miss" and falls back to local QUOTES)
 function fetchQuoteFromAddress(
   address: string,
-  field: string,
+  paths: readonly string[],
 ): string | null {
   let body: string;
   try {
@@ -3607,16 +3635,29 @@ function fetchQuoteFromAddress(
   } catch {
     return null;
   }
-  // Try JSON parse first (the common case). If body is a plain
-  // string and field is empty, return it directly (per the user's
-  // "如果拿到的已经是字符串" contract).
+  // Try JSON parse first. If body is a plain string AND the user
+  // supplied an empty fields list (e.g. just one empty path that
+  // resolves to the whole body), return it directly.
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);
   } catch {
-    return field === "" ? body : null;
+    if (paths.length === 1 && paths[0] === "") {
+      // Trim trailing colons so the output is bare body, not
+      // `body:` (the join below would tack on ":" unconditionally).
+      return body;
+    }
+    return null;
   }
-  return getFieldByPath(parsed, field);
+  const parts: string[] = [];
+  for (const path of paths) {
+    parts.push(getFieldByPath(parsed, path) ?? "");
+  }
+  // If every path is empty, treat as a miss and return null so the
+  // caller can fall back. (We don't render an empty `" : : "` —
+  // that's a no-op masquerading as data.)
+  if (parts.every((p) => p === "")) return null;
+  return parts.join(": ") + ":";
 }
 
 // v0.8.18+ — POSIX shell-quote a single argument. Wraps in single
@@ -3802,7 +3843,7 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
       ...QUOTE_FREQ_PARAM.named,
       ...QUOTE_COLOR_PARAM.named,
       ...QUOTE_ADDRESS_PARAM.named,
-      ...QUOTE_FIELD_PARAM.named,
+      ...QUOTE_FIELDS_PARAM.named,
       ...NULDROP_PARAM.named,
     },
   },
@@ -4472,31 +4513,44 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     return wrapValueDefault("m_sumApiCalls", agg.calls, `${labelFor("apiCalls")}${agg.calls}`, passThroughOr<string>(params, ctx, "color"));
   },
   m_quote: (params, ctx) => {
-    // v0.8.18+ — when `address` is non-empty, fetch the remote
-    // payload via curl and walk `field` to extract a string. Empty
-    // / undefined address falls through to the local QUOTES path
-    // (default freq = 1h, per-hour window). The fetch path IGNORES
-    // `freq` (remote payloads are not window-bucketed — the user
-    // is responsible for picking an endpoint that returns stable
-    // strings or rotates on its own schedule).
+    // v0.8.19+ — when `address` is non-empty, fetch the remote
+    // payload via curl and walk the comma-separated `fields`
+    // paths to extract strings. On any failure (curl exit,
+    // non-JSON body, all paths miss) we FALL BACK to the local
+    // QUOTES path so the user always sees something. Pass
+    // |nulldrop|true to drop the chunk on local-quote miss instead
+    // of surfacing the placeholder.
+    //
+    // The fetch path IGNORES `freq` (remote payloads are not
+    // window-bucketed — the user is responsible for picking an
+    // endpoint that returns stable strings or rotates on its own
+    // schedule).
     const address = params.address as string | undefined;
-    const field = (params.field as string | undefined) ?? "";
+    const fieldsRaw = (params.fields as string | undefined) ?? "";
+    const paths = fieldsRaw
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
     let text: string;
     let seed: number;
-    if (address && address.length > 0) {
-      const remote = fetchQuoteFromAddress(address, field);
-      if (remote === null || remote === "") {
-        // Fetch / parse / path failure → drop the chunk, same as
-        // an empty local quote. (We don't fall back to local
-        // QUOTES on remote failure — the user explicitly asked
-        // for a remote source.)
-        return null;
+    if (address && address.length > 0 && paths.length > 0) {
+      const remote = fetchQuoteFromAddress(address, paths);
+      if (remote !== null) {
+        text = remote;
+        // Seed for the color shortcut helpers (rainbow / hue) —
+        // use a stable hash of the text so each distinct remote
+        // quote gets its own deterministic color band.
+        seed = stringHash(remote);
+      } else {
+        // Fetch / parse / path failure → fall back to local
+        // QUOTES (v0.8.19 default; v0.8.18 dropped here).
+        const raw = params.freq as string | undefined;
+        const parsed: QuoteFreq | null = parseFreq(raw ?? "h");
+        if (!parsed) return INLINE_BADARG;
+        seed = quoteIndex(parsed, ctx.nowMs);
+        text = pickQuote(parsed, ctx.nowMs);
+        if (text === "") return null;
       }
-      text = remote;
-      // Seed for the color shortcut helpers (rainbow / hue) — use
-      // a stable hash of the text so each distinct remote quote
-      // gets its own deterministic color band.
-      seed = stringHash(remote);
     } else {
       // Local QUOTES path. Default freq = 1h. The schema resolver
       // already shape-validated the raw string; we now parse it

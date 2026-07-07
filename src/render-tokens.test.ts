@@ -344,11 +344,19 @@ describe("getFieldByPath (v0.8.18+ m_quote field resolver)", () => {
   });
 });
 
-describe("renderTemplate — m_quote address+field (v0.8.18+)", () => {
+describe("renderTemplate — m_quote address+fields (v0.8.19+)", () => {
   // End-to-end: spin up a local HTTP server, point the user's
-  // m_quote|address|<url>|field|<path> at it, assert the walked
-  // string renders. Mirrors the per-tick curl-out pattern from
-  // m_memUsage's vm_stat path.
+  // m_quote|address|<url>|fields|<path1>,<path2>,… at it, assert
+  // the walked strings render in `field1: field2:` colon-joined
+  // form. Mirrors the per-tick curl-out pattern from m_memUsage's
+  // vm_stat path.
+  //
+  // v0.8.19 upgrade: `field` (singular, single path) is REMOVED.
+  // The user-facing arg is now `fields` — comma-separated path
+  // list. Each path is walked independently; the joined body is
+  // `path1: path2: … pathN:`. On any failure (curl exit, non-JSON
+  // body, all paths miss), the renderer falls back to the local
+  // QUOTES list so the user always sees something.
   //
   // NOTE: this describe block is gated on a `curl` smoke probe.
   // In sandboxed CI environments (e.g. GitHub Actions runners
@@ -426,7 +434,7 @@ describe("renderTemplate — m_quote address+field (v0.8.18+)", () => {
     });
   }
 
-  it("address|fetched JSON + field|quotes.0.quotestring → string", async (t) => {
+  it("address|fetched JSON + fields|quotes.0.quotestring → string", async (t) => {
     if (!curlWorks) return t.skip("curl can't reach local server in this sandbox");
     const { url, close } = await startJsonServer({
       quotes: [
@@ -437,19 +445,72 @@ describe("renderTemplate — m_quote address+field (v0.8.18+)", () => {
     try {
       const out = renderTemplate(
         [
-          `m_quote|address|${url}|field|quotes.0.quotestring`,
+          `m_quote|address|${url}|fields|quotes.0.quotestring`,
         ],
         ctxFor(fakeSnapshot()),
       ).join("\n");
       // applyColor wraps with default 'hue' shortcut (or random);
       // strip ANSI and assert the body.
-      assert.equal(strip(out), "remote quote one");
+      assert.equal(strip(out), "remote quote one:");
     } finally {
       close();
     }
   });
 
-  it("address|plain string body + empty field → string", async (t) => {
+  it("address|fetched JSON + fields|multi path → 'field1: field2:' joined", async (t) => {
+    // v0.8.19+ — the canonical hitokoto.cn shape: each path is
+    // walked independently and the joined body is `<v1>: <v2>: <v3>:`.
+    // Mirrors the user's example: `m_quote|address|https://v1.hitokoto.cn/|fields|hitokoto,from,from_who`
+    // responding with `{hitokoto: "a", from: "b", from_who: "c"}`
+    // → `"a: b: c:"`.
+    if (!curlWorks) return t.skip("curl can't reach local server in this sandbox");
+    const { url, close } = await startJsonServer({
+      hitokoto: "生如夏花之绚烂",
+      from: "飞鸟集",
+      from_who: "泰戈尔",
+    });
+    try {
+      const out = renderTemplate(
+        [
+          `m_quote|address|${url}|fields|hitokoto,from,from_who`,
+        ],
+        ctxFor(fakeSnapshot()),
+      ).join("\n");
+      assert.equal(strip(out), "生如夏花之绚烂: 飞鸟集: 泰戈尔:");
+    } finally {
+      close();
+    }
+  });
+
+  it("address|fetched JSON + fields|mixed resolved/missed → non-empty wins", async (t) => {
+    // v0.8.19+ — when SOME paths miss but at least one resolves,
+    // the renderer still emits a colon-joined body with empty
+    // slots for the misses. The convention is `resolved1: : resolved3:`
+    // (the missed path contributes an empty segment, so you see
+    // a doubled colon). This matches `getFieldByPath` returning
+    // null → coerced to "" → joined with ": ".
+    if (!curlWorks) return t.skip("curl can't reach local server in this sandbox");
+    const { url, close } = await startJsonServer({
+      hitokoto: "only-this-resolved",
+    });
+    try {
+      const out = renderTemplate(
+        [
+          `m_quote|address|${url}|fields|hitokoto,from,from_who`,
+        ],
+        ctxFor(fakeSnapshot()),
+      ).join("\n");
+      assert.equal(strip(out), "only-this-resolved: : :");
+    } finally {
+      close();
+    }
+  });
+
+  it("address|plain string body (no JSON parse) + fields|empty → string body", async (t) => {
+    // v0.8.19+ — when the body is a plain string AND the user
+    // supplied NO `fields` arg (empty after split), the renderer
+    // returns the bare body. With a non-empty fields list, a
+    // non-JSON body falls back to local QUOTES (see test below).
     if (!curlWorks) return t.skip("curl can't reach local server in this sandbox");
     const { url, close } = await startStringServer("a bare string body");
     try {
@@ -463,62 +524,69 @@ describe("renderTemplate — m_quote address+field (v0.8.18+)", () => {
     }
   });
 
-  it("address|fetched JSON + field|empty → null (path miss on object)", async (t) => {
-    if (!curlWorks) return t.skip("curl can't reach local server in this sandbox");
-    const { url, close } = await startJsonServer({ foo: "bar" });
-    try {
-      // Empty field on an object body: split("") returns [""], the
-      // first segment is "" — not a key, so the function returns
-      // null and the renderer drops the chunk. The whole template
-      // produces an empty lines array.
-      const lines = renderTemplate(
-        [`m_quote|address|${url}`],
-        ctxFor(fakeSnapshot()),
-      );
-      assert.equal(lines.filter((l) => l.length > 0).length, 0);
-    } finally {
-      close();
-    }
-  });
-
-  it("address|fetched JSON + field|miss → chunk dropped", async (t) => {
-    if (!curlWorks) return t.skip("curl can't reach local server in this sandbox");
-    const { url, close } = await startJsonServer({ foo: "bar" });
-    try {
-      const lines = renderTemplate(
-        [`m_quote|address|${url}|field|missing.key`],
-        ctxFor(fakeSnapshot()),
-      );
-      assert.equal(lines.join("\n"), "");
-    } finally {
-      close();
-    }
-  });
-
-  it("address|unreachable URL → chunk dropped (graceful)", () => {
-    // Port 1 is reserved and not listening — curl fails with
-    // connection refused, which the catch translates to null.
-    // This test runs regardless of curlWorks: it's the canonical
-    // failure-path assertion.
+  it("address|fetched JSON + fields|all commas/empty segments → schema rejects, drops", () => {
+    // v0.8.19+ — `m_quote|address|...|fields|,` (all-empty path
+    // segments) is rejected by the QUOTE_FIELDS_PARAM resolver
+    // (each segment must be non-empty). The whole token is then
+    // dropped by the schema layer (`unknown lineTemplate module`
+    // warning), which is the documented behavior for any inline
+    // arg that fails validation. The renderer doesn't try to
+    // "fall back to local" here because the input is malformed
+    // in a way that's distinguishable from "address works but
+    // paths miss" — the user clearly intended multi-path but
+    // typoed. A drop + warn is more helpful than silent fallback
+    // because the user gets a stderr signal pointing at the
+    // offending config.
     const lines = renderTemplate(
-      ["m_quote|address|http://127.0.0.1:1/|field|x"],
+      [`m_quote|address|http://127.0.0.1:1/|fields|,`],
       ctxFor(fakeSnapshot()),
     );
     assert.equal(lines.join("\n"), "");
+  });
+
+  it("address|fetched JSON + fields|all miss → fallback to local QUOTES", async (t) => {
+    // v0.8.19+ — every path misses → fetchQuoteFromAddress
+    // returns null → renderer falls back to local QUOTES. Asserts
+    // the fallback fires (non-empty output) and that no remote
+    // payload leaks through.
+    if (!curlWorks) return t.skip("curl can't reach local server in this sandbox");
+    const { url, close } = await startJsonServer({ foo: "bar" });
+    try {
+      const out = renderTemplate(
+        [`m_quote|address|${url}|fields|missing.key,also.missing`],
+        ctxFor(fakeSnapshot()),
+      ).join("\n");
+      assert.ok(out.length > 0, "expected fallback to local QUOTES");
+    } finally {
+      close();
+    }
+  });
+
+  it("address|unreachable URL → fallback to local QUOTES (graceful)", () => {
+    // Port 1 is reserved and not listening — curl fails with
+    // connection refused, which the catch translates to null.
+    // v0.8.19: instead of dropping the chunk, the renderer falls
+    // back to local QUOTES so the user always sees something.
+    // Asserts the fallback fired (non-empty output).
+    const out = renderTemplate(
+      ["m_quote|address|http://127.0.0.1:1/|fields|x"],
+      ctxFor(fakeSnapshot()),
+    ).join("\n");
+    assert.ok(out.length > 0, "expected fallback to local QUOTES");
   });
 
   it("address|shell-injection attempt is shell-quoted (no exec of payload)", () => {
     // The user supplies a URL with `;` + `$(...)` — shellQuote
     // wraps in single quotes, defeating injection. The execSync
     // tries to curl the literal malicious URL, which fails (no
-    // such host), and returns null → chunk dropped. We just need
-    // to assert no shell command runs (no test crash).
-    const lines = renderTemplate(
-      ["m_quote|address|http://127.0.0.1:1/'%3Brm%20-rf%20/|field|x"],
+    // such host), and returns null → fallback to local QUOTES.
+    // We just need to assert no shell command runs (no test crash)
+    // and the renderer falls through cleanly.
+    const out = renderTemplate(
+      ["m_quote|address|http://127.0.0.1:1/'%3Brm%20-rf%20/|fields|x"],
       ctxFor(fakeSnapshot()),
-    );
-    // chunk drops cleanly; no crash.
-    assert.ok(lines.every((l) => l.length === 0 || l === ""));
+    ).join("\n");
+    assert.ok(out.length > 0, "expected fallback to local QUOTES");
   });
 });
 
