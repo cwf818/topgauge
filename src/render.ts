@@ -16,6 +16,7 @@
 
 import { configStore, warn } from "./config.ts";
 import { providerTypeFor } from "./providers.ts";
+import * as diagnostics from "./diagnostics.ts";
 import {
   getDeltaForRender,
   peekLastSpeed,
@@ -3615,6 +3616,15 @@ export function getFieldByPath(value: unknown, path: string): string | null {
 // path contributes a colon-terminated segment, even if its walk
 // yielded "" (the renderer treats an empty field as "miss").
 //
+// v0.8.20+ — every failure path appends a structured warning to
+// `diagnostics.jsonl` (gated on TOPGAUGE_CC_DIAGNOSTICS_ENABLE)
+// so a postmortem can grep why the local QUOTES fallback fired.
+// The log row includes the address (truncated to keep the JSONL
+// row ~250B) and the reason token; the `source` field is
+// `m_quote` so a postmortem can filter for this module. The
+// 60s in-process dedupe in diagnostics.append keeps a sustained
+// network outage from drowning the file.
+//
 // Returns the joined string when at least one path produced a
 // non-empty result; returns null only when:
 //   - curl exit non-zero (network / 4xx / 5xx / timeout)
@@ -3624,6 +3634,7 @@ export function getFieldByPath(value: unknown, path: string): string | null {
 function fetchQuoteFromAddress(
   address: string,
   paths: readonly string[],
+  ctx: RenderContext,
 ): string | null {
   let body: string;
   try {
@@ -3633,6 +3644,12 @@ function fetchQuoteFromAddress(
       stdio: ["ignore", "pipe", "ignore"],
     });
   } catch {
+    diagnostics.append(
+      "warning",
+      "m_quote",
+      `address fetch failed (curl exit): ${truncateForLog(address)}`,
+      ctx.nowMs,
+    );
     return null;
   }
   // Try JSON parse first. If body is a plain string AND the user
@@ -3647,6 +3664,12 @@ function fetchQuoteFromAddress(
       // `body:` (the join below would tack on ":" unconditionally).
       return body;
     }
+    diagnostics.append(
+      "warning",
+      "m_quote",
+      `address fetch returned non-JSON body: ${truncateForLog(address)}`,
+      ctx.nowMs,
+    );
     return null;
   }
   const parts: string[] = [];
@@ -3656,8 +3679,24 @@ function fetchQuoteFromAddress(
   // If every path is empty, treat as a miss and return null so the
   // caller can fall back. (We don't render an empty `" : : "` —
   // that's a no-op masquerading as data.)
-  if (parts.every((p) => p === "")) return null;
+  if (parts.every((p) => p === "")) {
+    diagnostics.append(
+      "warning",
+      "m_quote",
+      `address fetch OK but all paths miss: ${truncateForLog(address)} (paths=${paths.join(",")})`,
+      ctx.nowMs,
+    );
+    return null;
+  }
   return parts.join(": ") + ":";
+}
+
+// v0.8.20+ — truncate a user-supplied address for diagnostic
+// logging. Caps at 120 chars to keep the JSONL row under ~250B
+// while still surfacing enough of the URL for a postmortem to
+// identify which endpoint failed.
+function truncateForLog(s: string): string {
+  return s.length > 120 ? s.slice(0, 119) + "…" : s;
 }
 
 // v0.8.18+ — POSIX shell-quote a single argument. Wraps in single
@@ -4534,7 +4573,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     let text: string;
     let seed: number;
     if (address && address.length > 0 && paths.length > 0) {
-      const remote = fetchQuoteFromAddress(address, paths);
+      const remote = fetchQuoteFromAddress(address, paths, ctx);
       if (remote !== null) {
         text = remote;
         // Seed for the color shortcut helpers (rainbow / hue) —

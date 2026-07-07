@@ -46,7 +46,7 @@ import {
   setStatCachePathResolver,
 } from "./status-store.ts";
 import * as cacheMod from "./cache.ts";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, utimesSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, utimesSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -54,6 +54,7 @@ import { createServer } from "node:http";
 import { __resetGitInfoCacheForTest } from "./git-info.ts";
 import type { TokenSnapshot } from "./types.ts";
 import type { Window } from "./render.ts";
+import * as diagnostics from "./diagnostics.ts";
 
 const STALE = "\x1b[90m";
 const GREEN = "\x1b[38;5;41m";
@@ -587,6 +588,104 @@ describe("renderTemplate — m_quote address+fields (v0.8.19+)", () => {
       ctxFor(fakeSnapshot()),
     ).join("\n");
     assert.ok(out.length > 0, "expected fallback to local QUOTES");
+  });
+});
+
+describe("renderTemplate — m_quote fetch-failure diagnostics (v0.8.20+)", () => {
+  // v0.8.20+ — when fetchQuoteFromAddress returns null (curl exit /
+  // non-JSON body / all paths miss), it appends a structured warning
+  // to diagnostics.jsonl so a postmortem can grep why the local
+  // QUOTES fallback fired. Gate is TOPGAUGE_CC_DIAGNOSTICS_ENABLE=1;
+  // these tests enable it for the duration.
+  //
+  // The diagnostics module reads state root from process.env.HOME /
+  // CLAUDE_CONFIG_DIR at append-time; we redirect both to the
+  // per-test _tmpDir so the JSONL file lands at
+  // `<_tmpDir>/.claude/plugins/topgauge-cc/state/<projectHash(cwd)>/diagnostics.jsonl`.
+  // We use setSessionCwd to encode the originating project's hash on
+  // the row's `cwd` field AND on the file path (Per-Project Layout).
+
+  let diagRoot: string;
+  beforeEach(() => {
+    // Redirect state root to the per-test tmp dir.
+    diagRoot = join(_tmpDir, "diagnostics-root");
+    process.env.HOME = diagRoot;
+    process.env.CLAUDE_CONFIG_DIR = diagRoot;
+    process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE = "1";
+    diagnostics.setSessionCwd("D:\\test");
+    diagnostics.__resetDedupeForTest();
+  });
+
+  // Helper: read all JSONL rows from the project's diagnostics
+  // file. Returns [] when the file is missing. The path mirrors
+  // diagnostics.stateRoot() — see src/diagnostics.ts.
+  function readDiagLines(): Array<Record<string, unknown>> {
+    // diagnostics.stateRoot() returns either
+    //   $CLAUDE_CONFIG_DIR/plugins/topgauge-cc/state (when set), or
+    //   $HOME/.claude/plugins/topgauge-cc/state (when unset).
+    // We set CLAUDE_CONFIG_DIR=diagRoot in beforeEach so the
+    // per-project file lands at diagRoot/plugins/topgauge-cc/state/<hash>/diagnostics.jsonl
+    // (no .claude infix — CLAUDE_CONFIG_DIR is the literal config root).
+    const path = join(
+      diagRoot,
+      "plugins",
+      "topgauge-cc",
+      "state",
+      projectHash("D:\\test"),
+      "diagnostics.jsonl",
+    );
+    let raw: string;
+    try {
+      raw = readFileSync(path, "utf8");
+    } catch {
+      return [];
+    }
+    const out: Array<Record<string, unknown>> = [];
+    for (const line of raw.split("\n")) {
+      if (!line) continue;
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed && typeof parsed === "object") out.push(parsed);
+      } catch {
+        /* skip malformed */
+      }
+    }
+    return out;
+  }
+
+  it("address|unreachable URL → appends curl-exit warning to diagnostics.jsonl", () => {
+    const out = renderTemplate(
+      ["m_quote|address|http://127.0.0.1:1/|fields|x"],
+      ctxFor(fakeSnapshot()),
+    ).join("\n");
+    assert.ok(out.length > 0, "expected fallback to local QUOTES");
+    const rows = readDiagLines();
+    const mq = rows.find((r) => r.source === "m_quote");
+    assert.ok(mq, "expected an m_quote diagnostic row");
+    assert.equal(mq!.level, "warning");
+    assert.match(String(mq!.msg), /curl exit/);
+    assert.match(String(mq!.msg), /http:\/\/127\.0\.0\.1:1\//);
+    assert.equal(mq!.cwd, "D:\\test");
+  });
+
+  it("address|gate OFF (env unset) → no JSONL file written", () => {
+    // Disable the gate. Reset dedupe so the only thing gating the
+    // append is isEnabled().
+    process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE = "";
+    diagnostics.__resetDedupeForTest();
+    const out = renderTemplate(
+      ["m_quote|address|http://127.0.0.1:1/|fields|x"],
+      ctxFor(fakeSnapshot()),
+    ).join("\n");
+    assert.ok(out.length > 0, "expected fallback to local QUOTES");
+    const rows = readDiagLines();
+    assert.equal(
+      rows.find((r) => r.source === "m_quote"),
+      undefined,
+      "diagnostics.jsonl should not be written when gate is off",
+    );
+    // Restore gate for downstream tests.
+    process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE = "1";
   });
 });
 
