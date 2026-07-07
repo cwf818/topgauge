@@ -62,8 +62,18 @@ export type TickStatusValue = {
 // fields live on `TokenSnapshot` as snapshot fields and are read
 // straight, not derived. Identity (sessionId/cwd/model) is kept for
 // stale-baseline detection.
+//
+// v0.8.23+ — `totalDurationMs` joins the cursor alongside
+// `totalApiMs`. detectRegression now reads `totalDurationMs`
+// (stdin `cost.total_duration_ms` — the wall-clock cost of the
+// running claude-code process) as the regression signal, since
+// that field increments monotonically per tick on every observed
+// stdin producer. `totalApiMs` stays in the cursor because it's
+// still the source for the per-tick api-ms delta. The two are
+// read independently — totalDurationMs never feeds apiMs.
 export type PrevTickStatusValue = {
   totalApiMs: number;
+  totalDurationMs: number;
   sessionId: string | null;
   cwd: string | null;
   model: string | null;
@@ -348,6 +358,14 @@ function parseStore(raw: string): Store {
         kind: "prevTickStatus",
         value: {
           totalApiMs: typeof v.totalApiMs === "number" ? v.totalApiMs : 0,
+          // v0.8.23+ — totalDurationMs cursor. Legacy rows written
+          // before v0.8.23 lack this field; backfill with 0 so a
+          // backward-jump guard at next tick (current=0 vs prev=0)
+          // doesn't accidentally fire a regression reset on a
+          // freshly-upgraded state file.
+          totalDurationMs: typeof v.totalDurationMs === "number"
+            ? v.totalDurationMs
+            : 0,
           sessionId: typeof v.sessionId === "string" ? v.sessionId : null,
           cwd: typeof v.cwd === "string" ? v.cwd : null,
           model: typeof v.model === "string" ? v.model : null,
@@ -469,6 +487,10 @@ export function emptyTickStatus(): TickStatusValue {
 export function emptyPrevTickStatus(): PrevTickStatusValue {
   return {
     totalApiMs: 0,
+    // v0.8.23+ — see [[detectRegression-totaldurationms]]. Zero
+    // sentinel for "no prior measurement"; the next active tick
+    // writes the real stdin value.
+    totalDurationMs: 0,
     sessionId: null,
     cwd: null,
     model: null,
@@ -975,29 +997,72 @@ function applyContextUsedPercentCarryOver(
   }
 }
 
-// v0.8.11-alpha — regression detection: current.totalApiMs <
-// prev.totalApiMs means the cumulative counter rolled backward
-// (cc process restarted). Triggers a ccsession-slot zero reset.
-// The check is purely numerical — no identity guard.
+// v0.8.11-alpha → v0.8.23: regression detection.
+//
+// Originally the signal was `current.totalApiMs < prev.totalApiMs`
+// (stdin `cost.total_api_duration_ms`). That counter tracks the
+// cumulative API roundtrip time and increments only on actual
+// API calls — when a user idle-gazes for 30s with no API activity,
+// totalApiMs stays put and a subsequent restart is harder to spot
+// because the counter barely moves.
+//
+// v0.8.23+ — switched the primary signal to
+// `current.totalDurationMs < prev.totalDurationMs` (stdin
+// `cost.total_duration_ms`, the wall-clock cost of the running
+// cc process). totalDurationMs increments monotonically per tick
+// on every observed stdin producer, so it's a more reliable
+// "the cc process restarted" trigger — even an idle session shows
+// clock progression.
+//
+// Two extra guards keep the check well-behaved on edge cases:
+//
+//   1. **120s cold-start threshold** — the first tick of a fresh
+//      cc process carries `totalDurationMs ≈ 0`. Comparing against
+//      a prev baseline from a prior process (which could be any
+//      positive number up to hours) would falsely fire a regression
+//      on EVERY cold start. When the current totalDurationMs is
+//      under 120_000 (2 minutes), the cc process is brand-new and
+//      we treat the backward jump as expected — the prev baseline
+//      is from a different process and will be replaced by the
+//      current value before the next tick. The ccsession-slot zero
+//      reset still fires on a real restart, but at the moment of
+//      cold start it would be a no-op anyway (the slot is empty).
+//
+//   2. **contextUsedPercent===0 stdin-error guard** (carried over
+//      from v0.8.15-alpha) — when the caller observes
+//      `contextUsedPercent===0` AND no carry-over applies (prev
+//      null), `totalDurationMs` may roll backward as a side effect
+//      of the malformed probe rather than a real cc restart.
+//      Suppress the regression flag in that case so the ccsession
+//      slot doesn't get zeroed on a noisy probe. When carry-over
+//      substitutes a non-zero prev value, contextUsedPercent is
+//      already != 0 by the time detectRegression runs
+//      (normalizeTick applies carry-over first), so the guard
+//      naturally does not fire.
+//
+// Identity (sessionId/cwd) is still NOT part of the check — a
+// regression detection that also requires identity would miss the
+// common "I ran a different cc command" restart case.
+const COLD_START_THRESHOLD_MS = 120_000;
+
 function detectRegression(
   tokens: TokenSnapshot | null,
   prev: PrevTickStatusValue | null,
 ): boolean {
   if (!tokens?.sessionId || !prev) return false;
-  const currentTotalApiMs = tokens.cost.totalApiDurationMs;
-  if (currentTotalApiMs == null || !Number.isFinite(currentTotalApiMs)) return false;
-  // v0.8.15-alpha — stdin-side error guard: when the caller observes
-  // `contextUsedPercent===0` AND no carry-over applies (prev null),
-  // `currentTotalApiMs` may roll backward as a side effect of the
-  // malformed probe rather than a real cc restart. Suppress the
-  // regression flag in that case so the ccsession slot doesn't
-  // get zeroed on a noisy probe. When carry-over substitutes a
-  // non-zero prev value, contextUsedPercent is already != 0 by the
-  // time detectRegression runs (normalizeTick applies carry-over
-  // first), so the guard naturally does not fire.
+  const currentTotalDurationMs = tokens.cost?.totalDurationMs;
+  if (currentTotalDurationMs == null
+      || !Number.isFinite(currentTotalDurationMs)) return false;
+  // v0.8.23+ — cold-start guard. On the first tick of a fresh
+  // cc process, totalDurationMs is small (sub-2-minute by
+  // definition). Comparing against the prev baseline (from a
+  // prior process) would falsely flag a regression; suppress.
+  if (currentTotalDurationMs < COLD_START_THRESHOLD_MS) return false;
+  // v0.8.15-alpha — stdin-side error guard for contextUsedPercent
+  // (carried forward). See block comment above.
   const cw = tokens.contextWindow;
   if (cw && cw.contextUsedPercent === 0) return false;
-  return currentTotalApiMs < prev.totalApiMs;
+  return currentTotalDurationMs < prev.totalDurationMs;
 }
 
 function normalizeTick(
@@ -1299,6 +1364,14 @@ export function computeAndCacheTickDeltaPure(
 // field the next tick subtracts against for `apiMs`). Identity
 // (sessionId/cwd/model) is preserved across ticks so peekPrevTick's
 // identity-mismatch guard has something to compare against.
+//
+// v0.8.23+ — `totalDurationMs` joins the cursor alongside
+// totalApiMs (added to detectRegression's regression signal).
+// setPrevTick's snap payload is preserved (legacy callers thread
+// only totalApiMs); the new field is carried forward from the
+// prev baseline so a stale setPrevTick call doesn't wipe the
+// duration history — the v0.8.11-alpha totalApiMs-only contract
+// survives on the snap argument.
 export function setPrevTick(
   _sessionId: string,
   snap: PrevTickSnapshot,
@@ -1325,6 +1398,11 @@ export function setPrevTick(
     : prev.contextUsedPercent;
   writePrevTickStatus(cwd, {
     totalApiMs: snap.totalApiMs,
+    // v0.8.23+ — legacy setPrevTick callers don't thread a new
+    // duration value; preserve the prev baseline so the cursor
+    // is not wiped. processTick's own mark() call writes the
+    // fresh value the same tick.
+    totalDurationMs: prev.totalDurationMs,
     sessionId: identity?.sessionId ?? prev.sessionId,
     cwd: identity?.cwd ?? prev.cwd,
     model: identity?.model ?? prev.model,
@@ -1495,14 +1573,31 @@ export function processTick(
   }
 
   // Stage the prev-cursor. The next tick reads `prev.totalApiMs`
-  // to compute `apiMs = current - prev`, and `prev.contextUsedPercent`
-  // to substitute a real prior value when stdin mistakenly reports
-  // `used_percentage=0` (see applyContextUsedPercentCarryOver).
+  // to compute `apiMs = current - prev`, `prev.totalDurationMs`
+  // to compute the regression signal (see `detectRegression`),
+  // and `prev.contextUsedPercent` to substitute a real prior
+  // value when stdin mistakenly reports `used_percentage=0`
+  // (see applyContextUsedPercentCarryOver).
   // `tokens.contextWindow.contextUsedPercent` is already the
   // post-carry-over value when normalizeTick has run, so reading
   // it here persists the substituted value to disk.
+  //
+  // v0.8.23+ — totalDurationMs is sourced from stdin
+  // `cost.total_duration_ms`. It's a separate counter from
+  // totalApiMs (the latter tracks per-call API roundtrips; the
+  // former tracks the cc process wall-clock). It increments on
+  // every tick and survives longer API-idle gaps, making it a
+  // more reliable regression signal — see [[detectRegression-totaldurationms]].
+  // When stdin omits the field (older producers), fall back to
+  // the prev value so the regression check still has a baseline.
+  const prevForCarry = prevEntry?.kind === "prevTickStatus"
+    ? prevEntry.value
+    : null;
   mark(PREV_TICK_KEY, {
     totalApiMs: snapshot.totalApiMs,
+    totalDurationMs: tokens.cost?.totalDurationMs
+      ?? prevForCarry?.totalDurationMs
+      ?? 0,
     sessionId: tokens.sessionId,
     cwd,
     model: tokens.modelDisplayName ?? null,

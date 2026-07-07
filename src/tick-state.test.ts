@@ -16,12 +16,19 @@ import type { TokenSnapshot } from "./types.ts";
 
 // Minimal valid TokenSnapshot for the validation-gate tests.
 // totalIn > 0 AND totalOut > 0 AND totalApiDurationMs > 0 ⇒ valid.
+//
+// v0.8.23+ — `totalDurationMs` defaults to 500_000 (well above the
+// 120_000 cold-start threshold in detectRegression) so the default
+// token set exercises the "post-cold-start" path. Tests that want
+// to drive regression detection override `totalDurationMs` per
+// case (the default would otherwise suppress regression by
+// hitting the cold-start guard).
 const validTokens = (overrides: Partial<TokenSnapshot> = {}): TokenSnapshot => ({
   sessionId: "sess-test",
   cwd: "D:\\test",
   totals: { tokenTotalIn: 100, tokenTotalOut: 50 },
   current: { tokenIn: 100, tokenOut: 50, tokenCacheCreation: 0, tokenCachedIn: 0 },
-  cost: { totalDurationMs: 1000, totalApiDurationMs: 1000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+  cost: { totalDurationMs: 500_000, totalApiDurationMs: 1000, totalLinesAdded: 0, totalLinesRemoved: 0 },
   ...overrides,
 });
 
@@ -108,37 +115,82 @@ describe("data-processor — validation gate", () => {
     assert.equal(statusStore.getState().valid, true);
   });
 
-  // v0.8.11-alpha — regression detection is decoupled from
-  // sessionId identity. Stale PREV_TICK carry-overs from a prior
-  // session must STILL trigger the ccsession reset when the
-  // totalApiMs time-series rolls backward, otherwise the
+  // v0.8.11-alpha → v0.8.23: regression detection is decoupled
+  // from sessionId identity. Stale PREV_TICK carry-overs from a
+  // prior session must STILL trigger the ccsession reset when the
+  // totalDurationMs time-series rolls backward, otherwise the
   // accumulator keeps the prior session's totals forever.
+  //
+  // v0.8.23+: signal switched from `totalApiMs` to
+  // `totalDurationMs` with a 120_000 ms cold-start guard. Both
+  // prev and current must be ≥ 120_000 to exercise the
+  // post-cold-start path. prev (600_000) > current (300_000)
+  // triggers the regression.
   it("regression fires even when prev.sessionId differs from current (stale carry-over)", () => {
-    // Seed a prev tick with totalApiMs=1000 from session "old-sess".
+    // Seed a prev tick with totalDurationMs=600_000 from
+    // session "old-sess".
     statusStore.beginTick("D:\\test", validTokens({
-      cost: { totalDurationMs: 1000, totalApiDurationMs: 1000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+      cost: { totalDurationMs: 600_000, totalApiDurationMs: 1000, totalLinesAdded: 0, totalLinesRemoved: 0 },
     }));
     statusStore.mark(statusStore.PREV_TICK_KEY, {
       ...statusStore.emptyPrevTickStatus(),
       totalApiMs: 1000,
+      totalDurationMs: 600_000,
       sessionId: "old-sess",
       cwd: "D:\\test",
       model: null,
     });
     statusStore.commit();
 
-    // New session, totalApiMs dropped (process restart). The
-    // baseline is nulled (no meaningful cross-session subtract)
-    // but the regression-reset MUST still fire on the ccsession
-    // slot.
+    // New session, totalDurationMs dropped (process restart).
+    // The baseline is nulled (no meaningful cross-session
+    // subtract) but the regression-reset MUST still fire on
+    // the ccsession slot.
     statusStore.resetTickStateForTest();
     statusStore.beginTick("D:\\test", validTokens({
-      cost: { totalDurationMs: 1000, totalApiDurationMs: 200, totalLinesAdded: 0, totalLinesRemoved: 0 },
+      cost: { totalDurationMs: 300_000, totalApiDurationMs: 200, totalLinesAdded: 0, totalLinesRemoved: 0 },
       sessionId: "new-sess",
     }));
     assert.equal(
       statusStore.getState().snapshot?.invalidRegression, true,
       "regression fires across sessionId mismatch",
+    );
+  });
+
+  // v0.8.23+ — cold-start guard: when current.totalDurationMs
+  // is under 120_000 ms (a brand-new cc process whose prev
+  // baseline is from a prior process), detectRegression MUST
+  // suppress the regression flag. Without this guard, every
+  // fresh cc cold start would falsely zero the ccsession
+  // accumulator.
+  it("regression suppressed on cold start (current.totalDurationMs < 120_000)", () => {
+    // Seed a prev tick with a high totalDurationMs from a
+    // prior session.
+    statusStore.beginTick("D:\\test", validTokens({
+      cost: { totalDurationMs: 600_000, totalApiDurationMs: 1000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+    }));
+    statusStore.mark(statusStore.PREV_TICK_KEY, {
+      ...statusStore.emptyPrevTickStatus(),
+      totalApiMs: 1000,
+      totalDurationMs: 600_000,
+      sessionId: "old-sess",
+      cwd: "D:\\test",
+      model: null,
+    });
+    statusStore.commit();
+
+    // New session, fresh cc process. current.totalDurationMs
+    // is sub-2-minute — prev.totalDurationMs is from a prior
+    // process. Cold-start guard should suppress the
+    // regression flag.
+    statusStore.resetTickStateForTest();
+    statusStore.beginTick("D:\\test", validTokens({
+      cost: { totalDurationMs: 60_000, totalApiDurationMs: 200, totalLinesAdded: 0, totalLinesRemoved: 0 },
+      sessionId: "new-sess",
+    }));
+    assert.equal(
+      statusStore.getState().snapshot?.invalidRegression, false,
+      "cold-start guard suppresses backward jump from prior process",
     );
   });
 
@@ -364,7 +416,11 @@ describe("data-processor — contextUsedPercent=0 carry-over (v0.8.15-alpha)", (
     const t = tokensWithCw({ contextWindowSize: 200000, contextUsedPercent: 0, contextRemainingPercent: 100 });
     // Bump totalApiMs so the tick is not a regression (otherwise
     // the regression-reset mark would fire before our read).
-    t.cost = { totalDurationMs: 1000, totalApiDurationMs: 2000, totalLinesAdded: 0, totalLinesRemoved: 0 };
+    // v0.8.23+ — totalDurationMs also above the 120_000
+    // cold-start threshold, in the same direction as the prev
+    // baseline, so neither the v0.8.x apiMs nor the v0.8.23+
+    // durationMs comparison can flag a regression.
+    t.cost = { totalDurationMs: 500_000, totalApiDurationMs: 2000, totalLinesAdded: 0, totalLinesRemoved: 0 };
     statusStore.beginTick("D:\\test", t);
     statusStore.processTick("D:\\test", t);
 

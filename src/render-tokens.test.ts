@@ -5743,6 +5743,7 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
       // baseline persists into the next beginTick load.
       statusStore.writePrevTickStatus("D:\\test", {
         totalApiMs: 30_000,
+        totalDurationMs: 500_000,
         sessionId: "sess-ccs-api", cwd: "D:\\test", model: null,
         contextUsedPercent: null,
       });
@@ -5770,6 +5771,7 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
       // → ccsession.accApiMs += 100_000
       statusStore.writePrevTickStatus("D:\\test", {
         totalApiMs: 0,
+        totalDurationMs: 500_000,
         sessionId: "sess-ccs-reg", cwd: "D:\\test", model: null,
         contextUsedPercent: null,
       });
@@ -5777,7 +5779,7 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
         sessionId: "sess-ccs-reg",
         cwd: "D:\\test",
         current: { tokenIn: 100, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
-        cost: { totalDurationMs: 0, totalApiDurationMs: 100_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+        cost: { totalDurationMs: 600_000, totalApiDurationMs: 100_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
       });
       beginTickForTest("D:\\test", snap1);
       processTick(snap1.cwd, snap1);
@@ -5791,8 +5793,12 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
       // accPrimer's regression-reset path zeros the slot.
       // deltaApi<0 → hasDelta=false → setAvg early-returns, so
       // the ccsession slot stays at 0 (no immediate re-seed).
+      // v0.8.23+ — totalDurationMs also rolled backward (1.5M
+      // → 600_000), both ≥ 120_000 cold-start threshold, so the
+      // new regression signal fires correctly.
       statusStore.writePrevTickStatus("D:\\test", {
         totalApiMs: 100_000,
+        totalDurationMs: 1_500_000,
         sessionId: "sess-ccs-reg", cwd: "D:\\test", model: null,
         contextUsedPercent: null,
       });
@@ -5800,7 +5806,7 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
         sessionId: "sess-ccs-reg",
         cwd: "D:\\test",
         current: { tokenIn: 200, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
-        cost: { totalDurationMs: 0, totalApiDurationMs: 50_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+        cost: { totalDurationMs: 600_000, totalApiDurationMs: 50_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
       });
       beginTickForTest("D:\\test", snap2);
       processTick(snap2.cwd, snap2);
@@ -5821,6 +5827,7 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
       // Read via statusStore.pending (NOT disk) — see sibling test.
       statusStore.writePrevTickStatus("D:\\test", {
         totalApiMs: 0,
+        totalDurationMs: 500_000,
         sessionId: "sess-ccs-api-reset", cwd: "D:\\test", model: null,
         contextUsedPercent: null,
       });
@@ -5829,7 +5836,7 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
         sessionId: "sess-ccs-api-reset",
         cwd: "D:\\test",
         current: { tokenIn: 100, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
-        cost: { totalDurationMs: 0, totalApiDurationMs: 100_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+        cost: { totalDurationMs: 600_000, totalApiDurationMs: 100_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
       });
       beginTickForTest("D:\\test", snap1);
       processTick(snap1.cwd, snap1);
@@ -5844,14 +5851,17 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
       // hasDelta=false → setAvg doesn't fire → slot stays at 0.
       statusStore.writePrevTickStatus("D:\\test", {
         totalApiMs: 100_000,
+        totalDurationMs: 1_500_000,
         sessionId: "sess-ccs-api-reset", cwd: "D:\\test", model: null,
         contextUsedPercent: null,
       });
+      // v0.8.23+ — totalDurationMs also rolled backward (1.5M
+      // → 600_000), both ≥ 120_000 cold-start threshold.
       const snap2 = fakeSnapshot({
         sessionId: "sess-ccs-api-reset",
         cwd: "D:\\test",
         current: { tokenIn: 200, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
-        cost: { totalDurationMs: 0, totalApiDurationMs: 50_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
+        cost: { totalDurationMs: 600_000, totalApiDurationMs: 50_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
       });
       beginTickForTest("D:\\test", snap2);
       processTick(snap2.cwd, snap2);
