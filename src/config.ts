@@ -531,33 +531,52 @@ const DEFAULT_CONFIG: {
   fetchTimeoutMs: number;
   display: DisplayMode;
   modeLabels: { used: string; remaining: string; balance: string };
-  // v0.8.0+ — top-level prefix labels for the four token-stat axes
-  // used across all three module families (per-turn / acc /
-  // sum-avg / totals). v0.8.13+ extended to also cover the
-  // per-turn / acc / sum-avg api-ms, api-calls, in-speed, and
-  // out-speed axes (apiMs / apiCalls / inSpeed / outSpeed). Each
-  // value already includes its trailing colon (e.g. "In:") so the
-  // renderer can just concat. Defaults reproduce the v0.7.x
-  // literal-string behavior exactly so existing line templates
-  // render byte-identical until the user overrides labels.* in
-  // config.json.
+  // v0.8.0+ — top-level prefix labels for the per-turn / acc /
+  // sum-avg token-stat axes. Every value already includes its
+  // trailing colon (e.g. "in:") so the renderer can just concat.
+  //
+  // v0.8.22+ — names renamed to 1:1 mirror the `m_*` module names
+  // they back, so a reader looking at `m_tokenIn` immediately knows
+  // to look at `labels.labelTokenIn`. Each label name is shared
+  // across the per-turn / acc / sum-avg module of the same family
+  // (e.g. `labelTokenIn` covers m_tokenIn / m_accTokenIn /
+  // m_sumTokenIn); per-family override was deliberately NOT
+  // exposed — the three family variants render the same axis
+  // (in-flow / out-flow / cache-read / …) and per-family split
+  // would be confusing rather than useful.
+  //
+  // Defaults reproduce the v0.8.x hardcoded literal strings so
+  // existing renders stay byte-identical until the user overrides
+  // labels.* in config.json. Old v0.8.13–v0.8.21 names
+  // (labelIn / labelOut / labelCacheIn / labelTotalIn /
+  // labelApi / labelApiCalls / labelInSpeed / labelOutSpeed /
+  // labelMemUsage) are accepted as deprecated aliases — see
+  // `applyOverrides` for the migration warning + value mirror.
   labels: {
-    labelIn: string;
-    labelOut: string;
-    labelCacheIn: string;
-    labelTotalIn: string;
-    // v0.8.13+ — four new axes exposed via labelFor(). Defaults
-    // match the v0.8.x hardcoded literal strings (api: / calls: /
-    // in: / out:) so existing renders are byte-identical.
-    labelApi: string;
+    // per-turn / acc / sum-avg of token-IN flow
+    labelTokenIn: string;
+    // per-turn / acc / sum-avg of token-OUT flow
+    labelTokenOut: string;
+    // per-turn / acc / sum-avg of cache-read flow
+    labelTokenCachedIn: string;
+    // per-turn / acc / sum-avg of total-IN (input + cache-read)
+    labelTokenTotalIn: string;
+    // per-turn / acc / sum-avg of total-OUT
+    labelTokenTotalOut: string;
+    // per-turn / acc / sum-avg of API roundtrip time (dhms body)
+    labelApiMs: string;
+    // per-turn / acc / sum-avg of API call count (integer body)
     labelApiCalls: string;
-    labelInSpeed: string;
-    labelOutSpeed: string;
+    // v0.8.13+ — per-turn / acc / sum-avg of token-IN throughput
+    // (t/s). Shares `labelTokenIn` semantics across families.
+    labelTokenInSpeed: string;
+    // per-turn / acc / sum-avg of token-OUT throughput (t/s).
+    labelTokenOutSpeed: string;
     // v0.8.17+ — system RAM usage label exposed via m_memUsage.
-    // Default "Mem:" mirrors ccstatusline's hardcoded prefix so users
-    // migrating from ccstatusline get byte-identical output until they
-    // override.
     labelMemUsage: string;
+    // v0.8.22+ — cache hit-rate ratio (lifted out of the v0.8.x
+    // R8 hardcoded "hit:" prefix into the labels namespace).
+    labelTokenHitRate: string;
   };
   colors: typeof DEFAULT_COLORS;
   cacheHitColors: typeof DEFAULT_CACHE_HIT_COLORS;
@@ -607,20 +626,28 @@ const DEFAULT_CONFIG: {
   // so the m_modeLabel module for the DeepSeek path can pick it up. Defaults
   // to "Balance:" to preserve the v0.2.16 hardcoded literal.
   modeLabels: { used: "Usage:", remaining: "Remain:", balance: "Balance:" },
-  // v0.8.13+ — extends the four-axis labels.* set with apiMs /
-  // apiCalls / inSpeed / outSpeed defaults that match the
-  // v0.8.x hardcoded literals so existing renders are byte-
-  // identical until the user overrides them via config.json.
+  // v0.8.22+ — values mirror the v0.8.x hardcoded literals
+  // exactly: "in:" for both labelTokenIn and labelTokenInSpeed
+  // (the per-turn / acc / sum-avg form was always the same prefix
+  // before the v0.8.13 split), "out:" likewise for the matching
+  // out-axis. Existing renders stay byte-identical without any
+  // user intervention.
   labels: {
-    labelIn: "in:",
-    labelOut: "out:",
-    labelCacheIn: "cache:",
-    labelTotalIn: "total:",
-    labelApi: "api:",
+    labelTokenIn: "in:",
+    labelTokenOut: "out:",
+    labelTokenCachedIn: "cache:",
+    labelTokenTotalIn: "total:",
+    // m_tokenTotalOut shares the "out:" axis (it's session-
+    // cumulative output). Default stays "out:" so existing
+    // renders stay byte-identical; users who want a distinct
+    // totalOut: prefix can override here.
+    labelTokenTotalOut: "out:",
+    labelApiMs: "api:",
     labelApiCalls: "calls:",
-    labelInSpeed: "in:",
-    labelOutSpeed: "out:",
+    labelTokenInSpeed: "in:",
+    labelTokenOutSpeed: "out:",
     labelMemUsage: "Mem:",
+    labelTokenHitRate: "hit:",
   },
   colors: DEFAULT_COLORS,
   cacheHitColors: DEFAULT_CACHE_HIT_COLORS,
@@ -903,30 +930,78 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
     if (l && typeof l === "object" && !Array.isArray(l)) {
       const lm = l as Record<string, unknown>;
       const fields: Array<keyof typeof out.labels> = [
-        "labelIn",
-        "labelOut",
-        "labelCacheIn",
-        "labelTotalIn",
-        // v0.8.13+ — four new axes exposed via labelFor(): apiMs
-        // (per-turn / acc / sum-avg), apiCalls (per-turn / acc /
-        // sum-avg), inSpeed (per-turn / sum-avg), outSpeed
-        // (per-turn / sum-avg). Defaults match the v0.8.x
-        // hardcoded literals so existing renders stay byte-
-        // identical until the user overrides.
-        "labelApi",
+        "labelTokenIn",
+        "labelTokenOut",
+        "labelTokenCachedIn",
+        "labelTokenTotalIn",
+        "labelTokenTotalOut",
+        "labelApiMs",
         "labelApiCalls",
-        "labelInSpeed",
-        "labelOutSpeed",
-        // v0.8.17+ — system RAM usage label exposed via
-        // m_memUsage. Default "Mem:" mirrors ccstatusline
-        // so the user's existing overrides / templates keep working.
+        "labelTokenInSpeed",
+        "labelTokenOutSpeed",
         "labelMemUsage",
+        "labelTokenHitRate",
       ];
       for (const f of fields) {
         if (typeof lm[f] === "string") {
           out.labels[f] = lm[f] as string;
         } else if (f in lm) {
           warn(`labels.${f} must be a string; using default`);
+        }
+      }
+
+      // v0.8.22+ — accept the v0.8.13–v0.8.21 names as deprecated
+      // aliases. New name (labelTokenIn / labelApi / …) wins;
+      // alias is only applied when the new name is absent. Emits
+      // a one-shot warn line per alias used so a postmortem can
+      // see the user's old config and migrate it forward. Old
+      // aliases:
+      //   labelIn         → labelTokenIn
+      //   labelOut        → labelTokenOut
+      //   labelCacheIn    → labelTokenCachedIn
+      //   labelTotalIn    → labelTokenTotalIn
+      //   labelApi        → labelApiMs
+      //   labelInSpeed    → labelTokenInSpeed
+      //   labelOutSpeed   → labelTokenOutSpeed
+      //   labelMemUsage   → labelMemUsage (no rename)
+      //   labelApiCalls   → labelApiCalls (no rename)
+      // Mapping table spelled out so a reader doesn't need to
+      // dig for it. `labelMemUsage` and `labelApiCalls` aliased
+      // to themselves to keep the migration-warning semantics
+      // uniform — users who copy/paste their v0.8.13 block see
+      // "deprecated in v0.8.22" once and migrate forward.
+      const aliases: Record<string, keyof typeof out.labels> = {
+        labelIn: "labelTokenIn",
+        labelOut: "labelTokenOut",
+        labelCacheIn: "labelTokenCachedIn",
+        labelTotalIn: "labelTokenTotalIn",
+        // labelApi was the v0.8.13–v0.8.21 alias for labelApiMs.
+        labelApi: "labelApiMs",
+        // labelApiCalls and labelMemUsage were not renamed —
+        // but mirror them through so the same warn fires.
+        labelApiCalls: "labelApiCalls",
+        labelInSpeed: "labelTokenInSpeed",
+        labelOutSpeed: "labelTokenOutSpeed",
+        labelMemUsage: "labelMemUsage",
+      };
+      for (const [oldName, newName] of Object.entries(aliases)) {
+        if (oldName in lm) {
+          warn(
+            `labels.${oldName} is deprecated in v0.8.22; ` +
+            `use labels.${newName} instead`,
+          );
+          // Only mirror when the user did NOT also set the new
+          // name (new wins, by config-precedence).
+          if (!(newName in lm)) {
+            if (typeof lm[oldName] === "string") {
+              out.labels[newName] = lm[oldName] as string;
+            } else if (typeof lm[oldName] !== "undefined") {
+              warn(
+                `labels.${oldName} must be a string; ` +
+                `using default for ${newName}`,
+              );
+            }
+          }
         }
       }
     } else {

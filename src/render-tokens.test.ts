@@ -2013,12 +2013,12 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     assert.equal(strip(out), "out:155");
   });
 
-  // v0.8.0+ — newly registered module under the labelTotalIn
+  // v0.8.0+ — newly registered module under the labelTokenTotalIn
   // family. Reads the same source as m_tokenInTotal but emits the
-  // labelTotalIn prefix instead of labelIn — both default to
+  // labelTokenTotalIn prefix instead of labelTokenIn — both default to
   // "in:" / "total:" respectively, but a user override on either
   // axis diverges them.
-  it("m_tokenTotalIn| 'total|163.5k' (cumulative, labelTotalIn axis)", () => {
+  it("m_tokenTotalIn| 'total|163.5k' (cumulative, labelTokenTotalIn axis)", () => {
     const out = renderTemplate(["m_tokenTotalIn"], ctxFor(fakeSnapshot())).join("\n");
     assert.equal(strip(out), "total:163.5k");
   });
@@ -4133,7 +4133,7 @@ describe("renderTemplate — named separator aliases (v0.4.x)", () => {
 // Placeholders (v0.8.0+ labels.*): the four token-axis acc
 // modules (m_accTokenIn/Out/CachedIn/TotalIn) read their prefix
 // from labelFor so the placeholder matches the configured
-// labelIn/Out/CacheIn/TotalIn. m_accApiMs keeps its hardcoded
+// labelTokenIn/Out/CacheIn/TotalIn. m_accApiMs keeps its hardcoded
 // "api:" prefix (mirrors m_apiMs). m_accTokenHitRate (v0.8.x R8)
 // now mirrors m_tokenHitRate's "hit:" prefix (was "acc:") so the
 // per-turn / acc / sum triple shares one prefix. Inline default
@@ -4185,7 +4185,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       ctxFor(snap),
     ).join("\n");
     // formatCompactToken(42000) = "42.0k" → "in:42.0k" (v0.8.0+
-    // labels.* — m_accTokenIn shares the labelIn axis with its
+    // labels.* — m_accTokenIn shares the labelTokenIn axis with its
     // per-turn sibling m_tokenIn)
     assert.equal(strip(out), "in:42.0k");
   });
@@ -4596,7 +4596,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       ["m_accTokenIn|scope|model"],
       ctxFor(snap),
     ).join("\n");
-    // v0.8.0+ labels.* — m_accTokenIn renders under labelIn.
+    // v0.8.0+ labels.* — m_accTokenIn renders under labelTokenIn.
     // 100 + 150 + 38 (per-tick primer delta) = 288.
     assert.equal(strip(out), "in:288");
   });
@@ -4608,7 +4608,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       ["m_accTokenIn|scope|model"],
       ctxFor(fakeSnapshot({ sessionId: "sess-no-model", modelDisplayName: null })),
     ).join("\n");
-    // v0.8.0+ labels.* — placeholder reads labelIn.
+    // v0.8.0+ labels.* — placeholder reads labelTokenIn.
     assert.equal(strip(out), "in:n/a");
   });
 
@@ -4650,7 +4650,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       ["m_accTokenIn|nulldrop|false"],
       ctxFor(null),
     ).join("\n");
-    // v0.8.0+ labels.* — placeholder reads labelIn.
+    // v0.8.0+ labels.* — placeholder reads labelTokenIn.
     assert.equal(strip(out), "in:n/a");
   });
 
@@ -5184,7 +5184,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
 
 // v0.8.0+ — labels.* config customization. Each module that emits
 // a token-stat prefix reads the corresponding cfg().labels.* axis at
-// render time. Overriding labelIn/labelOut/labelCacheIn/labelTotalIn
+// render time. Overriding labelTokenIn/labelTokenOut/labelTokenCachedIn/labelTokenTotalIn
 // in config should propagate to: per-turn (m_tokenIn/Out/CachedIn/
 // TotalIn), totals (m_tokenInTotal/OutTotal), acc (m_accTokenIn/
 // Out/CachedIn/TotalIn/TokenIn/Out), sum/avg (m_sumTokenIn/Out/
@@ -5200,22 +5200,22 @@ describe("renderTemplate — v0.8.0+ labels.* config customization", () => {
     try { fn(); } finally { __resetForTest(); }
   }
 
-  it("labelIn override reaches per-turn m_tokenInTotal and m_tokenTotalIn", () => {
-    withLabels({ labelIn: "Δ:" }, () => {
+  it("labelTokenIn override reaches per-turn m_tokenInTotal and m_tokenTotalIn", () => {
+    withLabels({ labelTokenIn: "Δ:" }, () => {
       const a = renderTemplate(["m_tokenInTotal"], ctxFor(fakeSnapshot())).join("\n");
-      // labelTotalIn still defaults → "total:…".
+      // labelTokenTotalIn still defaults → "total:…".
       const b = renderTemplate(["m_tokenTotalIn"], ctxFor(fakeSnapshot())).join("\n");
       assert.equal(strip(a), "Δ:163.5k");
       assert.equal(strip(b), "total:163.5k");
     });
   });
 
-  it("labelTotalIn override reaches m_tokenTotalIn / m_accTokenTotalIn / m_sumTokenTotalIn", () => {
+  it("labelTokenTotalIn override reaches m_tokenTotalIn / m_accTokenTotalIn / m_sumTokenTotalIn", () => {
     // Pin stateRoot to a fresh empty dir so m_sumTokenTotalIn
     // sees no rows (production state has months of data that
     // would otherwise produce a 100M+ value here).
     setStateRoot(() => join(_tmpDir, "labels-test"));
-    withLabels({ labelTotalIn: "Total:" }, () => {
+    withLabels({ labelTokenTotalIn: "Total:" }, () => {
       // Use a fresh sessionId for m_accTokenTotalIn so any avg
       // snapshot left over from prior tests doesn't leak into
       // the rendered value (we only need to verify the prefix).
@@ -5241,37 +5241,53 @@ describe("renderTemplate — v0.8.0+ labels.* config customization", () => {
     });
   });
 
-  it("labelOut override reaches m_tokenOut / m_tokenTotalOut", () => {
-    withLabels({ labelOut: "↓:" }, () => {
+  it("labelTokenOut override reaches m_tokenOut (per-turn axis)", () => {
+    withLabels({ labelTokenOut: "↓:" }, () => {
       const snap = fakeSnapshot();
       processTick(snap.cwd, snap);
       statusStore.commit();
       const a = renderTemplate(["m_tokenOut"], ctxFor(snap)).join("\n");
-      const b = renderTemplate(["m_tokenTotalOut"], ctxFor(snap)).join("\n");
       assert.equal(strip(a), "↓:155");
-      assert.equal(strip(b), "↓:155");
     });
   });
 
-  it("labelCacheIn override reaches m_tokenCachedIn", () => {
-    withLabels({ labelCacheIn: "⚡:" }, () => {
+  it("labelTokenTotalOut override reaches m_tokenTotalOut (independent of labelTokenOut)", () => {
+    // v0.8.22+ — m_tokenTotalOut moved to its own labelFor("totalOut")
+    // axis so users who want a distinct `totalOut:` prefix can override
+    // it independently of the per-turn `labelTokenOut`. Defaults still
+    // match ("out:"), so existing renders stay byte-identical.
+    withLabels({ labelTokenTotalOut: "OutTotal:" }, () => {
+      const snap = fakeSnapshot();
+      processTick(snap.cwd, snap);
+      statusStore.commit();
+      const a = renderTemplate(["m_tokenTotalOut"], ctxFor(snap)).join("\n");
+      const b = renderTemplate(["m_tokenOut"], ctxFor(snap)).join("\n");
+      // m_tokenTotalOut picks up the dedicated axis...
+      assert.equal(strip(a), "OutTotal:155");
+      // ...while m_tokenOut keeps its per-turn "out:" default.
+      assert.equal(strip(b), "out:155");
+    });
+  });
+
+  it("labelTokenCachedIn override reaches m_tokenCachedIn", () => {
+    withLabels({ labelTokenCachedIn: "⚡:" }, () => {
       const out = renderTemplate(["m_tokenCachedIn"], ctxFor(fakeSnapshot())).join("\n");
       assert.match(strip(out), /^⚡:/);
     });
   });
 
-  // v0.8.13+ — four new label axes (labelApi / labelApiCalls /
-  // labelInSpeed / labelOutSpeed) extend the labelFor() resolver
+  // v0.8.13+ — four new label axes (labelApiMs / labelApiCalls /
+  // labelTokenInSpeed / labelTokenOutSpeed) extend the labelFor() resolver
   // so apiMs / apiCalls / inSpeed / outSpeed family modules are
   // configurable independently from the in/out token-axis family.
   // Defaults match today's literal strings ("api:" / "calls:" /
   // "in:" / "out:") so existing renders stay byte-identical.
 
-  it("labelApi override reaches m_apiMs / m_accApiMs / m_sumApiMs", () => {
-    setStateRoot(() => join(_tmpDir, "labels-labelApi"));
-    withLabels({ labelApi: "ms:" }, () => {
+  it("labelApiMs override reaches m_apiMs / m_accApiMs / m_sumApiMs", () => {
+    setStateRoot(() => join(_tmpDir, "labels-labelApiMs"));
+    withLabels({ labelApiMs: "ms:" }, () => {
       // m_apiMs (per-turn) and m_accApiMs both read labelFor("apiMs")
-      // (= labels.labelApi). m_sumApiMs placeholder reads the same.
+      // (= labels.labelApiMs). m_sumApiMs placeholder reads the same.
       // Seed a tick so m_accApiMs has a non-zero value to render.
       const aSnap = fakeSnapshot({ sessionId: "label-api" });
       processTick(aSnap.cwd, aSnap);
@@ -5307,12 +5323,12 @@ describe("renderTemplate — v0.8.0+ labels.* config customization", () => {
     });
   });
 
-  it("labelInSpeed override is independent of labelIn", () => {
+  it("labelTokenInSpeed override is independent of labelTokenIn", () => {
     // The speed-axis labels got their own slot in v0.8.13+ so a
-    // user who renames labelIn="In:" can keep speed reading
-    // "in:12.3 t/s" until they explicitly override labelInSpeed.
-    setStateRoot(() => join(_tmpDir, "labels-labelInSpeed"));
-    withLabels({ labelIn: "In:", labelInSpeed: "speed-in:" }, () => {
+    // user who renames labelTokenIn="In:" can keep speed reading
+    // "in:12.3 t/s" until they explicitly override labelTokenInSpeed.
+    setStateRoot(() => join(_tmpDir, "labels-labelTokenInSpeed"));
+    withLabels({ labelTokenIn: "In:", labelTokenInSpeed: "speed-in:" }, () => {
       const snap = fakeSnapshot({ sessionId: "label-inspeed" });
       processTick(snap.cwd, snap);
       statusStore.commit();
@@ -5339,14 +5355,16 @@ describe("renderTemplate — v0.8.0+ labels.* config customization", () => {
     });
   });
 
-  it("labelOutSpeed override is independent of labelOut", () => {
-    setStateRoot(() => join(_tmpDir, "labels-labelOutSpeed"));
-    withLabels({ labelOut: "Out:", labelOutSpeed: "speed-out:" }, () => {
+  it("labelTokenOutSpeed override is independent of labelTokenOut", () => {
+    setStateRoot(() => join(_tmpDir, "labels-labelTokenOutSpeed"));
+    withLabels({ labelTokenOut: "Out:", labelTokenOutSpeed: "speed-out:" }, () => {
       const snap = fakeSnapshot({ sessionId: "label-outspeed" });
       processTick(snap.cwd, snap);
       statusStore.commit();
       const speed = renderTemplate(["m_tokenOutSpeed"], ctxFor(snap)).join("\n");
-      const token = renderTemplate(["m_tokenTotalOut"], ctxFor(snap)).join("\n");
+      // m_tokenOut (per-turn) follows labelTokenOut — same axis as
+      // the speed override (m_tokenOutSpeed reads labelTokenOutSpeed).
+      const token = renderTemplate(["m_tokenOut"], ctxFor(snap)).join("\n");
       assert.match(strip(speed), /^speed-out:/);
       assert.match(strip(token), /^Out:/);
     });

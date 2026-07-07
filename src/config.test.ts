@@ -698,93 +698,112 @@ describe("loadConfig — modeLabels.balance (v0.2.17)", () => {
   });
 });
 
-// v0.8.0+ — top-level `labels` overrides for the token-stat
-// prefix axes. v0.8.0 had four axes (labelIn / labelOut /
-// labelCacheIn / labelTotalIn); v0.8.13+ extended the resolver
-// with four more (labelApi / labelApiCalls / labelInSpeed /
-// labelOutSpeed) so the apiMs / apiCalls / inSpeed / outSpeed
-// module families are independently configurable. Partial-merge
-// semantics match modeLabels: each field optional, invalid type
-// → warn + default retained.
-describe("loadConfig — labels (v0.8.0+ token-stat prefix customization)", () => {
+// v0.8.0+ → v0.8.22: top-level `labels` overrides for the
+// token-stat prefix axes. v0.8.0 had four axes (labelIn /
+// labelOut / labelCacheIn / labelTotalIn); v0.8.13+ extended the
+// resolver with four more (labelApi / labelApiCalls / labelInSpeed
+// / labelOutSpeed). v0.8.22 unified every label name under the
+// `labelToken*` / `labelApi*` namespace (and added labelTokenTotalOut
+// + labelTokenHitRate), so the resolver is now symmetric across
+// the per-turn / acc / sum-avg families. Old names (labelIn /
+// labelOut / labelCacheIn / labelTotalIn / labelApi /
+// labelInSpeed / labelOutSpeed) are accepted as deprecated
+// aliases — see the "v0.8.22+ deprecation aliases" describe
+// below. Partial-merge semantics match modeLabels: each field
+// optional, invalid type → warn + default retained.
+describe("loadConfig — labels (v0.8.22+ unified labelToken* / labelApi* namespace)", () => {
   it("defaults reproduce v0.7.x literal-string behavior for the four base axes", () => {
-    assert.equal(__testing.DEFAULT_CONFIG.labels.labelIn, "in:");
-    assert.equal(__testing.DEFAULT_CONFIG.labels.labelOut, "out:");
-    assert.equal(__testing.DEFAULT_CONFIG.labels.labelCacheIn, "cache:");
-    assert.equal(__testing.DEFAULT_CONFIG.labels.labelTotalIn, "total:");
+    assert.equal(__testing.DEFAULT_CONFIG.labels.labelTokenIn, "in:");
+    assert.equal(__testing.DEFAULT_CONFIG.labels.labelTokenOut, "out:");
+    assert.equal(__testing.DEFAULT_CONFIG.labels.labelTokenCachedIn, "cache:");
+    assert.equal(__testing.DEFAULT_CONFIG.labels.labelTokenTotalIn, "total:");
   });
 
-  // v0.8.13+ — four new axes (apiMs / apiCalls / inSpeed / outSpeed)
-  // default to today's literal strings so existing renders stay
-  // byte-identical until the user overrides.
-  it("v0.8.13+ defaults for labelApi / labelApiCalls / labelInSpeed / labelOutSpeed match v0.8.x literals", () => {
-    assert.equal(__testing.DEFAULT_CONFIG.labels.labelApi, "api:");
+  it("v0.8.13+ defaults for labelApiMs / labelApiCalls / labelTokenInSpeed / labelTokenOutSpeed match v0.8.x literals", () => {
+    assert.equal(__testing.DEFAULT_CONFIG.labels.labelApiMs, "api:");
     assert.equal(__testing.DEFAULT_CONFIG.labels.labelApiCalls, "calls:");
-    assert.equal(__testing.DEFAULT_CONFIG.labels.labelInSpeed, "in:");
-    assert.equal(__testing.DEFAULT_CONFIG.labels.labelOutSpeed, "out:");
+    assert.equal(__testing.DEFAULT_CONFIG.labels.labelTokenInSpeed, "in:");
+    assert.equal(__testing.DEFAULT_CONFIG.labels.labelTokenOutSpeed, "out:");
   });
 
-  it("accepts a custom labelIn; other axes keep defaults", async () => {
+  it("v0.8.17+ default for labelMemUsage matches v0.8.x literal", () => {
+    assert.equal(__testing.DEFAULT_CONFIG.labels.labelMemUsage, "Mem:");
+  });
+
+  it("v0.8.22+ defaults for labelTokenTotalOut and labelTokenHitRate match v0.8.x literals", () => {
+    // labelTokenTotalOut shares the out-axis (was labelTokenOut),
+    // labelTokenHitRate was hardcoded "hit:" in v0.8.x R8 — both
+    // are surfaced in the labels namespace now.
+    assert.equal(__testing.DEFAULT_CONFIG.labels.labelTokenTotalOut, "out:");
+    assert.equal(__testing.DEFAULT_CONFIG.labels.labelTokenHitRate, "hit:");
+  });
+
+  it("accepts a custom labelTokenIn; other axes keep defaults", async () => {
     writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
-      labels: { labelIn: "Δ:" },
+      labels: { labelTokenIn: "Δ:" },
     }));
     const cfg = await loadConfig();
-    assert.equal(cfg.labels.labelIn, "Δ:");
-    assert.equal(cfg.labels.labelOut, "out:");
-    assert.equal(cfg.labels.labelCacheIn, "cache:");
-    assert.equal(cfg.labels.labelTotalIn, "total:");
-    // v0.8.13+ axes keep their defaults when only labelIn is set.
-    assert.equal(cfg.labels.labelApi, "api:");
+    assert.equal(cfg.labels.labelTokenIn, "Δ:");
+    assert.equal(cfg.labels.labelTokenOut, "out:");
+    assert.equal(cfg.labels.labelTokenCachedIn, "cache:");
+    assert.equal(cfg.labels.labelTokenTotalIn, "total:");
+    assert.equal(cfg.labels.labelTokenTotalOut, "out:");
+    assert.equal(cfg.labels.labelApiMs, "api:");
     assert.equal(cfg.labels.labelApiCalls, "calls:");
-    assert.equal(cfg.labels.labelInSpeed, "in:");
-    assert.equal(cfg.labels.labelOutSpeed, "out:");
+    assert.equal(cfg.labels.labelTokenInSpeed, "in:");
+    assert.equal(cfg.labels.labelTokenOutSpeed, "out:");
+    assert.equal(cfg.labels.labelMemUsage, "Mem:");
+    assert.equal(cfg.labels.labelTokenHitRate, "hit:");
   });
 
-  it("accepts overrides for all eight axes simultaneously", async () => {
+  it("accepts overrides for all eleven axes simultaneously", async () => {
     writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
       labels: {
-        labelIn: "In:",
-        labelOut: "Out:",
-        labelCacheIn: "Cache:",
-        labelTotalIn: "Total:",
-        // v0.8.13+ four new axes — partial-merge follows the same
-        // pattern: each is optional and invalid types warn + drop.
-        labelApi: "ms:",
+        labelTokenIn: "In:",
+        labelTokenOut: "Out:",
+        labelTokenCachedIn: "Cache:",
+        labelTokenTotalIn: "Total:",
+        labelTokenTotalOut: "TotalOut:",
+        labelApiMs: "ms:",
         labelApiCalls: "calls²:",
-        labelInSpeed: "speed-in:",
-        labelOutSpeed: "speed-out:",
+        labelTokenInSpeed: "speed-in:",
+        labelTokenOutSpeed: "speed-out:",
+        labelMemUsage: "RAM:",
+        labelTokenHitRate: "CacheRate:",
       },
     }));
     const cfg = await loadConfig();
-    assert.equal(cfg.labels.labelIn, "In:");
-    assert.equal(cfg.labels.labelOut, "Out:");
-    assert.equal(cfg.labels.labelCacheIn, "Cache:");
-    assert.equal(cfg.labels.labelTotalIn, "Total:");
-    assert.equal(cfg.labels.labelApi, "ms:");
+    assert.equal(cfg.labels.labelTokenIn, "In:");
+    assert.equal(cfg.labels.labelTokenOut, "Out:");
+    assert.equal(cfg.labels.labelTokenCachedIn, "Cache:");
+    assert.equal(cfg.labels.labelTokenTotalIn, "Total:");
+    assert.equal(cfg.labels.labelTokenTotalOut, "TotalOut:");
+    assert.equal(cfg.labels.labelApiMs, "ms:");
     assert.equal(cfg.labels.labelApiCalls, "calls²:");
-    assert.equal(cfg.labels.labelInSpeed, "speed-in:");
-    assert.equal(cfg.labels.labelOutSpeed, "speed-out:");
+    assert.equal(cfg.labels.labelTokenInSpeed, "speed-in:");
+    assert.equal(cfg.labels.labelTokenOutSpeed, "speed-out:");
+    assert.equal(cfg.labels.labelMemUsage, "RAM:");
+    assert.equal(cfg.labels.labelTokenHitRate, "CacheRate:");
   });
 
   it("rejects a non-string label field and warns", async () => {
     writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
-      labels: { labelIn: 42 },
+      labels: { labelTokenIn: 42 },
     }));
     const cfg = await loadConfig();
-    assert.equal(cfg.labels.labelIn, "in:");
-    assert.match(capturedStderr, /labels\.labelIn/);
+    assert.equal(cfg.labels.labelTokenIn, "in:");
+    assert.match(capturedStderr, /labels\.labelTokenIn/);
   });
 
-  // v0.8.13+ — same warn shape applies to the new axes.
-  it("rejects non-string v0.8.13+ label fields and warns", async () => {
+  it("rejects non-string v0.8.22+ label fields and warns", async () => {
     writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
-      labels: { labelApi: 42, labelApiCalls: 99 },
+      labels: { labelApiMs: 42, labelTokenHitRate: 99 },
     }));
     const cfg = await loadConfig();
-    assert.equal(cfg.labels.labelApi, "api:");
-    assert.equal(cfg.labels.labelApiCalls, "calls:");
-    assert.match(capturedStderr, /labels\.labelApi/);
-    assert.match(capturedStderr, /labels\.labelApiCalls/);
+    assert.equal(cfg.labels.labelApiMs, "api:");
+    assert.equal(cfg.labels.labelTokenHitRate, "hit:");
+    assert.match(capturedStderr, /labels\.labelApiMs/);
+    assert.match(capturedStderr, /labels\.labelTokenHitRate/);
   });
 
   it("rejects labels as a non-object and warns", async () => {
@@ -792,8 +811,110 @@ describe("loadConfig — labels (v0.8.0+ token-stat prefix customization)", () =
       labels: "nope",
     }));
     const cfg = await loadConfig();
-    assert.equal(cfg.labels.labelIn, "in:");
+    assert.equal(cfg.labels.labelTokenIn, "in:");
     assert.match(capturedStderr, /labels must be an object/);
+  });
+});
+
+// v0.8.22+ — deprecation aliases. Old v0.8.13–v0.8.21 names are
+// still honored (with a one-shot stderr warn) so existing user
+// configs survive the rename. New name wins when both are set.
+describe("loadConfig — labels v0.8.22+ deprecation aliases", () => {
+  it("labelIn → labelTokenIn (warn + mirror)", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      labels: { labelIn: "Δ:" },
+    }));
+    const cfg = await loadConfig();
+    assert.equal(cfg.labels.labelTokenIn, "Δ:");
+    assert.match(capturedStderr, /labels\.labelIn is deprecated in v0\.8\.22/);
+  });
+
+  it("labelOut → labelTokenOut (warn + mirror)", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      labels: { labelOut: "Out2:" },
+    }));
+    const cfg = await loadConfig();
+    assert.equal(cfg.labels.labelTokenOut, "Out2:");
+    assert.match(capturedStderr, /labels\.labelOut is deprecated in v0\.8\.22/);
+  });
+
+  it("labelCacheIn → labelTokenCachedIn (warn + mirror)", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      labels: { labelCacheIn: "Cache2:" },
+    }));
+    const cfg = await loadConfig();
+    assert.equal(cfg.labels.labelTokenCachedIn, "Cache2:");
+    assert.match(capturedStderr, /labels\.labelCacheIn is deprecated in v0\.8\.22/);
+  });
+
+  it("labelTotalIn → labelTokenTotalIn (warn + mirror)", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      labels: { labelTotalIn: "Tot2:" },
+    }));
+    const cfg = await loadConfig();
+    assert.equal(cfg.labels.labelTokenTotalIn, "Tot2:");
+    assert.match(capturedStderr, /labels\.labelTotalIn is deprecated in v0\.8\.22/);
+  });
+
+  it("labelApi → labelApiMs (warn + mirror)", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      labels: { labelApi: "ms2:" },
+    }));
+    const cfg = await loadConfig();
+    assert.equal(cfg.labels.labelApiMs, "ms2:");
+    assert.match(capturedStderr, /labels\.labelApi is deprecated in v0\.8\.22/);
+  });
+
+  it("labelInSpeed → labelTokenInSpeed (warn + mirror)", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      labels: { labelInSpeed: "speedIn2:" },
+    }));
+    const cfg = await loadConfig();
+    assert.equal(cfg.labels.labelTokenInSpeed, "speedIn2:");
+    assert.match(capturedStderr, /labels\.labelInSpeed is deprecated in v0\.8\.22/);
+  });
+
+  it("labelOutSpeed → labelTokenOutSpeed (warn + mirror)", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      labels: { labelOutSpeed: "speedOut2:" },
+    }));
+    const cfg = await loadConfig();
+    assert.equal(cfg.labels.labelTokenOutSpeed, "speedOut2:");
+    assert.match(capturedStderr, /labels\.labelOutSpeed is deprecated in v0\.8\.22/);
+  });
+
+  it("labelApiCalls and labelMemUsage still warn (no rename — kept for migration consistency)", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      labels: { labelApiCalls: "calls2:", labelMemUsage: "RAM2:" },
+    }));
+    const cfg = await loadConfig();
+    assert.equal(cfg.labels.labelApiCalls, "calls2:");
+    assert.equal(cfg.labels.labelMemUsage, "RAM2:");
+    assert.match(capturedStderr, /labels\.labelApiCalls is deprecated in v0\.8\.22/);
+    assert.match(capturedStderr, /labels\.labelMemUsage is deprecated in v0\.8\.22/);
+  });
+
+  it("new name wins when both old + new are set", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      labels: {
+        labelIn: "old-value:",
+        labelTokenIn: "new-value:",
+      },
+    }));
+    const cfg = await loadConfig();
+    assert.equal(cfg.labels.labelTokenIn, "new-value:");
+    // Both warn — the user copy/pasted both forms and should clean
+    // up. New name is the one that survives.
+    assert.match(capturedStderr, /labels\.labelIn is deprecated/);
+  });
+
+  it("non-string alias falls back to default + warns", async () => {
+    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
+      labels: { labelIn: 42 },
+    }));
+    const cfg = await loadConfig();
+    assert.equal(cfg.labels.labelTokenIn, "in:");
+    assert.match(capturedStderr, /labels\.labelIn is deprecated/);
   });
 });
 

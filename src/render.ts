@@ -74,46 +74,61 @@ function cfg() {
   return configStore.get();
 }
 
-// v0.8.0+ — top-level token-label resolver. Each call reads
+// v0.8.22+ — top-level token-label resolver. Each call reads
 // configStore (same lazy-read pattern as `cfg()`) and returns the
-// configured prefix for the requested axis. The base four axes
-// (v0.8.0) map 1:1 to the v0.8.0 config schema:
-//   "in"      → cfg().labels.labelIn      (per-turn delta, totals, acc, sum)
-//   "out"     → cfg().labels.labelOut     (per-turn delta, totals, acc, sum)
-//   "cacheIn" → cfg().labels.labelCacheIn (cache-read columns: per-turn, acc, sum)
-//   "totalIn" → cfg().labels.labelTotalIn (session-cumulative total_input / sum-totalIn / acc-totalIn)
-//
-// v0.8.13+ extended the resolver with four more axes so the
-// downstream speed / apiMs / apiCalls modules no longer share
-// prefixes with the in/out token-axis family:
-//   "inSpeed"   → cfg().labels.labelInSpeed    (m_tokenInSpeed / m_sumTokenInSpeed)
-//   "outSpeed"  → cfg().labels.labelOutSpeed   (m_tokenOutSpeed / m_sumTokenOutSpeed)
-//   "apiMs"     → cfg().labels.labelApi        (m_apiMs / m_accApiMs / m_sumApiMs)
-//   "apiCalls"  → cfg().labels.labelApiCalls   (m_apiCalls / m_accApiCalls / m_sumApiCalls)
+// configured prefix for the requested axis. v0.8.22 unified all
+// label names under the `labelToken*` / `labelApi*` namespace so
+// a user who overrides one family member (e.g. `labelTokenIn`)
+// sees the rename propagate consistently to every module that
+// reads the same semantic axis (`m_tokenIn` / `m_accTokenIn` /
+// `m_sumTokenIn`):
+//   "in"        → cfg().labels.labelTokenIn
+//   "out"       → cfg().labels.labelTokenOut
+//   "cacheIn"   → cfg().labels.labelTokenCachedIn
+//   "totalIn"   → cfg().labels.labelTokenTotalIn
+//   "inSpeed"   → cfg().labels.labelTokenInSpeed
+//   "outSpeed"  → cfg().labels.labelTokenOutSpeed
+//   "apiMs"     → cfg().labels.labelApiMs
+//   "apiCalls"  → cfg().labels.labelApiCalls
+//   "memUsage"  → cfg().labels.labelMemUsage
+//   "hitRate"   → cfg().labels.labelTokenHitRate (v0.8.22+; was
+//                  hardcoded "hit:" before — see `src/render.ts`
+//                  m_tokenHitRate / m_accTokenHitRate /
+//                  m_sumTokenHitRate)
 //
 // Defaults reproduce the v0.8.x literal strings ("in:" / "out:"
-// / "cache:" / "Total:" / "api:" / "calls:") so existing line
-// templates render byte-identical until the user overrides labels.*
-// in config.json. Speed defaults are intentionally independent of
-// the corresponding in/out token-axis defaults so a user who
-// renames `labelIn` for the token-axis family can keep the speed
-// axis reading as "in:12.3 t/s" (or override it independently).
+// / "cache:" / "Total:" / "api:" / "calls:" / "hit:" / "Mem:")
+// so existing line templates render byte-identical until the user
+// overrides `labels.*` in config.json. Speed defaults are
+// intentionally independent of the corresponding in/out token-
+// axis defaults so a user who renames `labelTokenIn` for the
+// token-axis family can keep the speed axis reading as
+// "in:12.3 t/s" (or override it independently).
 type LabelAxis =
-  | "in" | "out" | "cacheIn" | "totalIn"
+  | "in" | "out" | "cacheIn" | "totalIn" | "totalOut"
   | "inSpeed" | "outSpeed" | "apiMs" | "apiCalls"
-  | "memUsage";   // v0.8.17+
+  | "memUsage"
+  | "hitRate";   // v0.8.22+ — lifted out of hardcoded literal
 function labelFor(axis: LabelAxis): string {
   const labels = cfg().labels;
   switch (axis) {
-    case "in": return labels.labelIn;
-    case "out": return labels.labelOut;
-    case "cacheIn": return labels.labelCacheIn;
-    case "totalIn": return labels.labelTotalIn;
-    case "inSpeed": return labels.labelInSpeed;
-    case "outSpeed": return labels.labelOutSpeed;
-    case "apiMs": return labels.labelApi;
+    case "in": return labels.labelTokenIn;
+    case "out": return labels.labelTokenOut;
+    case "cacheIn": return labels.labelTokenCachedIn;
+    case "totalIn": return labels.labelTokenTotalIn;
+    // v0.8.22+ — m_tokenTotalOut sits in the `totalOut` family
+    // alongside `m_accTokenOut` / `m_sumTokenOut` / the jsonl
+    // `totalOut` column. Default "out:" preserves the v0.8.x
+    // literal; users who want a distinct `totalOut:` prefix can
+    // override `labels.labelTokenTotalOut` independently of the
+    // per-turn `labels.labelTokenOut`.
+    case "totalOut": return labels.labelTokenTotalOut;
+    case "inSpeed": return labels.labelTokenInSpeed;
+    case "outSpeed": return labels.labelTokenOutSpeed;
+    case "apiMs": return labels.labelApiMs;
     case "apiCalls": return labels.labelApiCalls;
     case "memUsage": return labels.labelMemUsage;
+    case "hitRate": return labels.labelTokenHitRate;
   }
 }
 
@@ -1492,13 +1507,15 @@ function placeholderAcc(
 ): string {
   // v0.8.0+ labels.* — the four token-axis fields read their
   // prefix from labelFor so the placeholder matches the user's
-  // configured labelIn / labelOut / labelCacheIn / labelTotalIn.
+  // configured labelTokenIn / labelTokenOut / labelTokenCachedIn
+  // / labelTokenTotalIn.
   // v0.8.13+ — apiMs / apiCalls also go through labelFor so the
   // "api:n/a" / "calls:n/a" placeholders follow the configured
-  // labelApi / labelApiCalls defaults. hitRate remains hardcoded
-  // "hit:" (v0.8.x R8 namespace unification: per-turn / acc / sum
-  // hit-rate modules all share "hit:" as a non-configurable prefix
-  // since it's a synthetic ratio, not a user-facing axis).
+  // labelApiMs / labelApiCalls defaults.
+  // v0.8.22+ — hitRate joined the labels namespace too
+  // (labels.labelTokenHitRate, default "hit:"), so users can
+  // override the per-turn / acc / sum hit-rate prefix as a single
+  // knob instead of the v0.8.x hardcoded literal.
   let prefix: string;
   switch (field) {
     case "in": prefix = labelFor("in"); break;
@@ -1507,7 +1524,7 @@ function placeholderAcc(
     case "total": prefix = labelFor("totalIn"); break;
     case "apiMs": prefix = labelFor("apiMs"); break;
     case "apiCalls": prefix = labelFor("apiCalls"); break;
-    case "hitRate": prefix = "hit:"; break;
+    case "hitRate": prefix = labelFor("hitRate"); break;
   }
   // v0.8.10-alpha.3 — placeholderAcc simplified: no fieldNotShipped
 // branch. cache_read absence on stdin no longer triggers the "--"
@@ -2250,7 +2267,7 @@ const MODULES: Record<string, Module> = {
   // `m_accTokenOut`'s in-memory accumulator rollup.
   m_tokenTotalOut: (c) =>
     c.tokens?.totals.tokenTotalOut != null
-      ? `${labelFor("out")}${formatCompactToken(c.tokens.totals.tokenTotalOut)}`
+      ? `${labelFor("totalOut")}${formatCompactToken(c.tokens.totals.tokenTotalOut)}`
       : placeholderBare("m_tokenTotalOut", c),
   // v0.8.0+ — new module added to fix the v0.8.0 contract gap.
   // Source: same as m_tokenInTotal (stdin.context_window.
@@ -3279,7 +3296,10 @@ function placeholderLabelOr(axis: LabelAxis): PlaceholderBody {
 const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   // pure-number — placeholder shape is "<prefix>n/a"
   m_tokenInTotal: placeholderLabelOr("in"),
-  m_tokenTotalOut: placeholderLabelOr("out"),
+  // v0.8.22+ — m_tokenTotalOut placeholder routes through
+  // labelFor("totalOut") so the prefix follows
+  // labels.labelTokenTotalOut (independent of labelTokenOut).
+  m_tokenTotalOut: placeholderLabelOr("totalOut"),
   // v0.8.13+ — m_apiCalls placeholder routes through labelFor
   // (labels.labelApiCalls) so the prefix matches the user's
   // configured labelApiCalls default. Was hardcoded "calls:" via
@@ -3317,16 +3337,17 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   // user overrides either axis independently.
   m_accTokenInSpeed: placeholderLabelOr("inSpeed"),
   m_accTokenOutSpeed: placeholderLabelOr("outSpeed"),
-  // v0.8.x R8 — m_accTokenHitRate now mirrors m_tokenHitRate's
-  // "hit:" prefix (was "acc:"). The placeholder is therefore
-  // "hit:n/a%" — same body as the per-turn sibling, so users
-  // composing `m_tokenHitRate m_accTokenHitRate m_sumTokenHitRate`
-  // see a consistent prefix across the triple. The "hit:N%" shape
-  // needs a "%" suffix on the placeholder too, matching
-  // m_tokenHitRate's placeholderDashesUnit convention.
-  m_accTokenHitRate: placeholderDashesUnit("hit:n/a%"),
+  // v0.8.x R8 → v0.8.22: m_accTokenHitRate / m_tokenHitRate /
+  // m_sumTokenHitRate all share the `hit:` prefix via
+  // labels.labelTokenHitRate (was hardcoded in v0.8.x). The
+  // placeholder bodies keep the `n/a%` shape for the ratio
+  // modules and `n/a` for the bare per-turn form so existing
+  // renders stay byte-identical until the user overrides the
+  // label. Reading at placeholder-fire time keeps the rendered
+  // prefix in sync with any post-load config override.
+  m_accTokenHitRate: (_p, _c) => `${labelFor("hitRate")}n/a%`,
   m_tokenCachedIn: placeholderDashesUnit("cache:0"),
-  m_tokenHitRate: placeholderNA("hit:"),
+  m_tokenHitRate: (_p, _c) => `${labelFor("hitRate")}n/a`,
   m_contextSize: placeholderNA("size:"),
   m_contextWindowsSize: placeholderNA("size:"),
   // m_contextUsedPercent's natural shape is "${pct}%" — the
@@ -3367,7 +3388,10 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   // `hit:n/a%` placeholderAcc shape (was `hit:n/a`; the % was
   // missing in the v0.8.13 PLACEHOLDERS entry despite the inline
   // comment claiming otherwise).
-  m_sumTokenHitRate: (_p, _c) => "hit:n/a%",
+  // v0.8.22+ — prefix routes through labels.labelTokenHitRate
+  // via labelFor("hitRate") so the user can override the
+  // per-turn / acc / sum hit-rate prefix as a single knob.
+  m_sumTokenHitRate: (_p, _c) => `${labelFor("hitRate")}n/a%`,
   // v0.8.13+ — speed axes get their own labelFor slot
   // (labels.labelInSpeed / labels.labelOutSpeed) so a user can
   // rename speed prefixes independently of the in/out token-axis
@@ -4891,7 +4915,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const t = ctx.tokens;
     if (!t || t.totals.tokenTotalOut == null) return placeholderWithColor("m_tokenTotalOut", params, ctx);
     return wrapPlain(
-      `${labelFor("out")}${formatCompactToken(t.totals.tokenTotalOut)}`,
+      `${labelFor("totalOut")}${formatCompactToken(t.totals.tokenTotalOut)}`,
       params.color as string | undefined,
     );
   },
