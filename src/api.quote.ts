@@ -102,15 +102,15 @@ function fetchOne(
   const stderrPath = `${tmpdir()}/topgauge-cc-curl-${process.pid}.log`;
   // v0.8.21+ — opt-in TLS skip. Precedence (highest first):
   //   1. inline `|insecureTls|true|false` on the m_quote token
-  //      (`insecureTls` arg from preFetchQuotes)
+  //      (read by `preFetchQuotes` from the token's inline args)
   //   2. `cfg().quoteInsecureTls === true` from config.json
-  //   3. `TOPGAUGE_CC_QUOTE_INSECURE_TLS=1` env var (seeds the
-  //      same config flag at loadConfig time)
-  // When the flag is set we append `-k` / `--insecure` to the curl
-  // argv so self-signed / expired / untrusted-CA HTTPS endpoints
-  // work without modifying the system CA bundle. The flag stays
-  // OFF by default — a misconfigured upstream still surfaces TLS
-  // errors loudly.
+  // No env-var seed — the URL you skip TLS validation for is a
+  // config-file decision, not a shell-environment one. When the
+  // flag is set we append `-k` / `--insecure` to the curl argv so
+  // self-signed / expired / untrusted-CA HTTPS endpoints work
+  // without modifying the system CA bundle. The flag stays OFF by
+  // default — a misconfigured upstream still surfaces TLS errors
+  // loudly.
   const insecure = insecureTls ?? configStore.get().quoteInsecureTls === true;
   const curlArgs = ["-sSf", "--max-time", "5", "-S"];
   if (insecure) curlArgs.push("-k");
