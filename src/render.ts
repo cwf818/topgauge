@@ -1536,20 +1536,25 @@ function computeAccSpeed(
 function computeTickDelta(
   ctx: RenderContext,
   direction: "in" | "out",
-): { value: string } {
+): { value: string; numeric: number | null } {
   const t = ctx.tokens;
   const prefix = labelFor(direction);
   // v0.8.10-alpha.2 — `hasMeasurement` mirrors the validity gate
   // (totals.tokenTotalIn > 0 AND totals.tokenTotalOut > 0 AND apiMs > 0).
+  // v0.8.30+ — `numeric` mirrors the underlying integer so the
+  // caller can drive `wrapValueDefault`'s positive-value gate
+  // (default tint only fires when value > 0; 0 and n/a stay
+  // plain per the value-zero rule). null = no measurement at
+  // all (placeholder path).
   if (!t || !t.sessionId) {
-    return { value: `${prefix}n/a` };
+    return { value: `${prefix}n/a`, numeric: null };
   }
   const r = getDeltaForRender();
   if (!r.hasMeasurement) {
-    return { value: `${prefix}0` };
+    return { value: `${prefix}0`, numeric: 0 };
   }
   const n = direction === "in" ? r.in : r.out;
-  return { value: `${prefix}${formatCompactToken(n)}` };
+  return { value: `${prefix}${formatCompactToken(n)}`, numeric: n };
 }
 
 // Per-session running average speed across all valid API
@@ -1871,16 +1876,23 @@ m_quota: Object.assign(
     const r = computeTickDelta(c, "in");
     // v1.0 — setPrevTick moved to status-store.ts:processTick
     // Stage 3. Render is read-only.
-    return r.value;
+    // v0.8.30+ — bare default tint (brightGreen) on positive
+    // value. `wrapValueDefault` honors the value-zero rule
+    // (0 / n/a stay plain), and the user's `|color|<c>` inline
+    // override (handled by the INLINE_RENDERER path) wins over
+    // this default.
+    return wrapValueDefault("m_tokenIn", r.numeric, r.value, undefined);
   },
   // Per-API-call output tokens (see m_tokenIn for the gate
   // rationale — output-only turns, thinking-only turns, idle
   // turns all produce different "out:--" / "out:N" signals).
+  // v0.8.30+ — bare default tint (red) on positive value; see
+  // m_tokenIn for the wrap contract.
   m_tokenOut: (c) => {
     const r = computeTickDelta(c, "out");
     // v1.0 — setPrevTick moved to status-store.ts:processTick
     // Stage 3. Render is read-only.
-    return r.value;
+    return wrapValueDefault("m_tokenOut", r.numeric, r.value, undefined);
   },
   // Session cumulative in + out + cache (cache = ctx_creation + ctx_read
   // from the latest per-turn snapshot — close enough for "total tokens
@@ -2113,8 +2125,27 @@ m_quota: Object.assign(
   // route a bare `m_accTokenIn` (no inline args) to the project
   // scope. Inner-explicit-wins: when the inner token is the inline
   // form `m_accTokenIn|scope|...`, that arg beats the passthrough.
-  m_accTokenIn: (c) => accBody(c, "in", passThroughScope(c)),
-  m_accTokenOut: (c) => accBody(c, "out", passThroughScope(c)),
+  m_accTokenIn: (c) => {
+    // v0.8.30+ — bare default tint (brightGreen) on positive
+    // accumulator value. accBody returns the rendered string
+    // (or placeholderAcc on a null slot); we read the same slot
+    // through peekAcc to drive the wrap decision so the tint
+    // matches what gets rendered.
+    const scope = passThroughScope(c);
+    const useScope = scope ?? "ccsession";
+    const v = peekAcc(useScope, c);
+    const n = v ? v.accTokenIn : 0;
+    return wrapValueDefault("m_accTokenIn", n, accBody(c, "in", scope), undefined);
+  },
+  m_accTokenOut: (c) => {
+    // v0.8.30+ — bare default tint (red) on positive value; see
+    // m_accTokenIn for the wrap contract.
+    const scope = passThroughScope(c);
+    const useScope = scope ?? "ccsession";
+    const v = peekAcc(useScope, c);
+    const n = v ? v.accTokenOut : 0;
+    return wrapValueDefault("m_accTokenOut", n, accBody(c, "out", scope), undefined);
+  },
   // v0.8.13+ — non-zero, non-null default tint. accBody returns
   // plain `${prefix}${body}`; the wrap below paints the chunk
   // brown/blue when the underlying slot is a positive number,
@@ -2246,19 +2277,33 @@ m_quota: Object.assign(
     // "in:n/a" placeholder (was: drop) to mirror m_accTokenIn's
     // placeholderAcc. Empty filter (bad window key) still drops
     // (NOT placeholder — the whole axis is unusable).
+    // v0.8.30+ — bare default tint (brightGreen) on positive sum;
+    // sum=0 stays plain (value-zero rule).
     const filter = parseWindowScope(c, c.passThrough ?? {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderBare("m_sumTokenIn", c);
-    return `${labelFor("in")}${formatCompactToken(agg.sumIn)}`;
+    return wrapValueDefault(
+      "m_sumTokenIn",
+      agg.sumIn,
+      `${labelFor("in")}${formatCompactToken(agg.sumIn)}`,
+      undefined,
+    );
   },
   m_sumTokenOut: (c) => {
     // v0.8.7+ — bare m_sum* reads c.passThrough (forwarded by an outer m_template); v0.8.14+ — zero-row renders placeholder (was: drop)
+    // v0.8.30+ — bare default tint (red) on positive sum; see
+    // m_sumTokenIn for the wrap contract.
     const filter = parseWindowScope(c, c.passThrough ?? {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderBare("m_sumTokenOut", c);
-    return `${labelFor("out")}${formatCompactToken(agg.sumOut)}`;
+    return wrapValueDefault(
+      "m_sumTokenOut",
+      agg.sumOut,
+      `${labelFor("out")}${formatCompactToken(agg.sumOut)}`,
+      undefined,
+    );
   },
   m_sumTokenCachedIn: (c) => {
     // v0.8.7+ — bare m_sum* reads c.passThrough (forwarded by an outer m_template); v0.8.14+ — zero-row renders placeholder (was: drop)
@@ -2588,10 +2633,18 @@ m_quota: Object.assign(
   },
   // Session-cumulative input tokens (stdin.context_window.total_input_tokens).
   // v6.x: totals.tokenTotalIn=null → "in:n/a" placeholder (was: drop).
-  m_tokenInTotal: (c) =>
-    c.tokens?.totals.tokenTotalIn != null
-      ? `${labelFor("in")}${formatCompactToken(c.tokens.totals.tokenTotalIn)}`
-      : placeholderBare("m_tokenInTotal", c),
+  // v0.8.30+ — bare default tint (brightGreen) on positive value;
+  // 0 and n/a stay plain per the value-zero rule.
+  m_tokenInTotal: (c) => {
+    const n = c.tokens?.totals.tokenTotalIn;
+    if (n == null) return placeholderBare("m_tokenInTotal", c);
+    return wrapValueDefault(
+      "m_tokenInTotal",
+      n,
+      `${labelFor("in")}${formatCompactToken(n)}`,
+      undefined,
+    );
+  },
   // Session-cumulative output tokens. v6.x: totals.tokenTotalOut=null →
   // "out:n/a" placeholder. v0.8.0+ — renamed from `m_tokenOutTotal`
   // to `m_tokenTotalOut` so it sits in the `totalOut` family
@@ -2600,10 +2653,17 @@ m_quota: Object.assign(
   // unchanged: reads `tokens.totals.tokenTotalOut` (= stdin
   // `context_window.total_output_tokens`) directly, distinct from
   // `m_accTokenOut`'s in-memory accumulator rollup.
-  m_tokenTotalOut: (c) =>
-    c.tokens?.totals.tokenTotalOut != null
-      ? `${labelFor("out")}${formatCompactToken(c.tokens.totals.tokenTotalOut)}`
-      : placeholderBare("m_tokenTotalOut", c),
+  // v0.8.30+ — bare default tint (red) on positive value.
+  m_tokenTotalOut: (c) => {
+    const n = c.tokens?.totals.tokenTotalOut;
+    if (n == null) return placeholderBare("m_tokenTotalOut", c);
+    return wrapValueDefault(
+      "m_tokenTotalOut",
+      n,
+      `${labelFor("out")}${formatCompactToken(n)}`,
+      undefined,
+    );
+  },
   // v0.8.0+ — new module added to fix the v0.8.0 contract gap.
   // Source: same as m_tokenInTotal (stdin.context_window.
   // total_input_tokens); the distinguishing semantics is that
@@ -3139,6 +3199,22 @@ const DEFAULT_COLORS: Record<string, string> = {
   m_apiCalls: NAMED_PALETTE.cyan,
   m_accApiCalls: NAMED_PALETTE.cyan,
   m_sumApiCalls: NAMED_PALETTE.cyan,
+  // v0.8.30+ — m_tokenIn / m_tokenOut family default tint.
+  // Reuses the 5-band palette colors (brightGreen = 0% band,
+  // red = 80% band) so a user who customizes the threshold
+  // colors gets consistent flow indicators automatically.
+  // Resolved from configStore at module load (mirrors
+  // LABEL_COLOR_SHORTCUTS below); helpers that need to honor
+  // a runtime colors.* override call resolveTokenFlowColor()
+  // instead of reading DEFAULT_COLORS directly.
+  m_tokenIn: configStore.get().colors.brightGreen,
+  m_tokenOut: configStore.get().colors.red,
+  m_tokenInTotal: configStore.get().colors.brightGreen,
+  m_tokenTotalOut: configStore.get().colors.red,
+  m_accTokenIn: configStore.get().colors.brightGreen,
+  m_accTokenOut: configStore.get().colors.red,
+  m_sumTokenIn: configStore.get().colors.brightGreen,
+  m_sumTokenOut: configStore.get().colors.red,
   m_countdown: NAMED_PALETTE.teal,
   m_contextSize: NAMED_PALETTE.gray,
   m_contextWindowsSize: NAMED_PALETTE.gray,
@@ -3152,15 +3228,16 @@ const DEFAULT_COLORS: Record<string, string> = {
   m_sumStartTime: NAMED_PALETTE.gray,
   m_sumEndTime: NAMED_PALETTE.gray,
   // v0.8.0+ — m_acc* family. The two plain numeric in/out
-  // accumulators remain STALE_COLOR (gray) — they read as "data"
-  // rather than "status". m_accTokenCachedIn / m_accTokenTotalIn
-  // are upgraded to brown / blue (v0.8.13+) for the
-  // non-zero-non-null rule; m_accTokenHitRate is governed by the
-  // band-based cacheHitColor helper, so the DEFAULT_COLORS entry
-  // is moot for the value but keeps the dispatcher / inline path
-  // happy.
-  m_accTokenIn: NAMED_PALETTE.stale,
-  m_accTokenOut: NAMED_PALETTE.stale,
+  // accumulators had STALE_COLOR (gray) here in v0.8.x —
+  // "data" rather than "status". v0.8.30+ moved them to
+  // brightGreen / red up top alongside their m_tokenIn /
+  // m_tokenOut siblings, so the in-flow / out-flow tint
+  // applies to the bare and inline forms. m_accTokenCachedIn
+  // / m_accTokenTotalIn are upgraded to brown / blue (v0.8.13+)
+  // for the non-zero-non-null rule; m_accTokenHitRate is
+  // governed by the band-based cacheHitColor helper, so the
+  // DEFAULT_COLORS entry is moot for the value but keeps the
+  // dispatcher / inline path happy.
   // v0.8.13+ — non-zero, non-null default tint family. Brown is
   // the cache-token hue (matches the time-format family); blue
   // is the total-input hue (sits in the input-family row).
@@ -4850,12 +4927,18 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   m_tokenIn: (params, ctx) => {
     const r = computeTickDelta(ctx, "in");
     // v1.0 — setPrevTick moved to status-store.ts:processTick Stage 3. Render is read-only.
-    return wrapPlain(r.value, params.color as string | undefined);
+    // v0.8.30+ — bare default tint (brightGreen) on positive
+    // value when no `|color|<c>` override is present. User
+    // override wins; 0 and n/a stay plain per the value-zero
+    // rule.
+    return wrapValueDefault("m_tokenIn", r.numeric, r.value, params.color as string | undefined);
   },
   m_tokenOut: (params, ctx) => {
     const r = computeTickDelta(ctx, "out");
     // v1.0 — setPrevTick moved to status-store.ts:processTick Stage 3. Render is read-only.
-    return wrapPlain(r.value, params.color as string | undefined);
+    // v0.8.30+ — bare default tint (red) on positive value; see
+    // m_tokenIn inline for the wrap contract.
+    return wrapValueDefault("m_tokenOut", r.numeric, r.value, params.color as string | undefined);
   },
   m_tokenTotal: (params, ctx) => {
     const body = inlineTokenTotalLabel(ctx);
@@ -5004,11 +5087,21 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   // pass the resolved scope through.
   m_accTokenIn: (params, ctx) => {
     const scope = passThroughOr<"session" | "project" | "model" | "ccsession">(params, ctx, "scope") ?? "ccsession";
-    return wrapPlainDefault("m_accTokenIn", accBody(ctx, "in", scope), passThroughOr<string>(params, ctx, "color"));
+    // v0.8.30+ — bare default tint (brightGreen) on positive
+    // accumulator value. `wrapValueDefault` replaces the
+    // previous `wrapPlainDefault` so the value-zero rule
+    // applies: acc:0 stays plain.
+    const v = peekAcc(scope, ctx);
+    const n = v ? v.accTokenIn : 0;
+    return wrapValueDefault("m_accTokenIn", n, accBody(ctx, "in", scope), passThroughOr<string>(params, ctx, "color"));
   },
   m_accTokenOut: (params, ctx) => {
     const scope = passThroughOr<"session" | "project" | "model" | "ccsession">(params, ctx, "scope") ?? "ccsession";
-    return wrapPlainDefault("m_accTokenOut", accBody(ctx, "out", scope), passThroughOr<string>(params, ctx, "color"));
+    // v0.8.30+ — bare default tint (red) on positive value; see
+    // m_accTokenIn for the wrap contract.
+    const v = peekAcc(scope, ctx);
+    const n = v ? v.accTokenOut : 0;
+    return wrapValueDefault("m_accTokenOut", n, accBody(ctx, "out", scope), passThroughOr<string>(params, ctx, "color"));
   },
   m_accTokenCachedIn: (params, ctx) => {
     const scope = passThroughOr<"session" | "project" | "model" | "ccsession">(params, ctx, "scope") ?? "ccsession";
@@ -5099,7 +5192,15 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (!filter) return INLINE_BADARG;
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderWithColor("m_sumTokenIn", params, ctx);
-    return wrapPlain(`${labelFor("in")}${formatCompactToken(agg.sumIn)}`, passThroughOr<string>(params, ctx, "color"));
+    // v0.8.30+ — bare default tint (brightGreen) on positive
+    // sum; user `|color|<c>` override wins; sum=0 stays plain
+    // (value-zero rule).
+    return wrapValueDefault(
+      "m_sumTokenIn",
+      agg.sumIn,
+      `${labelFor("in")}${formatCompactToken(agg.sumIn)}`,
+      passThroughOr<string>(params, ctx, "color"),
+    );
   },
   m_sumTokenOut: (params, ctx) => {
     const merged = mergePassThrough(params, ctx);
@@ -5107,7 +5208,14 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (!filter) return INLINE_BADARG;
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderWithColor("m_sumTokenOut", params, ctx);
-    return wrapPlain(`${labelFor("out")}${formatCompactToken(agg.sumOut)}`, passThroughOr<string>(params, ctx, "color"));
+    // v0.8.30+ — bare default tint (red) on positive sum; see
+    // m_sumTokenIn for the wrap contract.
+    return wrapValueDefault(
+      "m_sumTokenOut",
+      agg.sumOut,
+      `${labelFor("out")}${formatCompactToken(agg.sumOut)}`,
+      passThroughOr<string>(params, ctx, "color"),
+    );
   },
   m_sumTokenCachedIn: (params, ctx) => {
     const merged = mergePassThrough(params, ctx);
@@ -5464,7 +5572,11 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   m_tokenInTotal: (params, ctx) => {
     const t = ctx.tokens;
     if (!t || t.totals.tokenTotalIn == null) return placeholderWithColor("m_tokenInTotal", params, ctx);
-    return wrapPlain(
+    // v0.8.30+ — bare default tint (brightGreen) on positive
+    // value; user `|color|<c>` override wins; 0 stays plain.
+    return wrapValueDefault(
+      "m_tokenInTotal",
+      t.totals.tokenTotalIn,
       `${labelFor("in")}${formatCompactToken(t.totals.tokenTotalIn)}`,
       params.color as string | undefined,
     );
@@ -5472,7 +5584,11 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   m_tokenTotalOut: (params, ctx) => {
     const t = ctx.tokens;
     if (!t || t.totals.tokenTotalOut == null) return placeholderWithColor("m_tokenTotalOut", params, ctx);
-    return wrapPlain(
+    // v0.8.30+ — bare default tint (red) on positive value; see
+    // m_tokenInTotal inline for the wrap contract.
+    return wrapValueDefault(
+      "m_tokenTotalOut",
+      t.totals.tokenTotalOut,
       `${labelFor("out")}${formatCompactToken(t.totals.tokenTotalOut)}`,
       params.color as string | undefined,
     );

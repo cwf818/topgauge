@@ -1519,10 +1519,14 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
     assert.equal(line, "\x1b[38;5;41min:1.5k\x1b[0m", `got: ${JSON.stringify(line)}`);
   });
 
-  it("bare m_tokenIn stays plain (byte-for-byte identical)", () => {
+  it("bare m_tokenIn picks up the brightGreen default (v0.8.30+)", () => {
     // v0.4.0+ delta semantics: seed prev so the delta has a value
     // and totalApiDurationMs so the gate (delta_api > 0) fires.
-    // The bare form keeps the chunk uncolored.
+    // v0.8.30+ — bare form gets the brightGreen SGR (the same
+    // color as the 0% band of the 5-band threshold palette, so
+    // a user override on colors.brightGreen flows through
+    // automatically). The chunk still respects the value-zero
+    // rule: positive value only.
     __resetForTest({
       statuslineTemplate:["m_tokenIn"],
     });
@@ -1542,7 +1546,7 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
       ageMs: null, stale: false, version: "",
       tokens: snap,
     });
-    assert.equal(line, "in:1.5k", `got: ${JSON.stringify(line)}`);
+    assert.equal(line, "\x1b[38;5;41min:1.5k\x1b[0m", `got: ${JSON.stringify(line)}`);
   });
 
   it("m_contextSize|color|orange wraps the 'size|N' chunk in orange", () => {
@@ -1624,6 +1628,120 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
     );
     assert.equal(line, "", `got: ${JSON.stringify(line)}`);
     assert.equal(warns.filter((w) => w.includes("unknown lineTemplate module")).length, 1);
+  });
+});
+
+describe("lineTemplate — m_*tokenIn/m_*tokenOut default tints (v0.8.30+)", () => {
+  beforeEach(() => __resetUnknownModuleWarnForTest());
+  afterEach(() => __resetForTest());
+
+  function makeSnap(overrides: Partial<{
+    cwd: string;
+    sessionId: string;
+    tokenTotalIn: number;
+    tokenTotalOut: number;
+    currentIn: number;
+    currentOut: number;
+    totalApiMs: number;
+  }> = {}): {
+    cwd: string;
+    sessionId: string;
+    totals: { tokenTotalIn: number; tokenTotalOut: number };
+    current: { tokenIn: number; tokenOut: number; tokenCacheCreation: number; tokenCachedIn: number };
+    cost: { totalDurationMs: number; totalApiDurationMs: number; totalLinesAdded: null; totalLinesRemoved: null };
+  } {
+    return {
+      cwd: overrides.cwd ?? "C:\\fake",
+      sessionId: overrides.sessionId ?? "sess-default-tint",
+      totals: {
+        tokenTotalIn: overrides.tokenTotalIn ?? 1500,
+        tokenTotalOut: overrides.tokenTotalOut ?? 100,
+      },
+      current: {
+        tokenIn: overrides.currentIn ?? 1500,
+        tokenOut: overrides.currentOut ?? 100,
+        tokenCacheCreation: 0,
+        tokenCachedIn: 0,
+      },
+      cost: {
+        totalDurationMs: 1_000,
+        totalApiDurationMs: overrides.totalApiMs ?? 1_000,
+        totalLinesAdded: null,
+        totalLinesRemoved: null,
+      },
+    };
+  }
+
+  it("bare m_tokenOut picks up the red default on a positive delta", () => {
+    // v0.8.30+ — mirror of the m_tokenIn test above; the out-flow
+    // gets red (\x1b[38;5;196m, same as the ≥80% threshold band).
+    __resetForTest({ statuslineTemplate: ["m_tokenOut"] });
+    const snap = makeSnap();
+    beginTickForTest(snap.cwd, snap);
+    processTick(snap.cwd, snap);
+    statusStore.commit();
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      shortInterval: null, midInterval: null, balance: null,
+      ageMs: null, stale: false, version: "",
+      tokens: snap,
+    });
+    assert.equal(line, "\x1b[38;5;196mout:100\x1b[0m", `got: ${JSON.stringify(line)}`);
+  });
+
+  it("bare m_tokenIn with no sessionId renders the n/a placeholder plain (value-zero rule)", () => {
+    // v0.8.30+ — placeholder path (no stdin at all → "in:n/a").
+    // The value-zero rule says placeholders stay plain, so the
+    // default tint does NOT fire.
+    __resetForTest({ statuslineTemplate: ["m_tokenIn"] });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      shortInterval: null, midInterval: null, balance: null,
+      ageMs: null, stale: false, version: "",
+      tokens: null,
+    });
+    assert.equal(line, "in:n/a", `got: ${JSON.stringify(line)}`);
+  });
+
+  it("inline m_tokenIn|color|yellow wins over the brightGreen default", () => {
+    // v0.8.30+ — user `|color|<c>` override still takes precedence
+    // over the new bare default (wrapValueDefault honors the
+    // paramsColor argument first).
+    __resetForTest({ statuslineTemplate: ["m_tokenIn|color|yellow"] });
+    const snap = makeSnap();
+    beginTickForTest(snap.cwd, snap);
+    processTick(snap.cwd, snap);
+    statusStore.commit();
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      shortInterval: null, midInterval: null, balance: null,
+      ageMs: null, stale: false, version: "",
+      tokens: snap,
+    });
+    assert.equal(line, "\x1b[38;5;220min:1.5k\x1b[0m", `got: ${JSON.stringify(line)}`);
+  });
+
+  it("bare m_tokenInSpeed keeps its 5-band scale color (unchanged in v0.8.30+)", () => {
+    // v0.8.30+ — speed modules are EXPLICITLY out of scope; they
+    // still derive their color from the 5-band speedScaleColor
+    // helper. This test guards against accidental scope creep.
+    __resetForTest({ statuslineTemplate: ["m_tokenInSpeed"] });
+    const snap = makeSnap();
+    beginTickForTest(snap.cwd, snap);
+    processTick(snap.cwd, snap);
+    statusStore.commit();
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      shortInterval: null, midInterval: null, balance: null,
+      ageMs: null, stale: false, version: "",
+      tokens: snap,
+    });
+    // The speed modules emit a colored "<prefix>N.N t/s" body. We
+    // just assert the result is non-empty and starts with an SGR
+    // (i.e. the 5-band scale fired). Exact color is governed by
+    // speedScaleColor; we don't pin it here.
+    assert.ok(line.length > 0, `got: ${JSON.stringify(line)}`);
+    assert.ok(line.startsWith("\x1b["), `expected SGR prefix, got: ${JSON.stringify(line)}`);
   });
 });
 
