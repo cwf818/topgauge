@@ -817,6 +817,204 @@ export function readAllSamples(sinceMs: number): TokenSample[] {
   return out;
 }
 
+// ----- v0.8.29 — cold-slot JSONL replay ----------------------------------------
+//
+// When state.json is missing (fresh install, after `:clean --purge-runtime`,
+// accidental deletion), setAvg's first valid write seeded each tickStatus
+// slot from the CURRENT tick's delta only — historical JSONL was discarded.
+// The user saw a misleading `acc:0` followed by a one-tick blip instead of
+// the cumulative number they expected.
+//
+// This block mirrors the m_sum* pattern (readAllSamples / cache.stat.json
+// TTL) for the three persistent m_acc* scopes (session / project / model).
+// ccsession is intentionally NOT replayed — it tracks one claude-code
+// process invocation, so historical JSONL is semantically unrelated. The
+// regression-reset mark at Stage 1 is the only legitimate ccsession zero.
+//
+// Replay runs in processTick Stage 0 — BEFORE setAvg mutates the slot. The
+// recovered aggregate is mark()'ed into _tickState.pending, so:
+//   - on valid ticks, setAvg additively merges this tick's delta on top
+//     of the recovered base (single commit per tick preserved)
+//   - on invalid ticks, the recovered base is flushed standalone (no
+//     delta; we don't pollute history with a bad row)
+//   - render sees the recovered value via the existing pending read path
+//     (no firstWriteKeys side-channel needed)
+
+function replayAccKey(
+  scope: "session" | "project" | "model",
+  args: {
+    sessionId?: string | null;
+    cwd?: string | null;
+    modelDisplayName?: string | null;
+  },
+): string | null {
+  if (scope === "session") {
+    if (!args.sessionId) return null;
+    return `tickStatus:${args.sessionId}`;
+  }
+  if (scope === "project") {
+    if (!args.cwd) return null;
+    return `tickStatus:${projectHash(args.cwd)}`;
+  }
+  // scope === "model"
+  if (!args.modelDisplayName) return null;
+  return `tickStatus:${args.modelDisplayName}`;
+}
+
+// v0.8.29 — read-once per-scope helper. Walks the JSONL stream scoped
+// to one slot:
+//   session  → state/<projectHash>/<sessionId>.jsonl (one file)
+//   project  → every *.jsonl under state/<projectHash>/ (cross-session)
+//   model    → every *.jsonl under state/<projectHash>/ filtered by
+//              sample.model === args.modelDisplayName
+// sinceMs=0 → no time cutoff; replay reads the full history.
+function readReplaySamples(
+  scope: "session" | "project" | "model",
+  args: {
+    sessionId?: string | null;
+    cwd?: string | null;
+    modelDisplayName?: string | null;
+  },
+): TokenSample[] {
+  if (scope === "session") {
+    if (!args.sessionId || !args.cwd) return [];
+    return readSamples(args.cwd, args.sessionId, 0);
+  }
+  // project / model — read per-project to honor the project-scope
+  // boundary (TokenSample doesn't carry projectHash; reading from
+  // readAllSamples would conflate with other projects under the same
+  // state root on a multi-project machine).
+  if (!args.cwd) return [];
+  const all = readProjectSamples(args.cwd, 0);
+  if (scope === "project") return all;
+  // scope === "model"
+  if (!args.modelDisplayName) return [];
+  return all.filter((s) => s.model === args.modelDisplayName);
+}
+
+// readProjectSamples — mirrors readAllSamples' inner walk, but only
+// visits the one projectHash subdir matching cwd. Same coerceSampleRow
+// filter, same mtime cutoff semantics.
+function readProjectSamples(cwd: string, sinceMs: number): TokenSample[] {
+  const dir = join(stateRoot(), projectHash(cwd));
+  logFsList(dir, "status-store.readProjectSamples");
+  const out: TokenSample[] = [];
+  let files: string[];
+  try {
+    files = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  for (const f of files) {
+    if (!f.endsWith(".jsonl")) continue;
+    const path = join(dir, f);
+    if (sinceMs > 0) {
+      logFsStat(path, "status-store.readProjectSamples");
+      let fst;
+      try {
+        fst = statSync(path);
+      } catch {
+        continue;
+      }
+      if (fst.mtimeMs < sinceMs) continue;
+    }
+    logFsRead(path, "status-store.readProjectSamples");
+    let raw: string;
+    try {
+      raw = readFileSync(path, "utf8");
+    } catch {
+      continue;
+    }
+    for (const line of raw.split("\n")) {
+      if (!line) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!parsed || typeof parsed !== "object") continue;
+      const sample = coerceSampleRow(parsed as Record<string, unknown>, sinceMs);
+      if (!sample) continue;
+      out.push(sample);
+    }
+  }
+  return out;
+}
+
+// v0.8.29 — cold-slot replay. Returns a TickStatusValue ready to
+// mark() into pending, or null when:
+//   - slot already has a startAt (warm — replay is a no-op, the
+//     user's confirmed value is preserved)
+//   - JSONL has zero matching rows (no history to recover; the
+//     current tick's setAvg will populate from this tick's delta)
+//   - missing sessionId / cwd / modelDisplayName (no slot to recover)
+// ccsession is intentionally NOT handled here — see REPLAY_SCOPES at
+// the call site (processTick Stage 0).
+export function replayAccInit(
+  scope: "session" | "project" | "model",
+  args: {
+    sessionId?: string | null;
+    cwd?: string | null;
+    modelDisplayName?: string | null;
+  },
+): TickStatusValue | null {
+  const key = replayAccKey(scope, args);
+  if (!key) return null;
+  // Short-circuit on warm slot — preserves the user's confirmed
+  // value. Reads via activeStoreFor so a same-tick in-memory
+  // pending entry is preferred over the on-disk file (avoids
+  // a "warmed earlier in this tick, cold again now" race).
+  const existing = readTickStatus(args.cwd, key);
+  if (existing && existing.startAt != null) return null;
+
+  const samples = readReplaySamples(scope, args);
+  if (samples.length === 0) return null;
+
+  // Aggregate the same fields setAvg writes. Mirrors aggregateSamples
+  // but mapped to TickStatusValue field names. Note: accTokenTotalIn
+  // here is the PER-TICK-DELTA accumulator (sum of per-row
+  // totalIn-deltas), matching aggregateSamples' sumTotalIn ==
+  // sumIn + sumCached semantics.
+  let accTokenIn = 0;
+  let accTokenOut = 0;
+  let accTokenCachedIn = 0;
+  let accTokenTotalIn = 0;
+  let accApiMs = 0;
+  let accApiCalls = 0;
+  let firstAt = Number.POSITIVE_INFINITY;
+  for (const s of samples) {
+    accTokenIn += s.in;
+    accTokenOut += s.out;
+    accTokenCachedIn += s.cacheIn;
+    accTokenTotalIn += s.in + s.cacheIn;
+    accApiMs += s.apiMs ?? 0;
+    if ((s.apiMs ?? 0) > 0) accApiCalls += 1;
+    // startAt precedence: explicit row.startAt > row.at > skip.
+    // The > 0 gate filters legacy "0" sentinels and the
+    // POSITIVE_INFINITY default; the min roll-up matches the
+    // existing aggregateSamples firstAt semantics.
+    const candidate = (s.startAt != null && Number.isFinite(s.startAt) && s.startAt > 0)
+      ? s.startAt
+      : (Number.isFinite(s.at) && s.at > 0 ? s.at : null);
+    if (candidate != null && candidate < firstAt) firstAt = candidate;
+  }
+  if (!Number.isFinite(firstAt)) firstAt = Date.now();
+
+  return {
+    accTokenIn,
+    accTokenOut,
+    accTokenCachedIn,
+    accTokenTotalIn,
+    accApiMs,
+    accApiCalls,
+    accTokenHitRate: accTokenTotalIn > 0
+      ? (accTokenCachedIn / accTokenTotalIn) * 100
+      : 0,
+    startAt: firstAt,
+  };
+}
+
 // ----- Stat cache ownership ----------------------------------------------------
 
 const _statCacheStore = new Map<string, StatCacheEntry<unknown>>();
@@ -1689,6 +1887,56 @@ export function processTick(
   s.snapshot = snapshot;
   s.valid = validateNormalizedTick(snapshot);
   s.measurement = measurement;
+
+  // v0.8.29 — Stage 0: cold-slot JSONL replay. For each
+  // tickStatus:<dim> slot that has no startAt on disk (state.json
+  // was wiped / never existed), scan the JSONL history and
+  // re-populate the slot with the recovered aggregate BEFORE
+  // setAvg mutates it. The subsequent setAvg will additively
+  // merge this tick's delta on top of the recovered base, and
+  // commit() flushes everything in a single full-file rewrite
+  // (v1.0 invariant preserved).
+  //
+  // ccsession is intentionally excluded — it tracks one claude-code
+  // process invocation, so historical JSONL is semantically
+  // unrelated. The regression-reset mark at Stage 1 is the only
+  // legitimate ccsession zero.
+  //
+  // Replay runs even when s.valid is false (invalid tick —
+  // cwd + sessionId are still known). The recovered aggregate
+  // is the historical truth; the invalid tick's delta is dropped
+  // because setAvg is gated on s.valid. If commit() later
+  // flushes the slot without this tick's delta, that's the
+  // correct outcome — we preserved the historical aggregate
+  // without polluting it with a bad row.
+  const REPLAY_SCOPES = ["session", "project", "model"] as const;
+  if (cwd && tokens?.sessionId) {
+    const replayArgs = {
+      sessionId: tokens.sessionId,
+      cwd,
+      modelDisplayName: tokens.modelDisplayName ?? null,
+    };
+    for (const scope of REPLAY_SCOPES) {
+      const key = replayAccKey(scope, replayArgs);
+      if (!key) continue;
+      const existing = readTickStatus(cwd, key);
+      if (existing && existing.startAt != null) continue;
+      const replay = replayAccInit(scope, replayArgs);
+      if (replay) {
+        mark(key, replay);
+        if (process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE === "1") {
+          appendDiag(
+            "info",
+            "replay-acc-init",
+            `scope=${scope} accTokenIn=${replay.accTokenIn} accTokenOut=${replay.accTokenOut} accTokenCachedIn=${replay.accTokenCachedIn} accTokenTotalIn=${replay.accTokenTotalIn} accApiMs=${replay.accApiMs} accApiCalls=${replay.accApiCalls} startAt=${replay.startAt}`,
+            Date.now(),
+            cwd,
+            "status-store.replayAccInit",
+          );
+        }
+      }
+    }
+  }
 
   // v0.8.10-alpha.2 — regression-reset (ccsession slot zero) and
   // prev-tick baseline update fire BEFORE the validity guard, so

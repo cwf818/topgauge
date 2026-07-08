@@ -1,5 +1,68 @@
 # Changelog
 
+## v0.8.29
+
+### Added
+
+- `m_acc*` modules now reconstruct cold slots from the JSONL
+  sample stream. Previously, when `state.json` was missing
+  (fresh install, after `:clean --purge-runtime`, accidental
+  deletion), the first valid tick's `setAvg` seeded the
+  `tickStatus:<dim>` slot from the current tick's delta only —
+  historical JSONL data was discarded and the user saw a
+  misleading `acc:0` followed by a one-tick blip. The new
+  Stage 0 cold-slot replay runs BEFORE `setAvg` mutates the
+  slot, marks the recovered aggregate into `_tickState.pending`,
+  and lets the existing `commit()` flush everything in a single
+  full-file rewrite (v1.0 one-write-per-tick invariant preserved).
+
+### Behavior
+
+- Three of the four `m_acc*` scopes participate: `session` /
+  `project` / `model`. `ccsession` is intentionally excluded
+  — it tracks one claude-code process invocation, so historical
+  JSONL is semantically unrelated and replaying would mask
+  process restarts. The regression-reset mark at Stage 1
+  remains the only legitimate `ccsession` zero.
+- The recovered aggregate is `mark()`-ed into `pending` so
+  `setAvg` additively merges the current tick's delta on top
+  of the recovered base. On invalid ticks (cwd+sessionId
+  known but apiMs<=0), the recovered base is flushed standalone
+  via `commit()` without this tick's delta — the historical
+  truth is preserved without pollution from a bad row.
+- `startAt` on the replayed slot is `min(row.startAt || row.at)`
+  across matching rows. All-null / all-zero / empty JSONL →
+  the natural cold-start `Date.now()` stamp from `setAvg`'s
+  first-write branch fires instead. Mixed → `min(finite>0)`.
+- Diagnostics: when `TOPGAUGE_CC_DIAGNOSTICS_ENABLE=1`, a
+  `replay-acc-init` row is appended to
+  `state/<projectHash>/diagnostics.jsonl` per cold-slot
+  replay (scope + aggregated counts + startAt). Default off
+  → no row.
+- Warm slots (where `startAt != null`) short-circuit the
+  replay before any JSONL read, so a confirmed value is
+  preserved across the wipe-and-rebuild boundary.
+
+### Files
+
+- `src/status-store.ts` — new `replayAccKey` (scope-to-slot
+  key resolver), `replayAccInit` (the cold-slot JSONL replay
+  helper, returns a `TickStatusValue` ready to `mark()`),
+  `readReplaySamples` (per-scope I/O dispatcher), and
+  `readProjectSamples` (mirrors `readAllSamples` but only
+  walks one `projectHash` subdir — `TokenSample` doesn't
+  carry `projectHash`, so the project-scope boundary is
+  enforced at the I/O level). New Stage 0 in `processTick`
+  (after the `normalizeTick` snapshot is set, before the
+  existing Stage 1 regression-reset).
+- `src/status-store.replay.test.ts` — NEW. 13 tests covering
+  the cold-slot replay matrix: cold session / project /
+  model replay, warm-slot short-circuit, empty JSONL fall-
+  through, ccsession exclusion, invalid tick gate, regression
+  tick interaction, startAt edge cases (all-null / all-zero
+  / mixed), and diagnostics env-gate.
+- `CHANGELOG.md` — this entry.
+
 ## v0.8.27
 
 ### Added
