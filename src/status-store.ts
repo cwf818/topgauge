@@ -54,9 +54,15 @@ export type TickStatusValue = {
   //   accTokenHitRate = accTokenCachedIn / accTokenTotalIn * 100
   // Zero denominator (no totalIn accumulated this slot) → 0.
   accTokenHitRate: number;
+  // v0.8.24+ — wall-clock instant this slot received its first
+  // valid write (Unix ms). Stamped by setAvg / bumpDeltaScope
+  // on first write (when readTickStatus returns null OR
+  // startAt is null). Refreshed by the ccsession regression-
+  // reset mark so a cc process restart re-opens the window.
+  // `null` = "no writes yet" → m_accStartTime renders the
+  // "start:n/a" placeholder.
+  startAt?: number | null;
 };
-
-// v0.8.10-alpha.2 — PrevTickStatusValue is the "prev-snapshot" cursor:
 // the ONLY field the next tick subtracts against is `totalApiMs`
 // (apiMs = current.totalApiMs - prev.totalApiMs). All other per-turn
 // fields live on `TokenSnapshot` as snapshot fields and are read
@@ -132,6 +138,10 @@ export type AvgSnapshot = {
   // v0.8.10-alpha.3 — mirror of TickStatusValue.accTokenHitRate,
   // pre-computed by the data-processor.
   accTokenHitRate: number;
+  // v0.8.24+ — propagated from TickStatusValue.startAt. The
+  // renderer reads it through peekAcc / readAccumulator and
+  // formats via formatAbsTime.
+  startAt?: number | null;
 };
 
 // v0.8.10-alpha.2 — internal per-tick snapshot for the data-processor.
@@ -200,6 +210,10 @@ export type StatAggregate = {
   rows: number;
   calls: number;
   lastAt: number;
+  // v0.8.24+ — min(s.startAt) across the filtered rows. 0 when
+  // no row carries a valid startAt (legacy / missing). Drives
+  // m_sumStartTime's "earliest session start" rendering.
+  firstAt: number;
   generatedAt: number;
 };
 
@@ -408,6 +422,11 @@ function parseStore(raw: string): Store {
           accApiCalls: typeof v.accApiCalls === "number" ? v.accApiCalls
             : typeof v.accApiCount === "number" ? v.accApiCount : 0,
           accTokenHitRate,
+          // v0.8.24+ — backfill. Legacy rows (pre-v0.8.24)
+          // read as null → m_accStartTime shows "start:n/a"
+          // placeholder until the next valid tick stamps
+          // Date.now() via setAvg / bumpDeltaScope.
+          startAt: typeof v.startAt === "number" ? v.startAt : null,
         },
       };
     }
@@ -481,6 +500,12 @@ export function emptyTickStatus(): TickStatusValue {
     accApiMs: 0,
     accApiCalls: 0,
     accTokenHitRate: 0,
+    // v0.8.24+ — "no writes yet" sentinel. setAvg /
+    // bumpDeltaScope stamp Date.now() on the first valid
+    // write; the ccsession regression-reset mark also
+    // refreshes this to Date.now() so a process restart
+    // re-opens the window.
+    startAt: null,
   };
 }
 
@@ -602,6 +627,17 @@ export function writePrevTickStatus(
 }
 
 export const LAST_ACTIVE_TTL_MS = 60_000;
+// v0.8.24 — sanity ceiling on the per-tick apiMs sample
+// (validateNormalizedTick, below). Rejects apiMs values at or
+// above this bound so a single pathological stdin reading
+// (clock skew, provider bug, stale baseline) cannot pollute
+// the JSONL sample stream / the per-session accApiMs sum.
+// NOT a fetch timeout — the real fetch timeout is config-driven
+// (configStore.get().fetchTimeoutMs) and applied in src/index.ts
+// via AbortSignal.timeout(). Set to 5min — well above any
+// realistic per-tick API call (typically <60s) but below the
+// 10min "pathological" marker. Pin in tick-state.test.ts.
+export const MAX_SAMPLE_API_MS = 300_000;
 
 export function readLastActive(
   cwd: string | null | undefined,
@@ -675,6 +711,12 @@ function coerceSampleRow(r: Record<string, unknown>, sinceMs: number): TokenSamp
         : typeof r.prevApiMs === "number"
           ? r.prevApiMs
           : undefined,
+    // v0.8.24+ — backfill. Legacy rows (pre-v0.8.24) read as
+    // null; aggregateSamples' Number.isFinite gate filters
+    // them out of the firstAt roll-up so a single legacy
+    // file can't drag the min down to 0.
+    startAt: typeof r.startAt === "number" ? r.startAt : null,
+    lastAt: typeof r.lastAt === "number" ? r.lastAt : null,
   };
 }
 
@@ -906,6 +948,12 @@ function aggregateSamples(samples: TokenSample[]): StatAggregate {
   let sumCached = 0;
   let sumApiMs = 0;
   let lastAt = 0;
+  // v0.8.24+ — min(s.startAt) over filtered rows. The min
+  // defaults to +Infinity and falls back to 0 if no row
+  // carries a valid startAt (legacy file / all-null). The
+  // m_sumStartTime renderer treats firstAt <= 0 as
+  // placeholder.
+  let firstAt = Number.POSITIVE_INFINITY;
   let calls = 0;
   for (const s of samples) {
     sumIn += s.in;
@@ -914,7 +962,16 @@ function aggregateSamples(samples: TokenSample[]): StatAggregate {
     sumApiMs += s.apiMs ?? 0;
     if ((s.apiMs ?? 0) > 0) calls += 1;
     if (s.at > lastAt) lastAt = s.at;
+    if (
+      s.startAt != null &&
+      Number.isFinite(s.startAt) &&
+      s.startAt > 0 &&
+      s.startAt < firstAt
+    ) {
+      firstAt = s.startAt;
+    }
   }
+  if (!Number.isFinite(firstAt)) firstAt = 0;
   return {
     sumIn,
     sumOut,
@@ -924,6 +981,7 @@ function aggregateSamples(samples: TokenSample[]): StatAggregate {
     rows: samples.length,
     calls,
     lastAt,
+    firstAt,
     generatedAt: Date.now(),
   };
 }
@@ -1044,6 +1102,59 @@ function applyContextUsedPercentCarryOver(
 // regression detection that also requires identity would miss the
 // common "I ran a different cc command" restart case.
 const COLD_START_THRESHOLD_MS = 120_000;
+
+// v0.8.24+ — read-once-per-tick helper. Returns the
+// wall-clock instant of the first tick for the current
+// session, which becomes the row-level `startAt` for every
+// JSONL sample we write. For a fresh session (no JSONL file
+// yet, or empty / unreadable), returns Date.now() — this row
+// IS the first tick, so its own startAt === its own at.
+//
+// Reads the JSONL head line (oldest tick — JSONL appends to
+// the END, so the first tick is at the TOP). The first line
+// is the smallest one; subsequent reads of the same file
+// (this is per-tick, so every tick after the first hits the
+// same page-cached line) are amortized to ~µs.
+//
+// Why not an in-memory sticky: the statusline runs as a
+// per-tick child process (see diagnostics.ts:148-152), so an
+// in-memory sticky dies between ticks. The first tick of
+// every cc restart would compute a fresh "first tick"
+// (wrong semantic — the session hasn't restarted, only the
+// cc process has). Reading from disk gives the correct
+// per-session persistence with one cheap read per tick.
+function resolveFirstTickAt(cwd: string, sessionId: string): number {
+  const path = sampleFilePath(cwd, sessionId);
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    return Date.now();
+  }
+  const nl = raw.indexOf("\n");
+  const firstLine = nl === -1 ? raw : raw.slice(0, nl);
+  if (!firstLine) return Date.now();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(firstLine);
+  } catch {
+    return Date.now();
+  }
+  if (!parsed || typeof parsed !== "object") return Date.now();
+  const row = parsed as Record<string, unknown>;
+  // Prefer the explicit startAt field. Fall back to the row's
+  // own `at` for legacy rows written before this field existed
+  // — the row's own at IS the first-tick instant for that
+  // file, and the same file is read on every subsequent tick
+  // so the roll-up is stable.
+  if (typeof row.startAt === "number" && Number.isFinite(row.startAt) && row.startAt > 0) {
+    return row.startAt;
+  }
+  if (typeof row.at === "number" && Number.isFinite(row.at) && row.at > 0) {
+    return row.at;
+  }
+  return Date.now();
+}
 
 function detectRegression(
   tokens: TokenSnapshot | null,
@@ -1179,7 +1290,13 @@ function normalizeTick(
 function validateNormalizedTick(tick: CurrentTick | null): boolean {
   if (!tick) return false;
   // v0.8.10-alpha.2 — session-cumulative totals (per user contract).
-  return (tick.totalIn ?? 0) > 0 && (tick.totalOut ?? 0) > 0 && tick.apiMs > 0;
+  // v0.8.24 — MAX_SAMPLE_API_MS sanity ceiling (inclusive: a tick
+  // with apiMs <= 5min is accepted; anything above is rejected so
+  // a clock-skew / provider-bug reading cannot pollute the JSONL
+  // sample stream or the per-session accApiMs sum). The 5min cap
+  // is well above any realistic per-tick API call (typically <60s)
+  // but below the "10min pathological" marker.
+  return (tick.totalIn ?? 0) > 0 && (tick.totalOut ?? 0) > 0 && tick.apiMs > 0 && tick.apiMs <= MAX_SAMPLE_API_MS;
 }
 
 export function beginTick(cwd: string | null, tokens: TokenSnapshot | null): TickState {
@@ -1305,6 +1422,8 @@ export function peekAvg(
     accApiCalls: v.accApiCalls,
     accTokenTotalIn: v.accTokenTotalIn,
     accTokenHitRate: v.accTokenHitRate,
+    // v0.8.24+ — propagated from TickStatusValue.startAt.
+    startAt: v.startAt ?? null,
   };
 }
 
@@ -1339,6 +1458,8 @@ export function readAccumulator(
     accApiCalls: v.accApiCalls,
     accTokenTotalIn: v.accTokenTotalIn,
     accTokenHitRate: v.accTokenHitRate,
+    // v0.8.24+ — propagated from TickStatusValue.startAt.
+    startAt: v.startAt ?? null,
   };
 }
 
@@ -1467,6 +1588,15 @@ export function setAvg(
   const sessionKey = `tickStatus:${sessionId}`;
   const sessionCurrent = readTickStatus(cwd, sessionKey) ?? emptyTickStatus();
   const sessionNext: TickStatusValue = { ...sessionCurrent };
+  // v0.8.24+ — first-write stamp. Stamps Date.now() on the very
+  // first write to a session slot (when startAt is null), then
+  // preserves the original value across subsequent writes. The
+  // session slot only ever has a "first write" moment — there is
+  // no regression-reset path here (session identity is bound to
+  // sessionId, which doesn't roll over).
+  if (sessionNext.startAt == null) {
+    sessionNext.startAt = Date.now();
+  }
   // v0.8.10-alpha.2 (per user refinement 2026-07-04) —
   // `accTokenTotalIn` is an ACCUMULATE-ADDITIVE accumulator
   // following the same shape as accTokenIn / accTokenOut /
@@ -1499,6 +1629,18 @@ export function setAvg(
   const bumpDeltaScope = (key: string) => {
     const current = readTickStatus(cwd, key) ?? emptyTickStatus();
     const next: TickStatusValue = { ...current };
+    // v0.8.24+ — same first-write stamp rule as the session
+    // slot. For project/model/ccsession, the "first write"
+    // branch fires on:
+    //   - project: the first tick in this projectHash (no
+    //     prior history)
+    //   - ccsession: the first tick in this cc process AND
+    //     every tick after a regression-reset (which zeros
+    //     startAt via emptyTickStatus)
+    //   - model: the first tick for this modelDisplayName
+    if (next.startAt == null) {
+      next.startAt = Date.now();
+    }
     next.accTokenIn += deltaTokenIn;
     next.accTokenOut += deltaTokenOut;
     next.accTokenCachedIn += deltaTokenCachedIn;
@@ -1564,7 +1706,16 @@ export function processTick(
     );
   }
   if (snapshot?.invalidRegression) {
-    mark(CCSESSION_KEY, emptyTickStatus());
+    // v0.8.24+ — ccsession regression-reset also refreshes
+    // startAt to Date.now() so m_accStartTime reads the
+    // post-reset "process clock start" instant on the very
+    // first frame, not "n/a" → next-tick. emptyTickStatus()
+    // sets startAt: null; we explicitly stamp Date.now() here
+    // so the ccsession slot is in a "ready to render" state
+    // the moment the reset fires.
+    const reset = emptyTickStatus();
+    reset.startAt = Date.now();
+    mark(CCSESSION_KEY, reset);
   }
 
   if (!s.valid || !snapshot || !tokens?.sessionId) {
@@ -1661,6 +1812,16 @@ export function processTick(
           totalApiMs: snapshot.totalApiMs,
           apiMs: snapshot.apiMs,
           prevApiMs: snapshot.prevTotalApiMs,
+          // v0.8.24+ — per-row time anchors. startAt is the
+          // per-session first-tick instant (read-once-per-tick
+          // from the JSONL head line via resolveFirstTickAt);
+          // lastAt mirrors the current row's at so the
+          // m_sumStartTime / m_sumEndTime aggregations are
+          // self-describing without re-deriving from at.
+          startAt: cwd && tokens.sessionId
+            ? resolveFirstTickAt(cwd, tokens.sessionId)
+            : Date.now(),
+          lastAt: Date.now(),
         }
       : null;
 }

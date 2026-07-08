@@ -109,7 +109,8 @@ type LabelAxis =
   | "inSpeed" | "outSpeed" | "apiMs" | "apiCalls"
   | "memUsage"
   | "hitRate"   // v0.8.22+ — lifted out of hardcoded literal
-  | "contextSize" | "contextWindowsSize" | "contextUsedPercent" | "contextRemainingPercent"; // v0.8.23+
+  | "contextSize" | "contextWindowsSize" | "contextUsedPercent" | "contextRemainingPercent" // v0.8.23+
+  | "startTime" | "endTime"; // v0.8.24+ — start/end of the tick statistics window
 function labelFor(axis: LabelAxis): string {
   const labels = cfg().labels;
   switch (axis) {
@@ -129,6 +130,12 @@ function labelFor(axis: LabelAxis): string {
     case "contextWindowsSize": return labels.labelContextWindowsSize;
     case "contextUsedPercent": return labels.labelContextUsedPercent;
     case "contextRemainingPercent": return labels.labelContextRemainingPercent;
+    // v0.8.24+ — start/end of the tick statistics window.
+    // m_accStartTime / m_sumStartTime use labelStartTime;
+    // m_sumEndTime uses labelEndTime. Defaults "start:" / "end:"
+    // (per config.ts:DEFAULT_CONFIG.labels).
+    case "startTime": return labels.labelStartTime;
+    case "endTime": return labels.labelEndTime;
   }
 }
 
@@ -145,6 +152,26 @@ export function formatMemBytes(bytes: number | null): string {
   if (bytes >= MB) return `${(bytes / MB).toFixed(0)}M`;
   if (bytes >= KB) return `${(bytes / KB).toFixed(0)}K`;
   return `${bytes}B`;
+}
+
+// v0.8.24+ — format a Unix-ms timestamp as `HH:MM:SS` local
+// time. Used by m_accStartTime / m_sumStartTime / m_sumEndTime
+// to render the start/end of the tick statistics window. The
+// sv-SE locale is the documented "give me an ISO8601-shaped
+// local time" idiom (same as diagnostics.ts:localIso) — it
+// produces a 24-hour clock, no AM/PM, no leading-zero drop, no
+// locale-dependent surprise formatting.
+//
+// Returns "n/a" on null / non-finite / non-positive inputs so
+// call sites can simply template-literal concat.
+export function formatAbsTime(epochMs: number | null | undefined): string {
+  if (epochMs == null || !Number.isFinite(epochMs) || epochMs <= 0) return "n/a";
+  return new Date(epochMs).toLocaleTimeString("sv-SE", {
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 }
 
 // v0.8.17+ — sample system memory. Darwin shells out to `vm_stat`
@@ -1502,7 +1529,7 @@ function accBody(
 // the call site is self-documenting and a future tweak that
 // distinguishes scopes (e.g. "acc(total):n/a") has a hook.
 function placeholderAcc(
-  field: "in" | "out" | "cached" | "total" | "apiMs" | "apiCalls" | "hitRate",
+  field: "in" | "out" | "cached" | "total" | "apiMs" | "apiCalls" | "hitRate" | "startTime",
   _scope: "session" | "project" | "model" | "ccsession",
 ): string {
   // v0.8.0+ labels.* — the four token-axis fields read their
@@ -1516,6 +1543,8 @@ function placeholderAcc(
   // (labels.labelTokenHitRate, default "hit:"), so users can
   // override the per-turn / acc / sum hit-rate prefix as a single
   // knob instead of the v0.8.x hardcoded literal.
+  // v0.8.24+ — startTime joined for m_accStartTime. The
+  // "start:n/a" placeholder mirrors the in/out/apiMs shape.
   let prefix: string;
   switch (field) {
     case "in": prefix = labelFor("in"); break;
@@ -1525,6 +1554,7 @@ function placeholderAcc(
     case "apiMs": prefix = labelFor("apiMs"); break;
     case "apiCalls": prefix = labelFor("apiCalls"); break;
     case "hitRate": prefix = labelFor("hitRate"); break;
+    case "startTime": prefix = labelFor("startTime"); break;
   }
   // v0.8.10-alpha.3 — placeholderAcc simplified: no fieldNotShipped
 // branch. cache_read absence on stdin no longer triggers the "--"
@@ -1992,6 +2022,22 @@ const MODULES: Record<string, Module> = {
     const color = cacheHitColor(pct);
     return `${color}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;
   },
+  // v0.8.24+ — start of the tick statistics window. Reads
+  // TickStatusValue.startAt for the chosen scope (default
+  // ccsession, matching the other m_acc* modules) and renders
+  // `<labelStartTime>HH:MM:SS` (sv-SE locale, 24h clock). The
+  // startAt field is first-write-stamped by setAvg; a legacy
+  // state.json with no startAt falls through to the
+  // `start:n/a` placeholder. ccsession's startAt is refreshed
+  // by detectRegression, so a Claude Code process restart shows
+  // the new boot instant immediately on the next tick.
+  m_accStartTime: (c) => {
+    const useScope = passThroughScope(c) ?? "ccsession";
+    const v = peekAcc(useScope, c);
+    const startAt = v?.startAt ?? null;
+    if (startAt == null) return placeholderAcc("startTime", useScope);
+    return `${labelFor("startTime")}${formatAbsTime(startAt)}`;
+  },
   // v0.8.0+ — sum/avg advanced statistics. 5 plain sums (in/out/
   // cached/total/apiMs) + 3 ratios (tokenHitRate + tokenInSpeed +
   // tokenOutSpeed). All default to "|model|active" + "|window|5h"
@@ -2114,6 +2160,41 @@ const MODULES: Record<string, Module> = {
     // v0.8.13+ — prefix routes through labelFor(labels.labelApiCalls);
     // default "calls:" preserves the v0.8.x literal.
     return wrapValueDefault("m_sumApiCalls", agg.calls, `${labelFor("apiCalls")}${agg.calls}`, undefined);
+  },
+  // v0.8.24+ — start of the tick statistics window across the
+  // filtered JSONL rows. Aggregates min(s.startAt) over the
+  // window/model/align-filtered sample set (read-once-per-tick
+  // from the head line + per-row from coerceSampleRow). Legacy
+  // rows (pre-v0.8.24, startAt: null) are filtered out by the
+  // aggregate's Number.isFinite gate, so an all-legacy window
+  // renders the `start:n/a` placeholder. Pass-through axes from
+  // an outer m_template|...| follow the same convention as the
+  // other m_sum* modules.
+  m_sumStartTime: (c) => {
+    const filter = parseWindowScope(c, c.passThrough ?? {});
+    if (!filter) return null;
+    const agg = fetchSumAggregate(filter);
+    if (agg.rows === 0) return placeholderBare("m_sumStartTime", c);
+    if (!Number.isFinite(agg.firstAt) || agg.firstAt <= 0) {
+      return placeholderBare("m_sumStartTime", c);
+    }
+    return `${labelFor("startTime")}${formatAbsTime(agg.firstAt)}`;
+  },
+  // v0.8.24+ — end of the tick statistics window across the
+  // filtered JSONL rows. Aggregates max(s.lastAt) over the
+  // window/model/align-filtered sample set. lastAt mirrors the
+  // row's `at` field (the wall-clock instant of that tick), so
+  // max(lastAt) is the "newest tick" in the window — the dual
+  // of m_sumStartTime. Empty / all-legacy window → `end:n/a`.
+  m_sumEndTime: (c) => {
+    const filter = parseWindowScope(c, c.passThrough ?? {});
+    if (!filter) return null;
+    const agg = fetchSumAggregate(filter);
+    if (agg.rows === 0) return placeholderBare("m_sumEndTime", c);
+    if (!Number.isFinite(agg.lastAt) || agg.lastAt <= 0) {
+      return placeholderBare("m_sumEndTime", c);
+    }
+    return `${labelFor("endTime")}${formatAbsTime(agg.lastAt)}`;
   },
   // v0.3.6+ — bare `m_quote` (no inline args). Picks a quote from
   // the hourly window and renders it plain (no SGR wrapper). Opt-in
@@ -2802,6 +2883,13 @@ const DEFAULT_COLORS: Record<string, string> = {
   m_contextWindowsSize: NAMED_PALETTE.gray,
   m_contextUsedPercent: NAMED_PALETTE.gray,
   m_contextRemainingPercent: NAMED_PALETTE.gray,
+  // v0.8.24+ — start/end time of the tick statistics window.
+  // Gray = "neutral data" (matches the context-window family);
+  // the user's labels.labelStartTime / labels.labelEndTime knob
+  // controls the literal prefix ("start:" / "end:" defaults).
+  m_accStartTime: NAMED_PALETTE.gray,
+  m_sumStartTime: NAMED_PALETTE.gray,
+  m_sumEndTime: NAMED_PALETTE.gray,
   // v0.8.0+ — m_acc* family. The two plain numeric in/out
   // accumulators remain STALE_COLOR (gray) — they read as "data"
   // rather than "status". m_accTokenCachedIn / m_accTokenTotalIn
@@ -3418,6 +3506,15 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   m_sumTokenInSpeed: placeholderLabelOr("inSpeed"),
   m_sumTokenOutSpeed: placeholderLabelOr("outSpeed"),
   m_sumApiCalls: placeholderLabelOr("apiCalls"),
+  // v0.8.24+ — start/end time of the tick statistics window.
+  // m_sumStartTime aggregates min(s.startAt) over the filtered
+  // rows; m_sumEndTime aggregates max(s.lastAt). Placeholder
+  // shape: "<labelStartTime>n/a" / "<labelEndTime>n/a" (labels
+  // routed through labelFor so the configured labelStartTime /
+  // labelEndTime defaults apply). The m_accStartTime sibling
+  // routes through placeholderAcc, not the PLACEHOLDERS map.
+  m_sumStartTime: placeholderLabelOr("startTime"),
+  m_sumEndTime: placeholderLabelOr("endTime"),
   // v0.8.0+ — newly added m_tokenTotalIn (session-cumulative
   // total_input_tokens). Shares the labelTotalIn axis with its
   // sum/avg siblings.
@@ -3994,6 +4091,9 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_accTokenInSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
   m_accTokenOutSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
   m_accTokenHitRate: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
+  // v0.8.24+ — start of the tick statistics window. Same arg
+  // surface as the other m_acc* modules (color / nulldrop / scope).
+  m_accStartTime: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
   // v0.8.0+ — sum/avg advanced statistics. All 8 accept the same
   // 5 inline args: :model|<active|name|all>, :window|<dhms|all>,
   // :align|<true|false>, :color|<c>, :nulldrop|<b>. The WINDOW
@@ -4009,6 +4109,13 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_sumTokenInSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
   m_sumTokenOutSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
   m_sumApiCalls: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
+  // v0.8.24+ — start/end of the tick statistics window. Same 5-axis
+  // arg surface as the other m_sum* modules (model/window/align +
+  // color/nulldrop). Empty window / all-legacy rows → placeholder
+  // (rendered via the matching m_sumStartTime / m_sumEndTime
+  // PLACEHOLDERS entry — see `placeholderBare` at the dispatcher).
+  m_sumStartTime: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
+  m_sumEndTime: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
   // v0.3.6+ — quote module. Accepts `:freq|<numeric-time>` and
   // `:color|<sgr|shortcut|rainbow|rand-rainbow|hue>`. The freq
   // grammar is the single-unit time format `<digits><unit>` (bare
@@ -4632,6 +4739,18 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const color = passThroughOr<string>(params, ctx, "color") ?? cacheHitColor(pct);
     return `${color}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;
   },
+  // v0.8.24+ — start of the tick statistics window. Inline form
+  // supports :scope: (default ccsession) and :color: override on
+  // the rendered "HH:MM:SS" body. Missing slot / legacy
+  // state.json without startAt → `start:n/a` placeholder.
+  m_accStartTime: (params, ctx) => {
+    const scope = passThroughOr<"session" | "project" | "model" | "ccsession">(params, ctx, "scope") ?? "ccsession";
+    const v = peekAcc(scope, ctx);
+    const startAt = v?.startAt ?? null;
+    if (startAt == null) return placeholderAcc("startTime", scope);
+    const userColor = passThroughOr<string>(params, ctx, "color");
+    return wrapPlain(`${labelFor("startTime")}${formatAbsTime(startAt)}`, userColor);
+  },
   // v0.8.0+ — sum/avg inline renderers. Same body shape as the
   // bare-form MODULES entries; the inline path passes params so
   // :model|/:window|/:align| take effect. A parse failure on the
@@ -4738,6 +4857,39 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // v0.8.13+ — prefix routes through labelFor(labels.labelApiCalls);
     // default "calls:" preserves the v0.8.x literal.
     return wrapValueDefault("m_sumApiCalls", agg.calls, `${labelFor("apiCalls")}${agg.calls}`, passThroughOr<string>(params, ctx, "color"));
+  },
+  // v0.8.24+ — start of the tick statistics window across the
+  // filtered JSONL rows. min(s.startAt) over the
+  // window/model/align-filtered sample set. Empty / all-legacy
+  // window → `start:n/a` placeholder (m_sumStartTime PLACEHOLDERS
+  // entry). Same 5-axis arg surface as the other m_sum* modules.
+  m_sumStartTime: (params, ctx) => {
+    const merged = mergePassThrough(params, ctx);
+    const filter = parseWindowScope(ctx, merged);
+    if (!filter) return INLINE_BADARG;
+    const agg = fetchSumAggregate(filter);
+    if (agg.rows === 0) return placeholderWithColor("m_sumStartTime", params, ctx);
+    if (!Number.isFinite(agg.firstAt) || agg.firstAt <= 0) {
+      return placeholderWithColor("m_sumStartTime", params, ctx);
+    }
+    return wrapPlain(`${labelFor("startTime")}${formatAbsTime(agg.firstAt)}`, passThroughOr<string>(params, ctx, "color"));
+  },
+  // v0.8.24+ — end of the tick statistics window across the
+  // filtered JSONL rows. max(s.lastAt) over the filtered sample
+  // set. lastAt mirrors the row's `at` field (the wall-clock
+  // instant of that tick), so max(lastAt) is the "newest tick"
+  // in the window — the dual of m_sumStartTime. Empty /
+  // all-legacy window → `end:n/a` placeholder.
+  m_sumEndTime: (params, ctx) => {
+    const merged = mergePassThrough(params, ctx);
+    const filter = parseWindowScope(ctx, merged);
+    if (!filter) return INLINE_BADARG;
+    const agg = fetchSumAggregate(filter);
+    if (agg.rows === 0) return placeholderWithColor("m_sumEndTime", params, ctx);
+    if (!Number.isFinite(agg.lastAt) || agg.lastAt <= 0) {
+      return placeholderWithColor("m_sumEndTime", params, ctx);
+    }
+    return wrapPlain(`${labelFor("endTime")}${formatAbsTime(agg.lastAt)}`, passThroughOr<string>(params, ctx, "color"));
   },
   m_quote: (params, ctx) => {
     // v0.8.21+ — when `address` is non-empty, fetch the remote
@@ -5376,6 +5528,12 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         // m_accTokenTotalIn (18) and m_sumTokenTotalIn (18) but
         // diverges at position 14 ('H' vs 'T' / 'T'), so no shadow.
         inline = expandInlineToken(tok, "m_accTokenHitRate", 18, ctx);
+      } else if (tok.startsWith("m_accStartTime|")) {
+        // v0.8.24+ — m_accStartTime → skip prefix+pipe (15 chars).
+        // Diverges from m_accTokenHitRate (18) at position 14
+        // ('S' vs 'H') so no shadow despite being in the m_acc*
+        // cluster.
+        inline = expandInlineToken(tok, "m_accStartTime", 15, ctx);
       } else if (tok.startsWith("m_sumTokenOutSpeed|")) {
         // v0.8.x — m_avgTokenOutSpeed renamed to m_sumTokenOutSpeed.
         // "m_sumTokenOutSpeed" is 18 chars + "|" = 19 chars of
@@ -5419,6 +5577,18 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         inline = expandInlineToken(tok, "m_sumTokenOut", 14, ctx);
       } else if (tok.startsWith("m_sumApiCalls|")) {
         inline = expandInlineToken(tok, "m_sumApiCalls", 14, ctx);
+      } else if (tok.startsWith("m_sumStartTime|")) {
+        // v0.8.24+ — m_sumStartTime → skip prefix+pipe (15 chars).
+        // Listed before the 14-char m_sum* siblings to keep the
+        // "longer literal first" defensive ordering convention.
+        // Diverges from m_sumTokenOut / m_sumApiCalls (14) at
+        // position 6 ('S' vs 'T' / 'A') so no shadow.
+        inline = expandInlineToken(tok, "m_sumStartTime", 15, ctx);
+      } else if (tok.startsWith("m_sumEndTime|")) {
+        // v0.8.24+ — m_sumEndTime → skip prefix+pipe (13 chars).
+        // Shares length with m_sumTokenIn (13) but diverges at
+        // position 6 ('E' vs 'T'), so no shadow.
+        inline = expandInlineToken(tok, "m_sumEndTime", 13, ctx);
       } else if (tok.startsWith("m_sumTokenIn|")) {
         inline = expandInlineToken(tok, "m_sumTokenIn", 13, ctx);
       } else if (tok.startsWith("m_sumApiMs|")) {

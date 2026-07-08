@@ -583,6 +583,15 @@ const DEFAULT_CONFIG: {
     labelContextWindowsSize: string;
     labelContextUsedPercent: string;
     labelContextRemainingPercent: string;
+    // v0.8.24+ — start of the tick statistics window. Read by
+    // m_accStartTime and m_sumStartTime (the cross-project min
+    // of per-row startAt). Default "start:" preserves a clean
+    // axis to override via config.json.
+    labelStartTime: string;
+    // v0.8.24+ — end of the tick statistics window. Read by
+    // m_sumEndTime (the cross-project max of per-row lastAt).
+    // Default "end:" mirrors the startTime default.
+    labelEndTime: string;
   };
   colors: typeof DEFAULT_COLORS;
   cacheHitColors: typeof DEFAULT_CACHE_HIT_COLORS;
@@ -656,6 +665,11 @@ const DEFAULT_CONFIG: {
     labelContextWindowsSize: "size:",
     labelContextUsedPercent: "used:",
     labelContextRemainingPercent: "remain:",
+    // v0.8.24+ — start/end of the tick statistics window. Net-new
+    // axes (no v0.8.23 default to preserve), so the literals are
+    // pure v0.8.24 conventions.
+    labelStartTime: "start:",
+    labelEndTime: "end:",
   },
   colors: DEFAULT_COLORS,
   cacheHitColors: DEFAULT_CACHE_HIT_COLORS,
@@ -952,6 +966,10 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
         "labelContextWindowsSize",
         "labelContextUsedPercent",
         "labelContextRemainingPercent",
+        // v0.8.24+ — start/end of the tick statistics window.
+        // Net-new axes (no v0.8.23 default to preserve).
+        "labelStartTime",
+        "labelEndTime",
       ];
       for (const f of fields) {
         if (typeof lm[f] === "string") {

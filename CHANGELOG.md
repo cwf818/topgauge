@@ -1,5 +1,56 @@
 # Changelog
 
+## v0.8.24
+
+### Added
+
+- `m_accStartTime` / `m_sumStartTime` / `m_sumEndTime` modules.
+  `m_accStartTime` reads the ccsession slot's `startAt` (Unix-ms)
+  by default and supports `:scope:<session|project|model|ccsession>`.
+  `m_sumStartTime` aggregates `min(s.startAt)` over the JSONL
+  sample rows; `m_sumEndTime` aggregates `max(s.lastAt)`. Both
+  m_sum* modules support the full 5-axis arg surface (`:model:`,
+  `:window:`, `:align:`, `:color:`, `:nulldrop:`). Format:
+  `HH:MM:SS` local time (sv-SE locale, 24h clock). Default labels:
+  `labelStartTime = "start:"`, `labelEndTime = "end:"`.
+- `startAt` field on `TickStatusValue` / `AvgSnapshot` — first-write
+  instant of the slot (Unix ms), stamped by `setAvg` /
+  `bumpDeltaScope` on the first valid write. Refreshed by the
+  ccsession regression-reset mark so a Claude Code process restart
+  re-opens the window. Legacy rows backfill to `null` (renders
+  `start:n/a` placeholder).
+- `startAt` / `lastAt` fields on `TokenSample` (JSONL rows).
+  `startAt` is the per-session first-tick instant, read-once-per-tick
+  from the JSONL head line via the new `resolveFirstTickAt` helper
+  (sticky across cc process restarts because the JSONL is the only
+  stable per-session state). `lastAt` mirrors the row's `at` for
+  self-describing min/max aggregation. Legacy rows backfill to
+  `null`; `aggregateSamples` filters them out of the `firstAt`
+  roll-up via `Number.isFinite` gate.
+- `labelStartTime` / `labelEndTime` in the `labels.*` namespace
+  (v0.8.24). New fields in the labels type, defaults in
+  `DEFAULT_CONFIG.labels`, and entries in the field allowlist.
+- `formatAbsTime(ms)` helper in `src/render.ts` — `HH:MM:SS`
+  local time via `sv-SE` locale + `hour12: false` (same idiom
+  as `diagnostics.ts:localIso`). Returns `"n/a"` on null /
+  non-finite / non-positive inputs.
+- `StatAggregate.firstAt` field — min(s.startAt) over filtered
+  rows. Defaults to 0 when no row carries a valid startAt.
+
+### Changed
+
+- `validateNormalizedTick` adds a `MAX_SAMPLE_API_MS` (300_000 ms,
+  5 min) sanity ceiling on per-tick `apiMs` (inclusive). A single
+  pathological stdin reading (clock skew, provider bug, stale
+  baseline) can no longer pollute the JSONL sample stream or the
+  per-session accApiMs sum. Well above any realistic per-tick API
+  call (typically <60s) but below the 10min "pathological" marker.
+- `ccsession` regression-reset (`detectRegression` trigger) now
+  stamps `startAt: Date.now()` on the reset value, so the very
+  first frame after a Claude Code process restart renders the
+  post-reset "process clock start" instant (not `"n/a"` → next
+  tick).
+
 ## v0.8.14
 
 ### Changed (BREAKING)

@@ -9,6 +9,7 @@ import {
   __resetPrevTickForTest,
   __resetUnknownModuleWarnForTest,
   cacheHitColor,
+  formatAbsTime,
   formatCompactToken,
   formatMemBytes,
   formatSpeed,
@@ -6064,5 +6065,233 @@ describe("render — m_statTtlStatus", () => {
     // nulldrop:true + null data → renderer returns null → the
     // separator-adjacent-skip logic drops the chunk entirely.
     assert.equal(out.length, 0);
+  });
+});
+
+// ----- v0.8.24+ startAt / lastAt time anchors -------------------------------
+//
+// 3 new modules (m_accStartTime / m_sumStartTime / m_sumEndTime)
+// + 2 new label axes (labelStartTime / labelEndTime) +
+// 1 new helper (formatAbsTime). The acc module reads the ccsession
+// slot's startAt (default scope) and renders HH:MM:SS. The two
+// sum modules aggregate min/max over JSONL rows.
+describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEndTime", () => {
+  // Reuse the same tmp-dir convention as the m_sum* tests. The
+  // setAvg helper writes through tick-state, so the slot's
+  // startAt is populated by the first valid write.
+  beforeEach(() => {
+    setCachePathResolver(() => join(_tmpDir, "cache.json"));
+    resetCacheForTest();
+  });
+
+  it("formatAbsTime helper formats Unix-ms as HH:MM:SS (sv-SE 24h)", () => {
+    // 1700000000000 ms = 2023-11-14T22:13:20.000Z UTC. Local
+    // time depends on the host TZ, so we just assert the
+    // structural shape (HH:MM:SS) and the hour-window-24h
+    // range.
+    const formatted = formatAbsTime(1700000000000);
+    assert.match(formatted, /^\d{2}:\d{2}:\d{2}$/);
+    // Hours in 24h format are 00..23 — sanity-check the
+    // first two chars are a valid hour.
+    const hh = parseInt(formatted.slice(0, 2), 10);
+    assert.ok(hh >= 0 && hh <= 23, "hour in 00..23 range");
+  });
+
+  it("formatAbsTime returns 'n/a' on null / non-finite / non-positive", () => {
+    assert.equal(formatAbsTime(null), "n/a");
+    assert.equal(formatAbsTime(undefined), "n/a");
+    assert.equal(formatAbsTime(0), "n/a");
+    assert.equal(formatAbsTime(-1), "n/a");
+    assert.equal(formatAbsTime(NaN), "n/a");
+    assert.equal(formatAbsTime(Infinity), "n/a");
+  });
+
+  it("bare m_accStartTime on a fresh session (no writes) → 'start:n/a' placeholder", () => {
+    // No setAvg → slot doesn't exist → placeholderAcc("startTime").
+    // The bare form on a ccsession with no prior writes must
+    // show the placeholder so the user can see "no data yet",
+    // not a hidden drop.
+    const out = renderTemplate(
+      ["m_accStartTime"],
+      ctxFor(fakeSnapshot({ sessionId: "sess-no-start" })),
+    ).join("\n");
+    assert.equal(strip(out), "start:n/a");
+  });
+
+  it("inline m_accStartTime|scope|session renders HH:MM:SS with start: prefix", () => {
+    // Seed the session slot via setAvg + processTick + commit
+    // (mirrors the m_accTokenIn|scope|session test pattern
+    // at the top of the m_acc* describe block). The first-
+    // write stamp populates startAt with Date.now().
+    setAvg(
+      "sess-start",
+      { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1, accTokenTotalIn: 0, accTokenHitRate: 0 },
+      "D:\\test",
+      { modelDisplayName: "MiniMax-M3", deltaApiCalls: 1, currentApiMs: 1000, deltaTokenIn: 0, deltaTokenOut: 0, deltaTokenCachedIn: 0, deltaApiMs: 1000 },
+    );
+    const snap = fakeSnapshot({ sessionId: "sess-start", cwd: "D:\\test" });
+    processTick(snap.cwd, snap);
+    statusStore.commit();
+    const out = renderTemplate(
+      ["m_accStartTime|scope|session"],
+      ctxFor(snap),
+    ).join("\n");
+    // Structural check: "start:HH:MM:SS" (24h, padded).
+    assert.match(strip(out), /^start:\d{2}:\d{2}:\d{2}$/);
+  });
+
+  it("inline m_accStartTime|color|cyan wraps the chunk in cyan SGR", () => {
+    // Same seed path as the previous test; verify the color
+    // override emits an SGR escape.
+    setAvg(
+      "sess-start-color",
+      { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1, accTokenTotalIn: 0, accTokenHitRate: 0 },
+      "D:\\test",
+      { modelDisplayName: "MiniMax-M3", deltaApiCalls: 1, currentApiMs: 1000, deltaTokenIn: 0, deltaTokenOut: 0, deltaTokenCachedIn: 0, deltaApiMs: 1000 },
+    );
+    const snap = fakeSnapshot({ sessionId: "sess-start-color", cwd: "D:\\test" });
+    processTick(snap.cwd, snap);
+    statusStore.commit();
+    const out = renderTemplate(
+      ["m_accStartTime|scope|session|color|cyan"],
+      ctxFor(snap),
+    ).join("\n");
+    assert.ok(out.includes("\x1b["), `expected SGR escape in: ${JSON.stringify(out)}`);
+    assert.ok(out.includes("m") && out.length > strip(out).length,
+      "output has SGR wrapper around the body");
+  });
+
+  it("inline m_accStartTime|nulldrop|true is a no-op (function never returns null)", () => {
+    // The m_accStartTime renderer never returns null — on a
+    // missing slot it returns the "start:n/a" placeholder, on
+    // a populated slot it returns "start:HH:MM:SS". Therefore
+    // `:nulldrop:true` has no effect (the dispatcher can only
+    // short-circuit on a null return). Mirrors the m_accTokenIn
+    // family contract — see the test at line 4658 above.
+    const out = renderTemplate(
+      ["m_accStartTime|scope|session|nulldrop|true"],
+      ctxFor(fakeSnapshot({ sessionId: "sess-start-null", cwd: "D:\\test" })),
+    );
+    // Placeholder ("start:n/a") emits → output length is 1.
+    assert.equal(out.length, 1);
+    assert.match(strip(out[0]!), /^start:n\/a$/);
+  });
+
+  it("inline m_sumStartTime|window|5h renders min(startAt) across rows", () => {
+    // Seed a JSONL stream with 3 rows. Two carry a real
+    // startAt; one is legacy (startAt: null). The min should
+    // pick the earliest valid startAt (1700000000000).
+    const stateRootDir = join(_tmpDir, "sum-start");
+    setStateRoot(() => stateRootDir);
+    const projHash = "d--sum-start";
+    const sess = "sess-sum-start";
+    const cwd = "D:\\sum-start";
+    const sessionFile = join(stateRootDir, projHash, `${sess}.jsonl`);
+    mkdirSync(dirname(sessionFile), { recursive: true });
+    writeFileSync(
+      sessionFile,
+      [
+        JSON.stringify({ at: 999_000, totalIn: 150, totalOut: 50, in: 100, out: 50, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 1000, apiMs: 1000, startAt: 1_700_000_000_000, lastAt: 999_000 }),
+        JSON.stringify({ at: 999_500, totalIn: 350, totalOut: 75, in: 200, out: 75, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 1000, apiMs: 1000, startAt: 1_700_000_005_000, lastAt: 999_500 }),
+        // Legacy row — no startAt/lastAt fields. aggregateSamples'
+        // Number.isFinite gate filters it out of firstAt.
+        JSON.stringify({ at: 999_900, totalIn: 650, totalOut: 100, in: 300, out: 100, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 1000, apiMs: 1000 }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    // ctxFor's nowMs is 1_000_000 so all 3 rows fall inside the
+    // 5h window. align|false so the parseWindowScope falls
+    // through to the wall-clock branch (no plan window in
+    // this test ctx).
+    const out = renderTemplate(
+      ["m_sumStartTime|window|5h|model|active|align|false"],
+      ctxFor(fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" })),
+    ).join("\n");
+    const expected = `start:${formatAbsTime(1_700_000_000_000)}`;
+    assert.equal(strip(out), expected);
+  });
+
+  it("inline m_sumStartTime|window|5h with no rows → 'start:n/a' placeholder", () => {
+    // Empty state root → no rows → agg.rows=0 → placeholder.
+    setStateRoot(() => join(_tmpDir, "sum-start-empty"));
+    const out = renderTemplate(
+      ["m_sumStartTime|window|5h"],
+      ctxFor(fakeSnapshot()),
+    ).join("\n");
+    assert.equal(strip(out), "start:n/a");
+  });
+
+  it("inline m_sumEndTime|window|7d|model|active renders max(lastAt) across rows", () => {
+    // 3 rows, lastAt field carries each row's `at` so max is
+    // the newest tick. align|false to avoid the resetStartAt
+    // dependency (no plan window in this test ctx).
+    const stateRootDir = join(_tmpDir, "sum-end");
+    setStateRoot(() => stateRootDir);
+    const projHash = "d--sum-end";
+    const sess = "sess-sum-end";
+    const cwd = "D:\\sum-end";
+    const sessionFile = join(stateRootDir, projHash, `${sess}.jsonl`);
+    mkdirSync(dirname(sessionFile), { recursive: true });
+    writeFileSync(
+      sessionFile,
+      [
+        JSON.stringify({ at: 999_000, totalIn: 150, totalOut: 50, in: 100, out: 50, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 1000, apiMs: 1000, startAt: 1_700_000_000_000, lastAt: 999_000 }),
+        JSON.stringify({ at: 999_500, totalIn: 350, totalOut: 75, in: 200, out: 75, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 1000, apiMs: 1000, startAt: 1_700_000_005_000, lastAt: 999_500 }),
+        JSON.stringify({ at: 999_900, totalIn: 650, totalOut: 100, in: 300, out: 100, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 1000, apiMs: 1000, startAt: 1_700_000_010_000, lastAt: 999_900 }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const out = renderTemplate(
+      ["m_sumEndTime|window|7d|model|active|align|false"],
+      ctxFor(fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" })),
+    ).join("\n");
+    const expected = `end:${formatAbsTime(999_900)}`;
+    assert.equal(strip(out), expected);
+  });
+
+  it("inline m_sumStartTime|window|5h with all-legacy rows → 'start:n/a' placeholder", () => {
+    // All 3 rows lack startAt → aggregateSamples' firstAt falls
+    // back to 0 → m_sumStartTime renders the placeholder.
+    const stateRootDir = join(_tmpDir, "sum-start-legacy");
+    setStateRoot(() => stateRootDir);
+    const projHash = "d--sum-start-legacy";
+    const sess = "sess-sum-start-legacy";
+    const cwd = "D:\\sum-start-legacy";
+    const sessionFile = join(stateRootDir, projHash, `${sess}.jsonl`);
+    mkdirSync(dirname(sessionFile), { recursive: true });
+    writeFileSync(
+      sessionFile,
+      [
+        JSON.stringify({ at: 999_000, totalIn: 150, totalOut: 50, in: 100, out: 50, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 1000, apiMs: 1000 }),
+        JSON.stringify({ at: 999_500, totalIn: 350, totalOut: 75, in: 200, out: 75, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 1000, apiMs: 1000 }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const out = renderTemplate(
+      ["m_sumStartTime|window|5h|model|active|align|false"],
+      ctxFor(fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" })),
+    ).join("\n");
+    assert.equal(strip(out), "start:n/a");
+  });
+
+  it("legacy state.json without startAt → bare m_accStartTime renders 'start:n/a'", () => {
+    // Hand-craft a legacy tickStatus row (no startAt field)
+    // and verify the bare-form m_accStartTime falls through to
+    // placeholderAcc("startTime", "ccsession"). The
+    // ccsession-scope read goes through readAccumulator which
+    // propagates the backfilled startAt: null.
+    statusStore.writeTickStatus("D:\\test", statusStore.CCSESSION_KEY, {
+      accTokenIn: 0, accTokenOut: 0, accTokenCachedIn: 0,
+      accApiMs: 0, accApiCalls: 0, accTokenTotalIn: 0, accTokenHitRate: 0,
+      // startAt: <absent on purpose>
+    } as any);
+    const out = renderTemplate(
+      ["m_accStartTime"],
+      ctxFor(fakeSnapshot({ sessionId: "sess-legacy-cc", cwd: "D:\\test" })),
+    ).join("\n");
+    // The bare form defaults to ccsession scope. Legacy row
+    // has no startAt → peekAcc returns startAt: null →
+    // placeholderAcc("startTime", "ccsession") = "start:n/a".
+    assert.equal(strip(out), "start:n/a");
   });
 });
