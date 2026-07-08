@@ -155,18 +155,40 @@ export function formatMemBytes(bytes: number | null): string {
 }
 
 // v0.8.24+ — format a Unix-ms timestamp as `HH:MM:SS` local
-// time. Used by m_accStartTime / m_sumStartTime / m_sumEndTime
-// to render the start/end of the tick statistics window. The
+// time (or, with `opts.abs === true`, as `YYYY-MM-DD HH:MM:SS`).
+// Used by m_accStartTime / m_sumStartTime / m_sumEndTime to
+// render the start/end of the tick statistics window. The
 // sv-SE locale is the documented "give me an ISO8601-shaped
 // local time" idiom (same as diagnostics.ts:localIso) — it
 // produces a 24-hour clock, no AM/PM, no leading-zero drop, no
-// locale-dependent surprise formatting.
+// locale-dependent surprise formatting. With year/month/day
+// added it produces `YYYY-MM-DD` so the abs form reads
+// `YYYY-MM-DD HH:MM:SS` end-to-end — no `T` separator, just a
+// literal space, so ANSI layouts stay clean.
 //
 // Returns "n/a" on null / non-finite / non-positive inputs so
 // call sites can simply template-literal concat.
-export function formatAbsTime(epochMs: number | null | undefined): string {
+export function formatAbsTime(
+  epochMs: number | null | undefined,
+  opts: { abs?: boolean } = {},
+): string {
   if (epochMs == null || !Number.isFinite(epochMs) || epochMs <= 0) return "n/a";
-  return new Date(epochMs).toLocaleTimeString("sv-SE", {
+  const d = new Date(epochMs);
+  if (opts.abs === true) {
+    const date = d.toLocaleDateString("sv-SE", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    const time = d.toLocaleTimeString("sv-SE", {
+      hour12: false,
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    return `${date} ${time}`;
+  }
+  return d.toLocaleTimeString("sv-SE", {
     hour12: false,
     hour: "2-digit",
     minute: "2-digit",
@@ -2031,12 +2053,17 @@ const MODULES: Record<string, Module> = {
   // `start:n/a` placeholder. ccsession's startAt is refreshed
   // by detectRegression, so a Claude Code process restart shows
   // the new boot instant immediately on the next tick.
+  // v0.8.25+ — bare form honors `passThrough.abs === "true"`
+  // (set by an outer `m_template|...|abs|true`) to widen the
+  // body to YYYY-MM-DD HH:MM:SS. Default stays HH:MM:SS so
+  // existing renders are byte-identical.
   m_accStartTime: (c) => {
     const useScope = passThroughScope(c) ?? "ccsession";
     const v = peekAcc(useScope, c);
     const startAt = v?.startAt ?? null;
     if (startAt == null) return placeholderAcc("startTime", useScope);
-    return `${labelFor("startTime")}${formatAbsTime(startAt)}`;
+    const abs = c.passThrough?.abs === "true";
+    return `${labelFor("startTime")}${formatAbsTime(startAt, { abs })}`;
   },
   // v0.8.0+ — sum/avg advanced statistics. 5 plain sums (in/out/
   // cached/total/apiMs) + 3 ratios (tokenHitRate + tokenInSpeed +
@@ -2178,7 +2205,9 @@ const MODULES: Record<string, Module> = {
     if (!Number.isFinite(agg.firstAt) || agg.firstAt <= 0) {
       return placeholderBare("m_sumStartTime", c);
     }
-    return `${labelFor("startTime")}${formatAbsTime(agg.firstAt)}`;
+    // v0.8.25+ — abs flag from outer m_template passthrough.
+    const abs = c.passThrough?.abs === "true";
+    return `${labelFor("startTime")}${formatAbsTime(agg.firstAt, { abs })}`;
   },
   // v0.8.24+ — end of the tick statistics window across the
   // filtered JSONL rows. Aggregates max(s.lastAt) over the
@@ -2194,7 +2223,9 @@ const MODULES: Record<string, Module> = {
     if (!Number.isFinite(agg.lastAt) || agg.lastAt <= 0) {
       return placeholderBare("m_sumEndTime", c);
     }
-    return `${labelFor("endTime")}${formatAbsTime(agg.lastAt)}`;
+    // v0.8.25+ — abs flag from outer m_template passthrough.
+    const abs = c.passThrough?.abs === "true";
+    return `${labelFor("endTime")}${formatAbsTime(agg.lastAt, { abs })}`;
   },
   // v0.3.6+ — bare `m_quote` (no inline args). Picks a quote from
   // the hourly window and renders it plain (no SGR wrapper). Opt-in
@@ -3301,6 +3332,21 @@ const DISPLAY_PARAM = {
   },
 } as const;
 
+// v0.8.25+ — boolean toggle that widens the m_accStartTime /
+// m_sumStartTime / m_sumEndTime rendered body from
+// `HH:MM:SS` (default) to `YYYY-MM-DD HH:MM:SS`. Accepts
+// only literal `true` or `false` so typos fail loud at the
+// inline-args resolver rather than silently no-op'ing —
+// matches the discipline used by ALIGN_PARAM. Default of
+// the bare form is `HH:MM:SS` so v0.8.24 renders stay
+// byte-identical after upgrade.
+const ABS_PARAM = {
+  named: {
+    abs: (raw: string): ResolvedValue | null =>
+      raw === "true" || raw === "false" ? raw : null,
+  },
+} as const;
+
 // ----- v0.4.0+ placeholder shapes for nulldrop:false -----------------------
 //
 // Each constant is a closure over the inline-args params + ctx so the
@@ -4093,7 +4139,8 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_accTokenHitRate: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
   // v0.8.24+ — start of the tick statistics window. Same arg
   // surface as the other m_acc* modules (color / nulldrop / scope).
-  m_accStartTime: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
+  // v0.8.25+ — |abs|<true|false> toggles YYYY-MM-DD HH:MM:SS vs HH:MM:SS.
+  m_accStartTime: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named, ...ABS_PARAM.named } },
   // v0.8.0+ — sum/avg advanced statistics. All 8 accept the same
   // 5 inline args: :model|<active|name|all>, :window|<dhms|all>,
   // :align|<true|false>, :color|<c>, :nulldrop|<b>. The WINDOW
@@ -4114,8 +4161,9 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   // color/nulldrop). Empty window / all-legacy rows → placeholder
   // (rendered via the matching m_sumStartTime / m_sumEndTime
   // PLACEHOLDERS entry — see `placeholderBare` at the dispatcher).
-  m_sumStartTime: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
-  m_sumEndTime: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
+  // v0.8.25+ — |abs|<true|false> toggles YYYY-MM-DD HH:MM:SS vs HH:MM:SS.
+  m_sumStartTime: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named, ...ABS_PARAM.named } },
+  m_sumEndTime: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named, ...ABS_PARAM.named } },
   // v0.3.6+ — quote module. Accepts `:freq|<numeric-time>` and
   // `:color|<sgr|shortcut|rainbow|rand-rainbow|hue>`. The freq
   // grammar is the single-unit time format `<digits><unit>` (bare
@@ -4749,7 +4797,9 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const startAt = v?.startAt ?? null;
     if (startAt == null) return placeholderAcc("startTime", scope);
     const userColor = passThroughOr<string>(params, ctx, "color");
-    return wrapPlain(`${labelFor("startTime")}${formatAbsTime(startAt)}`, userColor);
+    // v0.8.25+ — |abs|inline override; default off so v0.8.24 renders are byte-identical.
+    const abs = passThroughOr<string>(params, ctx, "abs") === "true";
+    return wrapPlain(`${labelFor("startTime")}${formatAbsTime(startAt, { abs })}`, userColor);
   },
   // v0.8.0+ — sum/avg inline renderers. Same body shape as the
   // bare-form MODULES entries; the inline path passes params so
@@ -4872,7 +4922,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (!Number.isFinite(agg.firstAt) || agg.firstAt <= 0) {
       return placeholderWithColor("m_sumStartTime", params, ctx);
     }
-    return wrapPlain(`${labelFor("startTime")}${formatAbsTime(agg.firstAt)}`, passThroughOr<string>(params, ctx, "color"));
+    return wrapPlain(`${labelFor("startTime")}${formatAbsTime(agg.firstAt, { abs: passThroughOr<string>(params, ctx, "abs") === "true" })}`, passThroughOr<string>(params, ctx, "color"));
   },
   // v0.8.24+ — end of the tick statistics window across the
   // filtered JSONL rows. max(s.lastAt) over the filtered sample
@@ -4889,7 +4939,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (!Number.isFinite(agg.lastAt) || agg.lastAt <= 0) {
       return placeholderWithColor("m_sumEndTime", params, ctx);
     }
-    return wrapPlain(`${labelFor("endTime")}${formatAbsTime(agg.lastAt)}`, passThroughOr<string>(params, ctx, "color"));
+    return wrapPlain(`${labelFor("endTime")}${formatAbsTime(agg.lastAt, { abs: passThroughOr<string>(params, ctx, "abs") === "true" })}`, passThroughOr<string>(params, ctx, "color"));
   },
   m_quote: (params, ctx) => {
     // v0.8.21+ — when `address` is non-empty, fetch the remote

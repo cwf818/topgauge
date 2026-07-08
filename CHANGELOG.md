@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.8.25
+
+### Added
+
+- `|abs|<true|false>` inline arg on `m_accStartTime` /
+  `m_sumStartTime` / `m_sumEndTime`. When `true`, the rendered
+  body widens from `HH:MM:SS` (default) to `YYYY-MM-DD HH:MM:SS`
+  (sv-SE locale, 24h clock, ASCII-space separator). Default is
+  `false` so v0.8.24 renders stay byte-identical after upgrade.
+  - Inline form: `m_accStartTime|abs|true|...`,
+    `m_sumStartTime|abs|true|...`, `m_sumEndTime|abs|true|...`.
+  - Pass-through form: an outer
+    `m_template|<key>|abs|true` flips the flag for every
+    inner module at once (matches the v0.8.7+ pass-through
+    contract used by `scope` / `window` / `model` / `align`).
+  - Resolver accepts only literal `true` / `false`; any other
+    value (e.g. `abs|yes`) drops the token via the standard
+    inline-badarg path. Same discipline as `ALIGN_PARAM`.
+- `formatAbsTime(epochMs, opts: { abs?: boolean })` helper
+  signature widened. The signature is additive (the second
+  arg is optional) — every existing v0.8.24 caller still
+  compiles and renders identically.
+
+### Files
+
+- `src/render.ts` — new `ABS_PARAM` schema, three inline-schemas
+  extended, six renderer sites updated (3 bare + 3 inline),
+  `formatAbsTime` helper widened.
+- `src/render-tokens.test.ts` — 6 new tests covering the abs
+  helper unit (shape + null/non-finite) and the runtime
+  module path (default byte-identical + `abs|true` widens +
+  badarg drops + composition with `|color|`).
+
 ## v0.8.24
 
 ### Added

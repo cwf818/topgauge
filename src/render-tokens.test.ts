@@ -6106,6 +6106,121 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
     assert.equal(formatAbsTime(Infinity), "n/a");
   });
 
+  // v0.8.25+ — |abs|true widens HH:MM:SS → YYYY-MM-DD HH:MM:SS.
+  it("formatAbsTime |abs|true formats as YYYY-MM-DD HH:MM:SS (sv-SE)", () => {
+    // 1700000000000 ms = 2023-11-14T22:13:20.000Z UTC. Local
+    // date depends on TZ, so we assert the structural shape
+    // (YYYY-MM-DD HH:MM:SS) and a valid year in 2020..2099.
+    const formatted = formatAbsTime(1700000000000, { abs: true });
+    assert.match(formatted, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    const year = parseInt(formatted.slice(0, 4), 10);
+    assert.ok(year >= 2020 && year <= 2099, `year ${year} in 2020..2099`);
+  });
+
+  it("formatAbsTime |abs|false / undefined falls back to HH:MM:SS", () => {
+    // explicit false
+    assert.match(formatAbsTime(1700000000000, { abs: false }), /^\d{2}:\d{2}:\d{2}$/);
+    // omitted opts (v0.8.24+ default preserved)
+    assert.match(formatAbsTime(1700000000000, {}), /^\d{2}:\d{2}:\d{2}$/);
+  });
+
+  it("formatAbsTime |abs|true still returns 'n/a' on null / non-finite", () => {
+    assert.equal(formatAbsTime(null, { abs: true }), "n/a");
+    assert.equal(formatAbsTime(NaN, { abs: true }), "n/a");
+  });
+
+  it("inline m_accStartTime|abs|true renders start:YYYY-MM-DD HH:MM:SS", () => {
+    // Seed the session slot the same way as the color test above.
+    setAvg(
+      "sess-start-abs",
+      { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1, accTokenTotalIn: 0, accTokenHitRate: 0 },
+      "D:\\test",
+      { modelDisplayName: "MiniMax-M3", deltaApiCalls: 1, currentApiMs: 1000, deltaTokenIn: 0, deltaTokenOut: 0, deltaTokenCachedIn: 0, deltaApiMs: 1000 },
+    );
+    const snap = fakeSnapshot({ sessionId: "sess-start-abs", cwd: "D:\\test" });
+    processTick(snap.cwd, snap);
+    statusStore.commit();
+    const out = renderTemplate(
+      ["m_accStartTime|scope|session|abs|true"],
+      ctxFor(snap),
+    ).join("\n");
+    // YYYY-MM-DD HH:MM:SS prefix matches the wider format.
+    assert.match(strip(out), /^start:\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+  });
+
+  it("inline m_accStartTime|abs|true combined with |color|cyan still emits SGR", () => {
+    // |abs| and |color| are independent — both must apply.
+    setAvg(
+      "sess-start-abs-color",
+      { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1, accTokenTotalIn: 0, accTokenHitRate: 0 },
+      "D:\\test",
+      { modelDisplayName: "MiniMax-M3", deltaApiCalls: 1, currentApiMs: 1000, deltaTokenIn: 0, deltaTokenOut: 0, deltaTokenCachedIn: 0, deltaApiMs: 1000 },
+    );
+    const snap = fakeSnapshot({ sessionId: "sess-start-abs-color", cwd: "D:\\test" });
+    processTick(snap.cwd, snap);
+    statusStore.commit();
+    const out = renderTemplate(
+      ["m_accStartTime|scope|session|abs|true|color|cyan"],
+      ctxFor(snap),
+    ).join("\n");
+    assert.ok(out.includes("\x1b["), `expected SGR escape in: ${JSON.stringify(out)}`);
+    assert.match(strip(out), /^start:\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+  });
+
+  it("inline m_accStartTime|abs|yes rejects unknown value (parse-fail → badarg)", () => {
+    // |abs|yes is not literal "true"/"false" — ABS_PARAM
+    // resolver returns null → parseInlineArgs drops the token.
+    // The dispatcher logs a warn + drops; either way the
+    // assert is that no chunk lands in the rendered body.
+    const warnings: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map(String).join(" "));
+    };
+    try {
+      setAvg(
+        "sess-start-abs-bad",
+        { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1, accTokenTotalIn: 0, accTokenHitRate: 0 },
+        "D:\\test",
+        { modelDisplayName: "MiniMax-M3", deltaApiCalls: 1, currentApiMs: 1000, deltaTokenIn: 0, deltaTokenOut: 0, deltaTokenCachedIn: 0, deltaApiMs: 1000 },
+      );
+      const snap = fakeSnapshot({ sessionId: "sess-start-abs-bad", cwd: "D:\\test" });
+      processTick(snap.cwd, snap);
+      statusStore.commit();
+      const out = renderTemplate(
+        ["m_accStartTime|scope|session|abs|yes"],
+        ctxFor(snap),
+      ).join("\n");
+      // Badarg drops the chunk — body is "".
+      assert.equal(strip(out), "");
+    } finally {
+      console.warn = origWarn;
+    }
+  });
+
+  it("default m_accStartTime without |abs| keeps the v0.8.24 HH:MM:SS shape", () => {
+    // Regression guard: existing users who DON'T pass |abs|
+    // must continue to get exactly HH:MM:SS bytes, since
+    // |abs| defaults to false. Mirrors the structural check
+    // in the `scope|session` test above.
+    setAvg(
+      "sess-start-default",
+      { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1, accTokenTotalIn: 0, accTokenHitRate: 0 },
+      "D:\\test",
+      { modelDisplayName: "MiniMax-M3", deltaApiCalls: 1, currentApiMs: 1000, deltaTokenIn: 0, deltaTokenOut: 0, deltaTokenCachedIn: 0, deltaApiMs: 1000 },
+    );
+    const snap = fakeSnapshot({ sessionId: "sess-start-default", cwd: "D:\\test" });
+    processTick(snap.cwd, snap);
+    statusStore.commit();
+    const out = renderTemplate(
+      ["m_accStartTime|scope|session"],
+      ctxFor(snap),
+    ).join("\n");
+    assert.match(strip(out), /^start:\d{2}:\d{2}:\d{2}$/);
+    // Negative regression — must NOT contain a year prefix.
+    assert.doesNotMatch(strip(out), /^start:\d{4}-/);
+  });
+
   it("bare m_accStartTime on a fresh session (no writes) → 'start:n/a' placeholder", () => {
     // No setAvg → slot doesn't exist → placeholderAcc("startTime").
     // The bare form on a ccsession with no prior writes must
