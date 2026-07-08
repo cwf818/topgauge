@@ -65,7 +65,7 @@ beforeEach(() => {
 describe("lineTemplate — custom template (drop the 7d window)", () => {
   beforeEach(() => {
     __resetForTest({
-      statuslineTemplate:["m_modeLabel", "s_0", "m_window5h", "s_0", "m_countdown5h"],
+      statuslineTemplate:["m_modeLabel", "s_0", "m_window|term|short", "s_0", "m_countdown|term|short"],
     });
   });
   afterEach(() => __resetForTest());
@@ -74,8 +74,8 @@ describe("lineTemplate — custom template (drop the 7d window)", () => {
     const line = renderProviderLine("minimax", {
       mode: "used",
       nowMs: Date.now(),
-      fiveHour: { pct: 38, resetAt: null },
-      weekly: { pct: 60, resetAt: null },
+      shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 38, remainingPercent: 62, remainingQuota: null, usedQuota: null, limitQuota: null },
+      midInterval: { windowId: "7d", label: "7d", startAt: null, endAt: null, intervalMs: null, usedPercent: 60, remainingPercent: 40, remainingQuota: null, usedQuota: null, limitQuota: null },
       ageMs: null,
       stale: false,
       version: "",
@@ -92,17 +92,17 @@ describe("lineTemplate — custom separators", () => {
       separators: [" ", " / "],
       statuslineTemplate:[
         "m_modeLabel", "s_0",
-        "m_window5h", "s_0", "m_countdown5h",
+        "m_window|term|short", "s_0", "m_countdown|term|short",
         "s_0", "s_1", "s_0",
-        "m_window7d", "s_0", "m_countdown7d",
+        "m_window|term|mid", "s_0", "m_countdown|term|mid",
       ],
     });
     try {
       const line = renderProviderLine("minimax", {
         mode: "used",
         nowMs: Date.now(),
-        fiveHour: { pct: 38, resetAt: null },
-        weekly: { pct: 60, resetAt: null },
+        shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 38, remainingPercent: 100 - 38, remainingQuota: null, usedQuota: null, limitQuota: null },
+        midInterval: { windowId: "7d", label: "7d", startAt: null, endAt: null, intervalMs: null, usedPercent: 60, remainingPercent: 100 - 60, remainingQuota: null, usedQuota: null, limitQuota: null },
         ageMs: null,
         stale: false,
         version: "",
@@ -123,7 +123,7 @@ describe("lineTemplate — unknown module token", () => {
     // would also warn now (empty default array), polluting the
     // captured stderr.
     __resetForTest({
-      statuslineTemplate:["m_modeLabel", "s_space", "m_window5h", "s_space", "m_foo"],
+      statuslineTemplate:["m_modeLabel", "s_space", "m_window|term|short", "s_space", "m_foo"],
     });
     // Capture stderr.
     const err = process.stderr as unknown as { write: (c: string) => boolean };
@@ -137,8 +137,8 @@ describe("lineTemplate — unknown module token", () => {
       const line = renderProviderLine("minimax", {
         mode: "used",
         nowMs: Date.now(),
-        fiveHour: { pct: 38, resetAt: null },
-        weekly: null,
+        shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 38, remainingPercent: 100 - 38, remainingQuota: null, usedQuota: null, limitQuota: null },
+        midInterval: null,
         ageMs: null,
         stale: false,
         version: "",
@@ -162,8 +162,8 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
     const line = renderProviderLine("minimax", {
       mode: "used",
       nowMs: Date.now(),
-      fiveHour: { pct: 38, resetAt: null },
-      weekly: { pct: 60, resetAt: null },
+      shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 38, remainingPercent: 100 - 38, remainingQuota: null, usedQuota: null, limitQuota: null },
+      midInterval: { windowId: "7d", label: "7d", startAt: null, endAt: null, intervalMs: null, usedPercent: 60, remainingPercent: 100 - 60, remainingQuota: null, usedQuota: null, limitQuota: null },
       ageMs: 5 * 60_000,
       stale: true,
       version: "",
@@ -181,17 +181,17 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
       separators: [" ago"],
       statuslineTemplate:[
         "m_modeLabel", "s_0",
-        "m_window5h", "s_0", "m_countdown5h",
+        "m_window|term|short", "s_0", "m_countdown|term|short",
         "s_0", "s_1", "s_0",
-        "m_window7d", "s_0", "m_countdown7d",
+        "m_window|term|mid", "s_0", "m_countdown|term|mid",
       ],
     });
     try {
       const line = renderProviderLine("minimax", {
         mode: "used",
         nowMs: Date.now(),
-        fiveHour: { pct: 38, resetAt: null },
-        weekly: { pct: 60, resetAt: null },
+        shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 38, remainingPercent: 100 - 38, remainingQuota: null, usedQuota: null, limitQuota: null },
+        midInterval: { windowId: "7d", label: "7d", startAt: null, endAt: null, intervalMs: null, usedPercent: 60, remainingPercent: 100 - 60, remainingQuota: null, usedQuota: null, limitQuota: null },
         ageMs: 5 * 60_000,
         stale: true,
         version: "",
@@ -210,9 +210,9 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
     __resetForTest({
       statuslineTemplate:[
         "m_modeLabel", "s_0",
-        "m_window5h", "s_0", "m_countdown5h",
+        "m_window|term|short", "s_0", "m_countdown|term|short",
         "s_0", "s_1", "s_0",
-        "m_window7d", "s_0", "m_countdown7d",
+        "m_window|term|mid", "s_0", "m_countdown|term|mid",
         "s_0", "m_age",
       ],
     });
@@ -220,8 +220,8 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
       const line = renderProviderLine("minimax", {
         mode: "used",
         nowMs: Date.now(),
-        fiveHour: { pct: 38, resetAt: null },
-        weekly: { pct: 60, resetAt: null },
+        shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 38, remainingPercent: 100 - 38, remainingQuota: null, usedQuota: null, limitQuota: null },
+        midInterval: { windowId: "7d", label: "7d", startAt: null, endAt: null, intervalMs: null, usedPercent: 60, remainingPercent: 100 - 60, remainingQuota: null, usedQuota: null, limitQuota: null },
         ageMs: 5 * 60_000,
         stale: true,
         version: "",
@@ -238,8 +238,8 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
     const line = renderProviderLine("minimax", {
       mode: "used",
       nowMs: Date.now(),
-      fiveHour: { pct: 38, resetAt: null },
-      weekly: { pct: 60, resetAt: null },
+      shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 38, remainingPercent: 100 - 38, remainingQuota: null, usedQuota: null, limitQuota: null },
+      midInterval: { windowId: "7d", label: "7d", startAt: null, endAt: null, intervalMs: null, usedPercent: 60, remainingPercent: 100 - 60, remainingQuota: null, usedQuota: null, limitQuota: null },
       ageMs: 0,
       stale: false,
       version: "",
@@ -255,7 +255,7 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
     __resetForTest({
       statuslineTemplate:[
         "m_modeLabel", "s_0",
-        "m_window5h", "s_0", "m_countdown5h",
+        "m_window|term|short", "s_0", "m_countdown|term|short",
         "s_0", "m_age",
       ],
     });
@@ -263,8 +263,8 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
       const line = renderProviderLine("minimax", {
         mode: "used",
         nowMs: Date.now(),
-        fiveHour: { pct: 38, resetAt: null },
-        weekly: { pct: 60, resetAt: null },
+        shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 38, remainingPercent: 100 - 38, remainingQuota: null, usedQuota: null, limitQuota: null },
+        midInterval: { windowId: "7d", label: "7d", startAt: null, endAt: null, intervalMs: null, usedPercent: 60, remainingPercent: 100 - 60, remainingQuota: null, usedQuota: null, limitQuota: null },
         ageMs: 30_000,
         stale: false,
         version: "",
@@ -297,8 +297,8 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
       const line = renderProviderLine("minimax", {
         mode: "used",
         nowMs: Date.now(),
-        fiveHour: { pct: 38, resetAt: null },
-        weekly: { pct: 60, resetAt: null },
+        shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 38, remainingPercent: 100 - 38, remainingQuota: null, usedQuota: null, limitQuota: null },
+        midInterval: { windowId: "7d", label: "7d", startAt: null, endAt: null, intervalMs: null, usedPercent: 60, remainingPercent: 100 - 60, remainingQuota: null, usedQuota: null, limitQuota: null },
         ageMs: 5 * 60_000,
         stale: true,
         version: "",
@@ -324,7 +324,7 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
     __resetForTest({
       statuslineTemplate:["m_template|outer|mode|plan", "m_age"],
       lineTemplates:{
-        outer: ["s_0", "m_window5h", "s_0", "m_age"],
+        outer: ["s_0", "m_window|term|short", "s_0", "m_age"],
         balance: [],
       } as any,
       timeFormat: { minUnit: "s", maxUnitCount: 4 },
@@ -333,8 +333,8 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
       const line = renderProviderLine("minimax", {
         mode: "used",
         nowMs: Date.now(),
-        fiveHour: { pct: 38, resetAt: null },
-        weekly: { pct: 60, resetAt: null },
+        shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 38, remainingPercent: 100 - 38, remainingQuota: null, usedQuota: null, limitQuota: null },
+        midInterval: { windowId: "7d", label: "7d", startAt: null, endAt: null, intervalMs: null, usedPercent: 60, remainingPercent: 100 - 60, remainingQuota: null, usedQuota: null, limitQuota: null },
         ageMs: 5 * 60_000,
         stale: true,
         version: "",
@@ -354,14 +354,14 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
 describe("lineTemplate — m_version module", () => {
   it("renders 'v' + ctx.version when m_version is in the template", () => {
     __resetForTest({
-      statuslineTemplate:["m_modeLabel", "s_0", "m_window5h", "s_0", "m_version"],
+      statuslineTemplate:["m_modeLabel", "s_0", "m_window|term|short", "s_0", "m_version"],
     });
     try {
       const line = renderProviderLine("minimax", {
         mode: "used",
         nowMs: Date.now(),
-        fiveHour: { pct: 38, resetAt: null },
-        weekly: { pct: 60, resetAt: null },
+        shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 38, remainingPercent: 100 - 38, remainingQuota: null, usedQuota: null, limitQuota: null },
+        midInterval: { windowId: "7d", label: "7d", startAt: null, endAt: null, intervalMs: null, usedPercent: 60, remainingPercent: 100 - 60, remainingQuota: null, usedQuota: null, limitQuota: null },
         ageMs: null,
         stale: false,
         version: "0.2.17",
@@ -374,14 +374,14 @@ describe("lineTemplate — m_version module", () => {
 
   it("renders nothing when version is empty (m_version module returns null)", () => {
     __resetForTest({
-      statuslineTemplate:["m_modeLabel", "s_0", "m_window5h", "s_0", "m_version"],
+      statuslineTemplate:["m_modeLabel", "s_0", "m_window|term|short", "s_0", "m_version"],
     });
     try {
       const line = renderProviderLine("minimax", {
         mode: "used",
         nowMs: Date.now(),
-        fiveHour: { pct: 38, resetAt: null },
-        weekly: { pct: 60, resetAt: null },
+        shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 38, remainingPercent: 100 - 38, remainingQuota: null, usedQuota: null, limitQuota: null },
+        midInterval: { windowId: "7d", label: "7d", startAt: null, endAt: null, intervalMs: null, usedPercent: 60, remainingPercent: 100 - 60, remainingQuota: null, usedQuota: null, limitQuota: null },
         ageMs: null,
         stale: false,
         version: "",
@@ -466,7 +466,7 @@ describe("lineTemplate — m_label inline-args tokens", () => {
   it("m_label|hello renders plain 'hello'", () => {
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
     assert.equal(strip(line), "hello", `got: ${line}`);
@@ -478,7 +478,7 @@ describe("lineTemplate — m_label inline-args tokens", () => {
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
     assert.equal(line, "\x1b[38;5;196mhello\x1b[0m", `got: ${JSON.stringify(line)}`);
@@ -490,7 +490,7 @@ describe("lineTemplate — m_label inline-args tokens", () => {
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
     assert.equal(line, "\x1b[90mhi\x1b[0m", `got: ${JSON.stringify(line)}`);
@@ -502,7 +502,7 @@ describe("lineTemplate — m_label inline-args tokens", () => {
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
     assert.equal(line, "\x1b[36mx\x1b[0m", `got: ${JSON.stringify(line)}`);
@@ -515,7 +515,7 @@ describe("lineTemplate — m_label inline-args tokens", () => {
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
         mode: "used", nowMs: Date.now(),
-        fiveHour: null, weekly: null, balance: null,
+        shortInterval: null, midInterval: null, balance: null,
         ageMs: null, stale: false, version: "",
       }),
     );
@@ -531,7 +531,7 @@ describe("lineTemplate — m_label inline-args tokens", () => {
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
         mode: "used", nowMs: Date.now(),
-        fiveHour: null, weekly: null, balance: null,
+        shortInterval: null, midInterval: null, balance: null,
         ageMs: null, stale: false, version: "",
       }),
     );
@@ -546,7 +546,7 @@ describe("lineTemplate — m_label inline-args tokens", () => {
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
         mode: "used", nowMs: Date.now(),
-        fiveHour: null, weekly: null, balance: null,
+        shortInterval: null, midInterval: null, balance: null,
         ageMs: null, stale: false, version: "",
       }),
     );
@@ -561,7 +561,7 @@ describe("lineTemplate — m_label inline-args tokens", () => {
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
         mode: "used", nowMs: Date.now(),
-        fiveHour: null, weekly: null, balance: null,
+        shortInterval: null, midInterval: null, balance: null,
         ageMs: null, stale: false, version: "",
       }),
     );
@@ -576,7 +576,7 @@ describe("lineTemplate — m_label inline-args tokens", () => {
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
         mode: "used", nowMs: Date.now(),
-        fiveHour: null, weekly: null, balance: null,
+        shortInterval: null, midInterval: null, balance: null,
         ageMs: null, stale: false, version: "",
       }),
     );
@@ -596,7 +596,7 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
     assert.equal(line, "\x1b[38;5;196m \x1b[0m", `got: ${JSON.stringify(line)}`);
@@ -610,7 +610,7 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
         mode: "used", nowMs: Date.now(),
-        fiveHour: null, weekly: null, balance: null,
+        shortInterval: null, midInterval: null, balance: null,
         ageMs: null, stale: false, version: "",
       }),
     );
@@ -627,7 +627,7 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
         mode: "used", nowMs: Date.now(),
-        fiveHour: null, weekly: null, balance: null,
+        shortInterval: null, midInterval: null, balance: null,
         ageMs: null, stale: false, version: "",
       }),
     );
@@ -643,7 +643,7 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
         mode: "used", nowMs: Date.now(),
-        fiveHour: null, weekly: null, balance: null,
+        shortInterval: null, midInterval: null, balance: null,
         ageMs: null, stale: false, version: "",
       }),
     );
@@ -659,7 +659,7 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
         mode: "used", nowMs: Date.now(),
-        fiveHour: null, weekly: null, balance: null,
+        shortInterval: null, midInterval: null, balance: null,
         ageMs: null, stale: false, version: "",
       }),
     );
@@ -674,7 +674,7 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
     assert.equal(line, "X", `got: ${JSON.stringify(line)}`);
@@ -690,7 +690,7 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
     assert.equal(line, "   ", `got: ${JSON.stringify(line)}`);
@@ -703,7 +703,7 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
     assert.equal(strip(line), " · ", `got: ${JSON.stringify(line)}`);
@@ -716,7 +716,7 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
     assert.equal(strip(line), " ·  ·  · ", `got: ${JSON.stringify(line)}`);
@@ -729,7 +729,7 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
     assert.equal(strip(line), " ·  ·  ·  ·  ·  ·  ·  · ", `got: ${JSON.stringify(line)}`);
@@ -744,7 +744,7 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
       });
       return renderProviderLine("minimax", {
         mode: "used", nowMs: Date.now(),
-        fiveHour: null, weekly: null, balance: null,
+        shortInterval: null, midInterval: null, balance: null,
         ageMs: null, stale: false, version: "",
       });
     });
@@ -765,7 +765,7 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
       });
       return renderProviderLine("minimax", {
         mode: "used", nowMs: Date.now(),
-        fiveHour: null, weekly: null, balance: null,
+        shortInterval: null, midInterval: null, balance: null,
         ageMs: null, stale: false, version: "",
       });
     });
@@ -786,7 +786,7 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
       });
       return renderProviderLine("minimax", {
         mode: "used", nowMs: Date.now(),
-        fiveHour: null, weekly: null, balance: null,
+        shortInterval: null, midInterval: null, balance: null,
         ageMs: null, stale: false, version: "",
       });
     });
@@ -807,7 +807,7 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
     assert.equal(strip(line), "·", `got: ${JSON.stringify(line)}`);
@@ -820,7 +820,7 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
     assert.equal(strip(line), " · ", `got: ${JSON.stringify(line)}`);
@@ -833,7 +833,7 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
     assert.equal(line, " ", `got: ${JSON.stringify(line)}`);
@@ -864,7 +864,7 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
     assert.equal(strip(line), " : ", `got: ${JSON.stringify(line)}`);
@@ -877,7 +877,7 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
     assert.equal(strip(line), " | ", `got: ${JSON.stringify(line)}`);
@@ -892,7 +892,7 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
       });
       return renderProviderLine("minimax", {
         mode: "used", nowMs: Date.now(),
-        fiveHour: null, weekly: null, balance: null,
+        shortInterval: null, midInterval: null, balance: null,
         ageMs: null, stale: false, version: "",
       });
     });
@@ -913,7 +913,7 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
     assert.equal(strip(line), "···", `got: ${JSON.stringify(line)}`);
@@ -926,7 +926,7 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
     assert.equal(strip(line), "···", `got: ${JSON.stringify(line)}`);
@@ -939,7 +939,7 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
     assert.equal(strip(line), " ·  · ", `got: ${JSON.stringify(line)}`);
@@ -957,7 +957,7 @@ describe("lineTemplate — m_modeLabel:color inline-args tokens", () => {
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
     assert.equal(line, "\x1b[38;5;196mUsage:\x1b[0m", `got: ${JSON.stringify(line)}`);
@@ -983,7 +983,7 @@ describe("lineTemplate — m_modeLabel:color inline-args tokens", () => {
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
         mode: "used", nowMs: Date.now(),
-        fiveHour: null, weekly: null, balance: null,
+        shortInterval: null, midInterval: null, balance: null,
         ageMs: null, stale: false, version: "",
       }),
     );
@@ -997,23 +997,23 @@ describe("lineTemplate — m_modeLabel:color inline-args tokens", () => {
 // override. These tests cover both:
 //   - plain-text modules (m_version, m_tokenIn, …) — the override
 //     wraps the bare body in `<c>body<RESET>`.
-//   - already-colored modules (m_window5h/7d, m_balance, m_age,
+//   - already-colored modules (m_window|term|short|mid, m_balance, m_age,
 //     m_tokenHitRate, m_cacheRead, m_tokenInSpeed, m_tokenOutSpeed) —
 //     the override REPLACES the natural color (user always wins).
 //   - invalid :color: → hard noop (drop + warn), same as m_label.
 //   - bare `<module>` form is byte-for-byte identical to pre-v0.3.3.
-describe("lineTemplate — m_window5h / m_window7d :color override", () => {
+describe("lineTemplate — m_window|term|short / m_window|term|mid :color override", () => {
   beforeEach(() => __resetUnknownModuleWarnForTest());
   afterEach(() => __resetForTest());
 
-  it("m_window5h|color|red replaces the band-based color with red", () => {
+  it("m_window|term|short|color|red replaces the band-based color with red", () => {
     __resetForTest({
-      statuslineTemplate:["m_window5h|color|red"],
+      statuslineTemplate:["m_window|term|short|color|red"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: { pct: 38, resetAt: null },
-      weekly: null, balance: null,
+      shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 38, remainingPercent: 100 - 38, remainingQuota: null, usedQuota: null, limitQuota: null },
+      midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
     // The override color (\x1b[38;5;196m) must appear inside the chunk,
@@ -1022,14 +1022,14 @@ describe("lineTemplate — m_window5h / m_window7d :color override", () => {
     assert.ok(line.includes("\x1b[38;5;196m38%"), `got: ${JSON.stringify(line)}`);
   });
 
-  it("m_window7d|color|darkGreen replaces the band-based color with darkGreen", () => {
+  it("m_window|term|mid|color|darkGreen replaces the band-based color with darkGreen", () => {
     __resetForTest({
-      statuslineTemplate:["m_window7d|color|darkGreen"],
+      statuslineTemplate:["m_window|term|mid|color|darkGreen"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null,
-      weekly: { pct: 60, resetAt: null },
+      shortInterval: null,
+      midInterval: { windowId: "7d", label: "7d", startAt: null, endAt: null, intervalMs: null, usedPercent: 60, remainingPercent: 100 - 60, remainingQuota: null, usedQuota: null, limitQuota: null },
       balance: null,
       ageMs: null, stale: false, version: "",
     });
@@ -1037,14 +1037,14 @@ describe("lineTemplate — m_window5h / m_window7d :color override", () => {
     assert.ok(line.includes("\x1b[38;5;29m60%"), `got: ${JSON.stringify(line)}`);
   });
 
-  it("bare m_window5h is byte-for-byte unchanged when no :color: is supplied", () => {
+  it("bare m_window|term|short is byte-for-byte unchanged when no :color: is supplied", () => {
     __resetForTest({
-      statuslineTemplate:["m_window5h"],
+      statuslineTemplate:["m_window|term|short"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: { pct: 38, resetAt: null },
-      weekly: null, balance: null,
+      shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 38, remainingPercent: 100 - 38, remainingQuota: null, usedQuota: null, limitQuota: null },
+      midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
     // Default band color for 38% used is darkGreen (\x1b[38;5;29m).
@@ -1052,15 +1052,15 @@ describe("lineTemplate — m_window5h / m_window7d :color override", () => {
     assert.ok(line.includes("\x1b[38;5;29m38%"), `got: ${JSON.stringify(line)}`);
   });
 
-  it("m_window5h|color|garbage is a hard noop (drops and warns)", () => {
+  it("m_window|term|short|color|garbage is a hard noop (drops and warns)", () => {
     __resetForTest({
-      statuslineTemplate:["m_window5h|color|garbage"],
+      statuslineTemplate:["m_window|term|short|color|garbage"],
     });
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
         mode: "used", nowMs: Date.now(),
-        fiveHour: { pct: 38, resetAt: null },
-        weekly: null, balance: null,
+        shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 38, remainingPercent: 100 - 38, remainingQuota: null, usedQuota: null, limitQuota: null },
+        midInterval: null, balance: null,
         ageMs: null, stale: false, version: "",
       }),
     );
@@ -1072,35 +1072,35 @@ describe("lineTemplate — m_window5h / m_window7d :color override", () => {
 // v0.4.0+ — inline :display: override for window modules. Scoped to
 // that module's bar computation only (does NOT mutate the global
 // `display` config field). Accepts "used" or "remaining" verbatim;
-// anything else is a hard noop. The bare `m_window5h` form is
+// anything else is a hard noop. The bare `m_window|term|short` form is
 // byte-for-byte unchanged — bare still reads `ctx.mode` (which
 // defaults to "used" when no config override).
-describe("lineTemplate — m_window5h / m_window7d / m_windowContext :display override", () => {
+describe("lineTemplate — m_window|term|short / m_window|term|mid / m_windowContext :display override", () => {
   beforeEach(() => __resetUnknownModuleWarnForTest());
   afterEach(() => __resetForTest());
 
-  it("bare m_window5h honors the global config (default 'used') — renders 38% at darkGreen", () => {
+  it("bare m_window|term|short honors the global config (default 'used') — renders 38% at darkGreen", () => {
     __resetForTest({
-      statuslineTemplate:["m_window5h"],
+      statuslineTemplate:["m_window|term|short"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: { pct: 38, resetAt: null },
-      weekly: null, balance: null,
+      shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 38, remainingPercent: 100 - 38, remainingQuota: null, usedQuota: null, limitQuota: null },
+      midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
     // Default mode = used; 38% lands in [20, 40) band → darkGreen (\x1b[38;5;29m).
     assert.ok(line.includes("\x1b[38;5;29m38%"), `got: ${JSON.stringify(line)}`);
   });
 
-  it("m_window5h|display|remaining inverts 38% used → renders 62% at band 3 (darkGreen)", () => {
+  it("m_window|term|short|display|remaining inverts 38% used → renders 62% at band 3 (darkGreen)", () => {
     __resetForTest({
-      statuslineTemplate:["m_window5h|display|remaining"],
+      statuslineTemplate:["m_window|term|short|display|remaining"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: { pct: 38, resetAt: null },
-      weekly: null, balance: null,
+      shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 38, remainingPercent: 100 - 38, remainingQuota: null, usedQuota: null, limitQuota: null },
+      midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
     // Inverse: 100 - 38 = 62. 62 in [60, 80) → band 3. In "remaining"
@@ -1112,30 +1112,30 @@ describe("lineTemplate — m_window5h / m_window7d / m_windowContext :display ov
     assert.ok(!line.includes("38%"), `got: ${JSON.stringify(line)}`);
   });
 
-  it("m_window5h|display|used is byte-identical to bare when ctx.mode is 'used'", () => {
+  it("m_window|term|short|display|used is byte-identical to bare when ctx.mode is 'used'", () => {
     __resetForTest({
-      statuslineTemplate:["m_window5h|display|used"],
+      statuslineTemplate:["m_window|term|short|display|used"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: { pct: 38, resetAt: null },
-      weekly: null, balance: null,
+      shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 38, remainingPercent: 100 - 38, remainingQuota: null, usedQuota: null, limitQuota: null },
+      midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
     // 38% used → darkGreen, same as bare.
     assert.ok(line.includes("\x1b[38;5;29m38%"), `got: ${JSON.stringify(line)}`);
   });
 
-  it("m_window5h|display|remaining|color|yellow — both params combine, 62% in yellow", () => {
+  it("m_window|term|short|display|remaining|color|yellow — both params combine, 62% in yellow", () => {
     // Tests that color and display compose: override color REPLACES the
     // band color (yellow, NOT orange); display inverts the percentage.
     __resetForTest({
-      statuslineTemplate:["m_window5h|display|remaining|color|yellow"],
+      statuslineTemplate:["m_window|term|short|display|remaining|color|yellow"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: { pct: 38, resetAt: null },
-      weekly: null, balance: null,
+      shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 38, remainingPercent: 100 - 38, remainingQuota: null, usedQuota: null, limitQuota: null },
+      midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
     // Yellow wraps the 62% chunk. Both color and display honored.
@@ -1143,14 +1143,14 @@ describe("lineTemplate — m_window5h / m_window7d / m_windowContext :display ov
     assert.ok(!line.includes("38%"), `got: ${JSON.stringify(line)}`);
   });
 
-  it("m_window7d|display|remaining inverts 60% used → renders 40% at band 2 (yellow)", () => {
+  it("m_window|term|mid|display|remaining inverts 60% used → renders 40% at band 2 (yellow)", () => {
     __resetForTest({
-      statuslineTemplate:["m_window7d|display|remaining"],
+      statuslineTemplate:["m_window|term|mid|display|remaining"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null,
-      weekly: { pct: 60, resetAt: null },
+      shortInterval: null,
+      midInterval: { windowId: "7d", label: "7d", startAt: null, endAt: null, intervalMs: null, usedPercent: 60, remainingPercent: 100 - 60, remainingQuota: null, usedQuota: null, limitQuota: null },
       balance: null,
       ageMs: null, stale: false, version: "",
     });
@@ -1167,7 +1167,7 @@ describe("lineTemplate — m_window5h / m_window7d / m_windowContext :display ov
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
       tokens: {
         cwd: "C:\\fake",
@@ -1190,7 +1190,7 @@ describe("lineTemplate — m_window5h / m_window7d / m_windowContext :display ov
     });
     const line = renderProviderLine("minimax", {
       mode: "remaining", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
       tokens: {
         cwd: "C:\\fake",
@@ -1206,15 +1206,15 @@ describe("lineTemplate — m_window5h / m_window7d / m_windowContext :display ov
     assert.ok(line.includes("\x1b[38;5;208m63%"), `got: ${JSON.stringify(line)}`);
   });
 
-  it("m_window5h|display|garbage is a hard noop (drops and warns)", () => {
+  it("m_window|term|short|display|garbage is a hard noop (drops and warns)", () => {
     __resetForTest({
-      statuslineTemplate:["m_window5h|display|garbage"],
+      statuslineTemplate:["m_window|term|short|display|garbage"],
     });
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
         mode: "used", nowMs: Date.now(),
-        fiveHour: { pct: 38, resetAt: null },
-        weekly: null, balance: null,
+        shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 38, remainingPercent: 100 - 38, remainingQuota: null, usedQuota: null, limitQuota: null },
+        midInterval: null, balance: null,
         ageMs: null, stale: false, version: "",
       }),
     );
@@ -1222,20 +1222,20 @@ describe("lineTemplate — m_window5h / m_window7d / m_windowContext :display ov
     assert.equal(warns.filter((w) => w.includes("unknown lineTemplate module")).length, 1);
   });
 
-  it("m_window5h|display|USED (case-sensitive) is a hard noop (drops and warns)", () => {
+  it("m_window|term|short|display|USED (case-sensitive) is a hard noop (drops and warns)", () => {
     // The resolver does NOT lower-case. Anything that isn't an exact
     // match for "used" or "remaining" (including "USED", "Used",
     // "remaining " with trailing space) is a parse-fail. This is
     // intentional — silent normalization would mask user typos and
     // leave "Remaining" rendering as a different mode than expected.
     __resetForTest({
-      statuslineTemplate:["m_window5h|display|USED"],
+      statuslineTemplate:["m_window|term|short|display|USED"],
     });
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
         mode: "used", nowMs: Date.now(),
-        fiveHour: { pct: 38, resetAt: null },
-        weekly: null, balance: null,
+        shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 38, remainingPercent: 100 - 38, remainingQuota: null, usedQuota: null, limitQuota: null },
+        midInterval: null, balance: null,
         ageMs: null, stale: false, version: "",
       }),
     );
@@ -1243,16 +1243,16 @@ describe("lineTemplate — m_window5h / m_window7d / m_windowContext :display ov
     assert.equal(warns.filter((w) => w.includes("unknown lineTemplate module")).length, 1);
   });
 
-  it("m_window5h|display| (empty value) is a hard noop (drops and warns)", () => {
+  it("m_window|term|short|display| (empty value) is a hard noop (drops and warns)", () => {
     // Empty value → resolver sees "" → null → badarg.
     __resetForTest({
-      statuslineTemplate:["m_window5h|display|"],
+      statuslineTemplate:["m_window|term|short|display|"],
     });
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
         mode: "used", nowMs: Date.now(),
-        fiveHour: { pct: 38, resetAt: null },
-        weekly: null, balance: null,
+        shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 38, remainingPercent: 100 - 38, remainingQuota: null, usedQuota: null, limitQuota: null },
+        midInterval: null, balance: null,
         ageMs: null, stale: false, version: "",
       }),
     );
@@ -1271,7 +1271,7 @@ describe("lineTemplate — plain-text modules :color override", () => {
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "0.2.17",
     });
     // Yellow = \x1b[38;5;220m (default palette).
@@ -1284,7 +1284,7 @@ describe("lineTemplate — plain-text modules :color override", () => {
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "0.2.17",
     });
     // v6.x — bare path now tints with DEFAULT_COLORS["m_version"] = gray.
@@ -1298,7 +1298,7 @@ describe("lineTemplate — plain-text modules :color override", () => {
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
         mode: "used", nowMs: Date.now(),
-        fiveHour: null, weekly: null, balance: null,
+        shortInterval: null, midInterval: null, balance: null,
         ageMs: null, stale: false, version: "0.2.17",
       }),
     );
@@ -1306,28 +1306,28 @@ describe("lineTemplate — plain-text modules :color override", () => {
     assert.equal(warns.filter((w) => w.includes("unknown lineTemplate module")).length, 1);
   });
 
-  it("m_countdown5h|color|darkGreen wraps the bare '5h' suffix in darkGreen", () => {
+  it("m_countdown|term|short|color|darkGreen wraps the bare '5h' suffix in darkGreen", () => {
     __resetForTest({
-      statuslineTemplate:["m_countdown5h|color|darkGreen"],
+      statuslineTemplate:["m_countdown|term|short|color|darkGreen"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: { pct: 38, resetAt: null },
-      weekly: null, balance: null,
+      shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 38, remainingPercent: 100 - 38, remainingQuota: null, usedQuota: null, limitQuota: null },
+      midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
     // No resetAt → formatOneResetSuffix emits just "5h", wrapped in darkGreen.
     assert.equal(line, "\x1b[38;5;29m5h\x1b[0m", `got: ${JSON.stringify(line)}`);
   });
 
-  it("m_countdown7d|color|red wraps the bare '7d' suffix in red", () => {
+  it("m_countdown|term|mid|color|red wraps the bare '7d' suffix in red", () => {
     __resetForTest({
-      statuslineTemplate:["m_countdown7d|color|red"],
+      statuslineTemplate:["m_countdown|term|mid|color|red"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null,
-      weekly: { pct: 60, resetAt: null },
+      shortInterval: null,
+      midInterval: { windowId: "7d", label: "7d", startAt: null, endAt: null, intervalMs: null, usedPercent: 60, remainingPercent: 100 - 60, remainingQuota: null, usedQuota: null, limitQuota: null },
       balance: null,
       ageMs: null, stale: false, version: "",
     });
@@ -1373,7 +1373,7 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: 5 * 60_000,
       stale: true,
       version: "",
@@ -1392,7 +1392,7 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: 5 * 60_000,
       stale: true,
       version: "",
@@ -1408,7 +1408,7 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
       tokens: {
         cwd: "C:\\fake",
@@ -1448,7 +1448,7 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
     statusStore.commit();
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
       tokens: snap,
     });
@@ -1476,7 +1476,7 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
     statusStore.commit();
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
       tokens: snap,
     });
@@ -1512,7 +1512,7 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
     statusStore.commit();
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
       tokens: snap,
     });
@@ -1538,7 +1538,7 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
     statusStore.commit();
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
       tokens: snap,
     });
@@ -1553,7 +1553,7 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
       tokens: {
         cwd: "C:\\fake",
@@ -1584,7 +1584,7 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
         mode: "used", nowMs: Date.now(),
-        fiveHour: null, weekly: null, balance: null,
+        shortInterval: null, midInterval: null, balance: null,
         ageMs: null, stale: false, version: "",
         tokens: {
           cwd: "C:\\fake",
@@ -1611,7 +1611,7 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
         mode: "used", nowMs: Date.now(),
-        fiveHour: null, weekly: null, balance: null,
+        shortInterval: null, midInterval: null, balance: null,
         ageMs: null, stale: false, version: "",
         tokens: {
           cwd: "C:\\fake",
@@ -1635,8 +1635,8 @@ describe("lineTemplate — inline-args regression / round-trip", () => {
     // No __resetForTest — uses the stock default template.
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: { pct: 38, resetAt: null },
-      weekly: { pct: 60, resetAt: null },
+      shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 38, remainingPercent: 100 - 38, remainingQuota: null, usedQuota: null, limitQuota: null },
+      midInterval: { windowId: "7d", label: "7d", startAt: null, endAt: null, intervalMs: null, usedPercent: 60, remainingPercent: 100 - 60, remainingQuota: null, usedQuota: null, limitQuota: null },
       ageMs: null, stale: false, version: "",
     });
     // Default template renders "Usage: ▓▓▓░░░░░ 38% 5h · ▓▓▓▓▓▓░░░ 60% 7d".
@@ -1653,7 +1653,7 @@ describe("lineTemplate — inline-args regression / round-trip", () => {
     const upstream = "upstream-line \x1b[31m";
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
-      fiveHour: null, weekly: null, balance: null,
+      shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
     const composed = compose(upstream, line);
@@ -1698,7 +1698,7 @@ describe("m_template — legacy lineTemplate warns once and is ignored (v0.4.0 h
         path.join(tmpDir, "config.json"),
         JSON.stringify({
           lineTemplate: {
-            plan: ["m_modeLabel", "s_0", "m_window5h"],
+            plan: ["m_modeLabel", "s_0", "m_window|term|short"],
             balance: ["m_modeLabel", "s_0", "m_balance"],
           },
         }),
@@ -1711,13 +1711,13 @@ describe("m_template — legacy lineTemplate warns once and is ignored (v0.4.0 h
       // NOT to the legacy arrays.
       assert.deepEqual(cfg.statuslineTemplate, ["m_template|_1line"]);
       // Render through the minimax path — output should reflect the
-      // default preset shape (m_window5h + m_window7d, NOT just
-      // m_window5h as the legacy plan array would suggest).
+      // default preset shape (m_window|term|short + m_window|term|mid, NOT just
+      // m_window|term|short as the legacy plan array would suggest).
       const line = renderProviderLine("minimax", {
         mode: "used",
         nowMs: Date.now(),
-        fiveHour: { pct: 38, resetAt: null },
-        weekly: { pct: 60, resetAt: null },
+        shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 38, remainingPercent: 100 - 38, remainingQuota: null, usedQuota: null, limitQuota: null },
+        midInterval: { windowId: "7d", label: "7d", startAt: null, endAt: null, intervalMs: null, usedPercent: 60, remainingPercent: 100 - 60, remainingQuota: null, usedQuota: null, limitQuota: null },
         ageMs: null,
         stale: false,
         version: "",
@@ -1735,7 +1735,7 @@ describe("m_template — end-to-end expansion on minimax (plan mode)", () => {
   beforeEach(() => {
     __resetForTest({
       lineTemplates: {
-        shared: ["m_modeLabel", "s_0", "m_window5h", "s_0", "m_countdown5h"],
+        shared: ["m_modeLabel", "s_0", "m_window|term|short", "s_0", "m_countdown|term|short"],
       },
       statuslineTemplate: ["m_template|shared|mode|plan"],
     });
@@ -1746,8 +1746,8 @@ describe("m_template — end-to-end expansion on minimax (plan mode)", () => {
     const line = renderProviderLine("minimax", {
       mode: "used",
       nowMs: Date.now(),
-      fiveHour: { pct: 38, resetAt: null },
-      weekly: null,
+      shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 38, remainingPercent: 100 - 38, remainingQuota: null, usedQuota: null, limitQuota: null },
+      midInterval: null,
       ageMs: null,
       stale: false,
       version: "",
@@ -1763,7 +1763,7 @@ describe("m_template — mode filter drops on mismatch (deepseek vs plan)", () =
   beforeEach(() => {
     __resetForTest({
       lineTemplates: {
-        shared: ["m_modeLabel", "s_0", "m_window5h"],
+        shared: ["m_modeLabel", "s_0", "m_window|term|short"],
       },
       // Combine m_template:shared:mode:plan (will drop on deepseek)
       // with an unconditional m_balance chunk. The m_balance chunk
@@ -1831,8 +1831,8 @@ describe("m_template passthrough — end-to-end via renderProviderLine (v0.8.7+)
     const line = renderProviderLine("minimax", {
       mode: "used",
       nowMs: 1_000_000,
-      fiveHour: { pct: 10 },
-      weekly: { pct: 20 },
+      shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 10, remainingPercent: 100 - 10, remainingQuota: null, usedQuota: null, limitQuota: null },
+      midInterval: { windowId: "7d", label: "7d", startAt: null, endAt: null, intervalMs: null, usedPercent: 20, remainingPercent: 100 - 20, remainingQuota: null, usedQuota: null, limitQuota: null },
       balance: null,
       ageMs: null,
       stale: false,
@@ -1865,8 +1865,8 @@ describe("m_template passthrough — end-to-end via renderProviderLine (v0.8.7+)
     const line = renderProviderLine("minimax", {
       mode: "used",
       nowMs: 1_000_000,
-      fiveHour: { pct: 10 },
-      weekly: { pct: 20 },
+      shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 10, remainingPercent: 100 - 10, remainingQuota: null, usedQuota: null, limitQuota: null },
+      midInterval: { windowId: "7d", label: "7d", startAt: null, endAt: null, intervalMs: null, usedPercent: 20, remainingPercent: 100 - 20, remainingQuota: null, usedQuota: null, limitQuota: null },
       balance: null,
       ageMs: null,
       stale: false,

@@ -517,9 +517,9 @@ describe("loadConfig — lineTemplates + statuslineTemplate (v0.4.0+, presets fl
     const cfg = __testing.DEFAULT_CONFIG;
     assert.deepEqual(cfg.lineTemplates.plan, [
       "m_modeLabel", "s_space",
-      "m_window5h", "s_space", "m_countdown5h",
+      "m_window|term|short", "s_space", "m_countdown|term|short",
       "s_space", "s_dot", "s_space",
-      "m_window7d", "s_space", "m_countdown7d",
+      "m_window|term|mid", "s_space", "m_countdown|term|mid",
     ]);
     assert.deepEqual(cfg.lineTemplates.balance, ["m_modeLabel", "s_space", "m_balance"]);
     // The 9 built-in presets are present with `_`-prefix.
@@ -551,7 +551,7 @@ describe("loadConfig — lineTemplates + statuslineTemplate (v0.4.0+, presets fl
   });
 
   it("statuslineTemplate array form is passed through verbatim", async () => {
-    const tokens = ["m_modeLabel", "s_0", "m_window5h"];
+    const tokens = ["m_modeLabel", "s_0", "m_window|term|short"];
     writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
       statuslineTemplate: tokens,
     }));
@@ -577,7 +577,7 @@ describe("loadConfig — lineTemplates + statuslineTemplate (v0.4.0+, presets fl
     const cfg = await loadConfig();
     assert.deepEqual(cfg.lineTemplates.foo, foo);
     // Existing defaults still present (merged, not replaced).
-    assert.ok(cfg.lineTemplates.plan.includes("m_window5h"));
+    assert.ok(cfg.lineTemplates.plan.includes("m_window|term|short"));
   });
 
   it("lineTemplates strips nested m_template tokens (nesting protection)", async () => {
@@ -616,20 +616,20 @@ describe("loadConfig — lineTemplates + statuslineTemplate (v0.4.0+, presets fl
   it("lineTemplates._1line collides with built-in preset and is rejected", async () => {
     capturedStderr = "";
     writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
-      lineTemplates: { _1line: ["m_window5h"] },
+      lineTemplates: { _1line: ["m_window|term|short"] },
     }));
     const cfg = await loadConfig();
     // The user's `_1line` entry is dropped; the built-in `_1line`
     // body from DEFAULT_LINE_TEMPLATES survives.
     assert.deepEqual(cfg.lineTemplates._1line, __testing.DEFAULT_CONFIG.lineTemplates._1line);
-    assert.notDeepEqual(cfg.lineTemplates._1line, ["m_window5h"]);
+    assert.notDeepEqual(cfg.lineTemplates._1line, ["m_window|term|short"]);
     assert.match(capturedStderr, /reserved for built-in presets/);
   });
 
   it("lineTemplates._balance_simple collides with built-in preset and is rejected", async () => {
     capturedStderr = "";
     writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
-      lineTemplates: { _balance_simple: ["m_window5h"] },
+      lineTemplates: { _balance_simple: ["m_window|term|short"] },
     }));
     const cfg = await loadConfig();
     // The user's `_balance_simple` entry is dropped; the built-in
@@ -645,10 +645,10 @@ describe("loadConfig — lineTemplates + statuslineTemplate (v0.4.0+, presets fl
   it("lineTemplates._custom (non-builtin _-prefix) is preserved", async () => {
     capturedStderr = "";
     writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
-      lineTemplates: { _custom: ["m_window5h"] },
+      lineTemplates: { _custom: ["m_window|term|short"] },
     }));
     const cfg = await loadConfig();
-    assert.deepEqual(cfg.lineTemplates._custom, ["m_window5h"]);
+    assert.deepEqual(cfg.lineTemplates._custom, ["m_window|term|short"]);
     // No warn — the collision check only fires for keys that
     // actually exist in DEFAULT_LINE_TEMPLATES.
     assert.doesNotMatch(capturedStderr, /reserved for built-in/);
@@ -657,7 +657,7 @@ describe("loadConfig — lineTemplates + statuslineTemplate (v0.4.0+, presets fl
   it("legacy lineTemplate warns once and is ignored (hard break)", async () => {
     writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
       lineTemplate: {
-        plan: ["m_window5h"],
+        plan: ["m_window|term|short"],
         balance: ["m_balance"],
       },
     }));
@@ -666,7 +666,7 @@ describe("loadConfig — lineTemplates + statuslineTemplate (v0.4.0+, presets fl
     // (v0.8.14 — default is the array ["m_template|_1line"], not
     // the v0.4.0–v0.8.13 string "1line".)
     assert.deepEqual(cfg.statuslineTemplate, ["m_template|_1line"]);
-    assert.ok(cfg.lineTemplates.plan.includes("m_window5h"));
+    assert.ok(cfg.lineTemplates.plan.includes("m_window|term|short"));
     assert.ok(cfg.lineTemplates.balance.includes("m_balance"));
     assert.match(capturedStderr, /lineTemplate is removed in v0\.4\.0/);
   });
@@ -1217,7 +1217,7 @@ describe("applyProviderOverrides — three-layer precedence", () => {
     // v0.8.14+ — `statuslineTemplate` is always `string[]`. Test
     // passes an array via provider.config override; the only form
     // the loader accepts at the provider-config layer is also `string[]`.
-    const tokens = ["m_modeLabel", "s_0", "m_window5h"];
+    const tokens = ["m_modeLabel", "s_0", "m_window|term|short"];
     applyProviderOverrides({
       statuslineTemplate: tokens,
     });

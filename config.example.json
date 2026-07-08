@@ -43,9 +43,9 @@
   "lineTemplate": {
     "plan": [
       "m_modeLabel", "s_0",
-      "m_window5h", "s_0", "m_countdown5h",
+      "m_window|term|short", "s_0", "m_countdown|term|short",
       "s_0", "s_1", "s_0",
-      "m_window7d", "s_0", "m_countdown7d"
+      "m_window|term|mid", "s_0", "m_countdown|term|mid"
     ],
     "balance": ["m_modeLabel", "s_0", "m_balance"]
   },
@@ -55,20 +55,26 @@
       "BASE_URL_COMPARED_TO": "https://api.minimaxi.com/anthropic",
       "COMPARE_METHOD": "EXACT",
       "ENDPOINT": "https://www.minimaxi.com/v1/token_plan/remains",
-      "parameters": {
-        "remainingPercentInterval": "model_remains.0.current_interval_remaining_percent",
-        "remainingPercentWeekly":   "model_remains.0.current_weekly_remaining_percent",
-        "startAtInterval":          "model_remains.0.start_time",
-        "endAtInterval":            "model_remains.0.end_time",
-        "startAtWeekly":            "model_remains.0.weekly_start_time",
-        "endAtWeekly":              "model_remains.0.weekly_end_time"
+      "intervals": {
+        "shortInterval": {
+          "remainingPercent": "model_remains.0.current_interval_remaining_percent",
+          "startAt":          "model_remains.0.start_time",
+          "endAt":            "model_remains.0.end_time"
+        },
+        "midInterval": {
+          "remainingPercent": "model_remains.0.current_weekly_remaining_percent",
+          "startAt":          "model_remains.0.weekly_start_time",
+          "endAt":            "model_remains.0.weekly_end_time"
+        },
+        "longInterval": {}
       }
     },
     "deepseek": {
       "TYPE": "BALANCE",
       "BASE_URL_COMPARED_TO": "https://api.deepseek.com/anthropic",
       "COMPARE_METHOD": "EXACT",
-      "ENDPOINT": "https://api.deepseek.com/user/balance"
+      "ENDPOINT": "https://api.deepseek.com/user/balance",
+      "intervals": {}
     }
   }
 }

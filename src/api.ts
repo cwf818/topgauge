@@ -32,262 +32,285 @@
 // them). The hardcoded `const ENDPOINT` and the per-field `pickFirst`
 // alias lists are gone.
 
-import type { Window } from "./render.ts";
-import type { ProviderEntry } from "./types.ts";
+import type { ProviderEntry, IntervalConfig, IntervalKey, IntervalSlotConfig } from "./types.ts";
 import { resolveSlot } from "./path-expr.ts";
 import * as diagnostics from "./diagnostics.ts";
 
+// v0.9.0+ — `Remains` carries three independent `Interval`s
+// instead of the v0.5.0–v0.8.x pair-of-Windows shape. Each term
+// (shortInterval / midInterval / longInterval) is parsed from the
+// provider response using the rules encoded in `parseRemains`
+// below (percent / time / quota group derivation + 3-step
+// intervalMs fallback chain). A null value means "the parser found
+// no usable data for this term" — `m_window`/`m_countdown`/`m_quota`
+// fall back to their per-term placeholder when this happens. The
+// renderer-side `Window` projection lives in `intervalToWindow` in
+// src/render.ts.
+import type { Interval } from "./render";
+export type { Interval };
+
 export type Remains = {
-  fiveHour: Window | null;
-  weekly: Window | null;
+  shortInterval: Interval | null;
+  midInterval: Interval | null;
+  longInterval: Interval | null;
 };
 
-// v0.5.0+ — slot names and their type coercions. Same key shape the
-// user writes in config.json's `providers.<name>.parameters` block.
-// Per-slot type enforcement is the parser's job; the renderer never
-// sees a string in a number slot.
-type SlotName =
-  | "remainingPercentInterval"
-  | "usedPercentInterval"
-  | "remainingPercentWeekly"
-  | "usedPercentWeekly"
-  | "startAtInterval"
-  | "endAtInterval"
-  | "startAtWeekly"
-  | "endAtWeekly"
-  | "isAvailable";
-
-const SLOT_TYPES: Record<SlotName, "number" | "epochMs" | "boolean" | "any"> = {
-  remainingPercentInterval: "number",
-  usedPercentInterval: "number",
-  remainingPercentWeekly: "number",
-  usedPercentWeekly: "number",
-  startAtInterval: "epochMs",
-  endAtInterval: "epochMs",
-  startAtWeekly: "epochMs",
-  endAtWeekly: "epochMs",
-  isAvailable: "boolean",
+// v0.9.0+ — built-in defaults for the `shortInterval` / `midInterval`
+// labels. The longInterval has no built-in minimax mapping (the
+// /v1/token_plan/remains endpoint doesn't ship a 30-day window),
+// so its windowId falls back to "30d" via `DEFAULT_WINDOW_IDS`
+// without any default path mappings.
+const DEFAULT_WINDOW_IDS: Record<IntervalKey, "5h" | "7d" | "30d"> = {
+  shortInterval: "5h",
+  midInterval:   "7d",
+  longInterval:  "30d",
 };
 
-// Default minimax slot map. Used when the user's config doesn't supply
-// one (so the v0.4.x out-of-the-box behavior is preserved). The
-// bracket-less form matches the fixture's real key layout.
-export const DEFAULT_MINIMAX_PARAMETERS: Record<string, string> = {
-  remainingPercentInterval: "model_remains.0.current_interval_remaining_percent",
-  remainingPercentWeekly:   "model_remains.0.current_weekly_remaining_percent",
-  startAtInterval:          "model_remains.0.start_time",
-  endAtInterval:            "model_remains.0.end_time",
-  startAtWeekly:            "model_remains.0.weekly_start_time",
-  endAtWeekly:              "model_remains.0.weekly_end_time",
-};
+// v0.9.0+ — keyword lookup table for the step-3 intervalMs fallback
+// chain. Each key is probed against the response root; if the value
+// at that key is a finite number, it's multiplied by the listed
+// ms-per-unit factor to produce the final intervalMs. Keys are tried
+// in array order (first match wins). The semantic covers the common
+// shapes providers ship: `hour` / `fiveHour` / `day` / `sevenDay` /
+// `week` / `month` / `year`.
+const INTERVAL_MS_KEYWORD_TABLE: ReadonlyArray<readonly [string, number]> = [
+  ["hour",     3_600_000],       // 1 hour = 3.6e6 ms
+  ["fiveHour", 18_000_000],      // 5 hours = 1.8e7 ms
+  ["day",      86_400_000],      // 1 day = 8.64e7 ms
+  ["sevenDay", 604_800_000],     // 7 days = 6.048e8 ms
+  ["week",     604_800_000],     // 7 days = 6.048e8 ms (alias)
+  ["month",    2_592_000_000],   // 30 days = 2.592e9 ms
+  ["year",     31_536_000_000],  // 365 days = 3.1536e10 ms
+];
 
-// Pull the active parameters map for a given provider, falling back
-// to the default for known names. Unknown providers get an empty
-// map (caller will see all nulls → render nothing).
-function parametersFor(provider: ProviderEntry | null): Record<string, string> {
-  if (!provider) return {};
-  if (provider.parameters) return provider.parameters;
-  if (provider.TYPE === "TOKEN_PLAN" && provider.ENDPOINT.includes("minimaxi.com")) {
-    return DEFAULT_MINIMAX_PARAMETERS;
-  }
-  return {};
-}
-
+// Number coercion shared by all group resolvers. Accepts JS numbers
+// and numeric strings; rejects everything else. Used in preference
+// to `coerceNumber` from src/path-expr.ts because we sometimes
+// coerce values that have already been path-resolved (and don't
+// need the path layer's `null → 0` semantics).
 function asNumber(v: unknown): number | null {
   if (typeof v === "number" && Number.isFinite(v)) return v;
   if (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))) return Number(v);
   return null;
 }
 
-function tsToIso(ms: number | null): string | null {
-  if (ms == null) return null;
-  try {
-    return new Date(ms).toISOString();
-  } catch {
-    return null;
-  }
-}
-
-// Per-window read. Walks all four slots (used + remaining + start + end)
-// and produces a single Window. The "used + remaining = 100" derivation
-// happens HERE: if the user mapped only `usedPercentInterval`, the
-// remaining-percent is computed before the window is built. If they
-// mapped only `remainingPercentInterval`, used% is computed. If they
-// mapped both (uncommon but allowed), used wins (it matches the
-// "what fraction did I burn" mental model).
-type WindowSlots = {
-  usedPct: number | null;
-  startMs: number | null;
-  endMs: number | null;
-};
-
-function readWindowSlots(
+// v0.9.0+ — resolve the percent group for a single interval. Reads
+// the two percent slot paths from `slot` against the response
+// `root`, then applies the derivation rules:
+//   - both present → used wins (set remaining = 100 - used)
+//   - only one present → derive the other as 100 - x
+//   - neither → both null (the interval has no % data; `m_window`
+//                falls back to placeholder)
+function resolvePercentGroup(
   root: unknown,
-  params: Record<string, string>,
-  prefix: "Interval" | "Weekly",
-): WindowSlots {
-  function readNumber(name: SlotName): number | null {
-    const path = params[name];
-    if (!path) return null;
-    const v = resolveSlot(root, path, SLOT_TYPES[name]);
-    return asNumber(v);
-  }
-  function readEpoch(name: SlotName): number | null {
-    const path = params[name];
-    if (!path) return null;
-    const v = resolveSlot(root, path, SLOT_TYPES[name]);
-    return asNumber(v);
-  }
-  const usedRaw = readNumber(`usedPercent${prefix}` as SlotName);
-  const remRaw = readNumber(`remainingPercent${prefix}` as SlotName);
-  // Derivation: if both present, used wins; if only one present, derive
-  // the other; if neither, the window is missing entirely.
-  let usedPct: number | null;
+  slot: IntervalSlotConfig,
+): { remainingPercent: number | null; usedPercent: number | null } {
+  const usedRaw = slot.usedPercent
+    ? asNumber(resolveSlot(root, slot.usedPercent, "number"))
+    : null;
+  const remRaw = slot.remainingPercent
+    ? asNumber(resolveSlot(root, slot.remainingPercent, "number"))
+    : null;
   if (usedRaw != null) {
-    usedPct = usedRaw;
-  } else if (remRaw != null) {
-    usedPct = 100 - remRaw;
-  } else {
-    usedPct = null;
+    return { usedPercent: usedRaw, remainingPercent: 100 - usedRaw };
   }
-  return {
-    usedPct,
-    startMs: readEpoch(`startAt${prefix}` as SlotName),
-    endMs: readEpoch(`endAt${prefix}` as SlotName),
-  };
+  if (remRaw != null) {
+    return { remainingPercent: remRaw, usedPercent: 100 - remRaw };
+  }
+  return { remainingPercent: null, usedPercent: null };
 }
 
-function slotsToWindow(s: WindowSlots): Window | null {
-  if (s.usedPct == null) return null;
-  const resetIso = tsToIso(s.endMs);
-  const startIso = tsToIso(s.startMs);
-  let durationMs: number | null = null;
-  if (s.startMs != null && s.endMs != null && s.endMs > s.startMs) {
-    durationMs = s.endMs - s.startMs;
-  }
-  const w: Window = {
-    pct: Math.max(0, Math.min(100, s.usedPct)),
-    resetAt: resetIso,
-  };
-  if (startIso !== null) w.resetStartAt = startIso;
-  if (durationMs !== null) w.resetDurationMs = durationMs;
-  return w;
-}
-
-// Pick the most-active entry from `model_remains[]`. Returns the
-// INDEX of the chosen entry so the caller can re-bind the user's
-// `parameters` paths to that specific entry. See `pickMostActiveIndex`
-// below for the full scoring rules.
+// v0.9.0+ — resolve the time group for a single interval. Implements
+// the 3-step intervalMs fallback chain:
 //
-// The "most-active" model is the one whose 5h window is closest to
-// exhausted. On the `used` axis that's the LARGEST used%; on the
-// `remaining` axis (the original minimax signal) that's the
-// SMALLEST remaining%. We unify by reading whichever the user
-// mapped and converting to a "used% equivalent" for comparison.
+//   STEP 1 — path resolution. `slot.intervalMs` / `slot.intervalS`
+//            are interpreted as path expressions against `root`. The
+//            resolved value becomes the candidate intervalMs (with
+//            intervalS multiplied by 1000 to convert seconds to ms).
+//   STEP 2 — numeric parse fallback. If step 1 returned null AND
+//            `slot.intervalS` / `slot.intervalMs` is a raw number
+//            (not a path), use that value directly. This is the
+//            "user supplied 18000000 in their config" case.
+//   STEP 3 — keyword lookup. If steps 1 + 2 both returned null,
+//            probe the response `root` for keys in
+//            INTERVAL_MS_KEYWORD_TABLE order. First match wins; the
+//            matched numeric value is multiplied by the listed
+//            ms-per-unit factor.
+//
+// After the chain runs, the "at least 2 of 3" rule applies: if only
+// one of startAt / endAt / intervalMs is non-null, ALL THREE return
+// null (the interval is time-unknown). Otherwise derivation order is:
+//
+//   - startAt + endAt → use them (explicit wins over intervalMs).
+//   - startAt + intervalMs → derive endAt = startAt + intervalMs.
+//   - endAt + intervalMs → derive startAt = endAt - intervalMs.
+//   - all three → startAt + endAt win.
+//
+// `slot.startAt` / `slot.endAt` are path expressions for epoch-ms
+// numbers. They do NOT participate in the fallback chain — they're
+// direct reads against the response.
+function resolveTimeGroup(
+  root: unknown,
+  slot: IntervalSlotConfig,
+): { startAt: number | null; endAt: number | null; intervalMs: number | null } {
+  const startRaw = slot.startAt
+    ? asNumber(resolveSlot(root, slot.startAt, "epochMs"))
+    : null;
+  const endRaw = slot.endAt
+    ? asNumber(resolveSlot(root, slot.endAt, "epochMs"))
+    : null;
 
-export function parseRemains(
-  raw: unknown,
-  provider: ProviderEntry | null = null,
-): Remains | null {
-  if (!raw || typeof raw !== "object") return null;
-  const root = raw as Record<string, unknown>;
-
-  // Non-zero base_resp.status_code -> failure.
-  const baseResp = root.base_resp;
-  if (baseResp && typeof baseResp === "object") {
-    const code = asNumber((baseResp as Record<string, unknown>).status_code);
-    if (code !== null && code !== 0) return null;
+  // STEP 1 — path resolution for intervalMs / intervalS.
+  let intervalMsRaw: number | null = null;
+  if (typeof slot.intervalMs === "number" && Number.isFinite(slot.intervalMs)) {
+    intervalMsRaw = slot.intervalMs;
+  } else if (slot.intervalMs != null) {
+    const v = asNumber(resolveSlot(root, String(slot.intervalMs), "number"));
+    if (v != null) intervalMsRaw = v;
+  } else if (typeof slot.intervalS === "number" && Number.isFinite(slot.intervalS)) {
+    intervalMsRaw = slot.intervalS * 1000;
+  } else if (slot.intervalS != null) {
+    const v = asNumber(resolveSlot(root, String(slot.intervalS), "number"));
+    if (v != null) intervalMsRaw = v * 1000;
   }
 
-  const params = parametersFor(provider);
-  const arr = root.model_remains ?? root.modelRemains;
-  if (Array.isArray(arr) && arr.length > 0) {
-    const chosenIdx = pickMostActiveIndex(arr, params);
-    if (chosenIdx >= 0) {
-      // Re-bind each slot path to point at this specific index. The
-      // user wrote `model_remains.0.start_time` (or the bracket
-      // equivalent); we replace the trailing `.0` / `[0]` with the
-      // chosen index. This keeps the user's `parameters` config
-      // independent of WHICH entry we'll pick — they describe the
-      // shape, we describe the instance.
-      const reindexed = reindexPaths(params, chosenIdx);
-      const interval = slotsToWindow(readWindowSlots(root, reindexed, "Interval"));
-      const weekly = slotsToWindow(readWindowSlots(root, reindexed, "Weekly"));
-      // Require at least one of the two windows to yield real data;
-      // an entry with no percent / no timestamps is treated as "no
-      // recognizable data" and we fall through to the null return.
-      // (Picking an empty entry is not an error per se — the user
-      // might just be looking at a quiet moment — but the renderer
-      // has nothing to draw, and surfacing a `null` here matches the
-      // "no data" contract the dispatcher expects.)
-      if (interval || weekly) {
-        return { fiveHour: interval, weekly };
+  // STEP 2 — raw numeric fallback. (slot.intervalS / slot.intervalMs
+  // shape covers this already when they're raw numbers — step 1
+  // already handled it. The "numeric parse" case in the user spec
+  // ("18000000" → 18000000) is the path-resolution case where the
+  // path returns a numeric string. That happens inside step 1's
+  // asNumber coercion. So step 2 is effectively a no-op when the
+  // slot is a plain raw number, which is already covered by step 1
+  // above. We keep the structure here for parity with the spec but
+  // don't add a duplicate check.)
+
+  // STEP 3 — keyword lookup against the response root. Only fires
+  // when steps 1 + 2 both returned null.
+  if (intervalMsRaw == null && root && typeof root === "object") {
+    const r = root as Record<string, unknown>;
+    for (const [key, msPerUnit] of INTERVAL_MS_KEYWORD_TABLE) {
+      const v = asNumber(r[key]);
+      if (v != null) {
+        intervalMsRaw = v * msPerUnit;
+        break;
       }
     }
   }
 
-  // v0.6.x+ — fallback for non-minimax TOKEN_PLAN providers whose
-  // response shape does NOT have a top-level `model_remains` array
-  // (e.g. kimi's `{ usages: [...], totalQuota: {...} }`). The
-  // `parameters` paths are interpreted as literal key chains from the
-  // response root, no array-picking / re-indexing needed. The
-  // existing readWindowSlots + slotsToWindow helpers do the right
-  // thing when fed the unchanged params map, so no parser surgery
-  // beyond skipping the reindex step.
-  //
-  // Skipping this branch when there's no provider.parameters
-  // (minimax default) keeps the legacy behavior: an unknown response
-  // shape with no user-supplied mapping still returns null, matching
-  // the pre-existing "we don't know how to read this" contract.
-  if (provider?.parameters) {
-    const interval = slotsToWindow(readWindowSlots(root, params, "Interval"));
-    const weekly = slotsToWindow(readWindowSlots(root, params, "Weekly"));
-    if (interval || weekly) {
-      return { fiveHour: interval, weekly };
-    }
+  // At-least-2-of-3 rule: if only one of the three is non-null,
+  // discard them all. The interval is "time-unknown" — `m_window`
+  // and `m_countdown` fall back to their placeholder.
+  const nonNullCount = (startRaw != null ? 1 : 0)
+    + (endRaw != null ? 1 : 0)
+    + (intervalMsRaw != null ? 1 : 0);
+  if (nonNullCount < 2) {
+    return { startAt: null, endAt: null, intervalMs: null };
   }
 
-  // No recognizable model_remains array and no parameters map → give up.
-  return null;
-}
-
-// Swap the leading `model_remains.0` (or `[0]`) of each path for
-// the chosen index. No-op on paths that don't start with
-// `model_remains` (e.g. a future provider where the user maps
-// `data.five_hour.remaining` instead).
-function reindexPaths(
-  params: Record<string, string>,
-  idx: number,
-): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [slot, path] of Object.entries(params)) {
-    out[slot] = path.replace(
-      /^(model_remains|modelRemains)\.?\[?0\]?\.?/,
-      `$1.${idx}.`,
-    );
+  // Explicit-wins derivation order.
+  let startAt = startRaw;
+  let endAt = endRaw;
+  if (startAt != null && endAt != null) {
+    // Both endpoints present — explicit wins. intervalMs is unused
+    // (already consumed above); we keep the resolved value for the
+    // caller's convenience (it equals endAt - startAt if the user
+    // didn't supply a conflicting intervalMs).
+    return { startAt, endAt, intervalMs: intervalMsRaw ?? (endAt - startAt) };
   }
-  return out;
+  if (startAt != null && intervalMsRaw != null) {
+    endAt = startAt + intervalMsRaw;
+    return { startAt, endAt, intervalMs: intervalMsRaw };
+  }
+  if (endAt != null && intervalMsRaw != null) {
+    startAt = endAt - intervalMsRaw;
+    return { startAt, endAt, intervalMs: intervalMsRaw };
+  }
+  // Unreachable given the nonNullCount >= 2 gate above, but TS
+  // wants the return to be exhaustive.
+  return { startAt: null, endAt: null, intervalMs: null };
 }
 
-// Return the index of the most-active entry. "Most active" = the
-// entry whose interval window is closest to exhausted, which on the
-// `used` axis means the LARGEST used%, and on the `remaining` axis
-// means the SMALLEST remaining%. We prefer `remainingPercentInterval`
-// (the original minimax signal) and fall back to `usedPercentInterval`
-// when the user didn't map a remaining slot. -1 when the array is
-// empty or no interval-related slot is mapped at all. Stable on
-// ties (first-encountered wins).
+// v0.9.0+ — resolve the quota group for a single interval. Each
+// quota field is an independent path expression — there's no
+// derivation between remaining / used / limit (unlike the percent
+// group). The renderer (`m_quota`) decides what's enough to
+// render based on what comes back. Returns all three resolved
+// values; any may be null.
+function resolveQuotaGroup(
+  root: unknown,
+  slot: IntervalSlotConfig,
+): { remainingQuota: number | null; usedQuota: number | null; limitQuota: number | null } {
+  return {
+    remainingQuota: slot.remainingQuota
+      ? asNumber(resolveSlot(root, slot.remainingQuota, "number"))
+      : null,
+    usedQuota: slot.usedQuota
+      ? asNumber(resolveSlot(root, slot.usedQuota, "number"))
+      : null,
+    limitQuota: slot.limitQuota
+      ? asNumber(resolveSlot(root, slot.limitQuota, "number"))
+      : null,
+  };
+}
+
+// v0.9.0+ — build one `Interval` from a slot config and a response
+// root. Returns null when ALL data sources are null — i.e. when
+// the interval would render as a pure empty placeholder. A
+// time-only interval (percent group all-null, quota group all-null,
+// but startAt + endAt present) is treated as null because the
+// renderer can't surface it through `m_window` / `m_countdown` /
+// `m_quota` — the placeholder would be the only output. We
+// preserve the Interval when ANY non-null percent or quota field
+// exists so the renderer can at least draw the gauge placeholder
+// (m_window → gray bar with 0%) and / or the quota body.
+function buildInterval(
+  root: unknown,
+  slot: IntervalSlotConfig,
+  key: IntervalKey,
+): Interval | null {
+  const percent = resolvePercentGroup(root, slot);
+  const time = resolveTimeGroup(root, slot);
+  const quota = resolveQuotaGroup(root, slot);
+
+  const hasPercent = percent.remainingPercent != null || percent.usedPercent != null;
+  const hasQuota = quota.remainingQuota != null || quota.usedQuota != null || quota.limitQuota != null;
+  if (!hasPercent && !hasQuota) return null;
+
+  const windowId = (slot.windowId ?? DEFAULT_WINDOW_IDS[key]) as "5h" | "7d" | "30d";
+  return {
+    windowId,
+    label: slot.label ?? slot.windowId ?? DEFAULT_WINDOW_IDS[key],
+    startAt: time.startAt,
+    endAt: time.endAt,
+    intervalMs: time.intervalMs,
+    remainingPercent: percent.remainingPercent,
+    usedPercent: percent.usedPercent,
+    remainingQuota: quota.remainingQuota,
+    usedQuota: quota.usedQuota,
+    limitQuota: quota.limitQuota,
+  };
+}
+
+// v0.9.0+ — pick the most-active entry from `model_remains[]`. The
+// scoring signal is the resolved used% (or remaining%, converted to
+// used-equivalent) of the `shortInterval` — the same short-window
+// metric that drove the v0.8.x `pickMostActiveIndex`. Returns -1
+// when no percent path is mapped for shortInterval (the caller
+// falls through to the non-array branch).
+//
+// The choice of shortInterval (5h) as the picker signal is
+// deliberate: the 5h window is the most reactive (resets most
+// often, has the tightest "almost out" signal), so picking by it
+// gives the renderer the most-current model usage reading.
 function pickMostActiveIndex(
   arr: unknown[],
-  params: Record<string, string>,
+  intervalsConfig: IntervalConfig,
 ): number {
   if (arr.length === 0) return -1;
-  // remaining% is the canonical "smaller is busier" signal. used%
-  // is the inverse — "larger is busier". We unify by reading whichever
-  // the user mapped and converting to a "used% equivalent" for
-  // comparison (0 = least busy, 100 = fully used).
-  const remainingPath = params.remainingPercentInterval;
-  const usedPath = params.usedPercentInterval;
+  const short = intervalsConfig?.shortInterval;
+  if (!short) return -1;
+  const remainingPath = short.remainingPercent;
+  const usedPath = short.usedPercent;
   if (!remainingPath && !usedPath) return -1;
   function reindexTail(path: string, idx: number): string {
     const tail = path.replace(
@@ -309,13 +332,6 @@ function pickMostActiveIndex(
       const v = asNumber(resolveSlot(root, reindexTail(usedPath, i), "number"));
       if (v != null) usedEquiv = v;
     }
-    // Missing score (no interval slot parseable for this entry) →
-    // treat as 0% used. A real 0% entry also scores 0; this is
-    // acceptable because an entry that yields 0 used AND 0 remaining
-    // (i.e. no data at all) should be deprioritized — but we don't
-    // have a strong "completely missing" signal here, and the
-    // alternative (skip the entry) leaves us with no fallback when
-    // ALL entries are unparseable.
     const score = usedEquiv ?? 0;
     if (score > bestScore) {
       bestScore = score;
@@ -323,6 +339,90 @@ function pickMostActiveIndex(
     }
   }
   return bestIdx;
+}
+
+// Swap the leading `model_remains.0` (or `[0]`) of each path in
+// every slot config for the chosen index. Walks all three terms;
+// paths that don't start with `model_remains` are left untouched.
+function reindexPaths(
+  config: IntervalConfig,
+  idx: number,
+): IntervalConfig {
+  const out: IntervalConfig = {};
+  for (const k of ["shortInterval", "midInterval", "longInterval"] as IntervalKey[]) {
+    const slot = config?.[k];
+    if (!slot) continue;
+    const next: IntervalSlotConfig = {};
+    for (const [field, value] of Object.entries(slot)) {
+      if (typeof value === "string") {
+        next[field as keyof IntervalSlotConfig] = value.replace(
+          /^(model_remains|modelRemains)\.?\[?0\]?\.?/,
+          `$1.${idx}.`,
+        ) as never;
+      } else {
+        // Numeric fields (intervalS / intervalMs) are passed through
+        // unchanged.
+        (next as Record<string, unknown>)[field] = value;
+      }
+    }
+    out[k] = next;
+  }
+  return out;
+}
+
+export function parseRemains(
+  raw: unknown,
+  _provider: ProviderEntry | null = null,
+  intervalsConfig: IntervalConfig = {},
+): Remains | null {
+  if (!raw || typeof raw !== "object") return null;
+  const root = raw as Record<string, unknown>;
+
+  // Non-zero base_resp.status_code -> failure.
+  const baseResp = root.base_resp;
+  if (baseResp && typeof baseResp === "object") {
+    const code = asNumber((baseResp as Record<string, unknown>).status_code);
+    if (code !== null && code !== 0) return null;
+  }
+
+  const arr = root.model_remains ?? root.modelRemains;
+
+  let scopeRoot: unknown = root;
+  if (Array.isArray(arr) && arr.length > 0) {
+    const chosenIdx = pickMostActiveIndex(arr, intervalsConfig);
+    if (chosenIdx >= 0) {
+      // Re-bind each path to point at this specific index. The user
+      // wrote `model_remains.0.start_time`; we replace the trailing
+      // `.0` / `[0]` with the chosen index.
+      const reindexed = reindexPaths(intervalsConfig, chosenIdx);
+      const short = buildInterval(scopeRoot, reindexed.shortInterval ?? {}, "shortInterval");
+      const mid = buildInterval(scopeRoot, reindexed.midInterval ?? {}, "midInterval");
+      const long = buildInterval(scopeRoot, reindexed.longInterval ?? {}, "longInterval");
+      if (short || mid || long) {
+        return { shortInterval: short, midInterval: mid, longInterval: long };
+      }
+    }
+  }
+
+  // Non-array root case (e.g. kimi's `{ usages: [...], totalQuota: {...} }`).
+  // The intervals config paths are interpreted as literal key chains
+  // from the response root, no array-picking / re-indexing needed.
+  // Skipping this branch when the caller didn't supply any intervals
+  // config keeps the "no data → null" contract.
+  const hasAnySlot =
+    intervalsConfig?.shortInterval ||
+    intervalsConfig?.midInterval ||
+    intervalsConfig?.longInterval;
+  if (hasAnySlot) {
+    const short = buildInterval(scopeRoot, intervalsConfig?.shortInterval ?? {}, "shortInterval");
+    const mid = buildInterval(scopeRoot, intervalsConfig?.midInterval ?? {}, "midInterval");
+    const long = buildInterval(scopeRoot, intervalsConfig?.longInterval ?? {}, "longInterval");
+    if (short || mid || long) {
+      return { shortInterval: short, midInterval: mid, longInterval: long };
+    }
+  }
+
+  return null;
 }
 
 export async function fetchRemains(
@@ -391,5 +491,10 @@ export async function fetchRemains(
   } catch {
     return null;
   }
-  return parseRemains(parsed, provider);
+  // v0.9.0+ — thread the provider's `intervals` block into the
+  // parser. Built-in minimax defaults are already applied by
+  // validateProviderEntry, so this is just the user-supplied
+  // overrides (or the built-in defaults if the user supplied
+  // none). Legacy `parameters` field is gone.
+  return parseRemains(parsed, provider, provider?.intervals);
 }

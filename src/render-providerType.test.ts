@@ -5,9 +5,9 @@
 // providers).
 //
 // The filter gates rendering on ctx.providerType:
-//   m_window5h, m_window7d, m_countdown5h, m_countdown7d → "plan"
-//   m_balance                                            → "balance"
-//   everything else (m_modeLabel, m_token*, m_age, …)     → agnostic
+//   m_window|term|short|mid|long, m_countdown|term|*, m_quota|term|* → "plan"
+//   m_balance                                                        → "balance"
+//   everything else (m_modeLabel, m_token*, m_age, …)                → agnostic
 //
 // A bare token matching these prefixes on a non-matching provider
 // type MUST silently drop (no warn, no stray "·", no chunk).
@@ -25,7 +25,6 @@
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { renderTemplate } from "./render.ts";
-import type { Window } from "./render.ts";
 import { __resetForTest } from "./config.ts";
 
 const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
@@ -33,8 +32,6 @@ const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 // Default seps from config.ts are [" ", "·"] — same as the existing
 // render-tokens suite. We rely on this; a future config refactor
 // would need to update this file in lockstep.
-const FIVE_HOUR: Window = { pct: 30, resetAt: null, resetStartAt: null, resetDurationMs: null };
-const WEEKLY: Window = { pct: 50, resetAt: null, resetStartAt: null, resetDurationMs: null };
 const BALANCE = {
   isAvailable: true,
   entries: [{ currency: "USD", totalBalance: 25 }],
@@ -44,8 +41,9 @@ const BALANCE = {
 const ctxFor = (providerType: "plan" | "balance" | "unknown") => ({
   mode: "used" as const,
   nowMs: 1_000_000,
-  fiveHour: FIVE_HOUR,
-  weekly: WEEKLY,
+  shortInterval: { windowId: "5h" as const, label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 30, remainingPercent: 70, remainingQuota: null, usedQuota: null, limitQuota: null },
+  midInterval: { windowId: "7d" as const, label: "7d", startAt: null, endAt: null, intervalMs: null, usedPercent: 50, remainingPercent: 50, remainingQuota: null, usedQuota: null, limitQuota: null },
+  longInterval: null,
   balance: BALANCE,
   ageMs: null,
   stale: false,
@@ -58,17 +56,17 @@ const ctxFor = (providerType: "plan" | "balance" | "unknown") => ({
 beforeEach(() => __resetForTest());
 
 describe("MODULES path: per-provider type filter", () => {
-  it("m_window5h renders on plan ctx; drops on balance ctx", () => {
-    const planLines = renderTemplate(["m_window5h"], ctxFor("plan"));
+  it("m_window|term|short renders on plan ctx; drops on balance ctx", () => {
+    const planLines = renderTemplate(["m_window|term|short"], ctxFor("plan"));
     assert.equal(planLines.length, 1);
     assert.ok(planLines[0]!.length > 0, "plan ctx must render the bar chunk");
 
-    const balanceLines = renderTemplate(["m_window5h"], ctxFor("balance"));
-    assert.deepEqual(balanceLines, [], "m_window5h must drop on balance");
+    const balanceLines = renderTemplate(["m_window|term|short"], ctxFor("balance"));
+    assert.deepEqual(balanceLines, [], "m_window|term|short must drop on balance");
   });
 
-  it("m_window7d / m_countdown5h / m_countdown7d all plan-only", () => {
-    for (const mod of ["m_window7d", "m_countdown5h", "m_countdown7d"]) {
+  it("m_window|term|mid / m_countdown|term|short / m_countdown|term|mid all plan-only", () => {
+    for (const mod of ["m_window|term|mid", "m_countdown|term|short", "m_countdown|term|mid"]) {
       const planLines = renderTemplate([mod], ctxFor("plan"));
       assert.ok(planLines.length === 1, `${mod}: plan ctx rendered`);
       assert.ok(planLines[0]!.length > 0, `${mod}: plan ctx non-empty`);
@@ -134,20 +132,20 @@ describe("MODULES path: per-provider type filter", () => {
     // doesn't match). Same for balance-only. The empty-output guard
     // downstream translates this into a null return at the dispatcher
     // level when no agnostic modules emit either.
-    const windowOnUnknown = renderTemplate(["m_window5h"], ctxFor("unknown"));
-    assert.deepEqual(windowOnUnknown, [], "m_window5h must drop on unknown");
+    const windowOnUnknown = renderTemplate(["m_window|term|short"], ctxFor("unknown"));
+    assert.deepEqual(windowOnUnknown, [], "m_window|term|short must drop on unknown");
 
     const balanceOnUnknown = renderTemplate(["m_balance"], ctxFor("unknown"));
     assert.deepEqual(balanceOnUnknown, [], "m_balance must drop on unknown");
   });
 
   it("dropped plan module also drops adjacent s_<n> separators", () => {
-    // ["m_window5h", "s_0", "m_window7d"] on a balance ctx: both
+    // ["m_window|term|short", "s_0", "m_window|term|mid"] on a balance ctx: both
     // modules drop, the s_0 separator between them has nothing to
     // separate → empty lines array. This is the same null-fall-
     // through the renderer already implements.
     const balanceLines = renderTemplate(
-      ["m_window5h", "s_0", "m_window7d"],
+      ["m_window|term|short", "s_0", "m_window|term|mid"],
       ctxFor("balance"),
     );
     assert.deepEqual(balanceLines, []);
@@ -155,15 +153,15 @@ describe("MODULES path: per-provider type filter", () => {
 });
 
 describe("inline-args path: per-provider type filter", () => {
-  it("m_window5h|color|red drops on balance ctx", () => {
+  it("m_window|term|short|color|red drops on balance ctx", () => {
     const planLines = renderTemplate(
-      ["m_window5h|color|red"],
+      ["m_window|term|short|color|red"],
       ctxFor("plan"),
     );
     assert.equal(planLines.length, 1);
     assert.ok(planLines[0]!.includes("30%"));
     const balanceLines = renderTemplate(
-      ["m_window5h|color|red"],
+      ["m_window|term|short|color|red"],
       ctxFor("balance"),
     );
     assert.deepEqual(balanceLines, []);
@@ -212,7 +210,7 @@ describe("composition: a balance ctx with mixed-type template", () => {
     // the balance one must render, and the s_0 separators between
     // them must collapse cleanly (no orphan "·").
     const balance = renderTemplate(
-      ["m_modeLabel", "s_0", "m_window5h", "s_0", "m_window7d",
+      ["m_modeLabel", "s_0", "m_window|term|short", "s_0", "m_window|term|mid",
         "s_0", "m_balance"],
       ctxFor("balance"),
     );
@@ -227,7 +225,7 @@ describe("composition: a balance ctx with mixed-type template", () => {
 
   it("renders plan modules; skips m_balance", () => {
     const plan = renderTemplate(
-      ["m_modeLabel", "s_0", "m_window5h", "s_0", "m_window7d",
+      ["m_modeLabel", "s_0", "m_window|term|short", "s_0", "m_window|term|mid",
         "s_0", "m_balance"],
       ctxFor("plan"),
     );
@@ -245,15 +243,15 @@ describe("composition: a balance ctx with mixed-type template", () => {
     // the display-mode label). This is the new third providerType
     // value that didn't exist in Phase 1.
     const unknown = renderTemplate(
-      ["m_modeLabel", "s_0", "m_window5h", "s_0", "m_window7d",
+      ["m_modeLabel", "s_0", "m_window|term|short", "s_0", "m_window|term|mid",
         "s_0", "m_balance"],
       ctxFor("unknown"),
     );
     assert.equal(unknown.length, 1);
     const text = strip(unknown[0]!);
     assert.ok(text.startsWith("Usage:"), `got: ${text}`);
-    assert.ok(!text.includes("30%"), `got: ${text} (m_window5h leaked)`);
-    assert.ok(!text.includes("50%"), `got: ${text} (m_window7d leaked)`);
+    assert.ok(!text.includes("30%"), `got: ${text} (m_window|term|short leaked)`);
+    assert.ok(!text.includes("50%"), `got: ${text} (m_window|term|mid leaked)`);
     assert.ok(!text.includes("$25"), `got: ${text} (m_balance leaked)`);
   });
 });

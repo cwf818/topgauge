@@ -53,7 +53,7 @@ import { join, dirname } from "node:path";
 import { execFileSync } from "node:child_process";
 import { __resetGitInfoCacheForTest } from "./git-info.ts";
 import type { TokenSnapshot } from "./types.ts";
-import type { Window } from "./render.ts";
+import type { Interval } from "./render.ts";
 import * as diagnostics from "./diagnostics.ts";
 
 const STALE = "\x1b[90m";
@@ -85,19 +85,50 @@ const fakeSnapshot = (overrides: Partial<TokenSnapshot> = {}): TokenSnapshot => 
   ...overrides,
 });
 
+// Bridge v0.8.x Window { pct, resetAt, resetStartAt, resetDurationMs }
+// literals used throughout this file to the v0.9.0 Interval shape.
+// Defaults windowId/label to "5h" so 7d callers pass it explicitly.
+type LegacyWin = {
+  pct: number;
+  resetAt?: string | null;
+  resetStartAt?: string | null;
+  resetDurationMs?: number | null;
+};
+function legacyToIv(
+  w: LegacyWin | null | undefined,
+  label: "5h" | "7d" | "30d" = "5h",
+): Interval | null {
+  if (!w) return null;
+  return {
+    windowId: label,
+    label,
+    startAt: w.resetStartAt ? Date.parse(w.resetStartAt) : null,
+    endAt: w.resetAt ? Date.parse(w.resetAt) : null,
+    intervalMs: w.resetDurationMs ?? null,
+    usedPercent: w.pct,
+    remainingPercent: 100 - w.pct,
+    remainingQuota: null,
+    usedQuota: null,
+    limitQuota: null,
+  };
+}
+
 // renderTemplate needs the full RenderContext. Default seps are
 // [" ", "·"] so "s_space" → " " and "s_dot" → "·". Tests don't care about
-// fiveHour/weekly/balance — we only exercise m_token* paths.
+// shortInterval/midInterval/longInterval/balance — we only exercise
+// m_token* paths.
 const ctxFor = (
   tokens: TokenSnapshot | null,
-  fiveHour: Window | null = null,
-  weekly: Window | null = null,
+  shortInterval: Interval | null = null,
+  midInterval: Interval | null = null,
+  longInterval: Interval | null = null,
   providerType: "plan" | "balance" | "unknown" = "plan",
 ) => ({
   mode: "used" as const,
   nowMs: 1_000_000,
-  fiveHour,
-  weekly,
+  shortInterval,
+  midInterval,
+  longInterval,
   balance: null,
   ageMs: null,
   stale: false,
@@ -2694,18 +2725,18 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     assert.equal(strip(out), "░░░░░░░░ 0%");
   });
 
-  it("m_window5h|nulldrop|false renders gray '░░░░░░░░ 0%' when fiveHour is null", () => {
-    // fiveHour is null → placeholder fires.
+  it("m_window|term|short|nulldrop|false renders gray '░░░░░░░░ 0%' when shortInterval is null", () => {
+    // shortInterval is null → placeholder fires.
     const out = renderTemplate(
-      ["m_window5h|nulldrop|false"],
+      ["m_window|term|short|nulldrop|false"],
       ctxFor(null, null, null),
     ).join("\n");
     assert.equal(strip(out), "░░░░░░░░ 0%");
   });
 
-  it("m_window7d|nulldrop|false renders gray '░░░░░░░░ 0%' when weekly is null", () => {
+  it("m_window|term|mid|nulldrop|false renders gray '░░░░░░░░ 0%' when midInterval is null", () => {
     const out = renderTemplate(
-      ["m_window7d|nulldrop|false"],
+      ["m_window|term|mid|nulldrop|false"],
       ctxFor(null, null, null),
     ).join("\n");
     assert.equal(strip(out), "░░░░░░░░ 0%");
@@ -3351,21 +3382,21 @@ describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
 
   it("m_template|foo with ctx.providerType='plan' expands the registered fragment", () => {
     __resetForTest({
-      lineTemplates: { foo: ["m_window5h"] },
+      lineTemplates: { foo: ["m_window|term|short"] },
     });
-    const out = renderTemplate(["m_template|foo"], ctxFor(null, { pct: 42 }));
-    // m_window5h at 42% should land in band 1 (orange) per the
+    const out = renderTemplate(["m_template|foo"], ctxFor(null, legacyToIv({ pct: 42 })));
+    // m_window|term|short at 42% should land in band 1 (orange) per the
     // default band thresholds. Strip ANSI for stability.
     assert.match(out.map(strip).join("\n"), /42%/);
   });
 
   it("m_template|foo with ctx.providerType='balance' wants type|plan → drops", () => {
     __resetForTest({
-      lineTemplates: { foo: ["m_window5h"] },
+      lineTemplates: { foo: ["m_window|term|short"] },
     });
     const out = renderTemplate(
       ["m_template|foo|type|plan"],
-      ctxFor(null, null, null, "balance"),
+      ctxFor(null, null, null, null, "balance"),
     );
     // Dropped because providerType=balance but type wants plan.
     // The dropped chunk leaves an empty array (separators are also
@@ -3375,11 +3406,11 @@ describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
 
   it("m_template|foo with ctx.providerType='plan' wants type|plan → renders", () => {
     __resetForTest({
-      lineTemplates: { foo: ["m_window5h"] },
+      lineTemplates: { foo: ["m_window|term|short"] },
     });
     const out = renderTemplate(
       ["m_template|foo|type|plan"],
-      ctxFor(null, { pct: 42 }, null, "plan"),
+      ctxFor(null, legacyToIv({ pct: 42 }), null, null, "plan"),
     );
     assert.match(out.map(strip).join("\n"), /42%/);
   });
@@ -3389,15 +3420,15 @@ describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
     // same semantics). Pre-v0.8.15 configs that wrote
     // `m_template|<key>|mode|plan` keep rendering byte-for-byte.
     __resetForTest({
-      lineTemplates: { foo: ["m_window5h"] },
+      lineTemplates: { foo: ["m_window|term|short"] },
     });
     const outLegacy = renderTemplate(
       ["m_template|foo|mode|plan"],
-      ctxFor(null, { pct: 42 }, null, "plan"),
+      ctxFor(null, legacyToIv({ pct: 42 }), null, null, "plan"),
     );
     const outType = renderTemplate(
       ["m_template|foo|type|plan"],
-      ctxFor(null, { pct: 42 }, null, "plan"),
+      ctxFor(null, legacyToIv({ pct: 42 }), null, null, "plan"),
     );
     assert.equal(
       outLegacy.map(strip).join("\n"),
@@ -3413,20 +3444,20 @@ describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
     // who accidentally writes both has a typo in one of them;
     // preferring the newer name keeps the renderer consistent.
     __resetForTest({
-      lineTemplates: { foo: ["m_window5h"] },
+      lineTemplates: { foo: ["m_window|term|short"] },
     });
-    // type=plan, mode=balance → plan wins (m_window5h renders
+    // type=plan, mode=balance → plan wins (m_window|term|short renders
     // because the inner ctx.providerType is "plan" which matches).
     const outPlanWins = renderTemplate(
       ["m_template|foo|type|plan|mode|balance"],
-      ctxFor(null, { pct: 42 }, null, "plan"),
+      ctxFor(null, legacyToIv({ pct: 42 }), null, null, "plan"),
     );
     assert.match(outPlanWins.map(strip).join("\n"), /42%/);
     // type=balance, mode=plan → balance wins (the plan context
     // is filtered out, chunk drops).
     const outBalanceWins = renderTemplate(
       ["m_template|foo|type|balance|mode|plan"],
-      ctxFor(null, null, null, "plan"),
+      ctxFor(null, null, null, null, "plan"),
     );
     assert.deepEqual(outBalanceWins, []);
   });
@@ -3437,16 +3468,16 @@ describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
     // BALANCE ctx drops silently, same behavior as the legacy
     // bare-key path.
     __resetForTest({
-      lineTemplates: { foo: ["m_window5h"] },
+      lineTemplates: { foo: ["m_window|term|short"] },
     });
     const outPlan = renderTemplate(
       ["m_template|foo"],
-      ctxFor(null, { pct: 42 }, null, "plan"),
+      ctxFor(null, legacyToIv({ pct: 42 }), null, null, "plan"),
     );
     assert.match(outPlan.map(strip).join("\n"), /42%/);
     const outBalance = renderTemplate(
       ["m_template|foo"],
-      ctxFor(null, null, null, "balance"),
+      ctxFor(null, null, null, null, "balance"),
     );
     assert.deepEqual(outBalance, []);
   });
@@ -3471,11 +3502,11 @@ describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
     });
     const outWithType = renderTemplate(
       ["m_template|probe|type|plan"],
-      ctxFor(fakeSnapshot(), null, null, "plan"),
+      ctxFor(fakeSnapshot(), null, null, null, "plan"),
     );
     const outBare = renderTemplate(
       ["m_template|probe"],
-      ctxFor(fakeSnapshot(), null, null, "plan"),
+      ctxFor(fakeSnapshot(), null, null, null, "plan"),
     );
     assert.equal(
       outWithType.map(strip).join("\n"),
@@ -3485,7 +3516,7 @@ describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
     // Same identity check for the legacy `mode` alias.
     const outWithMode = renderTemplate(
       ["m_template|probe|mode|plan"],
-      ctxFor(fakeSnapshot(), null, null, "plan"),
+      ctxFor(fakeSnapshot(), null, null, null, "plan"),
     );
     assert.equal(
       outWithMode.map(strip).join("\n"),
@@ -3655,7 +3686,7 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
     // effect on a m_accTokenIn that has data, so just confirm the
     // token doesn't badarg-warn and the inner module renders.
     __resetForTest({
-      lineTemplates: { foo: ["m_window5h"] },
+      lineTemplates: { foo: ["m_window|term|short"] },
     });
     let captured = "";
     const err = process.stderr as unknown as { write: (chunk: string) => boolean };
@@ -3665,7 +3696,7 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
       return true;
     };
     try {
-      const out = renderTemplate(["m_template|foo|nulldrop|true"], ctxFor(null, { pct: 50 })).join("\n");
+      const out = renderTemplate(["m_template|foo|nulldrop|true"], ctxFor(null, legacyToIv({ pct: 50 }))).join("\n");
       assert.match(strip(out), /50%/);
       assert.doesNotMatch(captured, /unknown lineTemplate module/);
     } finally {
@@ -3729,9 +3760,9 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
     // The pre-v0.8.7 shape `m_template|<key>` (no other args) must
     // keep expanding the fragment with no passThrough.
     __resetForTest({
-      lineTemplates: { foo: ["m_window5h"] },
+      lineTemplates: { foo: ["m_window|term|short"] },
     });
-    const out = renderTemplate(["m_template|foo"], ctxFor(null, { pct: 10 })).join("\n");
+    const out = renderTemplate(["m_template|foo"], ctxFor(null, legacyToIv({ pct: 10 }))).join("\n");
     assert.match(strip(out), /10%/);
   });
 
@@ -4971,12 +5002,13 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
       ["m_sumTokenIn|window|5h|align|true"],
       ctxFor(
         fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" }),
-        {
+        legacyToIv({
           pct: 10,
           resetAt,
           resetStartAt,
           resetDurationMs: 5 * 3600_000,
-        },
+        }),
+        null,
         null,
       ),
     ).join("\n");
@@ -5015,12 +5047,13 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
       ["m_sumTokenIn"], // bare form — default align=false now
       ctxFor(
         fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" }),
-        {
+        legacyToIv({
           pct: 10,
           resetAt,
           resetStartAt,
           resetDurationMs: 5 * 3600_000,
-        },
+        }),
+        null,
         null,
       ),
     ).join("\n");
@@ -5055,12 +5088,13 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
       ["m_sumTokenIn|window|5h|align|false"],
       ctxFor(
         fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" }),
-        {
+        legacyToIv({
           pct: 10,
           resetAt,
           resetStartAt,
           resetDurationMs: 5 * 3600_000,
-        },
+        }),
+        null,
         null,
       ),
     ).join("\n");
@@ -6527,12 +6561,13 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
       ["m_sumStartTime|window|5h|model|active|align|true"],
       ctxFor(
         fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" }),
-        {
+        legacyToIv({
           pct: 10,
           resetAt: anchorEnd,
           resetStartAt: anchorStart,
           resetDurationMs: 5 * 3600_000,
-        },
+        }),
+        null,
         null,
       ),
     ).join("\n");
@@ -6573,12 +6608,13 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
       ctxFor(
         fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" }),
         null,
-        {
+        legacyToIv({
           pct: 10,
           resetAt: weeklyEnd,
           resetStartAt: weeklyStart,
           resetDurationMs: 7 * 86400_000,
-        },
+        }, "7d"),
+        null,
       ),
     ).join("\n");
     // Plan close (now + 5d) wins over empirical (now - 1d).
@@ -6609,12 +6645,13 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
       ["m_sumStartTime|window|5h|model|active|align|false"],
       ctxFor(
         fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" }),
-        {
+        legacyToIv({
           pct: 10,
           resetAt: anchorEnd,
           resetStartAt: anchorStart,
           resetDurationMs: 5 * 3600_000,
-        },
+        }),
+        null,
         null,
       ),
     ).join("\n");
@@ -6648,7 +6685,8 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
         fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" }),
         // Window present but resetStartAt absent — package
         // returned only usedPct, no time anchor.
-        { pct: 10, resetAt: "invalid" as any, resetStartAt: undefined as any },
+        legacyToIv({ pct: 10, resetAt: "invalid" as any, resetStartAt: undefined as any }),
+        null,
         null,
       ),
     ).join("\n");

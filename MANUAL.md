@@ -13,12 +13,12 @@ A template is a JSON array of tokens. Two kinds exist:
 | `m_*` | Display module — colored chunk.  | See the per-module table below.                      |
 | `s_*` | Separator reference — literal.   | See the separator table below.                       |
 
-Tokens can be written in **bare form** (`"m_window5h"`) or **inline-arg
-form** (`"m_window5h|color|red|display|remaining"`). Inline args
+Tokens can be written in **bare form** (`"m_window|term|short"`) or **inline-arg
+form** (`"m_window|term|short|color|red|display|remaining"`). Inline args
 override per-token; bare form falls back to global config.
 
 > **Inline-arg separator is `|` (pipe) since v0.7.1.** The older
-> `:` form (`"m_window5h:color:red"`) is NOT recognized by the
+> `:` form (`"m_window|term|short:color:red"`) is NOT recognized by the
 > dispatcher — `parseInlineArgs` splits on `|` only. This is
 > intentional: `:` collides with rendered text (e.g. `Usage:`,
 > `api:5s`, `5h:--`). The first `|` separates the prefix from the
@@ -49,12 +49,13 @@ exceptions are called out in §3.
 | ----------- | ------------------------------------------------------------------------------ | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `color`     | SGR string OR shortcut (`red`, `green`, `yellow`, `blue`, `cyan`, `magenta`, `white`, `gray`, `orange`, `purple`, plus `rainbow`/`rand-rainbow`/`hue` for `m_quote`) | module's natural palette | Replaces the module's band color. WINS over stale-color / placeholder-color.                                                       |
 | `nulldrop`  | `true` \| `false`                                                              | `false`            | `false` → keep placeholder slot when data is missing (`STALE_COLOR`-wrapped `n/a` / `-- <unit>` / empty gauge). `true` → drop the chunk (adjacent separators trimmed). |
-| `display`   | `used` \| `remaining`                                                          | global `display`   | **Window modules only** (`m_window5h`, `m_window7d`). Flip between "show used %" and "show remaining %". Inline wins over config.                  |
+| `display`   | `used` \| `remaining`                                                          | global `display`   | **Window modules only** (`m_window|term|short|mid|long`). Flip between "show used %" and "show remaining %". Inline wins over config.              |
+| `term`      | `short` \| `mid` \| `long`                                                     | `short`            | **`m_window` / `m_countdown` / `m_quota` only (v0.9.0+).** Selects which `intervals.<term>` slot to read. `short` → 5h, `mid` → 7d, `long` → 30d (or whatever the provider's `intervals` config binds). |
 | `type`      | `plan` \| `balance`                                                            | `plan`             | **`m_template` only.** Filter sub-template by provider `TYPE`. **Recommended name (v0.8.15+).** The legacy alias `mode` is still accepted; when both are present on the same token, `type` wins. Neither arg is forwarded via `passThrough` (§1.2). |
 | `scope`     | `ccsession` \| `session` \| `project` \| `model`                              | `ccsession`        | **`m_acc*` only.** Pick which slot of the four-layer accumulator to read. See §3.                                                                  |
 | `model`     | `active` \| `all` \| `<name>`                                                  | `active`           | **`m_sum*` only.** Narrow the JSONL scan to one model identity or every row.                                                                       |
 | `window`    | `<dhms>` (e.g. `5h`, `7d`, `1h30m`) \| `all`                                   | `5h`               | **`m_sum*` only.** Time window for the JSONL scan.                                                                                                  |
-| `align`     | `true` \| `false`                                                              | `true`             | **`m_sum*` only.** When `true` AND window ∈ {5h, 7d} AND `ctx.fiveHour/weekly.resetStartAt` is set, use the plan-aligned window.                   |
+| `align`     | `true` \| `false`                                                              | `true`             | **`m_sum*` only.** When `true` AND window ∈ {5h, 7d} AND `ctx.shortInterval/midInterval.resetStartAt` is set, use the plan-aligned window.        |
 | `freq`      | `s` \| `m` \| `h` \| `d` \| `<digits><unit>`                                   | `h`                | **`m_quote` only.** Bucket size for quote rotation.                                                                                                 |
 | `address`   | URL string                                                                     | `""` (empty)       | **`m_quote` only (v0.8.18+, v0.8.19 fallback, v0.8.20 diagnostics).** When non-empty, fetch the URL via `curl -sSf --max-time 5` and use the body as the quote source instead of the bundled `quotes.json`. The fetched body is JSON-parsed; see `fields` for how the strings are extracted. On any failure (curl exit, non-JSON body, all paths miss), the renderer falls back to the local `quotes.json` list so the user always sees something. Each failure also appends a `warning` row to `diagnostics.jsonl` (gated on `TOPGAUGE_CC_DIAGNOSTICS_ENABLE=1`) under `source = "m_quote"` so a postmortem can grep why the local fallback fired. |
 | `fields`    | Comma-separated list of dot-paths (e.g. `hitokoto,from,from_who`)               | `""` (empty)       | **`m_quote` only (v0.8.19+).** Each path is walked independently against the JSON response (object keys / array indices / strings — string terminates the walk, anything after is ignored). The collected strings are rendered as `field1: field2:` (colon-joined, trailing colon). Pairs with `address`. v0.8.18's singular `field` is REMOVED. |
@@ -119,7 +120,7 @@ six built-in aliases (named form).
 **Rule**: the named form always renders the built-in character, even
 if the user has overridden `separators[0]` to `"x"`. This makes
 self-documenting templates (e.g.
-`["m_window5h", "s_space", "m_countdown5h"]`) immune to user-config
+`["m_window|term|short", "s_space", "m_countdown|term|short"]`) immune to user-config
 reshuffles.
 
 ### 2.3 Separator placement rules
@@ -159,10 +160,9 @@ provider-less ticks via the `unknown` TYPE fallback).
 | ---------------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------- | ------------------ | -------------------------------------- | ----- |
 | **Provider data (plan / balance)** |                                                                                      |                                                           |                    |                                        |       |
 | `m_modeLabel`                      | `Usage:` (plan) / `Remain:` (plan-display="remaining") / `Balance:` (balance).       | derived from `providerType` + global `display`            | (always emits)     | `color`, `nulldrop`                    | First item in default line templates.   |
-| `m_window5h`                       | Bar + colored % of 5-hour window: `▓░░░░░░░ 9%`.                                    | `fiveHour.pct` / `fiveHour.resetAt`                       | plan               | `color`, `display`, `nulldrop`         | `stale=true` dims bar + tail to `STALE_COLOR`. `display\|remaining` flips the % sign. |
-| `m_window7d`                       | Same shape for 7-day window.                                                         | `weekly.pct` / `weekly.resetAt`                           | plan               | `color`, `display`, `nulldrop`         | Same stale / display semantics as `m_window5h`. |
-| `m_countdown5h`                    | `(4h47m🕔 5h)` reset countdown with fill-state arrow.                                | `fiveHour.resetAt`, `fiveHour.resetStartAt`, `fiveHour.resetDurationMs` | plan    | `color`, `nulldrop`                    | Arrow from `resetArrows` indexed by `remainingMs / resetDurationMs`. Drops if no `resetAt`. |
-| `m_countdown7d`                    | `(2d8h🕔 7d)` for 7-day window.                                                      | `weekly.resetAt`, …                                       | plan               | `color`, `nulldrop`                    | Same arrow semantics as `m_countdown5h`. |
+| `m_window\|term\|short\|mid\|long` (default `term=short`) | Bar + colored % of the chosen interval, e.g. `▓░░░░░░░ 9%`.   | `intervals.<term>.usedPercent` / `.remainingPercent` + `.startAt` / `.endAt` (projected through `intervalToWindow`) | plan    | `color`, `display`, `term`, `nulldrop` | v0.9.0+. `term=short` reads `intervals.shortInterval` (default 5h), `term=mid` reads `intervals.midInterval` (default 7d), `term=long` reads `intervals.longInterval` (default 30d). `stale=true` dims bar + tail to `STALE_COLOR`. `display\|remaining` flips the % sign. |
+| `m_countdown\|term\|short\|mid\|long` (default `term=short`) | `(4h47m🕔 5h)` reset countdown with fill-state arrow.    | `intervals.<term>.startAt` / `.endAt` / `.intervalMs`     | plan               | `color`, `term`, `nulldrop`            | v0.9.0+. Arrow from `resetArrows` indexed by `remainingMs / resetDurationMs`. Drops if no `startAt`/`endAt`/`intervalMs`. Renders `<label>:--` placeholder when data is missing and `nulldrop` is false. |
+| `m_quota\|term\|short\|mid\|long` (default `term=short`) | Quota display, e.g. `quota(5h):100/500` / `quota(5h):0/500` / `quota(5h):100/--`. | `intervals.<term>.usedQuota` / `.limitQuota`              | plan               | `color`, `term`, `nulldrop`            | v0.9.0+. Body rules: `used+limit` → `used/limit`; `limit only` → `0/limit`; `used only` → `used/--`. All three null → drop. |
 | `m_balance`                        | `CNY 110.00 · USD 5.00`.                                                            | `balance.entries[]`                                       | balance            | `color`, `nulldrop`                    | Color band driven by the LOWEST `totalBalance`. |
 | `m_age`                            | `🔗 5m ago` (fresh) / `⛓️‍💥 5m ago` (stale).                                                | `ageMs`, `stale`                                          | agnostic           | `color`, `nulldrop`                    | Emits at most once per render (ref-deduped across `m_template|` recursion). Forced-visibility fallback appends `⛓️‍💥 X ago` only when the user did NOT list `m_age` and `stale=true`. |
 | `m_version`                        | `v0.8.14` plugin version.                                                            | `version` from `.claude-plugin/plugin.json`               | agnostic           | `color`, `nulldrop`                    | Emits nothing when version string is empty. |
@@ -261,11 +261,13 @@ Placeholder shapes per module class:
 | pure number                   | `<prefix>n/a` (e.g. `in:n/a`)             |
 | number + unit                 | `-- <unit>` (e.g. `5h:--`)                |
 | gauge (window)                | `░░░░░░░░ 0%` (gray)                       |
+| countdown / quota             | `<label>:--` (gray) — e.g. `5h:--` for `m_countdown\|term\|short`, `quota(5h):--` for `m_quota\|term\|short` |
 | bare string                   | `n/a`                                     |
 | ratio (hit-rate family)       | `<prefix>n/a%` (e.g. `hit:n/a%`)          |
 
-`m_window5h`, `m_window7d` always render the gauge shape with the
-`STALE_COLOR` band when stale, regardless of `display` mode.
+`m_window|term|short|mid|long` (any term) always render the gauge
+shape with the `STALE_COLOR` band when stale, regardless of `display`
+mode.
 
 **Value-zero rule** (since v0.8.x): when the module's data path yields
 the literal number `0` (not `null`), the module renders the value as
@@ -353,16 +355,16 @@ The `_` prefix marks a built-in preset — user-defined
 
 ```jsonc
 // Minimal: just the mode label and 5h window.
-"statuslineTemplate": ["m_modeLabel", "s_space", "m_window5h"]
+"statuslineTemplate": ["m_modeLabel", "s_space", "m_window|term|short"]
 
 // Default-style (with named separators between modules).
 "statuslineTemplate": [
   "m_modeLabel|color|yellow",
   "s_space",
-  "m_window5h",
+  "m_window|term|short",
   "s_dot",
   "s_space",
-  "m_window7d",
+  "m_window|term|mid",
   "s_space",
   "m_age|color|gray"
 ]
@@ -375,14 +377,14 @@ The `_` prefix marks a built-in preset — user-defined
 ],
 "lineTemplates": {
   "plan": [
-    "m_window5h|color|red|display|remaining",
+    "m_window|term|short|color|red|display|remaining",
     "s_space",
-    "m_countdown5h",
+    "m_countdown|term|short",
     "s_dot",
     "s_space",
-    "m_window7d",
+    "m_window|term|mid",
     "s_space",
-    "m_countdown7d",
+    "m_countdown|term|mid",
     "s_newline",
     "m_sumTokenIn|window|5h|align|true",
     "s_dot",

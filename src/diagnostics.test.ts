@@ -811,13 +811,18 @@ describe("diagnostics — integration with fetchRemains / fetchBalance (v0.6.x+)
       BASE_URL_COMPARED_TO: "https://x",
       COMPARE_METHOD: "EXACT" as const,
       ENDPOINT: "https://x/y",
-      parameters: {
-        remainingPercentInterval: "model_remains.0.current_interval_remaining_percent",
-        remainingPercentWeekly:   "model_remains.0.current_weekly_remaining_percent",
-        startAtInterval:          "model_remains.0.start_time",
-        endAtInterval:            "model_remains.0.end_time",
-        startAtWeekly:            "model_remains.0.weekly_start_time",
-        endAtWeekly:              "model_remains.0.weekly_end_time",
+      intervals: {
+        shortInterval: {
+          remainingPercent: "model_remains.0.current_interval_remaining_percent",
+          startAt:          "model_remains.0.start_time",
+          endAt:            "model_remains.0.end_time",
+        },
+        midInterval: {
+          remainingPercent: "model_remains.0.current_weekly_remaining_percent",
+          startAt:          "model_remains.0.weekly_start_time",
+          endAt:            "model_remains.0.weekly_end_time",
+        },
+        longInterval: {},
       },
     };
     globalThis.fetch = (async () =>

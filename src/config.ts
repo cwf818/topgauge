@@ -14,7 +14,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { CompareMethod, ProviderEntry, ProviderType } from "./types.ts";
+import type { CompareMethod, IntervalConfig, IntervalKey, IntervalSlotConfig, ProviderEntry, ProviderType } from "./types.ts";
 import * as diagnostics from "./diagnostics.ts";
 
 // ----- Defaults — must match today's hardcoded values exactly -----
@@ -59,9 +59,9 @@ const DEFAULT_LINE_TEMPLATE: {
   // with `s_space + s_dot + s_space`, both producing " · ".
   plan: [
     "m_modeLabel", "s_space",
-    "m_window5h", "s_space", "m_countdown5h",
+    "m_window|term|short", "s_space", "m_countdown|term|short",
     "s_space", "s_dot", "s_space",
-    "m_window7d", "s_space", "m_countdown7d",
+    "m_window|term|mid", "s_space", "m_countdown|term|mid",
   ],
   balance: ["m_modeLabel", "s_space", "m_balance"],
 };
@@ -173,32 +173,32 @@ export const DEFAULT_LINE_TEMPLATES: LineTemplates = {
   // ----- Built-in presets (v0.8.14+) -----
   _1line: [
     "m_modeLabel", "s_space",
-    "m_window5h", "s_space", "m_countdown5h",
+    "m_window|term|short", "s_space", "m_countdown|term|short",
     "s_space", "s_dot", "s_space",
-    "m_window7d", "s_space", "m_countdown7d",
+    "m_window|term|mid", "s_space", "m_countdown|term|mid",
   ],
   // alias of _1line — same shape, more discoverable name
   _simple: [
     "m_modeLabel", "s_space",
-    "m_window5h", "s_space", "m_countdown5h",
+    "m_window|term|short", "s_space", "m_countdown|term|short",
     "s_space", "s_dot", "s_space",
-    "m_window7d", "s_space", "m_countdown7d",
+    "m_window|term|mid", "s_space", "m_countdown|term|mid",
   ],
   // single line with "Usage:" label prefix
   _simple_alone: [
     "m_label:Usage:color:yellow", "s_newline",
-    "m_window5h:nulldrop:false", "s_space",
-    "m_countdown5h:nulldrop:false",
+    "m_window|term|short|nulldrop|false", "s_space",
+    "m_countdown|term|short|nulldrop|false",
     "s_space", "s_dot:color:red", "s_space",
-    "m_window7d:nulldrop:false", "s_space",
-    "m_countdown7d:nulldrop:false",
+    "m_window|term|mid|nulldrop|false", "s_space",
+    "m_countdown|term|mid|nulldrop|false",
   ],
   // 2 lines: line 0 = tokenplan, line 1 = context & token.
   _standard: [
     "m_modeLabel", "s_space",
-    "m_window5h", "s_space", "m_countdown5h",
+    "m_window|term|short", "s_space", "m_countdown|term|short",
     "s_space", "s_dot", "s_space",
-    "m_window7d", "s_space", "m_countdown7d",
+    "m_window|term|mid", "s_space", "m_countdown|term|mid",
     "s_newline",
     "m_sessionApiDuration:nulldrop:false", "s_space",
     "m_tokenIn:nulldrop:false", "s_space",
@@ -216,11 +216,11 @@ export const DEFAULT_LINE_TEMPLATES: LineTemplates = {
     "m_ccVersion:nulldrop:false",
     "s_newline",
     "m_label:Usage:color:yellow", "s_newline",
-    "m_window5h:nulldrop:false", "s_space",
-    "m_countdown5h:nulldrop:false",
+    "m_window|term|short|nulldrop|false", "s_space",
+    "m_countdown|term|short|nulldrop|false",
     "s_space", "s_dot:color:red", "s_space",
-    "m_window7d:nulldrop:false", "s_space",
-    "m_countdown7d:nulldrop:false",
+    "m_window|term|mid|nulldrop|false", "s_space",
+    "m_countdown|term|mid|nulldrop|false",
     "s_newline",
     "m_label:Context:color:yellow", "s_newline",
     "m_sessionApiDuration:nulldrop:false", "s_space",
@@ -242,11 +242,11 @@ export const DEFAULT_LINE_TEMPLATES: LineTemplates = {
     "m_ccVersion:nulldrop:false",
     "s_newline",
     "m_label:Usage:color:yellow", "s_newline",
-    "m_window5h:nulldrop:false", "s_space",
-    "m_countdown5h:nulldrop:false",
+    "m_window|term|short|nulldrop|false", "s_space",
+    "m_countdown|term|short|nulldrop|false",
     "s_space", "s_dot:color:red", "s_space",
-    "m_window7d:nulldrop:false", "s_space",
-    "m_countdown7d:nulldrop:false",
+    "m_window|term|mid|nulldrop|false", "s_space",
+    "m_countdown|term|mid|nulldrop|false",
     "s_newline",
     "m_label:Context:color:yellow", "s_newline",
     "m_sessionApiDuration:nulldrop:false", "s_space",
@@ -268,11 +268,11 @@ export const DEFAULT_LINE_TEMPLATES: LineTemplates = {
     "m_ccVersion:nulldrop:false",
     "s_newline",
     "m_label:Usage:color:yellow", "s_newline",
-    "m_window5h:nulldrop:false", "s_space",
-    "m_countdown5h:nulldrop:false",
+    "m_window|term|short|nulldrop|false", "s_space",
+    "m_countdown|term|short|nulldrop|false",
     "s_space", "s_dot:color:red", "s_space",
-    "m_window7d:nulldrop:false", "s_space",
-    "m_countdown7d:nulldrop:false",
+    "m_window|term|mid|nulldrop|false", "s_space",
+    "m_countdown|term|mid|nulldrop|false",
     "s_newline",
     "m_label:Context:color:yellow", "s_newline",
     "m_sessionApiDuration:nulldrop:false", "s_space",
@@ -506,6 +506,7 @@ const DEFAULT_PROVIDERS: Record<string, ProviderEntry> = {
     COMPARE_METHOD: "EXACT",
     ENDPOINT: "https://api.deepseek.com/user/balance",
     config: {},
+    intervals: {},
   },
 };
 
@@ -592,6 +593,11 @@ const DEFAULT_CONFIG: {
     // m_sumEndTime (the cross-project max of per-row lastAt).
     // Default "end:" mirrors the startTime default.
     labelEndTime: string;
+    // v0.9.0+ — quota module prefix. Read by `m_quota` (per-term
+    // via the new `|term|short|mid|long` inline arg). Default
+    // `"quota:"` preserves a clean axis to override via
+    // config.json. Renders as e.g. `quota(5h):123/500`.
+    labelQuota: string;
   };
   colors: typeof DEFAULT_COLORS;
   cacheHitColors: typeof DEFAULT_CACHE_HIT_COLORS;
@@ -620,6 +626,13 @@ const DEFAULT_CONFIG: {
   // v0.2.21: declarative provider registry. See DEFAULT_PROVIDERS
   // above and src/providers.ts for the matcher / dispatcher.
   providers: Record<string, ProviderEntry>;
+  // v0.9.0+ — top-level default intervals config. Each key is one
+  // of `shortInterval` / `midInterval` / `longInterval`. Per-provider
+  // `intervals` blocks deep-merge on top of these defaults (see
+  // validateProviderEntry). The top-level defaults start empty —
+  // built-in minimax defaults are applied per-provider inside
+  // validateProviderEntry (gated on `ENDPOINT.includes("minimaxi.com")`).
+  intervals: IntervalConfig;
   // v0.8.21+ — `m_quote|address|…` fetcher passes `--insecure` /
   // `-k` to curl so self-signed / expired / untrusted-CA HTTPS
   // endpoints work without patching the system CA bundle. Always
@@ -670,6 +683,10 @@ const DEFAULT_CONFIG: {
     // pure v0.8.24 conventions.
     labelStartTime: "start:",
     labelEndTime: "end:",
+    // v0.9.0+ — quota module prefix default. Matches the
+    // v0.8.x "labelFoo:" convention (trailing colon included
+    // so the renderer can concat without a separator).
+    labelQuota: "quota:",
   },
   colors: DEFAULT_COLORS,
   cacheHitColors: DEFAULT_CACHE_HIT_COLORS,
@@ -685,6 +702,11 @@ const DEFAULT_CONFIG: {
   tokenFormat: DEFAULT_TOKEN_FORMAT,
   version: "",
   providers: DEFAULT_PROVIDERS,
+  intervals: {
+    shortInterval: {},
+    midInterval: {},
+    longInterval: {},
+  },
   quoteInsecureTls: false,
 };
 
@@ -970,6 +992,9 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
         // Net-new axes (no v0.8.23 default to preserve).
         "labelStartTime",
         "labelEndTime",
+        // v0.9.0+ — quota module prefix. Net-new axis; default
+        // "quota:" preserved (see DEFAULT_CONFIG.labels above).
+        "labelQuota",
       ];
       for (const f of fields) {
         if (typeof lm[f] === "string") {
@@ -1009,6 +1034,29 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
       }
     } else {
       warn("labels must be an object; using default");
+    }
+  }
+
+  // v0.9.0+ — `intervals` top-level block. Each key is one of
+  // `shortInterval` / `midInterval` / `longInterval`. Per-interval
+  // slot validation mirrors the per-provider `intervals` validator
+  // (shared `validateIntervalSlot` helper below). Built-in
+  // minimax defaults are applied per-provider inside
+  // `validateProviderEntry`, NOT here — top-level defaults start
+  // empty so a user who doesn't ship a provider-specific
+  // override sees "no data" rather than a surprise minimax
+  // default firing for a non-minimax URL.
+  if ("intervals" in raw) {
+    const ivRaw = raw.intervals;
+    if (!ivRaw || typeof ivRaw !== "object" || Array.isArray(ivRaw)) {
+      warn("intervals must be an object; using default");
+    } else {
+      const ivm = ivRaw as Record<string, unknown>;
+      const keys: IntervalKey[] = ["shortInterval", "midInterval", "longInterval"];
+      for (const k of keys) {
+        if (!(k in ivm)) continue;
+        out.intervals[k] = validateIntervalSlot(k, ivm[k], out.intervals[k] ?? {});
+      }
     }
   }
 
@@ -1581,6 +1629,83 @@ function mergeConfig(raw: Record<string, unknown>): Config {
   return out;
 }
 
+// v0.9.0+ — validate one IntervalSlotConfig. Used by both the
+// top-level `intervals` validator (applyOverrides above) and the
+// per-provider `intervals` validator (validateProviderEntry
+// below). Returns the merged-and-validated slot config (deep-
+// merged over the supplied `base`). Drops bad fields with a
+// stderr warn; never throws — the caller decides whether to
+// proceed with the partially-validated slot.
+//
+// Field rules:
+//   windowId, label, the 7 path fields → string-only
+//   intervalS, intervalMs              → positive finite number
+//
+// The 7 path fields are stored as raw strings here; runtime
+// resolution (against the provider response) happens in
+// src/api.ts:parseRemains via the path-expr.ts grammar. We don't
+// pre-validate paths at config-load time (the response shape
+// isn't known yet) — only the SHAPE of each path field
+// (string-only).
+function validateIntervalSlot(
+  key: IntervalKey,
+  raw: unknown,
+  base: IntervalSlotConfig,
+): IntervalSlotConfig {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    warn(`intervals.${key} must be an object; using default`);
+    return base;
+  }
+  const sm = raw as Record<string, unknown>;
+  const next: IntervalSlotConfig = { ...base };
+  // String fields — windowId / label / the 7 path expressions.
+  const stringFields = [
+    "windowId", "label",
+    "remainingPercent", "usedPercent",
+    "startAt", "endAt",
+    "remainingQuota", "usedQuota", "limitQuota",
+  ] as const;
+  for (const f of stringFields) {
+    if (typeof sm[f] === "string") {
+      (next as Record<string, unknown>)[f] = sm[f];
+    } else if (f in sm) {
+      warn(`intervals.${key}.${f} must be a string; using default`);
+    }
+  }
+  // Numeric fields — intervalS / intervalMs.
+  const numericFields = ["intervalS", "intervalMs"] as const;
+  for (const f of numericFields) {
+    if (typeof sm[f] === "number" && Number.isFinite(sm[f]) && (sm[f] as number) > 0) {
+      (next as Record<string, unknown>)[f] = sm[f];
+    } else if (f in sm) {
+      warn(`intervals.${key}.${f} must be a positive number; using default`);
+    }
+  }
+  return next;
+}
+
+// v0.9.0+ — built-in default intervals for the minimax provider.
+// Applied inside `validateProviderEntry` when the provider
+// matches the minimax URL gate (`TYPE === "TOKEN_PLAN" &&
+// ENDPOINT.includes("minimaxi.com")`). The user's per-provider
+// `intervals` block deep-merges on top of these defaults via
+// `validateIntervalSlot`. The longInterval term has no built-in
+// minimax mapping (the /v1/token_plan/remains endpoint doesn't
+// ship a 30-day window) — its slot defaults to `{}`.
+const MINIMAX_DEFAULT_INTERVALS: IntervalConfig = {
+  shortInterval: {
+    remainingPercent: "model_remains.0.current_interval_remaining_percent",
+    startAt: "model_remains.0.start_time",
+    endAt: "model_remains.0.end_time",
+  },
+  midInterval: {
+    remainingPercent: "model_remains.0.current_weekly_remaining_percent",
+    startAt: "model_remains.0.weekly_start_time",
+    endAt: "model_remains.0.weekly_end_time",
+  },
+  longInterval: {},
+};
+
 // Validate one ProviderEntry. Returns the validated entry or null if
 // the entry is fatally malformed. The caller (`mergeConfig`) is
 // responsible for filling missing fields from the default entry
@@ -1704,34 +1829,59 @@ function validateProviderEntry(v: unknown): ProviderEntry | null {
     !Array.isArray(e.config)
       ? (e.config as Record<string, unknown>)
       : undefined;
-  // v0.5.0+ — forward the user-supplied `parameters` block (the
-  // data-driven slot→path mapping). When absent we omit the key
-  // entirely so consumers can fall back to DEFAULT_MINIMAX_PARAMETERS
-  // (or empty {} for unknown providers). Validate the shape: must
-  // be a plain object of string→string. Any non-string value
-  // (number, boolean, null, nested object) is a user error — drop
-  // the whole block, fall through to default. We do NOT drop the
-  // entry itself; a partial parameters block that fails validation
-  // is recoverable (default fallback covers minimax), but a missing
-  // TYPE/BASE_URL is not.
-  let validatedParameters: Record<string, string> | undefined;
-  if ("parameters" in e && e.parameters !== undefined) {
-    const p = e.parameters;
-    if (p && typeof p === "object" && !Array.isArray(p)) {
-      const allString = Object.values(p as Record<string, unknown>).every(
-        (v) => typeof v === "string",
-      );
-      if (allString) {
-        validatedParameters = p as Record<string, string>;
-      } else {
-        warn(
-          "provider.parameters must be a string→string map; dropping the block",
-        );
-      }
+  // v0.9.0+ — forward the user-supplied `intervals` block (the
+  // data-driven per-interval slot mapping). Replaces the v0.5.0–
+//  v0.8.x flat `parameters` block. When absent for a TOKEN_PLAN
+  // provider matching the minimax URL gate, we fill in the built-
+  // in MINIMAX_DEFAULT_INTERVALS so the default out-of-the-box
+  // minimax provider keeps working byte-identically. For other
+  // providers with no `intervals` block, the entry has no
+  // intervals data at all (parseRemains falls through to its
+  // null-return contract).
+  //
+  // Per-key validation reuses `validateIntervalSlot` (defined
+  // above) — same shape rules as the top-level `intervals`
+  // validator. Lenient: bad fields drop with a stderr warn; the
+  // entry itself stays loaded.
+  let validatedIntervals: IntervalConfig = {};
+  // First, layer in the minimax built-in defaults when applicable.
+  // These only fire for TOKEN_PLAN providers matching the URL
+  // gate — other providers start with no intervals data so a
+  // misconfigured entry doesn't accidentally inherit minimax
+  // mappings.
+  if (
+    t === "TOKEN_PLAN" &&
+    typeof ep === "string" &&
+    ep.includes("minimaxi.com")
+  ) {
+    validatedIntervals = {
+      shortInterval: { ...MINIMAX_DEFAULT_INTERVALS.shortInterval },
+      midInterval: { ...MINIMAX_DEFAULT_INTERVALS.midInterval },
+      longInterval: { ...MINIMAX_DEFAULT_INTERVALS.longInterval },
+    };
+  }
+  // Then, validate the user-supplied `intervals` block (if any) on
+  // top of the defaults. validateIntervalSlot deep-merges each
+  // present key over the corresponding default slot.
+  if ("intervals" in e && e.intervals !== undefined) {
+    const rawIntervals = e.intervals;
+    if (
+      !rawIntervals ||
+      typeof rawIntervals !== "object" ||
+      Array.isArray(rawIntervals)
+    ) {
+      warn("provider.intervals must be an object; dropping the block");
     } else {
-      warn(
-        "provider.parameters must be an object; dropping the block",
-      );
+      const rIm = rawIntervals as Record<string, unknown>;
+      for (const k of ["shortInterval", "midInterval", "longInterval"] as IntervalKey[]) {
+        if (k in rIm) {
+          validatedIntervals[k] = validateIntervalSlot(
+            k,
+            rIm[k],
+            validatedIntervals[k] ?? {},
+          );
+        }
+      }
     }
   }
   return {
@@ -1740,7 +1890,7 @@ function validateProviderEntry(v: unknown): ProviderEntry | null {
     COMPARE_METHOD: cm as CompareMethod,
     ENDPOINT: ep,
     ...(validatedConfig ? { config: validatedConfig } : {}),
-    ...(validatedParameters ? { parameters: validatedParameters } : {}),
+    ...(validatedIntervals ? { intervals: validatedIntervals } : {}),
     ...(validatedBearer ? { BEARER_KEY: validatedBearer } : {}),
     ...(validatedMethod ? { METHOD: validatedMethod } : {}),
     ...(validatedBody ? { BODY: validatedBody } : {}),

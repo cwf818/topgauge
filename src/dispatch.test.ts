@@ -16,8 +16,9 @@ const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
 // A minimally valid Remains payload (two windows) — enough for the renderer.
 const MINI_DATA: Remains = {
-  fiveHour: { pct: 38, resetAt: null },
-  weekly: { pct: 39, resetAt: null },
+  shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 38, remainingPercent: 62, remainingQuota: null, usedQuota: null, limitQuota: null },
+  midInterval: { windowId: "7d", label: "7d", startAt: null, endAt: null, intervalMs: null, usedPercent: 39, remainingPercent: 61, remainingQuota: null, usedQuota: null, limitQuota: null },
+  longInterval: null,
 };
 
 // A minimally valid Balance payload.
@@ -112,7 +113,7 @@ describe("buildProviderLine — fresh (no age suffix; data just arrived)", () =>
     __resetForTest({
       statuslineTemplate: [
         "m_modeLabel", "s_0",
-        "m_window5h", "s_0", "m_countdown5h",
+        "m_window|term|short", "s_0", "m_countdown|term|short",
         "s_0", "m_age",
       ],
     });
@@ -322,7 +323,7 @@ describe("buildProviderLine — null provider (no ANTHROPIC_BASE_URL match)", ()
     // provider the plan-only ones must drop, the agnostic ones fire.
     __resetForTest({
       statuslineTemplate: [
-        "m_session", "s_0", "m_window5h", "s_0", "m_window7d",
+        "m_session", "s_0", "m_window|term|short", "s_0", "m_window|term|mid",
         "s_0", "m_balance", "s_0", "m_tokenInTotal",
       ],
     });
@@ -337,7 +338,7 @@ describe("buildProviderLine — null provider (no ANTHROPIC_BASE_URL match)", ()
       const text = strip(line!);
       assert.ok(text.includes("strip-diagnostics-display"), `got: ${text}`);
       assert.ok(text.includes("in:163.5k"), `got: ${text}`);
-      // m_window5h / m_window7d / m_balance must NOT have rendered:
+      // m_window|term|short / m_window|term|mid / m_balance must NOT have rendered:
       assert.ok(!text.includes("38%"), `got: ${text}`);
       assert.ok(!text.includes("39%"), `got: ${text}`);
       assert.ok(!text.includes("$"), `got: ${text}`);

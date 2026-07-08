@@ -65,7 +65,60 @@ export type Window = {
   resetDurationMs?: number | null;
 };
 
+// v0.9.0+ — unified interval shape. Replaces the v0.5.0–v0.8.x
+// pair-of-Windows model (`Remains.fiveHour` / `Remains.weekly`) with
+// three independent intervals (`shortInterval` / `midInterval` /
+// `longInterval`). All fields are derived from the user's `intervals`
+// config block (top-level or per-provider override) plus the
+// built-in defaults. See `IntervalKey` / `IntervalSlotConfig` in
+// src/types.ts for the user-facing schema; see `parseRemains` in
+// src/api.ts for the resolution rules (percent / time / quota group
+// derivation + 3-step intervalMs fallback chain).
+//
+// The renderer (m_window / m_countdown / m_quota) reads these fields
+// directly. `Window` (above) is still the shape `formatOneChunk` and
+// `formatOneResetSuffix` consume; `intervalToWindow` (below) projects
+// an `Interval` → `Window` when the gauge / countdown rendering path
+// needs to fire.
+export type Interval = {
+  // Built-in defaults: shortInterval → "5h", midInterval → "7d",
+  // longInterval → "30d". Configurable via `intervals.<key>.windowId`.
+  windowId: "5h" | "7d" | "30d";
+  // Built-in default: same as windowId. Configurable via
+  // `intervals.<key>.label`. The renderer reads this to print the
+  // window's display label (e.g. "5h" in `quota(5h):123/500`).
+  label: string;
+  // Epoch ms when the window started, or null if unknown.
+  startAt: number | null;
+  // Epoch ms when the window resets, or null if unknown.
+  endAt: number | null;
+  // Window length in ms (derived endAt - startAt when both are
+  // present and the user didn't supply intervalMs directly). Used
+  // by the renderer's fill-state arrow picker. Null when neither
+  // startAt nor endAt nor intervalMs is available.
+  intervalMs: number | null;
+  // [0, 100] — at least one of {remainingPercent, usedPercent}
+  // is always non-null after parseRemains. The two are
+  // mirror-derived when only one is mapped.
+  remainingPercent: number | null;
+  usedPercent: number | null;
+  // Quota group — integer units (no normalization). Any subset of
+  // {remainingQuota, usedQuota, limitQuota} may be present; the
+  // renderer (`m_quota`) decides what's enough to render.
+  remainingQuota: number | null;
+  usedQuota: number | null;
+  limitQuota: number | null;
+};
+
 export type DisplayMode = "remaining" | "used";
+
+// v0.9.0+ — interval-term selector used by m_window / m_countdown /
+// m_quota. Each term maps to one of the three `Interval` fields on
+// `RenderContext`. The `Term` type lives here (next to `Interval`)
+// because the inline-renderer branch uses it as a narrow string
+// union — the dispatcher also uses it for the `term` resolver in
+// `TERM_PARAM` (see below).
+export type Term = "short" | "mid" | "long";
 
 // Shorthand for the active config snapshot. Reading configStore.get()
 // on every call would be wasteful for hot paths (every formatLine call
@@ -110,7 +163,8 @@ type LabelAxis =
   | "memUsage"
   | "hitRate"   // v0.8.22+ — lifted out of hardcoded literal
   | "contextSize" | "contextWindowsSize" | "contextUsedPercent" | "contextRemainingPercent" // v0.8.23+
-  | "startTime" | "endTime"; // v0.8.24+ — start/end of the tick statistics window
+  | "startTime" | "endTime" // v0.8.24+ — start/end of the tick statistics window
+  | "quota";   // v0.9.0+ — quota module prefix ("quota(5h):123/500")
 function labelFor(axis: LabelAxis): string {
   const labels = cfg().labels;
   switch (axis) {
@@ -136,6 +190,10 @@ function labelFor(axis: LabelAxis): string {
     // (per config.ts:DEFAULT_CONFIG.labels).
     case "startTime": return labels.labelStartTime;
     case "endTime": return labels.labelEndTime;
+    // v0.9.0+ — quota module prefix. Default "quota:" (set in
+    // config.ts:DEFAULT_CONFIG.labels.labelQuota). Reads "used/limit"
+    // in `m_quota|term|short`'s body, e.g. "quota(5h):123/500".
+    case "quota": return labels.labelQuota;
   }
 }
 
@@ -368,6 +426,94 @@ export function pctBar(usedPctValue: number, width = configStore.get().bar.width
     filled: cfg().bar.filled.repeat(filledCount),
     empty: cfg().bar.empty.repeat(emptyCount),
   };
+}
+
+// v0.9.0+ — project an `Interval` into the `Window` shape the
+// gauge / countdown renderers consume. Returns null when the
+// interval has no usable percent data (the same condition that
+// drives the v0.8.x `slotsToWindow` in src/api.ts:160-175 to return
+// null). Mirrors the v0.8.x projection rules:
+//
+//   pct             ← usedPercent (or 100 - remainingPercent if
+//                     usedPercent is null). Clamped to [0, 100].
+//   resetAt         ← ISO of endAt (null when endAt is null).
+//   resetStartAt    ← ISO of startAt (null when startAt is null).
+//   resetDurationMs ← endAt - startAt (null when either is null
+//                     or endAt <= startAt — same edge case as the
+//                     v0.8.x code path).
+//
+// Quota fields (remainingQuota / usedQuota / limitQuota) are NOT
+// projected — they're consumed by `m_quota` directly, never by the
+// gauge / countdown modules. Time-only intervals (no percent data)
+// still return a Window here so `m_countdown` can render the
+// `<label>--` placeholder against `iv.label` (no percent means
+// `m_window` falls back to its own placeholder).
+function intervalToWindow(i: Interval): Window | null {
+  // Pick the used%. Mirrors the v0.8.x rule: used wins when both
+  // are populated; if only remainingPercent is non-null, derive
+  // used as 100 - x.
+  let usedPct: number | null;
+  if (i.usedPercent != null) {
+    usedPct = i.usedPercent;
+  } else if (i.remainingPercent != null) {
+    usedPct = 100 - i.remainingPercent;
+  } else {
+    usedPct = null;
+  }
+  if (usedPct == null) return null;
+
+  const resetIso = tsToIso(i.endAt);
+  const startIso = tsToIso(i.startAt);
+  let durationMs: number | null = null;
+  if (i.startAt != null && i.endAt != null && i.endAt > i.startAt) {
+    durationMs = i.endAt - i.startAt;
+  }
+  const w: Window = {
+    pct: Math.max(0, Math.min(100, usedPct)),
+    resetAt: resetIso,
+  };
+  if (startIso !== null) w.resetStartAt = startIso;
+  if (durationMs !== null) w.resetDurationMs = durationMs;
+  return w;
+}
+
+// v0.9.0+ — render the quota body for an `Interval`. Returns null
+// when neither quota nor limit is present (the caller falls back to
+// the placeholder). Renders per the user spec:
+//   used + limit  → "quota(5h):123/500"
+//   limit only    → "quota(5h):0/500"
+//   used only     → "quota(5h):123/--"
+//   none          → null
+// The label in `(5h)` is read from the live `Interval.label` (so a
+// user who set `intervals.shortInterval.label = "5h🕐"` sees that
+// label in the body). The leading `quota:` prefix is read from
+// `labels.labelQuota` via `labelFor("quota")`.
+function renderQuotaBody(iv: Interval): string | null {
+  const prefix = labelFor("quota");
+  const head = `${prefix}(${iv.label}):`;
+  if (iv.usedQuota != null && iv.limitQuota != null) {
+    return `${head}${iv.usedQuota}/${iv.limitQuota}`;
+  }
+  if (iv.limitQuota != null) {
+    return `${head}0/${iv.limitQuota}`;
+  }
+  if (iv.usedQuota != null) {
+    return `${head}${iv.usedQuota}/--`;
+  }
+  return null;
+}
+
+// v0.9.0+ — epoch-ms → ISO timestamp. Local to render.ts (same
+// impl as the v0.8.x src/api.ts:tsToIso; hoisted here so
+// intervalToWindow can use it without dragging the api module
+// into render's hot path).
+function tsToIso(ms: number | null): string | null {
+  if (ms == null) return null;
+  try {
+    return new Date(ms).toISOString();
+  } catch {
+    return null;
+  }
 }
 
 // v0.2.17: factor of formatOne() — returns the bar + colored-percent
@@ -692,21 +838,25 @@ export function resolveDisplayMode(): DisplayMode {
 }
 
 export function formatLine(
-  fiveHour: Window,
-  weekly: Window,
+  shortInterval: Interval | null,
+  midInterval: Interval | null,
+  longInterval: Interval | null = null,
   mode: DisplayMode = resolveDisplayMode(),
   nowMs: number = Date.now(),
   ageMs?: number,
   stale: boolean = false,
   tokens: TokenSnapshot | null = null,
 ): string {
-  // v0.2.17: delegate to the lineTemplate renderer. The default plan
-  // template reproduces the v0.2.16 byte-for-byte output.
+  // v0.9.0+ — three-Interval signature. The first two are required
+  // (preserves backward compat with callers that pass two windows);
+  // longInterval is optional and defaults to null (the v0.8.x
+  // signature only shipped two windows).
   return renderProviderLine("minimax", {
     mode,
     nowMs,
-    fiveHour,
-    weekly,
+    shortInterval: shortInterval ?? null,
+    midInterval: midInterval ?? null,
+    longInterval: longInterval ?? null,
     ageMs: ageMs ?? null,
     stale,
     version: cfg().version,
@@ -839,8 +989,15 @@ export function formatBalanceLine(b: BalanceLike, ageMs?: number, stale: boolean
 type RenderContext = {
   mode: DisplayMode;
   nowMs: number;
-  fiveHour: Window | null;
-  weekly: Window | null;
+  // v0.9.0+ — three independent intervals. Replaces v0.5.0–v0.8.x
+  // `fiveHour` + `weekly` (a fixed pair of Windows). Each is the
+  // `Interval` shape produced by the parser; `m_window` /
+  // `m_countdown` / `m_quota` project the active one through
+  // `intervalToWindow` to feed the gauge / countdown renderers.
+  // Old code paths (m_sum* align-aware scans) read these directly.
+  shortInterval: Interval | null;
+  midInterval: Interval | null;
+  longInterval: Interval | null;
   balance: BalanceLike | null;
   ageMs: number | null;
   stale: boolean;
@@ -1616,50 +1773,57 @@ const MODULES: Record<string, Module> = {
       ? cfg().modeLabels.balance
       : cfg().modeLabels[c.mode],
     undefined),
-  m_window5h: Object.assign(
-    // v6.x: bare form now follows the placeholder rule — when the
-    // window is missing, render the gray gauge placeholder
-    // ("░░░░░░░░ 0%" used / "▓▓▓▓▓▓▓▓ 100%" remaining) instead of
-    // dropping. Inline `m_window5h:` had this since v0.4.x; the
-    // bare path was the lone hold-out.
-    ((c: RenderContext) => c.fiveHour ? formatOneChunk(c.fiveHour, c.mode, cfg().bar.width, c.stale) : placeholderBare("m_window5h", c)),
-    { type: "plan" as const },
-  ),
-  m_window7d: Object.assign(
-    ((c: RenderContext) => c.weekly ? formatOneChunk(c.weekly, c.mode, cfg().bar.width, c.stale) : placeholderBare("m_window7d", c)),
-    { type: "plan" as const },
-  ),
-  // Reset-suffix portion of a window. v6.x: when the whole window
-  // is missing, render "5h:--" / "7d:--" placeholder (matches the
-  // inline behavior). When resetAt is missing the helper still
-  // emits " <label>" (e.g. " 5h") so the m_countdown5h token
-  // doubles as the window-label module for legacy/no-reset data.
-  //
-  // v0.7.x: when ctx.stale AND resetAt <= nowMs (past-due), the
-  // cached countdown is no longer trustworthy — swap the body for
-  // "(n/a<arrow> <label>)" and tint it STALE_COLOR so the user
-  // sees a gray "already-expired, no longer readable" reading
-  // instead of the default teal "(0m<arrow> <label>)".
-  m_countdown5h: Object.assign(
-    ((c: RenderContext) => {
-      if (!c.fiveHour) return placeholderBare("m_countdown5h", c);
-      if (isStaleAndPastDue(c.fiveHour, c.stale, c.nowMs)) {
-        return `${STALE_COLOR}${formatStalePastDueResetSuffix("5h", c.fiveHour, c.nowMs)}${RESET}`;
-      }
-      return wrapPlainDefault("m_countdown5h", formatOneResetSuffix("5h", c.fiveHour, c.nowMs), undefined);
-    }),
-    { type: "plan" as const },
-  ),
-  m_countdown7d: Object.assign(
-    ((c: RenderContext) => {
-      if (!c.weekly) return placeholderBare("m_countdown7d", c);
-      if (isStaleAndPastDue(c.weekly, c.stale, c.nowMs)) {
-        return `${STALE_COLOR}${formatStalePastDueResetSuffix("7d", c.weekly, c.nowMs)}${RESET}`;
-      }
-      return wrapPlainDefault("m_countdown7d", formatOneResetSuffix("7d", c.weekly, c.nowMs), undefined);
-    }),
-    { type: "plan" as const },
-  ),
+  // v0.9.0+ — unified m_window module (replaces v0.5.0–v0.8.x
+// `m_window5h` + `m_window7d`). Reads `c.shortInterval` (the
+// 5-hour default term) and projects it through `intervalToWindow`
+// for the gauge render. Inline form accepts `|term|short|mid|long`
+// to pick a different interval. The hard-coded "5h" / "7d" labels
+// from the v0.8.x renderers are gone — the gauge is data-driven,
+// driven entirely by the Interval's `pct` field.
+m_window: Object.assign(
+  ((c: RenderContext) => {
+    const iv = c.shortInterval;
+    if (!iv) return placeholderBare("m_window", c);
+    const w = intervalToWindow(iv);
+    if (!w) return placeholderBare("m_window", c);
+    return formatOneChunk(w, c.mode, cfg().bar.width, c.stale);
+  }),
+  { type: "plan" as const },
+),
+  // Reset-suffix portion of the shortInterval (default term). The
+  // label is read from the live `Interval.label` rather than being
+  // hard-coded — so a user with `intervals.shortInterval.label =
+  // "5h🕐"` sees their custom label in the placeholder too. The
+  // stale+past-due branch reads the same label so the "(n/a<arrow>
+  // <label>)" body stays in sync with the active renderer.
+m_countdown: Object.assign(
+  ((c: RenderContext) => {
+    const iv = c.shortInterval;
+    if (!iv) return placeholderBare("m_countdown", c);
+    const w = intervalToWindow(iv);
+    if (!w) return placeholderBare("m_countdown", c);
+    if (isStaleAndPastDue(w, c.stale, c.nowMs)) {
+      return `${STALE_COLOR}${formatStalePastDueResetSuffix(iv.label, w, c.nowMs)}${RESET}`;
+    }
+    return wrapPlainDefault("m_countdown", formatOneResetSuffix(iv.label, w, c.nowMs), undefined);
+  }),
+  { type: "plan" as const },
+),
+  // v0.9.0+ — quota module. Reads the quota group from
+  // `c.shortInterval` (default term) and renders the
+  // `<label>(5h):used/limit` shape per the user spec. The
+  // placeholder (rendered when no quota data is present) is
+  // `${labelFor("quota")}(5h):--`.
+m_quota: Object.assign(
+  ((c: RenderContext) => {
+    const iv = c.shortInterval;
+    if (!iv) return placeholderBare("m_quota", c);
+    const body = renderQuotaBody(iv);
+    if (body === null) return placeholderBare("m_quota", c);
+    return wrapPlainDefault("m_quota", body, undefined);
+  }),
+  { type: "plan" as const },
+),
   // The DeepSeek balance chunk. v6.x: when there's nothing to
   // render (unavailable / empty / no min), emit a "balance:n/a"
   // placeholder instead of dropping. Aligns with the bare-vs-inline
@@ -2216,8 +2380,16 @@ const MODULES: Record<string, Module> = {
     if (agg.rows === 0) return placeholderBare("m_sumStartTime", c);
     const abs = c.passThrough?.abs === "true";
     if (filter.alignActive && filter.windowKey !== "all") {
-      const w: Window | null | undefined =
-        filter.windowKey === "5h" ? c.fiveHour : c.weekly;
+      // v0.9.0+ — resolve the Window from the matching Interval
+      // (shortInterval / midInterval / longInterval). The legacy
+      // c.fiveHour / c.weekly Window fields are gone; intervalToWindow
+      // projects the active Interval to the Window shape the
+      // anchor-check needs (resetStartAt / resetDurationMs).
+      const iv: Interval | null =
+        filter.windowKey === "5h" ? c.shortInterval :
+        filter.windowKey === "7d" ? c.midInterval :
+        c.longInterval;
+      const w = iv ? intervalToWindow(iv) : null;
       if (
         w != null &&
         typeof w.resetStartAt === "string" &&
@@ -2255,8 +2427,13 @@ const MODULES: Record<string, Module> = {
     if (agg.rows === 0) return placeholderBare("m_sumEndTime", c);
     const abs = c.passThrough?.abs === "true";
     if (filter.alignActive && filter.windowKey !== "all") {
-      const w: Window | null | undefined =
-        filter.windowKey === "5h" ? c.fiveHour : c.weekly;
+      // v0.9.0+ — see m_sumStartTime comment above; same
+      // Interval→Window projection.
+      const iv: Interval | null =
+        filter.windowKey === "5h" ? c.shortInterval :
+        filter.windowKey === "7d" ? c.midInterval :
+        c.longInterval;
+      const w = iv ? intervalToWindow(iv) : null;
       if (w != null && typeof w.resetAt === "string") {
         const anchorMs = Date.parse(w.resetAt);
         if (Number.isFinite(anchorMs)) {
@@ -2803,10 +2980,15 @@ function parseWindowScope(
   }
 
   // Try to align to the plan window's resetStartAt if asked.
-  const w: Window | null | undefined =
-    windowKey === "5h"
-      ? ctx.fiveHour
-      : ctx.weekly;
+  // v0.9.0+ — pull the Window projection from the matching Interval
+  // (shortInterval / midInterval / longInterval). The legacy ctx.fiveHour
+  // / ctx.weekly fields are gone; intervalToWindow rebuilds the Window
+  // shape parseWindowScope needs (resetStartAt / resetDurationMs).
+  const iv: Interval | null =
+    windowKey === "5h" ? ctx.shortInterval :
+    windowKey === "7d" ? ctx.midInterval :
+    null;
+  const w: Window | null = iv ? intervalToWindow(iv) : null;
   if (
     alignWanted &&
     w != null &&
@@ -2957,8 +3139,7 @@ const DEFAULT_COLORS: Record<string, string> = {
   m_apiCalls: NAMED_PALETTE.cyan,
   m_accApiCalls: NAMED_PALETTE.cyan,
   m_sumApiCalls: NAMED_PALETTE.cyan,
-  m_countdown5h: NAMED_PALETTE.teal,
-  m_countdown7d: NAMED_PALETTE.teal,
+  m_countdown: NAMED_PALETTE.teal,
   m_contextSize: NAMED_PALETTE.gray,
   m_contextWindowsSize: NAMED_PALETTE.gray,
   m_contextUsedPercent: NAMED_PALETTE.gray,
@@ -3378,6 +3559,19 @@ const ALIGN_PARAM = {
   },
 } as const;
 
+// v0.9.0+ — interval-term selector for m_window / m_countdown /
+// m_quota. Resolves to "short" | "mid" | "long"; the bare form
+// defaults to "short". Invalid values drop the inline token
+// (same shape as ALIGN_PARAM's true/false parse). The renderer
+// maps the term to one of the three `Interval` fields on
+// `RenderContext`: `shortInterval` / `midInterval` / `longInterval`.
+const TERM_PARAM = {
+  named: {
+    term: (raw: string): ResolvedValue | null =>
+      raw === "short" || raw === "mid" || raw === "long" ? raw : null,
+  },
+} as const;
+
 // v0.4.0+ — per-module display-mode override (scoped to the bar
 // computation for the window modules). Accepts "used" or
 // "remaining" verbatim; anything else is a parse-fail and the
@@ -3445,6 +3639,30 @@ function placeholderDashesUnit(
   body: string,
 ): (_params: Record<string, ResolvedValue>, _ctx: RenderContext) => string {
   return (_p, _c) => body;
+}
+
+// v0.9.0+ — variant of `placeholderDashesUnit` whose body is a
+// function of the live `RenderContext`. Used by `m_countdown` so
+// its placeholder reflects the per-term label (e.g. `5h:--`,
+// `7d:--`, `30d:--` depending on which term is rendering). The
+// default term is "short"; when `c.shortInterval` is null the
+// body falls back to the built-in "5h" label so the placeholder
+// always renders.
+function placeholderDashesUnitFn(
+  body: (ctx: RenderContext) => string,
+): (_params: Record<string, ResolvedValue>, ctx: RenderContext) => string {
+  return (_p, c) => body(c);
+}
+
+// v0.9.0+ — quota module placeholder. Always renders
+// `${labelFor("quota")}(5h):--` (the short-term default) so the
+// shape is predictable. The live `m_quota` renderer reads the
+// actual per-term label from the resolved `Interval.label`.
+function placeholderQuota(
+  _params: Record<string, ResolvedValue>,
+  _ctx: RenderContext,
+): string {
+  return `${labelFor("quota")}(5h):--`;
 }
 
 // gauge placeholder body: returns PLAIN text (no SGR). The
@@ -3627,8 +3845,7 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   // sum/avg siblings.
   m_tokenTotalIn: placeholderLabelOr("totalIn"),
   // gauge (placeholder shape is the gray 0% / 100% bar)
-  m_window5h: placeholderGauge,
-  m_window7d: placeholderGauge,
+  m_window: placeholderGauge,
   m_windowContext: placeholderGauge,
   // v0.8.16 — TTL gauge placeholders. Custom shape: single ▆ char
   // (NOT "ttl:n/a"). Returns PLAIN text (no SGR); the STALE_COLOR
@@ -3675,9 +3892,9 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   // separators don't shift. :nulldrop|true remains the opt-out.
   m_age: placeholderNA("age:"),
   m_version: placeholderNA("v:"),
-  m_countdown5h: placeholderDashesUnit("5h:--"),
-  m_countdown7d: placeholderDashesUnit("7d:--"),
+  m_countdown: placeholderDashesUnitFn((c) => `${c.shortInterval?.label ?? "5h"}:--`),
   m_balance: placeholderNA("balance:"),
+  m_quota: placeholderQuota,
 };
 
 // Render a placeholder body unless the user has explicitly opted
@@ -4166,10 +4383,9 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   // v0.3.3+ — every existing module also accepts an optional :color|
   // override. Schema is empty (`{}`) when the module takes no implicit
   // param; the renderer just reads params.color and applies it.
-  m_window5h: { named: { ...COLOR_PARAM.named, ...DISPLAY_PARAM.named, ...NULDROP_PARAM.named } },
-  m_window7d: { named: { ...COLOR_PARAM.named, ...DISPLAY_PARAM.named, ...NULDROP_PARAM.named } },
-  m_countdown5h: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
-  m_countdown7d: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_window: { named: { ...COLOR_PARAM.named, ...DISPLAY_PARAM.named, ...TERM_PARAM.named, ...NULDROP_PARAM.named } },
+  m_countdown: { named: { ...COLOR_PARAM.named, ...TERM_PARAM.named, ...NULDROP_PARAM.named } },
+  m_quota: { named: { ...COLOR_PARAM.named, ...TERM_PARAM.named, ...NULDROP_PARAM.named } },
   m_balance: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_age: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_version: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
@@ -4449,10 +4665,10 @@ function passThroughScope(
 
 // v0.4.x — parallel to MODULES' per-module `type` tag. Each entry
 // here mirrors its INLINE_RENDERERS counterpart's provider scope:
-// the inline form `m_window5h|color|…` is also plan-only; `m_balance:…`
+// the inline form `m_window|color|…` is also plan-only; `m_balance|…`
 // is balance-only. The bare-module dispatcher at line ~3220 enforces
 // the same filter via `MODULES[name].type`; this map keeps the
-// inline path symmetric so a `m_window5h|color|red` in a balance
+// inline path symmetric so a `m_window|color|red` in a balance
 // provider's template drops the same way the bare form does.
 //
 // Untagged entries (key absent from this map) are provider-agnostic;
@@ -4463,10 +4679,9 @@ function passThroughScope(
 // to avoid collision with the display-mode field (`used` /
 // `remaining` / `balance`).
 const INLINE_TYPE_FILTERS: Partial<Record<string, "plan" | "balance" | "unknown">> = {
-  m_window5h: "plan",
-  m_window7d: "plan",
-  m_countdown5h: "plan",
-  m_countdown7d: "plan",
+  m_window: "plan",
+  m_countdown: "plan",
+  m_quota: "plan",
   m_balance: "balance",
 };
 
@@ -4547,53 +4762,63 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
       : cfg().modeLabels[ctx.mode];
     return wrapPlainDefault("m_modeLabel", s, params.color as string | undefined);
   },
-  m_window5h: (params, ctx) => {
-    if (!ctx.fiveHour) return placeholderWithColor("m_window5h", params, ctx);
+  m_window: (params, ctx) => {
+    // v0.9.0+ — replaces v0.5.0–v0.8.x `m_window5h` + `m_window7d`.
+    // The `term` inline arg picks which interval to read:
+    //   |term|short → c.shortInterval (default)
+    //   |term|mid   → c.midInterval
+    //   |term|long  → c.longInterval
+    // Missing interval → placeholder. No percent data on the
+    // resolved Interval → also placeholder (intervalToWindow
+    // returns null when usedPercent/remainingPercent are both null).
+    const term = (params.term as Term | undefined) ?? "short";
+    const iv = term === "short" ? ctx.shortInterval
+             : term === "mid"   ? ctx.midInterval
+                                : ctx.longInterval;
+    if (!iv) return placeholderWithColor("m_window", params, ctx);
+    const w = intervalToWindow(iv);
+    if (!w) return placeholderWithColor("m_window", params, ctx);
     const mode = (params.display as DisplayMode | undefined) ?? ctx.mode;
     const color = params.color as string | undefined;
-    if (color) return formatOneChunkColored(ctx.fiveHour, mode, color);
-    // No override → reproduce the bare-module output. v0.6.0+: pass
-    // ctx.stale so the percent tail wraps in STALE_COLOR instead of
-    // the band-based color on stale ticks. :color| override above
-    // always wins (documented v0.3.3 semantics — the user's color
-    // wins even when stale so explicit coloring stays sticky).
-    return formatOneChunk(ctx.fiveHour, mode, cfg().bar.width, ctx.stale);
+    if (color) return formatOneChunkColored(w, mode, color);
+    return formatOneChunk(w, mode, cfg().bar.width, ctx.stale);
   },
-  m_window7d: (params, ctx) => {
-    if (!ctx.weekly) return placeholderWithColor("m_window7d", params, ctx);
-    const mode = (params.display as DisplayMode | undefined) ?? ctx.mode;
-    const color = params.color as string | undefined;
-    if (color) return formatOneChunkColored(ctx.weekly, mode, color);
-    return formatOneChunk(ctx.weekly, mode, cfg().bar.width, ctx.stale);
-  },
-  m_countdown5h: (params, ctx) => {
-    // v6.x: missing window → "5h:--" placeholder (was: drop).
-    // Bare MODULES already does this; inline now matches.
-    if (!ctx.fiveHour) return placeholderWithColor("m_countdown5h", params, ctx);
-    // v0.7.x: stale AND past-due → "(n/a<arrow> 5h)" wrapped in
-    // STALE_COLOR. An explicit :color| still wins (no override).
-    if (isStaleAndPastDue(ctx.fiveHour, ctx.stale, ctx.nowMs)) {
+  m_countdown: (params, ctx) => {
+    // v0.9.0+ — replaces v0.5.0–v0.8.x `m_countdown5h` +
+    // `m_countdown7d`. Same `term` arg as `m_window`. The label
+    // printed in `(n/a<arrow> <label>)` and `(4h47m🕔 <label>)` is
+    // read from the live `Interval.label` (no more hard-coded
+    // "5h" / "7d" strings).
+    const term = (params.term as Term | undefined) ?? "short";
+    const iv = term === "short" ? ctx.shortInterval
+             : term === "mid"   ? ctx.midInterval
+                                : ctx.longInterval;
+    if (!iv) return placeholderWithColor("m_countdown", params, ctx);
+    const w = intervalToWindow(iv);
+    if (!w) return placeholderWithColor("m_countdown", params, ctx);
+    if (isStaleAndPastDue(w, ctx.stale, ctx.nowMs)) {
       const userColor = params.color as string | undefined;
       const color = userColor ?? STALE_COLOR;
-      const body = formatStalePastDueResetSuffix("5h", ctx.fiveHour, ctx.nowMs);
+      const body = formatStalePastDueResetSuffix(iv.label, w, ctx.nowMs);
       return `${color}${body}${RESET}`;
     }
-    const body = formatOneResetSuffix("5h", ctx.fiveHour, ctx.nowMs);
+    const body = formatOneResetSuffix(iv.label, w, ctx.nowMs);
     if (body === "") return null;
-    return wrapPlainDefault("m_countdown5h", body, params.color as string | undefined);
+    return wrapPlainDefault("m_countdown", body, params.color as string | undefined);
   },
-  m_countdown7d: (params, ctx) => {
-    // v6.x: missing window → "7d:--" placeholder.
-    if (!ctx.weekly) return placeholderWithColor("m_countdown7d", params, ctx);
-    if (isStaleAndPastDue(ctx.weekly, ctx.stale, ctx.nowMs)) {
-      const userColor = params.color as string | undefined;
-      const color = userColor ?? STALE_COLOR;
-      const body = formatStalePastDueResetSuffix("7d", ctx.weekly, ctx.nowMs);
-      return `${color}${body}${RESET}`;
-    }
-    const body = formatOneResetSuffix("7d", ctx.weekly, ctx.nowMs);
-    if (body === "") return null;
-    return wrapPlainDefault("m_countdown7d", body, params.color as string | undefined);
+  m_quota: (params, ctx) => {
+    // v0.9.0+ — NEW module. Renders the quota group as
+    // `<labelQuota>(<interval.label>):used/limit` (or `0/limit`
+    // or `used/--` depending on what's mapped). `term` arg same
+    // shape as `m_window` / `m_countdown`.
+    const term = (params.term as Term | undefined) ?? "short";
+    const iv = term === "short" ? ctx.shortInterval
+             : term === "mid"   ? ctx.midInterval
+                                : ctx.longInterval;
+    if (!iv) return placeholderWithColor("m_quota", params, ctx);
+    const body = renderQuotaBody(iv);
+    if (body === null) return placeholderWithColor("m_quota", params, ctx);
+    return wrapPlainDefault("m_quota", body, params.color as string | undefined);
   },
   m_balance: (params, ctx) => {
     // v6.x: missing balance → "balance:n/a" placeholder (was:
@@ -4988,8 +5213,16 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // the rationale (plan anchor is the authoritative
     // "when did this window open" answer).
     if (filter.alignActive && filter.windowKey !== "all") {
-      const w: Window | null | undefined =
-        filter.windowKey === "5h" ? ctx.fiveHour : ctx.weekly;
+      // v0.9.0+ — pull the Window projection from the matching
+      // Interval (shortInterval / midInterval / longInterval). The
+      // legacy ctx.fiveHour / ctx.weekly fields are gone;
+      // intervalToWindow rebuilds the Window shape the anchor-check
+      // needs (resetStartAt / resetDurationMs).
+      const iv: Interval | null =
+        filter.windowKey === "5h" ? ctx.shortInterval :
+        filter.windowKey === "7d" ? ctx.midInterval :
+        ctx.longInterval;
+      const w: Window | null = iv ? intervalToWindow(iv) : null;
       if (
         w != null &&
         typeof w.resetStartAt === "string" &&
@@ -5024,8 +5257,14 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const abs = passThroughOr<string>(params, ctx, "abs") === "true";
     const color = passThroughOr<string>(params, ctx, "color");
     if (filter.alignActive && filter.windowKey !== "all") {
-      const w: Window | null | undefined =
-        filter.windowKey === "5h" ? ctx.fiveHour : ctx.weekly;
+      // v0.9.0+ — pull the Window projection from the matching
+      // Interval (shortInterval / midInterval / longInterval). See
+      // m_sumStartTime's twin comment for the full rationale.
+      const iv: Interval | null =
+        filter.windowKey === "5h" ? ctx.shortInterval :
+        filter.windowKey === "7d" ? ctx.midInterval :
+        ctx.longInterval;
+      const w: Window | null = iv ? intervalToWindow(iv) : null;
       if (w != null && typeof w.resetAt === "string") {
         const anchorMs = Date.parse(w.resetAt);
         if (Number.isFinite(anchorMs)) {
@@ -5575,15 +5814,21 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
       } else if (tok.startsWith("m_modeLabel|")) {
         // m_modeLabel|<args> → skip "m_|" (length 12).
         inline = expandInlineToken(tok, "m_modeLabel", 12, ctx);
-      } else if (tok.startsWith("m_window5h|")) {
-        // m_window5h|color|<c> → skip "m_window5h|" (length 11).
-        inline = expandInlineToken(tok, "m_window5h", 11, ctx);
-      } else if (tok.startsWith("m_window7d|")) {
-        inline = expandInlineToken(tok, "m_window7d", 11, ctx);
-      } else if (tok.startsWith("m_countdown5h|")) {
-        inline = expandInlineToken(tok, "m_countdown5h", 14, ctx);
-      } else if (tok.startsWith("m_countdown7d|")) {
-        inline = expandInlineToken(tok, "m_countdown7d", 14, ctx);
+      } else if (tok.startsWith("m_window|")) {
+        // v0.9.0+ — unified window module. `m_window|term|short`
+        // (default) → shortInterval; `|term|mid` → midInterval;
+        // `|term|long` → longInterval. Inline args: color, display,
+        // term, nulldrop. Skip "m_window|" (length 9).
+        inline = expandInlineToken(tok, "m_window", 9, ctx);
+      } else if (tok.startsWith("m_countdown|")) {
+        // v0.9.0+ — unified countdown module. Same `term` arg as
+        // m_window. Skip "m_countdown|" (length 12).
+        inline = expandInlineToken(tok, "m_countdown", 12, ctx);
+      } else if (tok.startsWith("m_quota|")) {
+        // v0.9.0+ — new quota module. Renders the quota group as
+        // `${labelQuota}(<interval.label>):used/limit`. Same `term`
+        // arg as m_window / m_countdown. Skip "m_quota|" (length 8).
+        inline = expandInlineToken(tok, "m_quota", 8, ctx);
       } else if (tok.startsWith("m_balance|")) {
         inline = expandInlineToken(tok, "m_balance", 10, ctx);
       } else if (tok.startsWith("m_age|")) {
@@ -5905,9 +6150,13 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
 // lineTemplate.
 export function renderProviderLine(
   provider: import("./types.ts").Provider,
-  ctx: Omit<RenderContext, "fiveHour" | "weekly" | "balance" | "tokens" | "contextWindow" | "providerType"> & {
-    fiveHour?: Window | null;
-    weekly?: Window | null;
+  ctx: Omit<RenderContext, "shortInterval" | "midInterval" | "longInterval" | "balance" | "tokens" | "contextWindow" | "providerType"> & {
+    // v0.9.0+ — three Interval fields replace the v0.5.0–v0.8.x
+    // `fiveHour` + `weekly` Windows. Caller (dispatch.ts) passes
+    // the parsed Remains directly; default to null when missing.
+    shortInterval?: Interval | null;
+    midInterval?: Interval | null;
+    longInterval?: Interval | null;
     balance?: BalanceLike | null;
     // v0.4.0+ — optional for back-compat with tests/callers that
     // don't thread a TokenSnapshot. Defaults to null, which causes
@@ -5956,8 +6205,9 @@ export function renderProviderLine(
   const fullCtx: RenderContext = {
     mode: ctx.mode,
     nowMs: ctx.nowMs,
-    fiveHour: ctx.fiveHour ?? null,
-    weekly: ctx.weekly ?? null,
+    shortInterval: ctx.shortInterval ?? null,
+    midInterval: ctx.midInterval ?? null,
+    longInterval: ctx.longInterval ?? null,
     balance: ctx.balance ?? null,
     ageMs: ctx.ageMs,
     stale: ctx.stale,

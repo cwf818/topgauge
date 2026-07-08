@@ -12,6 +12,7 @@ import {
   resolveDisplayMode,
   splitBar,
 } from "./render.ts";
+import type { Interval } from "./render.ts";
 import { __resetForTest, type Config } from "./config.ts";
 
 const RESET = "\x1b[0m";
@@ -27,6 +28,67 @@ const BROKEN_TEST_COLOR = "\x1b[31m";
 
 // Strip ANSI escape codes so we can inspect content cleanly.
 const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+
+// Bridge v0.8.x tests onto the v0.9.0 Interval signature: accept the
+// legacy { pct, resetAt, resetStartAt?, resetDurationMs? } shape (used
+// pervasively below) and project to an Interval. Defaults windowId/
+// label to "5h" since the bulk of these tests target the 5-hour window
+// (m_window|term|short). The 7d case uses the same helper with an
+// override.
+type LegacyWindow = {
+  pct: number;
+  resetAt?: string | null;
+  resetStartAt?: string | null;
+  resetDurationMs?: number | null;
+};
+function legacyToIv(
+  w: LegacyWindow | null | undefined,
+  label: "5h" | "7d" | "30d" = "5h",
+): Interval | null {
+  if (!w) return null;
+  const startAt = w.resetStartAt ? Date.parse(w.resetStartAt) : null;
+  const endAt = w.resetAt ? Date.parse(w.resetAt) : null;
+  return {
+    windowId: label,
+    label,
+    startAt,
+    endAt,
+    intervalMs: w.resetDurationMs ?? null,
+    usedPercent: w.pct,
+    remainingPercent: 100 - w.pct,
+    remainingQuota: null,
+    usedQuota: null,
+    limitQuota: null,
+  };
+}
+
+// v0.9.0+ — adapter from the legacy v0.8.x `Window` test fixture
+// shape (`{ pct, resetAt, resetStartAt, resetDurationMs }`) to the
+// new `Interval` shape (`{ windowId, label, startAt, endAt, ...}`).
+// The renderer-side `intervalToWindow` does the inverse projection
+// for live callers; this helper lets test fixtures stay readable
+// (`{ pct: 60, resetAt: null }`) while still feeding the new
+// `RenderContext` field shape. UsedPercent mirrors pct (no
+// `100 - remaining%` math here — tests already express the
+// rendered percentage directly).
+function winToIv(
+  w: { pct: number; resetAt: string | null; resetStartAt?: string; resetDurationMs?: number } | null,
+  label: "5h" | "7d" | "30d" = "5h",
+): Interval | null {
+  if (!w) return null;
+  return {
+    windowId: label,
+    label,
+    startAt: w.resetStartAt ? Date.parse(w.resetStartAt) : null,
+    endAt: w.resetAt ? Date.parse(w.resetAt) : null,
+    intervalMs: w.resetDurationMs ?? null,
+    usedPercent: w.pct,
+    remainingPercent: 100 - w.pct,
+    remainingQuota: null,
+    usedQuota: null,
+    limitQuota: null,
+  };
+}
 
 describe("splitBar — unified layout (left=used, right=remaining, glyphs flip by mode)", () => {
   it("used mode: left = used ▓ (colored), right = remaining ░ (plain)", () => {
@@ -198,20 +260,20 @@ describe("resolveDisplayMode", () => {
 
 describe("formatLine — mode='used' (default)", () => {
   it("prefixes with 'Usage:' label by default", () => {
-    const line = formatLine({ pct: 38 }, { pct: 60 });
+    const line = formatLine(legacyToIv({ pct: 38 }), legacyToIv({ pct: 60 }, "7d"));
     assert.ok(line.startsWith("Usage: "), `got: ${line}`);
     assert.ok(line.includes(" · "));
   });
 
   it("default mode displays used percentages (38% / 60%)", () => {
-    const line = formatLine({ pct: 38 }, { pct: 60 });
+    const line = formatLine(legacyToIv({ pct: 38 }), legacyToIv({ pct: 60 }, "7d"));
     assert.ok(line.includes(`38%`));
     assert.ok(line.includes(`60%`));
   });
 
   it("displayed value = 100 - used when mode='remaining'", () => {
     // used=38 → display remaining=62 → dark green
-    const line = formatLine({ pct: 38 }, { pct: 60 }, "remaining");
+    const line = formatLine(legacyToIv({ pct: 38 }), legacyToIv({ pct: 60 }, "7d"), null, "remaining");
     assert.ok(line.includes(`${DARK_GREEN}62%${RESET}`));
     assert.ok(line.includes(`${YELLOW}40%${RESET}`));
   });
@@ -220,13 +282,13 @@ describe("formatLine — mode='used' (default)", () => {
     // used=75 → remaining=25 → displayed=25 (band 1 = ORANGE) → 2/8 right cells colored
     // Per v0.2.11: glyphs flip in remaining mode — left=░ (used),
     // right=▓ (remaining).
-    const line = formatLine({ pct: 75 }, { pct: 0 }, "remaining");
+    const line = formatLine(legacyToIv({ pct: 75 }), legacyToIv({ pct: 0 }, "7d"), null, "remaining");
     // Bar: 6 plain ░ + 2 colored ▓
     assert.ok(line.includes(`░░░░░░${ORANGE}▓▓${RESET} ${ORANGE}25%${RESET}`),
       `got: ${line}`);
     // No resetAt → bare "5h" with no parens and no slash. v6.x:
-    // m_countdown5h is wrapped in DEFAULT_COLORS (teal); strip SGR
-    // before checking substring.
+    // m_countdown|term|short is wrapped in DEFAULT_COLORS (teal);
+    // strip SGR before checking substring.
     const cleanR = strip(line);
     assert.ok(cleanR.includes(" 5h "), `got: ${cleanR}`);
     assert.ok(!cleanR.includes("/ 5h"), `got: ${cleanR}`);
@@ -236,26 +298,26 @@ describe("formatLine — mode='used' (default)", () => {
 
 describe("formatLine — mode='used'", () => {
   it("prefixes with 'Usage:' label", () => {
-    const line = formatLine({ pct: 70 }, { pct: 90 }, "used");
+    const line = formatLine(legacyToIv({ pct: 70 }), legacyToIv({ pct: 90 }, "7d"), null, "used");
     assert.ok(line.startsWith("Usage: "), `got: ${line}`);
   });
 
   it("displayed value = used", () => {
     // used=70 → display 70 → orange
-    const line = formatLine({ pct: 70 }, { pct: 90 }, "used");
+    const line = formatLine(legacyToIv({ pct: 70 }), legacyToIv({ pct: 90 }, "7d"), null, "used");
     assert.ok(line.includes(`${ORANGE}70%${RESET}`));
     assert.ok(line.includes(`${RED}90%${RESET}`));
   });
 
   it("used mode: colored ▓ on LEFT represents used", () => {
     // used=75 → displayed=75 (band 3 = ORANGE) → 6/8 LEFT cells colored
-    const line = formatLine({ pct: 75 }, { pct: 0 }, "used");
+    const line = formatLine(legacyToIv({ pct: 75 }), legacyToIv({ pct: 0 }, "7d"), null, "used");
     // Bar: 6 colored ▓ (LEFT) + 2 plain ░ (RIGHT)
     assert.ok(line.includes(`${ORANGE}▓▓▓▓▓▓${RESET}░░ ${ORANGE}75%${RESET}`),
       `got: ${line}`);
     // No resetAt → bare "5h" with no parens and no slash. v6.x:
-    // m_countdown5h is wrapped in DEFAULT_COLORS (teal); strip SGR
-    // before checking substring.
+    // m_countdown|term|short is wrapped in DEFAULT_COLORS (teal);
+    // strip SGR before checking substring.
     const cleanU = strip(line);
     assert.ok(cleanU.includes(" 5h "), `got: ${cleanU}`);
     assert.ok(!cleanU.includes("/ 5h"), `got: ${cleanU}`);
@@ -265,16 +327,17 @@ describe("formatLine — mode='used'", () => {
   it("full layout matches spec: 'Usage: <bar> <pct>% (<reset><arrow> <windowLabel>) · ...'", () => {
     const now = Date.parse("2026-06-24T12:00:00Z");
     const line = formatLine(
-      { pct: 62, resetAt: "2026-06-24T12:38:00Z" },
-      { pct: 42, resetAt: "2026-06-29T04:38:00Z" },
+      legacyToIv({ pct: 62, resetAt: "2026-06-24T12:38:00Z" }),
+      legacyToIv({ pct: 42, resetAt: "2026-06-29T04:38:00Z" }, "7d"),
+      null,
       "used",
       now
     );
     // 5h: used=62 → 5 colored ▓ (LEFT) + 3 plain ░ (RIGHT), ORANGE.
     // New template: "(38m🕛 5h)" — countdown + arrow + space + label, no slash.
-    // v6.x: m_countdown5h wraps the suffix in DEFAULT_COLORS (teal);
-    // assert on the SGR-stripped form so the literal substring check
-    // matches the rendered text after color removal.
+    // v6.x: m_countdown|term|short wraps the suffix in DEFAULT_COLORS
+    // (teal); assert on the SGR-stripped form so the literal substring
+    // check matches the rendered text after color removal.
     const clean = strip(line);
     assert.ok(
       clean.includes(`▓▓▓▓▓░░░ 62% (38m🕛 5h)`),
@@ -299,8 +362,9 @@ describe("formatLine — reset suffix integration", () => {
   it("appends reset countdown + arrow + label inside parens, no slash", () => {
     const now = Date.parse("2026-06-24T12:00:00Z");
     const line = formatLine(
-      { pct: 30, resetAt: "2026-06-24T14:03:00Z" },
-      { pct: 40, resetAt: "2026-06-27T17:00:00Z" },
+      legacyToIv({ pct: 30, resetAt: "2026-06-24T14:03:00Z" }),
+      legacyToIv({ pct: 40, resetAt: "2026-06-27T17:00:00Z" }, "7d"),
+      null,
       "remaining",
       now
     );
@@ -309,9 +373,9 @@ describe("formatLine — reset suffix integration", () => {
   });
 
   it("no resetAt → bare ' 5h' / ' 7d' with no parens and no arrow", () => {
-    const line = formatLine({ pct: 30 }, { pct: 40 });
-    // v6.x: m_countdown5h/7d wrap in DEFAULT_COLORS (teal); strip SGR
-    // before checking substring.
+    const line = formatLine(legacyToIv({ pct: 30 }), legacyToIv({ pct: 40 }, "7d"));
+    // v6.x: m_countdown|term|short|mid wrap in DEFAULT_COLORS (teal);
+    // strip SGR before checking substring.
     const clean = strip(line);
     assert.ok(!clean.includes("🕛"));
     assert.ok(!clean.includes("("));
@@ -323,8 +387,9 @@ describe("formatLine — reset suffix integration", () => {
     const now = Date.parse("2026-06-24T12:00:00Z");
     // 5h window with 30 seconds remaining
     const line = formatLine(
-      { pct: 99, resetAt: new Date(now + 30_000).toISOString() },
-      { pct: 99, resetAt: new Date(now + 30_000).toISOString() },
+      legacyToIv({ pct: 99, resetAt: new Date(now + 30_000).toISOString() }),
+      legacyToIv({ pct: 99, resetAt: new Date(now + 30_000).toISOString() }, "7d"),
+      null,
       "used",
       now
     );
@@ -480,13 +545,14 @@ describe("pickResetArrow (stale.resetArrows[] by remaining/total)", () => {
     const remaining = ratio * durMs;
     const startMs = NOW - (durMs - remaining);
     const line = formatLine(
-      {
+      legacyToIv({
         pct: 50,
         resetAt: new Date(NOW + remaining).toISOString(),
         resetStartAt: new Date(startMs).toISOString(),
         resetDurationMs: durMs,
-      },
-      { pct: 50, resetAt: new Date(NOW + 100_000_000).toISOString() },
+      }),
+      legacyToIv({ pct: 50, resetAt: new Date(NOW + 100_000_000).toISOString() }, "7d"),
+      null,
       "used",
       NOW
     );
@@ -521,13 +587,14 @@ describe("pickResetArrow (stale.resetArrows[] by remaining/total)", () => {
         const remaining = ratio * 5 * 3_600_000;
         const startMs = NOW - (5 * 3_600_000 - remaining);
         const line = formatLine(
-          {
+          legacyToIv({
             pct: 50,
             resetAt: new Date(NOW + remaining).toISOString(),
             resetStartAt: new Date(startMs).toISOString(),
             resetDurationMs: 5 * 3_600_000,
-          },
-          { pct: 50, resetAt: new Date(NOW + 100_000_000).toISOString() },
+          }),
+          legacyToIv({ pct: 50, resetAt: new Date(NOW + 100_000_000).toISOString() }, "7d"),
+          null,
           "used",
           NOW
         );
@@ -544,8 +611,9 @@ describe("pickResetArrow (stale.resetArrows[] by remaining/total)", () => {
 
   it("falls back to index 0 when resetStartAt is missing (DeepSeek path)", () => {
     const line = formatLine(
-      { pct: 50, resetAt: new Date(NOW + 60_000).toISOString() },
-      { pct: 50, resetAt: new Date(NOW + 100_000_000).toISOString() },
+      legacyToIv({ pct: 50, resetAt: new Date(NOW + 60_000).toISOString() }),
+      legacyToIv({ pct: 50, resetAt: new Date(NOW + 100_000_000).toISOString() }, "7d"),
+      null,
       "used",
       NOW
     );
@@ -554,19 +622,30 @@ describe("pickResetArrow (stale.resetArrows[] by remaining/total)", () => {
     assert.ok(line.includes("🕛 5h"), `got: ${line}`);
   });
 
-  it("falls back to index 0 when resetDurationMs is missing", () => {
-    const startAt = new Date(NOW - 3_600_000).toISOString();
+  it("derives intervalMs from start+end when explicit intervalMs is missing (v0.9.0+)", () => {
+    // v0.9.0: intervalToWindow computes durationMs = endAt - startAt
+    // when both are present but intervalMs is null. The arrow
+    // should NOT fall back to index 0 anymore — it gets the full
+    // remaining/total ratio and picks the right glyph.
+    const startAt = new Date(NOW - 3 * 3_600_000).toISOString();
     const line = formatLine(
-      {
+      legacyToIv({
         pct: 50,
         resetAt: new Date(NOW + 2 * 3_600_000).toISOString(),
         resetStartAt: startAt,
-      },
-      { pct: 50, resetAt: new Date(NOW + 100_000_000).toISOString() },
+      }),
+      legacyToIv({ pct: 50, resetAt: new Date(NOW + 100_000_000).toISOString() }, "7d"),
+      null,
       "used",
       NOW
     );
-    assert.ok(line.includes("🕛 5h"), `got: ${line}`);
+    // 5h window: 2h remaining out of 5h total (endAt - startAt = 5h).
+    // The literal "2h0m" in the body confirms the derived duration
+    // was used (and a non-default arrow means pickResetArrow had a
+    // valid ratio to work with). The exact glyph is an artifact of
+    // the 12-clock-faces array indexing — pin "2h0m" to be stable.
+    assert.ok(line.includes("2h0m"), `got: ${line}`);
+    assert.ok(!line.includes("🕛 5h"), `should NOT fall back to first arrow: ${line}`);
   });
 
   it("ignores clock skew — clamps to last index", () => {
@@ -575,13 +654,14 @@ describe("pickResetArrow (stale.resetArrows[] by remaining/total)", () => {
     const startAt = new Date(NOW + 5_000).toISOString();
     const dur = 5 * 3_600_000;
     const line = formatLine(
-      {
+      legacyToIv({
         pct: 50,
         resetAt: new Date(NOW + dur).toISOString(),
         resetStartAt: startAt,
         resetDurationMs: dur,
-      },
-      { pct: 50, resetAt: new Date(NOW + 100_000_000).toISOString() },
+      }),
+      legacyToIv({ pct: 50, resetAt: new Date(NOW + 100_000_000).toISOString() }, "7d"),
+      null,
       "used",
       NOW
     );
@@ -755,20 +835,20 @@ describe("m_window5h/7d — stale coloring (v0.6.0+)", () => {
     // making the line read as authoritative even though the number is
     // from a stale cache.
     __resetForTest({
-      statuslineTemplate:["m_window5h"],
+      statuslineTemplate:["m_window|term|short"],
       timeFormat: { minUnit: "s", maxUnitCount: 4 },
     });
     try {
       const fresh = renderProviderLine("minimax", {
         mode: "used", nowMs: Date.now(),
-        fiveHour: { pct: 60, resetAt: null },
-        weekly: null, balance: null,
+        shortInterval: winToIv({ pct: 60, resetAt: null }),
+        midInterval: null, longInterval: null, balance: null,
         ageMs: 0, stale: false, version: "",
       });
       const stale = renderProviderLine("minimax", {
         mode: "used", nowMs: Date.now(),
-        fiveHour: { pct: 60, resetAt: null },
-        weekly: null, balance: null,
+        shortInterval: winToIv({ pct: 60, resetAt: null }),
+        midInterval: null, longInterval: null, balance: null,
         ageMs: 5 * 60_000, stale: true, version: "",
       });
       // Fresh: band-color wrap on the percent.
@@ -803,14 +883,14 @@ describe("m_window5h/7d — stale coloring (v0.6.0+)", () => {
     // Documented v0.3.3+ behavior — explicit :color: always wins.
     // v0.6.0+: stale does NOT silently override the user's color.
     __resetForTest({
-      statuslineTemplate:["m_window5h|color|" + ORANGE],
+      statuslineTemplate:["m_window|term|short|color|" + ORANGE],
       timeFormat: { minUnit: "s", maxUnitCount: 4 },
     });
     try {
       const stale = renderProviderLine("minimax", {
         mode: "used", nowMs: Date.now(),
-        fiveHour: { pct: 60, resetAt: null },
-        weekly: null, balance: null,
+        shortInterval: winToIv({ pct: 60, resetAt: null }),
+        midInterval: null, longInterval: null, balance: null,
         ageMs: 5 * 60_000, stale: true, version: "",
       });
       assert.ok(
@@ -830,14 +910,14 @@ describe("m_window5h/7d — stale coloring (v0.6.0+)", () => {
     // ▓ run — and the leading ░ run should stay plain. v0.6.0+
     // post-bar-blocks extension.
     __resetForTest({
-      statuslineTemplate:["m_window5h"],
+      statuslineTemplate:["m_window|term|short"],
       timeFormat: { minUnit: "s", maxUnitCount: 4 },
     });
     try {
       const stale = renderProviderLine("minimax", {
         mode: "remaining", nowMs: Date.now(),
-        fiveHour: { pct: 60, resetAt: null },
-        weekly: null, balance: null,
+        shortInterval: winToIv({ pct: 60, resetAt: null }),
+        midInterval: null, longInterval: null, balance: null,
         ageMs: 5 * 60_000, stale: true, version: "",
       });
       // Stale: STALE_COLOR wraps the percent tail.
@@ -871,7 +951,7 @@ describe("m_window5h/7d — stale coloring (v0.6.0+)", () => {
     try {
       const stale = renderProviderLine("minimax", {
         mode: "used", nowMs: Date.now(),
-        fiveHour: null, weekly: null, balance: null,
+        shortInterval: null, midInterval: null, longInterval: null, balance: null,
         contextWindow: { pct: 75, resetAt: null },
         ageMs: 5 * 60_000, stale: true, version: "",
       });
@@ -906,14 +986,14 @@ describe("m_countdown5h/7d — stale AND past-due renders '(n/a🕒 5h)' in STAL
   it("bare m_countdown5h emits '(n/a🕒 5h)' in STALE_COLOR when stale=true AND resetAt is past-due", () => {
     const nowMs = Date.parse("2026-06-24T12:00:00Z");
     __resetForTest({
-      statuslineTemplate: ["m_countdown5h"],
+      statuslineTemplate: ["m_countdown|term|short"],
       timeFormat: { minUnit: "m", maxUnitCount: 2 },
     });
     try {
       const line = renderProviderLine("minimax", {
         mode: "used", nowMs,
-        fiveHour: { pct: 30, resetAt: new Date(nowMs - 60_000).toISOString() },
-        weekly: null, balance: null,
+        shortInterval: winToIv({ pct: 30, resetAt: new Date(nowMs - 60_000).toISOString() }),
+        midInterval: null, longInterval: null, balance: null,
         ageMs: 5 * 60_000, stale: true, version: "",
       });
       const clean = strip(line);
@@ -949,14 +1029,14 @@ describe("m_countdown5h/7d — stale AND past-due renders '(n/a🕒 5h)' in STAL
     // tick will roll the countdown forward, so we don't gray it.
     const nowMs = Date.parse("2026-06-24T12:00:00Z");
     __resetForTest({
-      statuslineTemplate: ["m_countdown5h"],
+      statuslineTemplate: ["m_countdown|term|short"],
       timeFormat: { minUnit: "m", maxUnitCount: 2 },
     });
     try {
       const line = renderProviderLine("minimax", {
         mode: "used", nowMs,
-        fiveHour: { pct: 30, resetAt: new Date(nowMs - 60_000).toISOString() },
-        weekly: null, balance: null,
+        shortInterval: winToIv({ pct: 30, resetAt: new Date(nowMs - 60_000).toISOString() }),
+        midInterval: null, longInterval: null, balance: null,
         ageMs: 0, stale: false, version: "",
       });
       const clean = strip(line);
@@ -982,14 +1062,14 @@ describe("m_countdown5h/7d — stale AND past-due renders '(n/a🕒 5h)' in STAL
     // truthful within the fetch window; do not gray.
     const nowMs = Date.parse("2026-06-24T12:00:00Z");
     __resetForTest({
-      statuslineTemplate: ["m_countdown5h"],
+      statuslineTemplate: ["m_countdown|term|short"],
       timeFormat: { minUnit: "m", maxUnitCount: 2 },
     });
     try {
       const line = renderProviderLine("minimax", {
         mode: "used", nowMs,
-        fiveHour: { pct: 30, resetAt: new Date(nowMs + 30 * 60_000).toISOString() },
-        weekly: null, balance: null,
+        shortInterval: winToIv({ pct: 30, resetAt: new Date(nowMs + 30 * 60_000).toISOString() }),
+        midInterval: null, longInterval: null, balance: null,
         ageMs: 5 * 60_000, stale: true, version: "",
       });
       const clean = strip(line);
@@ -1006,18 +1086,18 @@ describe("m_countdown5h/7d — stale AND past-due renders '(n/a🕒 5h)' in STAL
     }
   });
 
-  it("bare m_countdown7d mirrors the same stale+past-due n/a rule", () => {
+  it("bare m_countdown|term|mid mirrors the same stale+past-due n/a rule", () => {
     const nowMs = Date.parse("2026-06-24T12:00:00Z");
     __resetForTest({
-      statuslineTemplate: ["m_countdown7d"],
+      statuslineTemplate: ["m_countdown|term|mid"],
       timeFormat: { minUnit: "m", maxUnitCount: 2 },
     });
     try {
       const line = renderProviderLine("minimax", {
         mode: "used", nowMs,
-        fiveHour: null,
-        weekly: { pct: 50, resetAt: new Date(nowMs - 60_000).toISOString() },
-        balance: null,
+        shortInterval: null,
+        midInterval: winToIv({ pct: 50, resetAt: new Date(nowMs - 60_000).toISOString() }, "7d"),
+        longInterval: null, balance: null,
         ageMs: 5 * 60_000, stale: true, version: "",
       });
       const clean = strip(line);
@@ -1040,14 +1120,14 @@ describe("m_countdown5h/7d — stale AND past-due renders '(n/a🕒 5h)' in STAL
     // the color is overridden.
     const nowMs = Date.parse("2026-06-24T12:00:00Z");
     __resetForTest({
-      statuslineTemplate: ["m_countdown5h|color|" + RED],
+      statuslineTemplate: ["m_countdown|term|short|color|" + RED],
       timeFormat: { minUnit: "m", maxUnitCount: 2 },
     });
     try {
       const line = renderProviderLine("minimax", {
         mode: "used", nowMs,
-        fiveHour: { pct: 30, resetAt: new Date(nowMs - 60_000).toISOString() },
-        weekly: null, balance: null,
+        shortInterval: winToIv({ pct: 30, resetAt: new Date(nowMs - 60_000).toISOString() }),
+        midInterval: null, longInterval: null, balance: null,
         ageMs: 5 * 60_000, stale: true, version: "",
       });
       const clean = strip(line);
@@ -1069,20 +1149,21 @@ describe("m_countdown5h/7d — stale AND past-due renders '(n/a🕒 5h)' in STAL
   });
 
   it("other modules are unaffected by the stale+past-due branch", () => {
-    // The m_window5h / m_window7d stale coloring path (v0.6.0+) is
-    // a separate concern — gated on ctx.stale alone, NOT on
-    // past-due. Make sure the new branch in m_countdown5h doesn't
-    // accidentally leak STALE_COLOR into the window module.
+    // The m_window|term|short / m_window|term|mid stale coloring
+    // path (v0.6.0+) is a separate concern — gated on ctx.stale
+    // alone, NOT on past-due. Make sure the new branch in
+    // m_countdown|term|short doesn't accidentally leak STALE_COLOR
+    // into the window module.
     const nowMs = Date.parse("2026-06-24T12:00:00Z");
     __resetForTest({
-      statuslineTemplate: ["m_window5h", "m_countdown5h"],
+      statuslineTemplate: ["m_window|term|short", "m_countdown|term|short"],
       timeFormat: { minUnit: "m", maxUnitCount: 2 },
     });
     try {
       const line = renderProviderLine("minimax", {
         mode: "used", nowMs,
-        fiveHour: { pct: 30, resetAt: new Date(nowMs - 60_000).toISOString() },
-        weekly: null, balance: null,
+        shortInterval: winToIv({ pct: 30, resetAt: new Date(nowMs - 60_000).toISOString() }),
+        midInterval: null, longInterval: null, balance: null,
         ageMs: 5 * 60_000, stale: true, version: "",
       });
       // m_window5h in stale mode uses STALE_COLOR around bar+percent.
@@ -1179,8 +1260,9 @@ describe("formatStaleSuffix", () => {
 describe("formatLine — stale suffix integration", () => {
   it("appends the stale suffix with broken emoji when stale=true", () => {
     const line = formatLine(
-      { pct: 38, resetAt: null },
-      { pct: 39, resetAt: null },
+      legacyToIv({ pct: 38, resetAt: null }),
+      legacyToIv({ pct: 39, resetAt: null }, "7d"),
+      null,
       "used",
       Date.now(),
       5 * 60_000,
@@ -1199,8 +1281,9 @@ describe("formatLine — stale suffix integration", () => {
     // no m_age) renders no suffix — the broken-chain indicator is
     // reserved for real outages.
     const line = formatLine(
-      { pct: 38, resetAt: null },
-      { pct: 39, resetAt: null },
+      legacyToIv({ pct: 38, resetAt: null }),
+      legacyToIv({ pct: 39, resetAt: null }, "7d"),
+      null,
       "used",
       Date.now(),
       30_000,
@@ -1211,15 +1294,16 @@ describe("formatLine — stale suffix integration", () => {
   });
 
   it("does NOT append the stale suffix when ageMs is omitted", () => {
-    const line = formatLine({ pct: 38, resetAt: null }, { pct: 39, resetAt: null });
+    const line = formatLine(legacyToIv({ pct: 38, resetAt: null }), legacyToIv({ pct: 39, resetAt: null }, "7d"));
     assert.ok(!line.includes("ago"));
     assert.ok(!line.includes(STALE_COLOR));
   });
 
   it("does NOT append the stale suffix when ageMs is 0 and stale=false", () => {
     const line = formatLine(
-      { pct: 38, resetAt: null },
-      { pct: 39, resetAt: null },
+      legacyToIv({ pct: 38, resetAt: null }),
+      legacyToIv({ pct: 39, resetAt: null }, "7d"),
+      null,
       "used",
       Date.now(),
       0
@@ -1232,8 +1316,9 @@ describe("formatLine — stale suffix integration", () => {
     // A just-failed fetch shows "⛓️‍💥 0m ago" (forced fallback, since
     // the default template doesn't include m_age).
     const line = formatLine(
-      { pct: 38, resetAt: null },
-      { pct: 39, resetAt: null },
+      legacyToIv({ pct: 38, resetAt: null }),
+      legacyToIv({ pct: 39, resetAt: null }, "7d"),
+      null,
       "used",
       Date.now(),
       0,

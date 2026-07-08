@@ -162,22 +162,20 @@ function renderDataLine(
   }
   if (entry.TYPE === "TOKEN_PLAN") {
     const r = data as Remains;
-    // The old renderPlanLine had a partial-window fallback:
-    // when only fiveHour (or only weekly) was present, it would
-    // synthesize a {pct:0} window for the missing side and still
-    // render. That logic moves here now — renderProviderLine no
-    // longer special-cases null windows (it expects both ctx
-    // fields populated), so we hard-fill them before delegating.
-    // If neither window is present, return null (legacy behavior).
-    const zero = { pct: 0 } as const;
-    const fiveHour = r.fiveHour ?? (r.weekly ? zero : null);
-    const weekly = r.weekly ?? (r.fiveHour ? zero : null);
-    if (!fiveHour || !weekly) return null;
+    // v0.9.0+ — three independent Intervals. No partial-window
+    // fallback synthesis (the v0.5.0–v0.8.x `zero = { pct: 0 }`
+    // trick): each interval is independent now, and the renderer
+    // (m_window / m_countdown / m_quota) handles a null interval
+    // via its own per-term placeholder. We only return null when
+    // ALL three intervals are null — i.e. the parser found no
+    // recognizable data for any term.
+    if (!r.shortInterval && !r.midInterval && !r.longInterval) return null;
     return renderProviderLine(provider, {
       mode,
       nowMs: Date.now(),
-      fiveHour,
-      weekly,
+      shortInterval: r.shortInterval,
+      midInterval: r.midInterval,
+      longInterval: r.longInterval,
       ageMs,
       stale,
       version: configStore.get().version,
@@ -335,7 +333,12 @@ export function renderPlanLine(
   tokens?: TokenSnapshot | null,
 ): string | null {
   void _mode;
-  if (!data.fiveHour && !data.weekly) return null;
+  // v0.9.0+ — three-interval gate. Return null when the parser
+  // found no data for any of the three terms (matches the
+  // pre-existing "nothing to draw" contract; the v0.5.0–v0.8.x
+  // code only checked fiveHour + weekly here, and the
+  // dispatch.ts path checked them again).
+  if (!data.shortInterval && !data.midInterval && !data.longInterval) return null;
   return renderDataLine(
     "minimax",
     data,
