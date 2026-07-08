@@ -83,7 +83,17 @@ export type Window = {
 export type Interval = {
   // Built-in defaults: shortInterval → "5h", midInterval → "7d",
   // longInterval → "30d". Configurable via `intervals.<key>.windowId`.
-  windowId: "5h" | "7d" | "30d";
+  //
+  // vX.X.X — `windowId` is now `string`, not the v0.9.0 closed
+  // union "5h" | "7d" | "30d", because user-supplied `intervals.*.
+  // windowId` values flow through to runtime Intervals verbatim
+  // (config.ts auto-prefixes digit-leading values with `w` so they
+  // can never be mistaken for a parseable dhms string, but
+  // otherwise any string identifier is allowed). Field is purely
+  // a label — the renderer reads `iv.label` (defaulting to the
+  // same value) for display, NOT `iv.windowId`, so widening has
+  // no observable effect on existing renders.
+  windowId: string;
   // Built-in default: same as windowId. Configurable via
   // `intervals.<key>.label`. The renderer reads this to print the
   // window's display label (e.g. "5h" in `quota(5h):123/500`).
@@ -2451,17 +2461,15 @@ m_quota: Object.assign(
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderBare("m_sumStartTime", c);
     const abs = c.passThrough?.abs === "true";
-    if (filter.alignActive && filter.windowKey !== "all") {
-      // v0.9.0+ — resolve the Window from the matching Interval
-      // (shortInterval / midInterval / longInterval). The legacy
-      // c.fiveHour / c.weekly Window fields are gone; intervalToWindow
-      // projects the active Interval to the Window shape the
-      // anchor-check needs (resetStartAt / resetDurationMs).
-      const iv: Interval | null =
-        filter.windowKey === "5h" ? c.shortInterval :
-        filter.windowKey === "7d" ? c.midInterval :
-        c.longInterval;
-      const w = iv ? intervalToWindow(iv) : null;
+    // vX.X.X — align semantics gated on the new `|align|<true|false>`
+    // inline arg (default false). When align=true AND the resolved
+    // filter came from the declared-windowId branch
+    // (`alignActive=true` + `interval!=null`), render the plan's
+    // resetStartAt anchor. When align=false (default) OR the resolution
+    // fell through to dhms (alignActive=false), keep the empirical
+    // min(row.startAt) reading — matches v0.8.26+ default behavior.
+    if (filter.alignActive && filter.interval != null) {
+      const w = intervalToWindow(filter.interval);
       if (
         w != null &&
         typeof w.resetStartAt === "string" &&
@@ -2498,14 +2506,14 @@ m_quota: Object.assign(
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderBare("m_sumEndTime", c);
     const abs = c.passThrough?.abs === "true";
-    if (filter.alignActive && filter.windowKey !== "all") {
-      // v0.9.0+ — see m_sumStartTime comment above; same
-      // Interval→Window projection.
-      const iv: Interval | null =
-        filter.windowKey === "5h" ? c.shortInterval :
-        filter.windowKey === "7d" ? c.midInterval :
-        c.longInterval;
-      const w = iv ? intervalToWindow(iv) : null;
+    // vX.X.X — symmetric with m_sumStartTime above. align=true +
+    // declared-windowId resolution → plan's resetAt close instant;
+    // everything else (align=false default, or dhms / "all"
+    // resolution) → empirical max(s.lastAt) fallback. The v0.8.x
+    // `alignActive` flag is gone — the resolver emits `alignActive`
+    // directly off the resolution path.
+    if (filter.alignActive && filter.interval != null) {
+      const w = intervalToWindow(filter.interval);
       if (w != null && typeof w.resetAt === "string") {
         const anchorMs = Date.parse(w.resetAt);
         if (Number.isFinite(anchorMs)) {
@@ -2993,64 +3001,77 @@ function parseDhms(raw: string | undefined): number | "all" | null {
   return ms;
 }
 
-// v0.8.x — resolve the effective (windowKey, sinceMs, alignActive,
-// model) for a sum/avg scan.
+// vX.X.X — resolve the effective (windowKey, sinceMs, interval,
+// alignActive, modelFilter) for a sum/avg scan.
 //
-//   windowKey   — discrete cache key segment. One of "5h" / "7d" /
-//                 "all". Any other dhms input (e.g. "1d2h") is
-//                 rejected at parse time so the cache key space
-//                 stays bounded (≤ 12 entries: 2 model × 3 window ×
-//                 2 align).
-//   sinceMs     — wall-clock anchor. Samples with `at < sinceMs` are
-//                 excluded. Derived from windowKey + ctx.nowMs +
-//                 optionally resetStartAt.
-//   alignActive — when true, sinceMs is resetStartAt (cover exactly
-//                 one full window since the last refill); when
-//                 false, sinceMs is nowMs-window (the trailing N ms
-//                 of wall-clock). Forced false for window="all" or
-//                 when resetStartAt is missing on the relevant Window.
-//   modelFilter — undefined (all rows), "active" (current model), or
-//                 a literal model name.
+//   windowKey   — cache key segment. Either the literal "all"
+//                 sentinel, a declared `interval.windowId` (only
+//                 when align=true resolves through it; align=false
+//                 skips the lookup), or a free-form dhms string.
+//                 Each unique windowKey mints its own stat cache
+//                 entry under `stat:<modelFilter>:<windowKey>:<alignActive>`.
+//
+//   sinceMs     — wall-clock anchor for the JSONL scan. Rows with
+//                 `at < sinceMs` are filtered out (readAllSamples
+//                 + coerceSampleRow both gate on this).
+//                 For align-active windowId resolution: sinceMs =
+//                 Date.parse(window.resetStartAt) — the plan
+//                 window's open instant.
+//                 For dhms resolution: sinceMs = ctx.nowMs -
+//                 parsedDhmsMs.
+//                 For "all": sinceMs = 0.
+//
+//   interval    — the matched Interval when alignActive is true;
+//                 null otherwise. Carried on SumFilter so
+//                 m_sumStartTime / m_sumEndTime can render the
+//                 plan-anchor without re-walking the three slots.
+//                 (Not part of the cache key — same windowKey can
+//                 resolve to different Intervals across providers,
+//                 but the cache is per-render so this is fine in
+//                 practice.)
+//
+//   alignActive — true iff parseWindowScope resolved through the
+//                 declared windowId branch. Wall-clock scans
+//                 (align=false + dhms, OR align=true + dhms fall-
+//                 through) keep alignActive=false. Required for the
+//                 m_sumStartTime/EndTime plan-anchor rendering path.
+//
+//   modelFilter — undefined (all rows), "active" (current model),
+//                 or a literal model name.
 type SumFilter = {
-  windowKey: "5h" | "7d" | "all";
+  windowKey: string;
   sinceMs: number;
+  interval: Interval | null;
   alignActive: boolean;
   modelFilter?: string;
 };
+
+// vX.X.X — look up which Interval (if any) declares a given
+// windowId. Walks the three Interval slots on ctx and returns the
+// first that matches. Used by parseWindowScope for the
+// `|window|<declaredWindowId>` lookup path so a user can write
+// `|window|monthly` against `intervals.longInterval.windowId =
+// "monthly"` and (with `|align|true`) get the plan-aligned scan.
+function matchIntervalByWindowId(
+  ctx: RenderContext,
+  windowId: string,
+): Interval | null {
+  const candidates: Array<Interval | null | undefined> = [
+    ctx.shortInterval,
+    ctx.midInterval,
+    ctx.longInterval,
+  ];
+  for (const iv of candidates) {
+    if (iv != null && iv.windowId === windowId) return iv;
+  }
+  return null;
+}
 
 function parseWindowScope(
   ctx: RenderContext,
   params: Record<string, ResolvedValue | undefined>,
 ): SumFilter | null {
-  const windowRaw = (params.window as string | undefined) ?? "5h";
-  // Normalize the raw window string into one of the three discrete
-  // cache-key values. Any other dhms is rejected (drops the module).
-  // The full parseDhms validation still runs so e.g. "5x" returns
-  // null, and the standard warn-unknown-window path can fire.
-  let windowKey: "5h" | "7d" | "all";
-  if (windowRaw === "all") {
-    windowKey = "all";
-  } else if (windowRaw === "5h") {
-    windowKey = "5h";
-  } else if (windowRaw === "7d") {
-    windowKey = "7d";
-  } else {
-    // Anything else (free-form dhms like "1d2h") is not allowed in
-    // v0.8.x — refuse rather than minting a unique cache key.
-    return null;
-  }
-
-  // v0.8.26+ — default switched from "true" to "false" so bare
-  // `m_sum*` reads a trailing wall-clock window (nowMs - N) by
-  // default. The plan-aligned anchor window (resetStartAt →
-  // resetStartAt + duration) is still available via explicit
-  // `|align|true`; aligns only fire when the ctx.fiveHour /
-  // weekly Window actually ships a resetStartAt. Inline call
-  // sites that already opt in to `|align|true` are unaffected.
-  const alignRaw = (params.align as string | undefined) ?? "false";
-  const alignWanted = alignRaw === "true";
-
-  // Resolve model filter.
+  // Resolve model first — shared across every branch below.
   const modelRaw = (params.model as string | undefined) ?? "active";
   let modelFilter: string | undefined;
   if (modelRaw === "all") {
@@ -3061,45 +3082,93 @@ function parseWindowScope(
     modelFilter = modelRaw;
   }
 
-  if (windowKey === "all") {
-    // No time anchor — align is meaningless. Scan from epoch.
-    return { windowKey, sinceMs: 0, alignActive: false, modelFilter };
+  // Bare form defaults to "all" (no time anchor) — opposite of the
+  // legacy v0.8.x "5h" default. A bare `m_sumTokenIn` now reads
+  // the entire cross-project JSONL; explicit `|window|<dhms>` is
+  // the opt-in to a time-bounded scan, and `|window|<declaredId>`
+  // requires `|align|true` to resolve as a plan-anchored scan.
+  // The literal "all" is RESERVED — parseWindowScope uses it as
+  // the no-time-anchor sentinel and short-circuits before any
+  // windowId lookup, so users CANNOT name an interval
+  // `windowId: "all"` (the matchIntervalByWindowId lookup never
+  // runs against the reserved string).
+  const windowRaw = (params.window as string | undefined) ?? "all";
+
+  // v0.8.27 default was `true`; v0.8.26 flipped it to `false`;
+  // vX.X.X restores the explicit opt-in form (default false),
+  // matching the discipline of |abs| / |nulldrop| — alignment is
+  // a deliberate choice, not an accident of resolution.
+  const alignRaw = (params.align as string | undefined) ?? "false";
+  const alignWanted = alignRaw === "true";
+
+  // "all" sentinel: short-circuit BEFORE any windowId check so the
+  // reserved "all" id can never collide with a declared
+  // interval.windowId of the same name. Behaves identically to
+  // v0.8.x for this case: scan everything since epoch.
+  if (windowRaw === "all") {
+    return {
+      windowKey: "all",
+      sinceMs: 0,
+      interval: null,
+      alignActive: false,
+      modelFilter,
+    };
   }
 
-  // Try to align to the plan window's resetStartAt if asked.
-  // v0.9.0+ — pull the Window projection from the matching Interval
-  // (shortInterval / midInterval / longInterval). The legacy ctx.fiveHour
-  // / ctx.weekly fields are gone; intervalToWindow rebuilds the Window
-  // shape parseWindowScope needs (resetStartAt / resetDurationMs).
-  const iv: Interval | null =
-    windowKey === "5h" ? ctx.shortInterval :
-    windowKey === "7d" ? ctx.midInterval :
-    null;
-  const w: Window | null = iv ? intervalToWindow(iv) : null;
-  if (
-    alignWanted &&
-    w != null &&
-    typeof w.resetStartAt === "string" &&
-    typeof w.resetDurationMs === "number" &&
-    w.resetDurationMs > 0
-  ) {
-    const alignedStartMs = Date.parse(w.resetStartAt);
-    if (Number.isFinite(alignedStartMs)) {
-      return {
-        windowKey,
-        sinceMs: alignedStartMs,
-        alignActive: true,
-        modelFilter,
-      };
+  // Branch A — align=true: try the declared-windowId lookup
+  // first. On match with a valid resetStartAt, run a
+  // plan-aligned scan; on miss (or matched-but-no-anchor) fall
+  // through to dhms if parseable.
+  if (alignWanted) {
+    const matchedIv = matchIntervalByWindowId(ctx, windowRaw);
+    if (matchedIv != null) {
+      const w = intervalToWindow(matchedIv);
+      if (
+        w != null &&
+        typeof w.resetStartAt === "string" &&
+        typeof w.resetDurationMs === "number" &&
+        w.resetDurationMs > 0
+      ) {
+        const anchorMs = Date.parse(w.resetStartAt);
+        if (Number.isFinite(anchorMs)) {
+          return {
+            windowKey: windowRaw,
+            sinceMs: anchorMs,
+            interval: matchedIv,
+            alignActive: true,
+            modelFilter,
+          };
+        }
+      }
     }
   }
-  const windowMs = windowKey === "5h" ? 5 * 3600_000 : 7 * 86400_000;
-  return {
-    windowKey,
-    sinceMs: ctx.nowMs - windowMs,
-    alignActive: false,
-    modelFilter,
-  };
+
+  // Branch B — dhms: the wall-clock fallback. align=true + windowId
+  // miss lands here; align=false ALWAYS lands here (no windowId
+  // lookup at all, so users who wrote `|window|monthly` with
+  // `|align|false` will drop with the warn below).
+  const dhmsMs = parseDhms(windowRaw);
+  if (typeof dhmsMs === "number" && dhmsMs > 0) {
+    return {
+      windowKey: windowRaw,
+      sinceMs: ctx.nowMs - dhmsMs,
+      interval: null,
+      alignActive: false,
+      modelFilter,
+    };
+  }
+
+  // Drop + warn. The user can recover by either:
+  //   - opt into align=true (so windowId lookup runs) and ensure
+  //     the value is a configured interval.windowId; OR
+  //   - rewrite as a parseable dhms duration.
+  warn(
+    `m_sum*|window "${windowRaw}" is not parseable as dhms` +
+    (alignWanted ? "" : ` (and align=false skips the interval.windowId lookup); pass |window|<dhms>` +
+    ` or |window|<declared interval.windowId>|align|true to fix`) +
+    `; dropping the module.`,
+  );
+  return null;
 }
 
 // v0.8.12 — resetStartAt is an ISO string in Window (see src/types.ts
@@ -3644,18 +3713,24 @@ const WINDOW_PARAM = {
   },
 } as const;
 
-// v0.8.0+ — `:align|<true|false>` — when true AND window ∈ {5h,
-// 7d} AND ctx.fiveHour/weekly.resetStartAt is set, the scan
-// covers the plan-aligned window [resetStartAt, resetStartAt +
-// duration] (one full refill bucket). When false (v0.8.26+
-// default for bare `m_sum*`), the scan reads the trailing
-// wall-clock window [nowMs - N, nowMs], which is closer to
-// "last 5h / 7d of activity" rather than "current refill
-// bucket". Without `|align|` callers therefore need to opt in
-// to plan-aligned behavior with `|align|true`. Everything
-// else (window="all" or no resetStartAt on the Window)
-// already collapses to wall-clock, so the flip is a no-op
-// for those shapes.
+// v0.8.0+ — `:align|<true|false>` — gates the plan-anchored
+// scan path against the dhms wall-clock path on m_sum*
+// modules. Resolver accepts only literal `true` / `false` so
+// typos fail loud at the inline-args resolver rather than
+// silently no-op'ing — matches the discipline used by ABS_PARAM
+// and other boolean gates.
+//
+// vX.X.X — restored. Default is `false` so a bare `m_sum*` or
+// `m_sum*|window|<dhms>` reads wall-clock. `|align|true` opts
+// into the plan-anchored path: with `|window|<declaredId>` the
+// scan anchors to the matching Interval's resetStartAt; with
+// `|window|<unparseable string>` it falls through to dhms if
+// parseable, else drops. With `|align|false` the windowId
+// branch is skipped entirely — `|window|<declaredId>` reads as
+// plain dhms (and a literally parseable dhms value still
+// resolves; a value like `"monthly"` would drop because dhms
+// can't parse it). See parseWindowScope for the full
+// resolution tree.
 const ALIGN_PARAM = {
   named: {
     align: (raw: string): ResolvedValue | null =>
@@ -4645,6 +4720,15 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
       // typos are not silently accepted. The whitelist mirrors
       // the param atoms that the `m_acc*` / `m_sum*` /
       // `m_template` consumers actually read.
+      //
+      // vX.X.X — `ALIGN_PARAM` retired in favor of
+      // `ALIGN_PARAM` (no-op resolver that accepts
+      // `true` / `false` for back-compat). Forwarding the no-op
+      // `align` param to inner modules is still useful so a
+      // pre-upgrade outer template carrying
+      // `m_template|<key>|align|true` continues to parse without
+      // the no-op value drowning out an inner module's own
+      // `window` / `model` declarations on the same token.
       ...NULDROP_PARAM.named,
       ...COLOR_PARAM.named,
       ...SCOPE_PARAM.named,
@@ -5357,22 +5441,13 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (agg.rows === 0) return placeholderWithColor("m_sumStartTime", params, ctx);
     const abs = passThroughOr<string>(params, ctx, "abs") === "true";
     const color = passThroughOr<string>(params, ctx, "color");
-    // v0.8.27+ — align=true surfaces the plan window's open
-    // instant (ctx.fiveHour/weekly.resetStartAt) when the
-    // matching Window ships one. See the bare-form comment for
-    // the rationale (plan anchor is the authoritative
-    // "when did this window open" answer).
-    if (filter.alignActive && filter.windowKey !== "all") {
-      // v0.9.0+ — pull the Window projection from the matching
-      // Interval (shortInterval / midInterval / longInterval). The
-      // legacy ctx.fiveHour / ctx.weekly fields are gone;
-      // intervalToWindow rebuilds the Window shape the anchor-check
-      // needs (resetStartAt / resetDurationMs).
-      const iv: Interval | null =
-        filter.windowKey === "5h" ? ctx.shortInterval :
-        filter.windowKey === "7d" ? ctx.midInterval :
-        ctx.longInterval;
-      const w: Window | null = iv ? intervalToWindow(iv) : null;
+    // vX.X.X — mirror of the bare-form branch above: align=true
+    // + declared-windowId resolution sets `alignActive=true +
+    // interval!=null`, which gates the plan-anchor rendering
+    // (window.resetStartAt). align=false (default) OR dhms / "all"
+    // resolution lands on the empirical agg.firstAt branch below.
+    if (filter.alignActive && filter.interval != null) {
+      const w = intervalToWindow(filter.interval);
       if (
         w != null &&
         typeof w.resetStartAt === "string" &&
@@ -5406,15 +5481,14 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (agg.rows === 0) return placeholderWithColor("m_sumEndTime", params, ctx);
     const abs = passThroughOr<string>(params, ctx, "abs") === "true";
     const color = passThroughOr<string>(params, ctx, "color");
-    if (filter.alignActive && filter.windowKey !== "all") {
-      // v0.9.0+ — pull the Window projection from the matching
-      // Interval (shortInterval / midInterval / longInterval). See
-      // m_sumStartTime's twin comment for the full rationale.
-      const iv: Interval | null =
-        filter.windowKey === "5h" ? ctx.shortInterval :
-        filter.windowKey === "7d" ? ctx.midInterval :
-        ctx.longInterval;
-      const w: Window | null = iv ? intervalToWindow(iv) : null;
+    // vX.X.X — mirror of the bare-form branch above. align=true +
+    // declared-windowId resolution → plan window's resetAt close
+    // instant; everything else (align=false default, or dhms /
+    // "all" resolution) → empirical max(s.lastAt) fallback. The
+    // v0.8.x `alignActive` flag is gone — the resolver emits
+    // `alignActive` directly off the resolution path.
+    if (filter.alignActive && filter.interval != null) {
+      const w = intervalToWindow(filter.interval);
       if (w != null && typeof w.resetAt === "string") {
         const anchorMs = Date.parse(w.resetAt);
         if (Number.isFinite(anchorMs)) {

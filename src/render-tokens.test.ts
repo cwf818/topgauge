@@ -96,7 +96,12 @@ type LegacyWin = {
 };
 function legacyToIv(
   w: LegacyWin | null | undefined,
-  label: "5h" | "7d" | "30d" = "5h",
+  // vX.X.X — widened from "5h" | "7d" | "30d" so tests can construct
+  // Intervals with a non-canonical windowId for the new
+  // declared-windowId resolution path (e.g. "5h-fake" to ensure
+  // `|window|2h` falls through to dhms instead of matching the
+  // declared ID).
+  label: string = "5h",
 ): Interval | null {
   if (!w) return null;
   return {
@@ -3834,15 +3839,17 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
       `Actual: ${JSON.stringify(strip(outAll))}`);
 
     // Control: bare m_template|stat (no args) → defaults to
-    // window=5h → recent row alone → "in:100". This is the
-    // expected behavior, and importantly it MUST still match
-    // after the v0.8.14 placeholder change for consistency.
+    // window="all" (vX.X.X — bare default changed from "5h" to
+    // "all" so that a bare m_sum* reads the entire cross-project
+    // JSONL by default; explicit `|window|<dhms>` or
+    // `|window|<declaredId>|align|true` opts into a bounded
+    // scan). Both rows count → "in:300".
     const outDefault = renderTemplate(
       ["m_template|stat"],
       { ...ctxFor(tokens), nowMs: now },
     ).join("\n");
-    assert.equal(strip(outDefault), "in:100",
-      `expected default window=5h to count only the recent row, got: ${JSON.stringify(strip(outDefault))}`);
+    assert.equal(strip(outDefault), "in:300",
+      `expected bare default window=all to count both rows, got: ${JSON.stringify(strip(outDefault))}`);
 
     // Sanity: m_template|stat|window|5h (explicit passthrough
     // matching the default) must match the default control.
@@ -4898,10 +4905,17 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     assert.equal(strip(out), "in:600");
   });
 
-  it("m_sumTokenIn|window|1d1h is rejected — v0.8.x only accepts 5h/7d/all as window keys", () => {
-    // v0.8.x: free-form dhms like "1d1h" no longer map to a cache
-    // key segment (would explode the key space). parseWindowScope
-    // returns null and the module drops (renders empty).
+  it("m_sumTokenIn|window|1d1h falls through to free-form dhms (no declared-ID match) — vX.X.X upgrade", () => {
+    // v0.8.x: free-form dhms like "1d1h" were rejected outright by
+    // parseWindowScope's closed-enum cap ("5h" / "7d" / "all"), so
+    // the module dropped. vX.X.X — the cap is gone; `|window|1d1h`
+    // now falls through to Step 3 of the three-step resolver
+    // (free-form dhms) and lands on the wall-clock
+    // `ctx.nowMs - 1d1h` sinceMs. The seed row is at
+    // `now - 1h` so it falls inside the 25h window and counts.
+    // Configured interval defaults from MINIMAX_DEFAULT_INTERVALS
+    // ("5h" / "7d" / "30d") don't collide with "1d1h" because the
+    // resolver treats them as different strings.
     const stateRootDir = join(_tmpDir, "sum-fixture-window");
     setStateRoot(() => stateRootDir);
     const projHash = "d--sum-w";
@@ -4910,8 +4924,6 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     const sessionFile = join(stateRootDir, projHash, `${sess}.jsonl`);
     mkdirSync(dirname(sessionFile), { recursive: true });
     const now = 1_000_000;
-    // Seed one row so a successful parse would render something
-    // visible; the assertion below verifies it gets DROPPED.
     writeFileSync(
       sessionFile,
       JSON.stringify({ at: now - 3600_000, totalIn: 10, totalOut: 0, in: 10, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 100, apiMs: 100 }) + "\n",
@@ -4927,7 +4939,30 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
         }),
       ),
     ).join("\n");
-    assert.equal(out, "");
+    // 1d1h window covers [now - 25h, now] — the row at now-1h falls
+    // inside, so the module renders the seeded value (10) instead
+    // of dropping.
+    assert.equal(strip(out), "in:10");
+  });
+
+  it("m_sumTokenIn|window|<garbage> (not a declared windowId AND not parseable dhms) drops with warn — vX.X.X", () => {
+    // Step 4 of the resolver: neither a declared windowId nor a
+    // parseable dhms string → drop the module with a stderr warn so
+    // the rest of the template can keep rendering. "garbage123"
+    // contains digits, so parseDhms would see `1*1*1 = 1s + 2*1*1
+    // = 2s + 3*1 = 3s` accumulation matching; that's not what the
+    // user wrote, so we use a non-shape string here.
+    const out = renderTemplate(
+      ["m_sumTokenIn|window|not-a-duration"],
+      ctxFor(fakeSnapshot()),
+    );
+    // No rows → empty either way; the diagnostic value here is
+    // that the token parses WITHOUT a badarg (the inline-args
+    // resolver's `parseDhms` accepts any string and returns null
+    // for non-shape), and Step 4 fires inside parseWindowScope.
+    // The module returns null (drop, not placeholder) because
+    // Step 4 returns null regardless of whether rows exist.
+    assert.deepEqual(out, []);
   });
 
   it("m_sumTokenIn|window|7d excludes rows older than 7d (canonical window)", () => {
@@ -5025,12 +5060,17 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     assert.equal(strip(out), "in:1");
   });
 
-  // v0.8.26+ — bare `m_sum*` default flipped from align|true to
-  // align|false. Without `|align|`, the same fixture above now
-  // reads the trailing wall-clock 5h window [nowMs - 5h, nowMs]
-  // and sums BOTH rows (in:1 + in:999 = in:1000). Inline callers
-  // who want the plan-aligned bucket must opt in with `|align|true`.
-  it("bare m_sumTokenIn (no |align|) reads wall-clock even when resetStartAt is set", () => {
+  // vX.X.X — bare `|window|5h` no longer auto-resolves to a
+  // declared windowId. The new contract: `align` is an explicit
+  // opt-in (default false). `align=false` skips the
+  // matchIntervalByWindowId lookup entirely, so `|window|5h`
+  // always reads as free-form dhms → wall-clock `[now - 5h,
+  // now]`. Plan-anchored scans require `|window|<id>|align|true`.
+  // This pins down the new "align-gated resolution" contract so
+  // a future regression back to plan-aligned-default would
+  // surface as `in:1` (declared-windowId branch winning) instead
+  // of `in:1.0k` (wall-clock fallback).
+  it("bare m_sumTokenIn|window|5h resolves dhms wall-clock (align=false skips declared-ID lookup)", () => {
     const stateRootDir = join(_tmpDir, "sum-fixture-aligned-5h-default");
     setStateRoot(() => stateRootDir);
     const projHash = "d--sum-al-d";
@@ -5044,15 +5084,15 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     writeFileSync(
       sessionFile,
       [
-        // Inside the aligned 30m window (would NOT count under align=true)
+        // Inside both the wall-clock 5h and the aligned 30m window
         JSON.stringify({ at: now - 10 * 60_000, totalIn: 1, totalOut: 0, in: 1, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 100, apiMs: 100 }),
-        // Outside the aligned window BUT inside wall-clock 5h
+        // Inside wall-clock 5h but OUTSIDE the aligned 30m window
         JSON.stringify({ at: now - 2 * 3600_000, totalIn: 999, totalOut: 0, in: 999, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 999, apiMs: 999 }),
       ].join("\n") + "\n",
       "utf8",
     );
     const out = renderTemplate(
-      ["m_sumTokenIn"], // bare form — default align=false now
+      ["m_sumTokenIn|window|5h"], // align=false default → dhms wall-clock
       ctxFor(
         fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" }),
         legacyToIv({
@@ -5065,15 +5105,117 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
         null,
       ),
     ).join("\n");
-    // Default reads wall-clock 5h → both rows counted.
+    // Wall-clock 5h covers both rows → 1 + 999 = 1000 → "in:1.0k".
     assert.equal(strip(out), "in:1.0k");
   });
 
-  it("inline m_sumTokenIn|window|5h|align|false mirrors the new bare default", () => {
-    // Parametric confirmation: explicit align|false produces the
-    // same body shape as the bare form. The bare test above
-    // covers the implicit default; this pins down the explicit
-    // expression for users who pass it through an m_template.
+  // vX.X.X — `|align|true` opts into the declared-windowId lookup.
+  // Same fixture as the wall-clock test above, but adding
+  // `|align|true` flips parseWindowScope into the windowId branch
+  // → plan-aligned sinceMs = resetStartAt → only the 10m-ago row
+  // counts. Pairs with the wall-clock test above to pin down both
+  // sides of the align gate.
+  it("m_sumTokenIn|window|5h|align|true resolves plan-aligned when shortInterval.windowId='5h'", () => {
+    const stateRootDir = join(_tmpDir, "sum-fixture-aligned-5h-true");
+    setStateRoot(() => stateRootDir);
+    const projHash = "d--sum-al-t";
+    const sess = "sess-sum-al-t";
+    const cwd = "D:\\sum-al-t";
+    const sessionFile = join(stateRootDir, projHash, `${sess}.jsonl`);
+    mkdirSync(dirname(sessionFile), { recursive: true });
+    const now = 1_700_000_000_000;
+    const resetStartAt = new Date(now - 30 * 60_000).toISOString();
+    const resetAt = new Date(now + 4 * 3600_000 + 30 * 60_000).toISOString();
+    writeFileSync(
+      sessionFile,
+      [
+        JSON.stringify({ at: now - 10 * 60_000, totalIn: 1, totalOut: 0, in: 1, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 100, apiMs: 100 }),
+        JSON.stringify({ at: now - 2 * 3600_000, totalIn: 999, totalOut: 0, in: 999, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 999, apiMs: 999 }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const out = renderTemplate(
+      ["m_sumTokenIn|window|5h|align|true"], // align=true → windowId lookup
+      ctxFor(
+        fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" }),
+        legacyToIv({
+          pct: 10,
+          resetAt,
+          resetStartAt,
+          resetDurationMs: 5 * 3600_000,
+        }),
+        null,
+        null,
+      ),
+    ).join("\n");
+    // Plan-aligned scan from resetStartAt: only the 10m-ago row counts.
+    assert.equal(strip(out), "in:1");
+  });
+
+  // vX.X.X — `align` was removed entirely. The bare `|window|<dhms>`
+  // form (no `|window|<declaredId>` match) ALWAYS reads
+  // wall-clock, regardless of whether `ctx.shortInterval`
+  // etc. carry a resetStartAt. This test constructs a context
+  // where shortInterval.windowId is intentionally NOT "5h" —
+  // so the resolver falls through to the dhms wall-clock branch.
+  it("m_sumTokenIn|window|2h reads trailing 2h wall-clock even when shortInterval.resetStartAt is set (vX.X.X upgrade)", () => {
+    // Note the use of legacyToIv with a non-`5h` label — that
+    // bumps ctx.shortInterval.windowId to `5h-fake` (the test's
+    // own ad-hoc label) so the resolver doesn't match it as a
+    // declared windowId, and Step 3 (free-form dhms) fires.
+    const stateRootDir = join(_tmpDir, "sum-fixture-aligned-2h-wallclock");
+    setStateRoot(() => stateRootDir);
+    const projHash = "d--sum-al-2h";
+    const sess = "sess-sum-al-2h";
+    const cwd = "D:\\sum-al-2h";
+    const sessionFile = join(stateRootDir, projHash, `${sess}.jsonl`);
+    mkdirSync(dirname(sessionFile), { recursive: true });
+    const now = 1_700_000_000_000;
+    const resetStartAt = new Date(now - 30 * 60_000).toISOString();
+    const resetAt = new Date(now + 4 * 3600_000 + 30 * 60_000).toISOString();
+    writeFileSync(
+      sessionFile,
+      [
+        JSON.stringify({ at: now - 10 * 60_000, totalIn: 1, totalOut: 0, in: 1, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 100, apiMs: 100 }),
+        JSON.stringify({ at: now - 90 * 60_000, totalIn: 999, totalOut: 0, in: 999, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 999, apiMs: 999 }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const out = renderTemplate(
+      ["m_sumTokenIn|window|2h"],
+      ctxFor(
+        fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" }),
+        // windowId='5h-fake' avoids the resolved-against-declared-ID
+        // branch — `|window|2h` is dhms, not a windowId. The
+        // resetStartAt fields on the Interval are ignored because
+        // Step 2 never matched.
+        legacyToIv(
+          {
+            pct: 10,
+            resetAt,
+            resetStartAt,
+            resetDurationMs: 5 * 3600_000,
+          },
+          "5h-fake",
+        ),
+        null,
+        null,
+      ),
+    ).join("\n");
+    // Wall-clock trailing 2h window covers both rows (90min ago
+    // is inside 2h) → 1 + 999 = 1000 → formatted as "1.0k".
+    assert.equal(strip(out), "in:1.0k");
+  });
+
+  it("inline m_sumTokenIn|window|5h|align|false resolves dhms wall-clock (align gates the lookup)", () => {
+    // vX.X.X — `align` is a meaningful param again, default false.
+    // `align=false` SKIPS the declared-windowId lookup entirely,
+    // so `|window|5h` resolves as free-form dhms (wall-clock
+    // `[now - 5h, now]`). With both seeded rows inside that window
+    // the sum is 1000 → `in:1.0k`. Pairs with the `|align|true`
+    // test above to pin down both sides of the align gate. The
+    // v0.8.31 contract treated `align=false` as a no-op (DEPRECATED_
+    // ALIGN_PARAM); that contract is reverted to a real resolver.
     const stateRootDir = join(_tmpDir, "sum-fixture-aligned-5h-false");
     setStateRoot(() => stateRootDir);
     const projHash = "d--sum-al-f";
@@ -5106,7 +5248,8 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
         null,
       ),
     ).join("\n");
-    // Same as the bare form — both rows counted via wall-clock 5h.
+    // align=false skips windowId lookup → dhms 5h wall-clock →
+    // both rows count → "in:1.0k".
     assert.equal(strip(out), "in:1.0k");
   });
 
@@ -5138,7 +5281,12 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     utimesSync(sessionFile, stale, stale);
 
     const out = renderTemplate(
-      ["m_sumTokenIn"], // default 5h window, no align-reset
+      // vX.X.X — bare default window changed from "5h" to "all",
+      // so an explicit `|window|5h` is now required to exercise
+      // the mtime pre-filter path. The test still verifies the
+      // 5h-windowed scan → file's stale mtime drops the whole
+      // file → rows=0 → `in:n/a`.
+      ["m_sumTokenIn|window|5h"],
       {
         ...ctxFor(
           fakeSnapshot({
@@ -6417,10 +6565,16 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
     assert.match(strip(out[0]!), /^start:n\/a$/);
   });
 
-  it("inline m_sumStartTime|window|5h renders min(startAt) across rows", () => {
-    // Seed a JSONL stream with 3 rows. Two carry a real
-    // startAt; one is legacy (startAt: null). The min should
-    // pick the earliest valid startAt (1700000000000).
+  it("inline m_sumStartTime|window|5h renders min(at) across rows", () => {
+    // vX.X.X — `firstAt` now reads min(s.at) over the filtered
+    // window, symmetric with m_sumEndTime's max(s.at). The
+    // v0.8.24 design read min(s.startAt) — a separate
+    // per-session first-tick stamp unrelated to the window's
+    // data range. Here 3 rows have `at` values 999_000 /
+    // 999_500 / 999_900; min = 999_000. The explicit `startAt`
+    // fields on each row are now ignored by aggregateSamples
+    // (kept on the row schema for legacy back-compat with
+    // v0.8.24 disk files, but unused by this aggregate).
     const stateRootDir = join(_tmpDir, "sum-start");
     setStateRoot(() => stateRootDir);
     const projHash = "d--sum-start";
@@ -6433,21 +6587,21 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
       [
         JSON.stringify({ at: 999_000, totalIn: 150, totalOut: 50, in: 100, out: 50, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 1000, apiMs: 1000, startAt: 1_700_000_000_000, lastAt: 999_000 }),
         JSON.stringify({ at: 999_500, totalIn: 350, totalOut: 75, in: 200, out: 75, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 1000, apiMs: 1000, startAt: 1_700_000_005_000, lastAt: 999_500 }),
-        // Legacy row — no startAt/lastAt fields. aggregateSamples'
-        // Number.isFinite gate filters it out of firstAt.
+        // Legacy row — no startAt/lastAt fields. No effect on
+        // firstAt now that aggregateSamples reads s.at.
         JSON.stringify({ at: 999_900, totalIn: 650, totalOut: 100, in: 300, out: 100, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 1000, apiMs: 1000 }),
       ].join("\n") + "\n",
       "utf8",
     );
     // ctxFor's nowMs is 1_000_000 so all 3 rows fall inside the
-    // 5h window. align|false so the parseWindowScope falls
-    // through to the wall-clock branch (no plan window in
-    // this test ctx).
+    // 5h window. align|false so parseWindowScope falls through
+    // to the wall-clock branch (no plan window in this test
+    // ctx).
     const out = renderTemplate(
       ["m_sumStartTime|window|5h|model|active|align|false"],
       ctxFor(fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" })),
     ).join("\n");
-    const expected = `start:${formatAbsTime(1_700_000_000_000)}`;
+    const expected = `start:${formatAbsTime(999_000)}`;
     assert.equal(strip(out), expected);
   });
 
@@ -6490,8 +6644,11 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
   });
 
   it("inline m_sumStartTime|window|5h with all-legacy rows → 'start:n/a' placeholder", () => {
-    // All 3 rows lack startAt → aggregateSamples' firstAt falls
-    // back to 0 → m_sumStartTime renders the placeholder.
+    // vX.X.X — firstAt now reads min(s.at); the placeholder
+    // path triggers when no row carries a valid positive `at`.
+    // Rows here omit both `at` and `startAt` → coerceSampleRow
+    // drops them (at is required) → agg.rows === 0 → the
+    // renderer falls through to placeholderBare.
     const stateRootDir = join(_tmpDir, "sum-start-legacy");
     setStateRoot(() => stateRootDir);
     const projHash = "d--sum-start-legacy";
@@ -6499,14 +6656,8 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
     const cwd = "D:\\sum-start-legacy";
     const sessionFile = join(stateRootDir, projHash, `${sess}.jsonl`);
     mkdirSync(dirname(sessionFile), { recursive: true });
-    writeFileSync(
-      sessionFile,
-      [
-        JSON.stringify({ at: 999_000, totalIn: 150, totalOut: 50, in: 100, out: 50, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 1000, apiMs: 1000 }),
-        JSON.stringify({ at: 999_500, totalIn: 350, totalOut: 75, in: 200, out: 75, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 1000, apiMs: 1000 }),
-      ].join("\n") + "\n",
-      "utf8",
-    );
+    // Empty file → no rows → no at to read → placeholder.
+    writeFileSync(sessionFile, "", "utf8");
     const out = renderTemplate(
       ["m_sumStartTime|window|5h|model|active|align|false"],
       ctxFor(fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" })),
@@ -6629,10 +6780,16 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
     assert.equal(strip(out), `end:${formatAbsTime(now + 5 * 86400_000)}`);
   });
 
-  it("m_sumStartTime|window|5h|align|false keeps empirical min(startAt) (no plan-window anchor)", () => {
-    // Regression guard: align=false (v0.8.26+ default) must
-    // keep the empirical reading even when the ctx Window
-    // ships a resetStartAt. The plan-window mode is opt-in.
+  it("m_sumStartTime|window|5h|align|false keeps empirical min(startAt) (align gates lookup)", () => {
+    // vX.X.X — `align` is a meaningful param again, default false.
+    // `align=false` SKIPS the declared-windowId lookup, so
+    // `|window|5h` resolves as free-form dhms → wall-clock
+    // `[now - 5h, now]`. The seeded row at `empiricalStart =
+    // now-4h` falls INSIDE that wall-clock window, so
+    // m_sumStartTime renders the empirical `formatAbsTime(now-4h)`
+    // instead of the plan anchor (`v0.8.31 start:n/a` placeholder).
+    // Pairs with the `|align|true` test below to pin down both
+    // sides of the align gate.
     const stateRootDir = join(_tmpDir, "sum-aligned-start-off");
     setStateRoot(() => stateRootDir);
     const projHash = "d--sum-aligned-start-off";
@@ -6641,7 +6798,7 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
     const sessionFile = join(stateRootDir, projHash, `${sess}.jsonl`);
     mkdirSync(dirname(sessionFile), { recursive: true });
     const now = 1_700_000_000_000;
-    const empiricalStart = now - 4 * 3600_000;
+    const empiricalStart = now - 4 * 3600_000; // inside wall-clock 5h
     const anchorStart = new Date(now - 3600_000).toISOString();
     const anchorEnd = new Date(now + 4 * 3600_000).toISOString();
     writeFileSync(
@@ -6663,8 +6820,9 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
         null,
       ),
     ).join("\n");
-    // Empirical wins — the (window, model, align|false) flag
-    // bundle opts out of plan-window anchoring.
+    // align=false → dhms 5h wall-clock → row at now-4h counts →
+    // empirical min(startAt) = now-4h → formatAbsTime renders it
+    // as "HH:MM:SS".
     assert.equal(strip(out), `start:${formatAbsTime(empiricalStart)}`);
   });
 

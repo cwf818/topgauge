@@ -75,6 +75,15 @@ export type IntervalKey = "shortInterval" | "midInterval" | "longInterval";
 export type IntervalSlotConfig = {
   // Built-in defaults: shortInterval → "5h", midInterval → "7d",
   // longInterval → "30d". When omitted, the parser fills these in.
+  //
+  // vX.X.X+ — windowId is now an arbitrary opaque label. The
+  // m_sum* `|window|<id>` resolver distinguishes named IDs from
+  // dhms via the `|align|` param (align=true → look up windowId
+  // first, then fall through to dhms; align=false → always dhms,
+  // never windowId), so user-supplied IDs no longer need to be
+  // guarded against parseDhms. The literal `"all"` is reserved as
+  // the no-time-anchor sentinel and CANNOT be used as a windowId
+  // — `parseWindowScope` short-circuits on it before any lookup.
   windowId?: string;
   // Built-in default: same as windowId. The renderer reads this
   // to print the window's display label (e.g. "5h" in

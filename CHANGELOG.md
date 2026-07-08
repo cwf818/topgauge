@@ -1,5 +1,72 @@
 # Changelog
 
+## v0.8.32
+
+### Added
+
+- `|align|<true|false>` is a meaningful inline arg again on
+  `m_sum*` modules, default `false`. `align=true` opts into
+  the declared-`interval.windowId` lookup branch of the
+  three-step resolver; `align=false` skips the lookup
+  entirely and goes straight to free-form dhms. This is a
+  reversal of v0.8.31, which had treated `align` as a no-op
+  in favor of "did the `window` arg match a declared ID"
+  semantics.
+
+- `m_sumStartTime` / `m_sumEndTime` read `filter.alignActive`
+  (renamed from v0.8.x; restored to its pre-v0.8.31 name).
+  When `align=true` AND the resolver landed on a declared
+  `interval.windowId`, the modules render the plan's
+  `resetStartAt` / `resetAt` close instant. Otherwise they
+  keep the empirical `min(row.startAt)` / `max(row.lastAt)`
+  fallback. `m_sumTokenIn` / `m_sumTokenOut` /
+  `m_sumTokenCachedIn` / `m_sumApiMs` / etc. are unaffected —
+  they were never `align`-gated readers.
+
+- The literal string `"all"` is reserved as the
+  no-time-anchor sentinel for `m_sum*|window|`. `parseWindowScope`
+  short-circuits on `"all"` before any windowId lookup, so
+  users CANNOT name an `interval.windowId: "all"`. The
+  reservation is enforced by the resolver (always
+  short-circuits), not by config validation.
+
+### Changed
+
+- Bare `m_sum*` (no `|window|` arg) now defaults to
+  `window="all"` instead of the legacy `window="5h"`. A bare
+  `m_sumTokenIn` now reads the entire cross-project JSONL;
+  explicit `|window|<dhms>` is the opt-in to a time-bounded
+  scan, and `|window|<declaredId>|align|true` is the opt-in
+  to a plan-aligned scan. Existing templates with explicit
+  `|window|5h` (the most common form) keep working — they
+  fall through to dhms wall-clock `5h` under the new
+  `align=false` default.
+
+- Stat-cache key at `src/status-store.ts:1207` re-adds the
+  `:alignActive` segment (`stat:<model>:<windowKey>:<alignActive>`)
+  because the resolver now buckets along it. The v0.8.31
+  reduction to `stat:<model>:<windowKey>` was discarded
+  since declared-windowId resolution can produce different
+  `(sinceMs, interval)` pairs for the same `windowKey`
+  literal depending on `align`. The 300s TTL still bounds
+  abandoned entries.
+
+- `intervals.<key>.windowId` accepts any string including
+  digit prefixes. The v0.8.31 `w`-auto-prefix + warn
+  behavior is removed — the new align-gated resolver makes
+  the collision impossible (windowId lookup only runs when
+  `align=true`; dhms lookup only runs when `align=false`),
+  so users can name their windows freely.
+
+### Hardening
+
+- `m_template` passthrough axis reach tests (which exercise
+  the `m_template|<key>|window|<v>` axis-forwarding path)
+  are updated to reflect the new defaults: bare-key passthrough
+  now reads the entire JSONL (matching the new bare `window=all`
+  default) and the `|window|<declaredId>|align|true` form
+  is required for plan-aligned scans.
+
 ## v0.8.29
 
 ### Added

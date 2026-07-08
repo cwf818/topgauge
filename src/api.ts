@@ -276,7 +276,7 @@ function buildInterval(
   const hasQuota = quota.remainingQuota != null || quota.usedQuota != null || quota.limitQuota != null;
   if (!hasPercent && !hasQuota) return null;
 
-  const windowId = (slot.windowId ?? DEFAULT_WINDOW_IDS[key]) as "5h" | "7d" | "30d";
+  const windowId = slot.windowId ?? DEFAULT_WINDOW_IDS[key];
   return {
     windowId,
     label: slot.label ?? slot.windowId ?? DEFAULT_WINDOW_IDS[key],

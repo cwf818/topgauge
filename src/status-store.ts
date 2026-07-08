@@ -195,10 +195,22 @@ export type TickState = {
 };
 
 export type SumFilter = {
-  windowKey: "5h" | "7d" | "all";
+  // vX.X.X — `windowKey` widened from the v0.8.x closed union to
+  // `string`. Each unique windowKey (declared `interval.windowId`,
+  // the literal "all" sentinel, or a free-form dhms string) mints
+  // its own stat cache entry under `stat:<model>:<windowKey>`. The
+  // v0.8.x cap of ≤ 12 entries (2 model × 3 window × 2 align) is
+  // gone — cache.ts's TTL=300s keeps abandoned entries bounded.
+  windowKey: string;
   sinceMs: number;
-  alignActive: boolean;
   modelFilter?: string;
+  // The renderer-side SumFilter declares more fields
+  // (`windowIdMatch` / `interval` / `windowMs`) used by
+  // m_sumStartTime / m_sumEndTime — those are read at the
+  // parseWindowScope call site, not here, so we deliberately
+  // don't redeclare them on this side of the import boundary.
+  // Status-store treats the parameter structurally: any object
+  // with these three core fields is accepted.
 };
 
 export type StatAggregate = {
@@ -1146,11 +1158,17 @@ function aggregateSamples(samples: TokenSample[]): StatAggregate {
   let sumCached = 0;
   let sumApiMs = 0;
   let lastAt = 0;
-  // v0.8.24+ — min(s.startAt) over filtered rows. The min
-  // defaults to +Infinity and falls back to 0 if no row
-  // carries a valid startAt (legacy file / all-null). The
-  // m_sumStartTime renderer treats firstAt <= 0 as
-  // placeholder.
+  // vX.X.X — `firstAt` now tracks min(s.at) over filtered rows,
+  // symmetric with `lastAt` = max(s.at). The v0.8.24 design
+  // read row.startAt (a separate per-session first-tick stamp
+  // unrelated to the window's data range), so m_sumStartTime
+  // reported the session's first-ever tick — not the earliest
+  // tick inside the filtered window. m_sumEndTime has always
+  // read max(s.at), so the two modules now describe the same
+  // window's empirical bounds. coerceSampleRow still reads
+  // `r.startAt` for legacy back-compat (v0.8.24 rows on disk),
+  // but it's no longer consulted by this aggregate. The m_sumStartTime
+  // renderer treats firstAt <= 0 as placeholder.
   let firstAt = Number.POSITIVE_INFINITY;
   let calls = 0;
   for (const s of samples) {
@@ -1161,12 +1179,11 @@ function aggregateSamples(samples: TokenSample[]): StatAggregate {
     if ((s.apiMs ?? 0) > 0) calls += 1;
     if (s.at > lastAt) lastAt = s.at;
     if (
-      s.startAt != null &&
-      Number.isFinite(s.startAt) &&
-      s.startAt > 0 &&
-      s.startAt < firstAt
+      Number.isFinite(s.at) &&
+      s.at > 0 &&
+      s.at < firstAt
     ) {
-      firstAt = s.startAt;
+      firstAt = s.at;
     }
   }
   if (!Number.isFinite(firstAt)) firstAt = 0;
@@ -1185,7 +1202,22 @@ function aggregateSamples(samples: TokenSample[]): StatAggregate {
 }
 
 export function getStatAggregate(filter: SumFilter): StatAggregate {
-  const key = `stat:${filter.modelFilter ?? "all"}:${filter.windowKey}:${filter.alignActive}`;
+  // vX.X.X — `:alignActive` segment RESTORED. The renderer-side
+  // parseWindowScope buckets along `alignActive` because the
+  // declared-windowId branch (align=true) and the dhms /
+  // "all" branches (align=false) can produce different
+  // (sinceMs, modelFilter) for the same `windowKey` literal.
+  // E.g. `|window|monthly|align|true` scans sinceMs =
+  // Date.parse(interval.resetStartAt), while `|window|monthly|align|false`
+  // (no dhms parse) drops with warn — but if a user later
+  // aliases `windowId: "5h"` to a 5-hour declared interval AND
+  // also writes `|window|5h|align|false`, the same `windowKey`
+  // string lands on different (sinceMs, interval) pairs.
+  // Bucketing along align keeps the two readings in disjoint
+  // cache slots so they don't poison each other. Free-form dhms
+  // values (always alignActive=false) still mint their own entries
+  // via the literal `windowKey` (`stat:...:2h30m:false`).
+  const key = `stat:${filter.modelFilter ?? "all"}:${filter.windowKey}:${(filter as { alignActive?: boolean }).alignActive ?? false}`;
   const cached = getStatCache<StatAggregate>(key, STAT_CACHE_TTL_MS);
   if (cached) return cached;
   const samples = readAllSamples(filter.sinceMs);

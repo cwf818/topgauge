@@ -54,13 +54,15 @@ exceptions are called out in §3.
 | `type`      | `plan` \| `balance`                                                            | `plan`             | **`m_template` only.** Filter sub-template by provider `TYPE`. **Recommended name (v0.8.15+).** The legacy alias `mode` is still accepted; when both are present on the same token, `type` wins. Neither arg is forwarded via `passThrough` (§1.2). |
 | `scope`     | `ccsession` \| `session` \| `project` \| `model`                              | `ccsession`        | **`m_acc*` only.** Pick which slot of the four-layer accumulator to read. See §3.                                                                  |
 | `model`     | `active` \| `all` \| `<name>`                                                  | `active`           | **`m_sum*` only.** Narrow the JSONL scan to one model identity or every row.                                                                       |
-| `window`    | `<dhms>` (e.g. `5h`, `7d`, `1h30m`) \| `all`                                   | `5h`               | **`m_sum*` only.** Time window for the JSONL scan.                                                                                                  |
-| `align`     | `true` \| `false`                                                              | `true`             | **`m_sum*` only.** When `true` AND window ∈ {5h, 7d} AND `ctx.shortInterval/midInterval.resetStartAt` is set, use the plan-aligned window.        |
+| `window`    | `<dhms>` (e.g. `5h`, `7d`, `1h30m`, `2d12h`) \| `all` \| `<interval.windowId>` | `all`              | **`m_sum*` only (v0.8.32+).** Time window for the JSONL scan. A free-form `<digits><unit>` chain resolves to wall-clock `[now - N, now]`. The literal `all` scans the entire jsonl with no time anchor (also the bare default). A configured `interval.windowId` (e.g. `"monthly"` against `intervals.longInterval.windowId = "monthly"`) resolves to a plan-aligned scan ONLY when `|align|true` is also passed — see `align` row below. |
+| `align`     | `true` \| `false`                                                              | `false`            | **`m_sum*` only (v0.8.32+).** Opt-in flag for declared-windowId resolution. `align=true` causes the resolver to look up `<interval.windowId>` first; on a match the scan runs plan-anchored against that interval's `resetStartAt`. On a miss (or when `align=false`) the resolver falls through to free-form dhms. The literal `all` short-circuits before this lookup regardless of `align`. |
 | `freq`      | `s` \| `m` \| `h` \| `d` \| `<digits><unit>`                                   | `h`                | **`m_quote` only.** Bucket size for quote rotation.                                                                                                 |
 | `address`   | URL string                                                                     | `""` (empty)       | **`m_quote` only (v0.8.18+, v0.8.19 fallback, v0.8.20 diagnostics).** When non-empty, fetch the URL via `curl -sSf --max-time 5` and use the body as the quote source instead of the bundled `quotes.json`. The fetched body is JSON-parsed; see `fields` for how the strings are extracted. On any failure (curl exit, non-JSON body, all paths miss), the renderer falls back to the local `quotes.json` list so the user always sees something. Each failure also appends a `warning` row to `diagnostics.jsonl` (gated on `TOPGAUGE_CC_DIAGNOSTICS_ENABLE=1`) under `source = "m_quote"` so a postmortem can grep why the local fallback fired. |
 | `fields`    | Comma-separated list of dot-paths (e.g. `hitokoto,from,from_who`)               | `""` (empty)       | **`m_quote` only (v0.8.19+).** Each path is walked independently against the JSON response (object keys / array indices / strings — string terminates the walk, anything after is ignored). The collected strings are rendered as `field1: field2:` (colon-joined, trailing colon). Pairs with `address`. v0.8.18's singular `field` is REMOVED. |
 | `repeat`    | `<1..8>` (integer)                                                             | `1`                | **`s_*` only (v0.7.2+).** Multiply the separator body.                                                                                             |
 | `wrap`      | `true` \| `false`                                                              | `true`             | **`s_*` only (v0.7.2+).** When `true` and the body is printable, pad with one space on each side (so `s_dot|wrap|true` → `" · "`).               |
+
+> **Custom `interval.windowId` rules (v0.8.32+):** Any string is accepted, including digit-prefixed ones (the v0.8.31 digit-prefix restriction is removed). The `"all"` literal is RESERVED as the no-time-anchor sentinel — `parseWindowScope` short-circuits on it before any windowId lookup, so users CANNOT name an `interval.windowId: "all"`. To resolve a `|window|<id>` against a declared ID, pass `|align|true`; with `align=false` (default) the resolver always treats the string as free-form dhms. See the `align` row above.
 
 ### 1.2 `m_template` passthrough (v0.8.7+)
 
@@ -170,7 +172,7 @@ provider-less ticks via the `unknown` TYPE fallback).
 | `m_label\|<text>`                   | Literal `<text>`.                                                                    | inline                                                    | agnostic           | `color`, `nulldrop`                    | `<text>` is the implicit first segment — anything `\|` in the value goes into the `name:value` parse. |
 | `m_template\|<key>[\|type\|plan\|balance]` | Inserts `lineTemplates.<key>` in place. Recursively expanded (loader strips nested `m_template` at load time). | inline key                                  | filtered by `type` | `type` (legacy alias: `mode`), plus any other args get **passthrough** (§1.2) | `type\|plan` skips on a BALANCE provider and vice versa. Default `type=plan`. Legacy `mode` is still accepted (same resolver, same semantics); when both `type` and `mode` are present on the same token, `type` wins. Built-in presets use the `_` prefix — see §4. |
 | **Per-turn / Acc / Sum family**    |                                                                                      |                                                           |                    |                                        |       |
-| `m_tokenIn` / `m_accTokenIn` / `m_sumTokenIn` | per-turn: `in:154` · acc: `acc(ccs):163.5k` · sum: `in:240k` | per-turn: stdin · acc: `status.json` `accTokenIn[scope]` · sum: cross-project JSONL scan | agnostic           | per-turn: `color`, `nulldrop` · acc: `color`, `nulldrop`, `scope` · sum: `color`, `nulldrop`, `model`, `window`, `align` | Three semantic variants of the same metric. Drops when stdin lacks the field; per-turn value=0 renders as `in:0` (value-zero rule). Acc default scope `ccsession`; sum reads `state/cache.json` cross-project TTL slot. |
+| `m_tokenIn` / `m_accTokenIn` / `m_sumTokenIn` | per-turn: `in:154` · acc: `acc(ccs):163.5k` · sum: `in:240k` | per-turn: stdin · acc: `status.json` `accTokenIn[scope]` · sum: cross-project JSONL scan | agnostic           | per-turn: `color`, `nulldrop` · acc: `color`, `nulldrop`, `scope` · sum: `color`, `nulldrop`, `model`, `window`, `align` | Three semantic variants of the same metric. Drops when stdin lacks the field; per-turn value=0 renders as `in:0` (value-zero rule). Acc default scope `ccsession`; sum reads `state/cache.json` cross-project TTL slot. v0.8.32+: `m_sum*` accepts `|align|<true|false>` (default false) to opt into declared-windowId resolution — `align=true` resolves `|window|<id>` against an `interval.windowId` and runs plan-anchored; `align=false` (default) goes straight to free-form dhms wall-clock. Bare `m_sum*` defaults to `window=all`. |
 | `m_tokenOut` / `m_accTokenOut` / `m_sumTokenOut` | per-turn: `out:135` · acc: `acc(ccs):120k` · sum: `out:180k` | per-turn: stdin · acc: `status.json` `accTokenOut[scope]` · sum: cross-project JSONL scan | agnostic           | same as `m_tokenIn` row                  | Same as above. |
 | `m_tokenCachedIn` / `m_accTokenCachedIn` / `m_sumTokenCachedIn` | per-turn: `cache:62k` · acc: `acc(ccs):1.2M` · sum: `cache:880k` | per-turn: stdin · acc: `status.json` `accTokenCachedIn[scope]` · sum: cross-project JSONL scan | agnostic           | same as `m_tokenIn` row                  | Per-turn renamed from `m_cacheRead` / `m_cachedTokenIn` in v0.8.0. |
 | `m_tokenInTotal` / `m_accTokenTotalIn` / `m_sumTokenTotalIn` | per-turn: `in:42k` · acc: `acc(ccs):42k` · sum: `in:240k` | per-turn: `tokens.totals.tokenTotalIn` · acc: `accTokenIn + accTokenCachedIn` · sum: in + cachedIn over window | agnostic           | same as `m_tokenIn` row                  | Per-turn = stdin cumulative input (excludes cache reads); acc/sum variants add cache reads. v0.8.0+ family. |
@@ -369,7 +371,12 @@ The `_` prefix marks a built-in preset — user-defined
   "m_age|color|gray"
 ]
 
-// Plan-only with custom 5h color override + plan-aligned sum:
+// Plan-only with custom 5h color override + sum tokens:
+// (v0.8.32+: `|window|5h` resolves to free-form dhms wall-clock
+// by default (align=false skips the windowId lookup). To opt into
+// a plan-anchored scan against shortInterval's resetStartAt, add
+// `|align|true` after the windowId-resolution token. See the
+// `align` row in §1.1 for the full opt-in matrix.)
 "statuslineTemplate": [
   "m_template|plan|type|plan",
   "s_newline",
@@ -386,10 +393,12 @@ The `_` prefix marks a built-in preset — user-defined
     "s_space",
     "m_countdown|term|mid",
     "s_newline",
-    "m_sumTokenIn|window|5h|align|true",
+    // Wall-clock 5h — the new bare-default behavior.
+    "m_sumTokenIn|window|5h",
     "s_dot",
     "s_space",
-    "m_sumTokenHitRate|window|5h"
+    // Plan-aligned against shortInterval's resetStartAt.
+    "m_sumTokenHitRate|window|5h|align|true"
   ],
   "balance": [
     "m_balance",
