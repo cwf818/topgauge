@@ -1599,8 +1599,12 @@ describe("lineTemplate — plain token-usage modules :color override", () => {
         },
       }),
     );
-    // Stable-slot "0" with the override color applied. No warn.
-    assert.equal(line, "\x1b[38;5;220mout:0\x1b[0m", `got: ${JSON.stringify(line)}`);
+    // v0.8.30+ — value-zero rule: current.output=null falls
+    // back to 0 (no live stdin number), so the renderer
+    // short-circuits to plain text (no SGR). The user's
+    // |color|yellow override does not apply because value=0
+    // is a "real zero" not a tinted value. No warn.
+    assert.equal(line, "out:0", `got: ${JSON.stringify(line)}`);
     assert.equal(
       warns.filter((w) => w.includes("unknown lineTemplate module")).length,
       0,
@@ -1742,6 +1746,60 @@ describe("lineTemplate — m_*tokenIn/m_*tokenOut default tints (v0.8.30+)", () 
     // speedScaleColor; we don't pin it here.
     assert.ok(line.length > 0, `got: ${JSON.stringify(line)}`);
     assert.ok(line.startsWith("\x1b["), `expected SGR prefix, got: ${JSON.stringify(line)}`);
+  });
+
+  it("idle tick (apiMs=0) renders STALE_COLOR + live stdin number for m_tokenIn (v0.8.30.1+)", () => {
+    // v0.8.30.1+ contract — color tracks hasMeasurement, value
+    // tracks stdin. Pre-seed prev with the SAME totalApiMs as
+    // current so deltaApi=0 → hasMeasurement=false. The
+    // number shown is the live stdin (current.tokenIn=1500),
+    // wrapped in STALE_COLOR (\x1b[90m). Previously the
+    // v0.8.30 default would have collapsed this to "in:0"
+    // (the processed delta); now it's "in:1.5k" in gray.
+    __resetForTest({ statuslineTemplate: ["m_tokenIn"] });
+    const snap = makeSnap();
+    // Force apiMs=0 on this tick by setting totalApiMs to a
+    // value prev already has. We use a fresh sessionId so
+    // prev doesn't carry over from other tests; then
+    // pre-seed via beginTickForTest / processTick on a
+    // baseline tick, then call again with the same totalApiMs.
+    beginTickForTest(snap.cwd, snap);
+    processTick(snap.cwd, snap);
+    statusStore.commit();
+    // Now call again with the SAME totalApiMs — deltaApi=0.
+    beginTickForTest(snap.cwd, snap);
+    processTick(snap.cwd, snap);
+    statusStore.commit();
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      shortInterval: null, midInterval: null, balance: null,
+      ageMs: null, stale: false, version: "",
+      tokens: snap,
+    });
+    // STALE_COLOR (\x1b[90m) wrap with the live stdin value.
+    assert.equal(line, "\x1b[90min:1.5k\x1b[0m", `got: ${JSON.stringify(line)}`);
+  });
+
+  it("idle tick for m_tokenOut picks up STALE_COLOR too, with red NOT applied", () => {
+    // v0.8.30.1+ — mirror of the m_tokenIn idle test. The
+    // red (out-flow) default is gated on hasMeasurement, so
+    // an idle tick does NOT receive red — STALE_COLOR wins.
+    __resetForTest({ statuslineTemplate: ["m_tokenOut"] });
+    const snap = makeSnap();
+    beginTickForTest(snap.cwd, snap);
+    processTick(snap.cwd, snap);
+    statusStore.commit();
+    beginTickForTest(snap.cwd, snap);
+    processTick(snap.cwd, snap);
+    statusStore.commit();
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      shortInterval: null, midInterval: null, balance: null,
+      ageMs: null, stale: false, version: "",
+      tokens: snap,
+    });
+    // live stdin current.tokenOut=100 → "out:100" in STALE_COLOR.
+    assert.equal(line, "\x1b[90mout:100\x1b[0m", `got: ${JSON.stringify(line)}`);
   });
 });
 

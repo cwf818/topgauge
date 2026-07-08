@@ -1536,25 +1536,45 @@ function computeAccSpeed(
 function computeTickDelta(
   ctx: RenderContext,
   direction: "in" | "out",
-): { value: string; numeric: number | null } {
+): { value: string; numeric: number | null; stale: boolean } {
   const t = ctx.tokens;
   const prefix = labelFor(direction);
   // v0.8.10-alpha.2 — `hasMeasurement` mirrors the validity gate
   // (totals.tokenTotalIn > 0 AND totals.tokenTotalOut > 0 AND apiMs > 0).
-  // v0.8.30+ — `numeric` mirrors the underlying integer so the
-  // caller can drive `wrapValueDefault`'s positive-value gate
-  // (default tint only fires when value > 0; 0 and n/a stay
-  // plain per the value-zero rule). null = no measurement at
-  // all (placeholder path).
+  // v0.8.30+ — `numeric` carries the live-stdin value
+  // (`tokens.current.tokenIn` / `tokenOut`) so the renderer can
+  // still surface a real number on idle ticks (apiMs=0) instead
+  // of collapsing to a processed "0". The gate is independent
+  // from the value: an idle tick has `numeric > 0` AND
+  // `stale === true`, which the renderer maps to STALE_COLOR
+  // (matching the v0.8.x R7 convention of "live stdin's
+  // last-known measurement, gray-wrapped"). `numeric: null`
+  // means no stdin at all (placeholder path).
+  // v0.8.30.1+ — `stale` is the explicit hasMeasurement mirror
+  // (true = the per-tick pipeline rejected this tick, so the
+  // number shown is from stdin, not from a measured delta).
   if (!t || !t.sessionId) {
-    return { value: `${prefix}n/a`, numeric: null };
+    return { value: `${prefix}n/a`, numeric: null, stale: false };
   }
   const r = getDeltaForRender();
+  // Pull the live stdin value directly. The processed delta
+  // (`r.in` / `r.out`) collapses to 0 on idle ticks; we want
+  // the user to see the actual stdin number, not the zero
+  // that the validation gate writes to the snapshot.
+  const liveN = direction === "in" ? t.current.tokenIn : t.current.tokenOut;
+  const liveNumeric =
+    typeof liveN === "number" && Number.isFinite(liveN) ? liveN : 0;
   if (!r.hasMeasurement) {
-    return { value: `${prefix}0`, numeric: 0 };
+    // Idle tick — hasMeasurement is false, so the displayed
+    // body is the live stdin number prefixed with the
+    // direction label. numeric carries the same value so the
+    // renderer's color gate sees a positive number; the
+    // `stale` flag routes the wrap to STALE_COLOR instead of
+    // brightGreen / red.
+    return { value: `${prefix}${formatCompactToken(liveNumeric)}`, numeric: liveNumeric, stale: true };
   }
   const n = direction === "in" ? r.in : r.out;
-  return { value: `${prefix}${formatCompactToken(n)}`, numeric: n };
+  return { value: `${prefix}${formatCompactToken(n)}`, numeric: n, stale: false };
 }
 
 // Per-session running average speed across all valid API
@@ -1877,21 +1897,28 @@ m_quota: Object.assign(
     // v1.0 — setPrevTick moved to status-store.ts:processTick
     // Stage 3. Render is read-only.
     // v0.8.30+ — bare default tint (brightGreen) on positive
-    // value. `wrapValueDefault` honors the value-zero rule
-    // (0 / n/a stay plain), and the user's `|color|<c>` inline
-    // override (handled by the INLINE_RENDERER path) wins over
-    // this default.
+    // value when the tick is active (hasMeasurement=true).
+    // Idle ticks (hasMeasurement=false) get STALE_COLOR
+    // instead, even when stdin still ships a positive number
+    // — the value-zero rule + the per-turn-delta-contract
+    // (delta_api=0 → no API call landed) both apply, so the
+    // number shown is "live stdin, not a measured delta" and
+    // gray-wraps to flag that. 0 and n/a stay plain.
+    if (r.numeric == null || r.numeric === 0) return r.value;
+    if (r.stale) return `${STALE_COLOR}${r.value}${RESET}`;
     return wrapValueDefault("m_tokenIn", r.numeric, r.value, undefined);
   },
   // Per-API-call output tokens (see m_tokenIn for the gate
   // rationale — output-only turns, thinking-only turns, idle
   // turns all produce different "out:--" / "out:N" signals).
   // v0.8.30+ — bare default tint (red) on positive value; see
-  // m_tokenIn for the wrap contract.
+  // m_tokenIn for the wrap contract and the STALE_COLOR rule.
   m_tokenOut: (c) => {
     const r = computeTickDelta(c, "out");
     // v1.0 — setPrevTick moved to status-store.ts:processTick
     // Stage 3. Render is read-only.
+    if (r.numeric == null || r.numeric === 0) return r.value;
+    if (r.stale) return `${STALE_COLOR}${r.value}${RESET}`;
     return wrapValueDefault("m_tokenOut", r.numeric, r.value, undefined);
   },
   // Session cumulative in + out + cache (cache = ctx_creation + ctx_read
@@ -4928,17 +4955,32 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const r = computeTickDelta(ctx, "in");
     // v1.0 — setPrevTick moved to status-store.ts:processTick Stage 3. Render is read-only.
     // v0.8.30+ — bare default tint (brightGreen) on positive
-    // value when no `|color|<c>` override is present. User
-    // override wins; 0 and n/a stay plain per the value-zero
-    // rule.
-    return wrapValueDefault("m_tokenIn", r.numeric, r.value, params.color as string | undefined);
+    // value when the tick is active (hasMeasurement=true).
+    // Idle ticks (hasMeasurement=false) get STALE_COLOR with
+    // the live stdin number, per the v0.8.30.1 contract: color
+    // tracks hasMeasurement, value tracks stdin. The user's
+    // `|color|<c>` override wins on the active path; on the
+    // idle path the user's color is honored (gray is a
+    // semantic signal — "this is a stale read", not a
+    // cosmetic preference — but the override is more specific
+    // than the implicit STALE_COLOR).
+    const userColor = params.color as string | undefined;
+    if (r.numeric == null || r.numeric === 0) return r.value;
+    if (r.stale) {
+      return userColor ? `${userColor}${r.value}${RESET}` : `${STALE_COLOR}${r.value}${RESET}`;
+    }
+    return wrapValueDefault("m_tokenIn", r.numeric, r.value, userColor);
   },
   m_tokenOut: (params, ctx) => {
     const r = computeTickDelta(ctx, "out");
     // v1.0 — setPrevTick moved to status-store.ts:processTick Stage 3. Render is read-only.
-    // v0.8.30+ — bare default tint (red) on positive value; see
-    // m_tokenIn inline for the wrap contract.
-    return wrapValueDefault("m_tokenOut", r.numeric, r.value, params.color as string | undefined);
+    // v0.8.30+ — see m_tokenIn inline for the wrap contract.
+    const userColor = params.color as string | undefined;
+    if (r.numeric == null || r.numeric === 0) return r.value;
+    if (r.stale) {
+      return userColor ? `${userColor}${r.value}${RESET}` : `${STALE_COLOR}${r.value}${RESET}`;
+    }
+    return wrapValueDefault("m_tokenOut", r.numeric, r.value, userColor);
   },
   m_tokenTotal: (params, ctx) => {
     const body = inlineTokenTotalLabel(ctx);

@@ -757,12 +757,20 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(cached!.totalApiMs, 60_000);
   });
 
-  it("m_tokenIn| no API call between ticks (deltaApi=0) → renders 'in|0'", () => {
-    // Pre-seed prev with the SAME totalApiDurationMs as current.
-    // deltaApi=0 → no API call → hasDelta=false → "in:0".
+  it("m_tokenIn| no API call between ticks (deltaApi=0) → STALE_COLOR 'in|<stdin>'", () => {
+    // v0.8.30.1+ — color tracks hasMeasurement, value tracks
+    // stdin. Pre-seed prev with the SAME totalApiDurationMs
+    // as current so deltaApi=0 → hasMeasurement=false. The
+    // number shown is the live stdin (fakeSnapshot ships
+    // current.tokenIn=38), wrapped in STALE_COLOR. value=0
+    // is no longer forced when the tick is idle.
     setPrevTick("sess-test", { totalApiMs: 60_000 }, "D:\\test");
     const out = renderTemplate(["m_tokenIn"], ctxFor(fakeSnapshot())).join("\n");
-    assert.equal(strip(out), "in:0");
+    // The STALE_COLOR (\x1b[90m) wrap is opaque to strip() so
+    // we only assert on the body. m_tokenIn's default is
+    // brightGreen for active ticks, STALE_COLOR for idle;
+    // the body is the live stdin number.
+    assert.equal(strip(out), "in:38");
   });
 
   it("m_tokenIn| sessionId changes → prev cache miss → assumes prev=0 for new session", () => {
