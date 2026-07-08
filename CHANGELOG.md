@@ -1,5 +1,80 @@
 # Changelog
 
+## v0.8.27
+
+### Added
+
+- `m_sumStartTime` / `m_sumEndTime` now honor `|align|true`.
+  When the inline arg is set AND the matching ctx Window
+  (fiveHour or weekly) ships `resetStartAt` / `resetAt`, the
+  rendered timestamps reflect the plan window open/close
+  — the authoritative "when did this window open / close"
+  answer — instead of the empirical min/max of captured
+  samples. Pairs cleanly with v0.8.26+ bare modules
+  (where `|align|false` is now the default): opt into the
+  plan-anchored boundary by passing `|align|true` through
+  the inline form or an outer `m_template|<key>|align|true`.
+
+### Behavior
+
+- `m_sumStartTime|window|5h|align|true` →
+  `start:<resetStartAt formatted>` when ctx.fiveHour ships
+  `resetStartAt`. Falls back to empirical `min(row.startAt)`
+  when the Window has no `resetStartAt` (plan anchor
+  unavailable, not absent). Empty window (`agg.rows === 0`)
+  still renders `start:n/a` placeholder.
+- `m_sumEndTime|window|5h|7d|align|true` →
+  `end:<resetAt formatted>`. `resetAt` is unconditional in
+  `slotsToWindow`, so the anchor branch fires for every
+  aligned scan in practice.
+- `|align|false` (v0.8.26+ default for bare m_sum*) keeps
+  the empirical min/max reading even when the plan anchor
+  is available. Align is opt-in, never forced.
+
+### Files
+
+- `src/render.ts` — bare + inline renderers of
+  `m_sumStartTime` / `m_sumEndTime` consult
+  `filter.alignActive` + `ctx.fiveHour` / `ctx.weekly`
+  before the empirical `agg.firstAt` / `agg.lastAt`
+  fallback.
+- `src/render-tokens.test.ts` — 4 new tests pin the
+  behavior: 5h `align|true` honors resetStartAt, 7d
+  `align|true` honors resetAt, `align|false` keeps
+  empirical even when the anchor is available,
+  `align|true` falls back to empirical when the Window
+  ships no anchor.
+
+## v0.8.26
+
+### Changed
+
+- Bare `m_sum*` modules (`m_sumTokenIn` / `m_sumTokenOut` /
+  `m_sumTokenCachedIn` / `m_sumTokenTotalIn` / `m_sumApiMs` /
+  `m_sumTokenHitRate` / `m_sumTokenInSpeed` /
+  `m_sumTokenOutSpeed` / `m_sumApiCalls` /
+  `m_sumStartTime` / `m_sumEndTime`) now default
+  `|align|false` instead of `|align|true`. Without the inline
+  arg the scan reads the trailing **wall-clock** window
+  `[nowMs - N, nowMs]`, matching "last 5h / 7d of activity".
+  Inline callers who want the plan-aligned refill bucket
+  `[resetStartAt, resetStartAt + duration]` must opt in with
+  `|align|true`. The behavior is unchanged when ctx.fiveHour /
+  weekly Window doesn't ship a resetStartAt, or when
+  `window="all"` — both already collapsed to wall-clock
+  before this change.
+
+### Files
+
+- `src/render.ts` — `parseWindowScope` `alignRaw ??` default
+  flipped `true` → `false`; `ALIGN_PARAM` doc updated to spell
+  out the new default and its narrow scope.
+- `src/render-tokens.test.ts` — 2 new tests pin the new default
+  for both `bare m_sumTokenIn` and `inline m_sumTokenIn|window|5h|align|false`
+  against the same resetStartAt fixture the `align|true` test
+  uses, asserting both reads pick up the wall-clock path while
+  the existing `align|true` test still gets the aligned bucket.
+
 ## v0.8.25
 
 ### Added

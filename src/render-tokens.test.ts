@@ -4985,6 +4985,89 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     assert.equal(strip(out), "in:1");
   });
 
+  // v0.8.26+ — bare `m_sum*` default flipped from align|true to
+  // align|false. Without `|align|`, the same fixture above now
+  // reads the trailing wall-clock 5h window [nowMs - 5h, nowMs]
+  // and sums BOTH rows (in:1 + in:999 = in:1000). Inline callers
+  // who want the plan-aligned bucket must opt in with `|align|true`.
+  it("bare m_sumTokenIn (no |align|) reads wall-clock even when resetStartAt is set", () => {
+    const stateRootDir = join(_tmpDir, "sum-fixture-aligned-5h-default");
+    setStateRoot(() => stateRootDir);
+    const projHash = "d--sum-al-d";
+    const sess = "sess-sum-al-d";
+    const cwd = "D:\\sum-al-d";
+    const sessionFile = join(stateRootDir, projHash, `${sess}.jsonl`);
+    mkdirSync(dirname(sessionFile), { recursive: true });
+    const now = 1_700_000_000_000;
+    const resetStartAt = new Date(now - 30 * 60_000).toISOString();
+    const resetAt = new Date(now + 4 * 3600_000 + 30 * 60_000).toISOString();
+    writeFileSync(
+      sessionFile,
+      [
+        // Inside the aligned 30m window (would NOT count under align=true)
+        JSON.stringify({ at: now - 10 * 60_000, totalIn: 1, totalOut: 0, in: 1, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 100, apiMs: 100 }),
+        // Outside the aligned window BUT inside wall-clock 5h
+        JSON.stringify({ at: now - 2 * 3600_000, totalIn: 999, totalOut: 0, in: 999, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 999, apiMs: 999 }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const out = renderTemplate(
+      ["m_sumTokenIn"], // bare form — default align=false now
+      ctxFor(
+        fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" }),
+        {
+          pct: 10,
+          resetAt,
+          resetStartAt,
+          resetDurationMs: 5 * 3600_000,
+        },
+        null,
+      ),
+    ).join("\n");
+    // Default reads wall-clock 5h → both rows counted.
+    assert.equal(strip(out), "in:1.0k");
+  });
+
+  it("inline m_sumTokenIn|window|5h|align|false mirrors the new bare default", () => {
+    // Parametric confirmation: explicit align|false produces the
+    // same body shape as the bare form. The bare test above
+    // covers the implicit default; this pins down the explicit
+    // expression for users who pass it through an m_template.
+    const stateRootDir = join(_tmpDir, "sum-fixture-aligned-5h-false");
+    setStateRoot(() => stateRootDir);
+    const projHash = "d--sum-al-f";
+    const sess = "sess-sum-al-f";
+    const cwd = "D:\\sum-al-f";
+    const sessionFile = join(stateRootDir, projHash, `${sess}.jsonl`);
+    mkdirSync(dirname(sessionFile), { recursive: true });
+    const now = 1_700_000_000_000;
+    const resetStartAt = new Date(now - 30 * 60_000).toISOString();
+    const resetAt = new Date(now + 4 * 3600_000 + 30 * 60_000).toISOString();
+    writeFileSync(
+      sessionFile,
+      [
+        JSON.stringify({ at: now - 10 * 60_000, totalIn: 1, totalOut: 0, in: 1, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 100, apiMs: 100 }),
+        JSON.stringify({ at: now - 2 * 3600_000, totalIn: 999, totalOut: 0, in: 999, out: 0, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 999, apiMs: 999 }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const out = renderTemplate(
+      ["m_sumTokenIn|window|5h|align|false"],
+      ctxFor(
+        fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" }),
+        {
+          pct: 10,
+          resetAt,
+          resetStartAt,
+          resetDurationMs: 5 * 3600_000,
+        },
+        null,
+      ),
+    ).join("\n");
+    // Same as the bare form — both rows counted via wall-clock 5h.
+    assert.equal(strip(out), "in:1.0k");
+  });
+
   it("readAllSamples mtime pre-filter: stale jsonl is skipped even if its row timestamps are recent", () => {
     // Performance contract: when a file's mtime is older than
     // sinceMs, readAllSamples MUST skip it without readFileSync.
@@ -6408,5 +6491,168 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
     // has no startAt → peekAcc returns startAt: null →
     // placeholderAcc("startTime", "ccsession") = "start:n/a".
     assert.equal(strip(out), "start:n/a");
+  });
+
+  // v0.8.27+ — align-aware window boundaries for
+  // m_sumStartTime / m_sumEndTime. When align=true AND the
+  // matching ctx Window ships resetStartAt/resetAt, the
+  // rendered timestamps reflect the plan window open/close
+  // (the authoritative answer) instead of the empirical
+  // min/max of captured samples.
+
+  it("m_sumStartTime|window|5h|align|true surfaces ctx.fiveHour.resetStartAt (not empirical firstAt)", () => {
+    const stateRootDir = join(_tmpDir, "sum-aligned-start");
+    setStateRoot(() => stateRootDir);
+    const projHash = "d--sum-aligned-start";
+    const sess = "sess-sum-aligned-start";
+    const cwd = "D:\\sum-aligned-start";
+    const sessionFile = join(stateRootDir, projHash, `${sess}.jsonl`);
+    mkdirSync(dirname(sessionFile), { recursive: true });
+    const now = 1_700_000_000_000;
+    // Plan anchor: window opened 1h ago, closes in 4h.
+    const anchorStart = new Date(now - 3600_000).toISOString();
+    const anchorEnd = new Date(now + 4 * 3600_000).toISOString();
+    writeFileSync(
+      sessionFile,
+      [
+        // Empirical firstAt is 4h before now — far earlier than
+        // the plan anchor. Without align-awareness, m_sumStartTime
+        // would surface this stale empirical value.
+        JSON.stringify({ at: now - 4 * 3600_000, totalIn: 5, totalOut: 1, in: 5, out: 1, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 100, apiMs: 100, startAt: now - 4 * 3600_000, lastAt: now - 4 * 3600_000 }),
+        JSON.stringify({ at: now - 10 * 60_000, totalIn: 7, totalOut: 2, in: 7, out: 2, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 100, apiMs: 100, startAt: now - 4 * 3600_000, lastAt: now - 10 * 60_000 }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const out = renderTemplate(
+      ["m_sumStartTime|window|5h|model|active|align|true"],
+      ctxFor(
+        fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" }),
+        {
+          pct: 10,
+          resetAt: anchorEnd,
+          resetStartAt: anchorStart,
+          resetDurationMs: 5 * 3600_000,
+        },
+        null,
+      ),
+    ).join("\n");
+    // Plan anchor (now - 1h) wins over empirical (now - 4h).
+    assert.equal(strip(out), `start:${formatAbsTime(now - 3600_000)}`);
+  });
+
+  it("m_sumEndTime|window|7d|align|true surfaces ctx.weekly.resetAt (not empirical lastAt)", () => {
+    const stateRootDir = join(_tmpDir, "sum-aligned-end");
+    setStateRoot(() => stateRootDir);
+    const projHash = "d--sum-aligned-end";
+    const sess = "sess-sum-aligned-end";
+    const cwd = "D:\\sum-aligned-end";
+    const sessionFile = join(stateRootDir, projHash, `${sess}.jsonl`);
+    mkdirSync(dirname(sessionFile), { recursive: true });
+    const now = 1_700_000_000_000;
+    // Plan anchor: weekly window opens 2d ago, closes in 5d.
+    // Rows must live INSIDE [weeklyStart, weeklyEnd] for the
+    // aligned scan to count them; otherwise agg.rows === 0
+    // hits the placeholder branch and the test would
+    // mis-attribute that to the align-aware boundary code.
+    const weeklyStart = new Date(now - 2 * 86400_000).toISOString();
+    const weeklyEnd = new Date(now + 5 * 86400_000).toISOString();
+    writeFileSync(
+      sessionFile,
+      [
+        // Empirical lastAt (now - 1d) is BEFORE the plan close
+        // (now + 5d). Without align-awareness, m_sumEndTime
+        // would surface this stale empirical value; with
+        // align=true, the plan anchor wins.
+        JSON.stringify({ at: now - 86400_000, totalIn: 5, totalOut: 1, in: 5, out: 1, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 100, apiMs: 100, startAt: now - 2 * 86400_000, lastAt: now - 86400_000 }),
+        JSON.stringify({ at: now - 23 * 3600_000, totalIn: 7, totalOut: 2, in: 7, out: 2, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 100, apiMs: 100, startAt: now - 2 * 86400_000, lastAt: now - 23 * 3600_000 }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const out = renderTemplate(
+      ["m_sumEndTime|window|7d|model|active|align|true"],
+      ctxFor(
+        fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" }),
+        null,
+        {
+          pct: 10,
+          resetAt: weeklyEnd,
+          resetStartAt: weeklyStart,
+          resetDurationMs: 7 * 86400_000,
+        },
+      ),
+    ).join("\n");
+    // Plan close (now + 5d) wins over empirical (now - 1d).
+    assert.equal(strip(out), `end:${formatAbsTime(now + 5 * 86400_000)}`);
+  });
+
+  it("m_sumStartTime|window|5h|align|false keeps empirical min(startAt) (no plan-window anchor)", () => {
+    // Regression guard: align=false (v0.8.26+ default) must
+    // keep the empirical reading even when the ctx Window
+    // ships a resetStartAt. The plan-window mode is opt-in.
+    const stateRootDir = join(_tmpDir, "sum-aligned-start-off");
+    setStateRoot(() => stateRootDir);
+    const projHash = "d--sum-aligned-start-off";
+    const sess = "sess-sum-aligned-start-off";
+    const cwd = "D:\\sum-aligned-start-off";
+    const sessionFile = join(stateRootDir, projHash, `${sess}.jsonl`);
+    mkdirSync(dirname(sessionFile), { recursive: true });
+    const now = 1_700_000_000_000;
+    const empiricalStart = now - 4 * 3600_000;
+    const anchorStart = new Date(now - 3600_000).toISOString();
+    const anchorEnd = new Date(now + 4 * 3600_000).toISOString();
+    writeFileSync(
+      sessionFile,
+      JSON.stringify({ at: empiricalStart, totalIn: 5, totalOut: 1, in: 5, out: 1, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 100, apiMs: 100, startAt: empiricalStart, lastAt: empiricalStart }) + "\n",
+      "utf8",
+    );
+    const out = renderTemplate(
+      ["m_sumStartTime|window|5h|model|active|align|false"],
+      ctxFor(
+        fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" }),
+        {
+          pct: 10,
+          resetAt: anchorEnd,
+          resetStartAt: anchorStart,
+          resetDurationMs: 5 * 3600_000,
+        },
+        null,
+      ),
+    ).join("\n");
+    // Empirical wins — the (window, model, align|false) flag
+    // bundle opts out of plan-window anchoring.
+    assert.equal(strip(out), `start:${formatAbsTime(empiricalStart)}`);
+  });
+
+  it("m_sumStartTime|window|5h|align|true falls back to empirical when ctx.fiveHour has no resetStartAt", () => {
+    // If the plan-window anchor is unavailable (the Window
+    // object exists but its resetStartAt field is absent),
+    // align=true gracefully falls back to the empirical
+    // min(startAt) reading rather than placeholder. The
+    // placeholder path is reserved for "no data at all".
+    const stateRootDir = join(_tmpDir, "sum-aligned-missing");
+    setStateRoot(() => stateRootDir);
+    const projHash = "d--sum-aligned-missing";
+    const sess = "sess-sum-aligned-missing";
+    const cwd = "D:\\sum-aligned-missing";
+    const sessionFile = join(stateRootDir, projHash, `${sess}.jsonl`);
+    mkdirSync(dirname(sessionFile), { recursive: true });
+    const empiricalStart = 1_700_000_000_000;
+    writeFileSync(
+      sessionFile,
+      JSON.stringify({ at: empiricalStart, totalIn: 5, totalOut: 1, in: 5, out: 1, cacheIn: 0, cacheCreation: 0, model: "MiniMax-M3", totalApiMs: 100, apiMs: 100, startAt: empiricalStart, lastAt: empiricalStart }) + "\n",
+      "utf8",
+    );
+    const out = renderTemplate(
+      ["m_sumStartTime|window|5h|model|active|align|true"],
+      ctxFor(
+        fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" }),
+        // Window present but resetStartAt absent — package
+        // returned only usedPct, no time anchor.
+        { pct: 10, resetAt: "invalid" as any, resetStartAt: undefined as any },
+        null,
+      ),
+    ).join("\n");
+    // Plan anchor unavailable → empirical firstAt wins.
+    assert.equal(strip(out), `start:${formatAbsTime(empiricalStart)}`);
   });
 });

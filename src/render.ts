@@ -2197,16 +2197,41 @@ const MODULES: Record<string, Module> = {
   // renders the `start:n/a` placeholder. Pass-through axes from
   // an outer m_template|...| follow the same convention as the
   // other m_sum* modules.
+  //
+  // v0.8.27+ — when align=true AND the matching ctx Window
+  // (fiveHour or weekly) ships resetStartAt, surface the plan
+  // window's open instant instead of the empirical
+  // min(s.startAt). The plan anchor is the authoritative answer
+  // to "when did this window open"; the empirical firstAt is
+  // only the oldest captured sample, which can drift earlier
+  // than the window for any number of reasons (claude-code
+  // process restart at the tail, JSONL rolls over, etc.).
+  // align=false (v0.8.26+ default) keeps the empirical reading.
+  // resetStartAt missing on the Window → fall back to
+  // agg.firstAt (the plan anchor is unavailable, not absent).
   m_sumStartTime: (c) => {
     const filter = parseWindowScope(c, c.passThrough ?? {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderBare("m_sumStartTime", c);
+    const abs = c.passThrough?.abs === "true";
+    if (filter.alignActive && filter.windowKey !== "all") {
+      const w: Window | null | undefined =
+        filter.windowKey === "5h" ? c.fiveHour : c.weekly;
+      if (
+        w != null &&
+        typeof w.resetStartAt === "string" &&
+        (w.resetDurationMs ?? 0) > 0
+      ) {
+        const anchorMs = Date.parse(w.resetStartAt);
+        if (Number.isFinite(anchorMs)) {
+          return `${labelFor("startTime")}${formatAbsTime(anchorMs, { abs })}`;
+        }
+      }
+    }
     if (!Number.isFinite(agg.firstAt) || agg.firstAt <= 0) {
       return placeholderBare("m_sumStartTime", c);
     }
-    // v0.8.25+ — abs flag from outer m_template passthrough.
-    const abs = c.passThrough?.abs === "true";
     return `${labelFor("startTime")}${formatAbsTime(agg.firstAt, { abs })}`;
   },
   // v0.8.24+ — end of the tick statistics window across the
@@ -2215,16 +2240,33 @@ const MODULES: Record<string, Module> = {
   // row's `at` field (the wall-clock instant of that tick), so
   // max(lastAt) is the "newest tick" in the window — the dual
   // of m_sumStartTime. Empty / all-legacy window → `end:n/a`.
+  //
+  // v0.8.27+ — when align=true AND the matching ctx Window
+  // ships resetAt, surface the plan window's close instant
+  // instead of the empirical max(s.lastAt). resetAt is
+  // unconditional in slotsToWindow, so this branch fires for
+  // every aligned scan in practice (the only miss case is when
+  // the Window itself is null, which collapses to the
+  // empirical path).
   m_sumEndTime: (c) => {
     const filter = parseWindowScope(c, c.passThrough ?? {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderBare("m_sumEndTime", c);
+    const abs = c.passThrough?.abs === "true";
+    if (filter.alignActive && filter.windowKey !== "all") {
+      const w: Window | null | undefined =
+        filter.windowKey === "5h" ? c.fiveHour : c.weekly;
+      if (w != null && typeof w.resetAt === "string") {
+        const anchorMs = Date.parse(w.resetAt);
+        if (Number.isFinite(anchorMs)) {
+          return `${labelFor("endTime")}${formatAbsTime(anchorMs, { abs })}`;
+        }
+      }
+    }
     if (!Number.isFinite(agg.lastAt) || agg.lastAt <= 0) {
       return placeholderBare("m_sumEndTime", c);
     }
-    // v0.8.25+ — abs flag from outer m_template passthrough.
-    const abs = c.passThrough?.abs === "true";
     return `${labelFor("endTime")}${formatAbsTime(agg.lastAt, { abs })}`;
   },
   // v0.3.6+ — bare `m_quote` (no inline args). Picks a quote from
@@ -2734,7 +2776,14 @@ function parseWindowScope(
     return null;
   }
 
-  const alignRaw = (params.align as string | undefined) ?? "true";
+  // v0.8.26+ — default switched from "true" to "false" so bare
+  // `m_sum*` reads a trailing wall-clock window (nowMs - N) by
+  // default. The plan-aligned anchor window (resetStartAt →
+  // resetStartAt + duration) is still available via explicit
+  // `|align|true`; aligns only fire when the ctx.fiveHour /
+  // weekly Window actually ships a resetStartAt. Inline call
+  // sites that already opt in to `|align|true` are unaffected.
+  const alignRaw = (params.align as string | undefined) ?? "false";
   const alignWanted = alignRaw === "true";
 
   // Resolve model filter.
@@ -3310,6 +3359,18 @@ const WINDOW_PARAM = {
   },
 } as const;
 
+// v0.8.0+ — `:align|<true|false>` — when true AND window ∈ {5h,
+// 7d} AND ctx.fiveHour/weekly.resetStartAt is set, the scan
+// covers the plan-aligned window [resetStartAt, resetStartAt +
+// duration] (one full refill bucket). When false (v0.8.26+
+// default for bare `m_sum*`), the scan reads the trailing
+// wall-clock window [nowMs - N, nowMs], which is closer to
+// "last 5h / 7d of activity" rather than "current refill
+// bucket". Without `|align|` callers therefore need to opt in
+// to plan-aligned behavior with `|align|true`. Everything
+// else (window="all" or no resetStartAt on the Window)
+// already collapses to wall-clock, so the flip is a no-op
+// for those shapes.
 const ALIGN_PARAM = {
   named: {
     align: (raw: string): ResolvedValue | null =>
@@ -4919,10 +4980,31 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (!filter) return INLINE_BADARG;
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderWithColor("m_sumStartTime", params, ctx);
+    const abs = passThroughOr<string>(params, ctx, "abs") === "true";
+    const color = passThroughOr<string>(params, ctx, "color");
+    // v0.8.27+ — align=true surfaces the plan window's open
+    // instant (ctx.fiveHour/weekly.resetStartAt) when the
+    // matching Window ships one. See the bare-form comment for
+    // the rationale (plan anchor is the authoritative
+    // "when did this window open" answer).
+    if (filter.alignActive && filter.windowKey !== "all") {
+      const w: Window | null | undefined =
+        filter.windowKey === "5h" ? ctx.fiveHour : ctx.weekly;
+      if (
+        w != null &&
+        typeof w.resetStartAt === "string" &&
+        (w.resetDurationMs ?? 0) > 0
+      ) {
+        const anchorMs = Date.parse(w.resetStartAt);
+        if (Number.isFinite(anchorMs)) {
+          return wrapPlain(`${labelFor("startTime")}${formatAbsTime(anchorMs, { abs })}`, color);
+        }
+      }
+    }
     if (!Number.isFinite(agg.firstAt) || agg.firstAt <= 0) {
       return placeholderWithColor("m_sumStartTime", params, ctx);
     }
-    return wrapPlain(`${labelFor("startTime")}${formatAbsTime(agg.firstAt, { abs: passThroughOr<string>(params, ctx, "abs") === "true" })}`, passThroughOr<string>(params, ctx, "color"));
+    return wrapPlain(`${labelFor("startTime")}${formatAbsTime(agg.firstAt, { abs })}`, color);
   },
   // v0.8.24+ — end of the tick statistics window across the
   // filtered JSONL rows. max(s.lastAt) over the filtered sample
@@ -4930,16 +5012,31 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   // instant of that tick), so max(lastAt) is the "newest tick"
   // in the window — the dual of m_sumStartTime. Empty /
   // all-legacy window → `end:n/a` placeholder.
+  // v0.8.27+ — align=true surfaces the plan window's close
+  // instant (ctx.fiveHour/weekly.resetAt) when the matching
+  // Window ships one.
   m_sumEndTime: (params, ctx) => {
     const merged = mergePassThrough(params, ctx);
     const filter = parseWindowScope(ctx, merged);
     if (!filter) return INLINE_BADARG;
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderWithColor("m_sumEndTime", params, ctx);
+    const abs = passThroughOr<string>(params, ctx, "abs") === "true";
+    const color = passThroughOr<string>(params, ctx, "color");
+    if (filter.alignActive && filter.windowKey !== "all") {
+      const w: Window | null | undefined =
+        filter.windowKey === "5h" ? ctx.fiveHour : ctx.weekly;
+      if (w != null && typeof w.resetAt === "string") {
+        const anchorMs = Date.parse(w.resetAt);
+        if (Number.isFinite(anchorMs)) {
+          return wrapPlain(`${labelFor("endTime")}${formatAbsTime(anchorMs, { abs })}`, color);
+        }
+      }
+    }
     if (!Number.isFinite(agg.lastAt) || agg.lastAt <= 0) {
       return placeholderWithColor("m_sumEndTime", params, ctx);
     }
-    return wrapPlain(`${labelFor("endTime")}${formatAbsTime(agg.lastAt, { abs: passThroughOr<string>(params, ctx, "abs") === "true" })}`, passThroughOr<string>(params, ctx, "color"));
+    return wrapPlain(`${labelFor("endTime")}${formatAbsTime(agg.lastAt, { abs })}`, color);
   },
   m_quote: (params, ctx) => {
     // v0.8.21+ — when `address` is non-empty, fetch the remote
