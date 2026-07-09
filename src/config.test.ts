@@ -169,7 +169,7 @@ describe("loadConfig — partial / per-section validation", () => {
       JSON.stringify({ thresholds: { percentBands: [20, 40] } }),
     );
     const cfg = await loadConfig();
-    assert.deepEqual(cfg.thresholds.percentBands, [20, 40, 60, 80]);
+    assert.deepEqual(cfg.thresholds.percentBands, [60, 70, 80, 90]);
     assert.match(capturedStderr, /thresholds\.percentBands/);
   });
 
@@ -179,7 +179,7 @@ describe("loadConfig — partial / per-section validation", () => {
       JSON.stringify({ thresholds: { percentBands: [40, 20, 60, 80] } }),
     );
     const cfg = await loadConfig();
-    assert.deepEqual(cfg.thresholds.percentBands, [20, 40, 60, 80]);
+    assert.deepEqual(cfg.thresholds.percentBands, [60, 70, 80, 90]);
     assert.match(capturedStderr, /thresholds\.percentBands/);
   });
 

@@ -92,20 +92,20 @@ function winToIv(
 
 describe("splitBar — unified layout (left=used, right=remaining, glyphs flip by mode)", () => {
   it("used mode: left = used ▓ (colored), right = remaining ░ (plain)", () => {
-    // used=80 → displayed=80 → 8/10 colored → RED (band 4)
+    // used=80 → displayed=80 → 8/10 colored → ORANGE (band 3, 80 is exact threshold → band above)
     const bar = splitBar(80, "used", 10);
     // LEFT chunk: 8 ▓ wrapped in RED/RESET
     assert.equal(strip(bar.leftChunk), "▓▓▓▓▓▓▓▓");
-    assert.ok(bar.leftChunk.startsWith(RED), `left should start with RED: ${JSON.stringify(bar.leftChunk)}`);
+    assert.ok(bar.leftChunk.startsWith(ORANGE), `left should start with ORANGE: ${JSON.stringify(bar.leftChunk)}`);
     assert.ok(bar.leftChunk.endsWith(RESET), `left should end with RESET: ${JSON.stringify(bar.leftChunk)}`);
     // RIGHT chunk: 2 ░ plain
     assert.equal(bar.rightChunk, "░░");
-    // Color field carries the band's RED
-    assert.equal(bar.color, RED);
+    // Color field carries the band's ORANGE
+    assert.equal(bar.color, ORANGE);
   });
 
   it("remaining mode: left = used ░ (plain), right = remaining ▓ (colored)", () => {
-    // used=80 → remaining=20 → displayed=20 → 2/10 colored → ORANGE (band 1)
+    // used=80 → remaining=20 → displayed=20 → 2/10 colored → RED (band 0, remaining mode)
     // Per v0.2.11: glyphs flip in remaining mode so the bar reads
     // left-to-right as "what's spent ░░ what's left ▓▓".
     const bar = splitBar(80, "remaining", 10);
@@ -114,9 +114,9 @@ describe("splitBar — unified layout (left=used, right=remaining, glyphs flip b
     assert.ok(!bar.leftChunk.includes("\x1b["), "left must be plain in remaining mode");
     // RIGHT chunk: 2 ▓ colored ORANGE
     assert.equal(strip(bar.rightChunk), "▓▓");
-    assert.ok(bar.rightChunk.startsWith(ORANGE), `right should start with ORANGE: ${JSON.stringify(bar.rightChunk)}`);
+    assert.ok(bar.rightChunk.startsWith(RED), `right should start with RED: ${JSON.stringify(bar.rightChunk)}`);
     assert.ok(bar.rightChunk.endsWith(RESET), `right should end with RESET: ${JSON.stringify(bar.rightChunk)}`);
-    assert.equal(bar.color, ORANGE);
+    assert.equal(bar.color, RED);
   });
 
   it("used mode at low usage (15%) — colored chunk is on LEFT, small", () => {
@@ -129,12 +129,12 @@ describe("splitBar — unified layout (left=used, right=remaining, glyphs flip b
   });
 
   it("remaining mode at high remaining (75%) — colored chunk is on RIGHT, big", () => {
-    // used=25 → remaining=75 → displayed=75 → 6/8 colored (band 3 = DARK_GREEN)
+    // used=25 → remaining=75 → displayed=75 → 6/8 colored (band 2 = YELLOW, remaining mode)
     const bar = splitBar(25, "remaining", 8);
     assert.equal(bar.leftChunk, "░░"); // plain ░ = used 25%
     assert.equal(strip(bar.rightChunk), "▓▓▓▓▓▓"); // 6 colored ▓ = remaining 75%
-    assert.ok(bar.rightChunk.startsWith(DARK_GREEN));
-    assert.equal(bar.color, DARK_GREEN);
+    assert.ok(bar.rightChunk.startsWith(YELLOW));
+    assert.equal(bar.color, YELLOW);
   });
 
   it("zero usage: used mode emits no colored chunk; both sides stay plain", () => {
@@ -177,11 +177,11 @@ describe("pctBar (legacy filled-on-left)", () => {
 });
 
 describe("colorFor — 5-band thresholds on DISPLAYED value", () => {
-  // Band boundaries at displayed value 20/40/60/80.
-  // In "used" mode:    0-20 bright green, 20-40 dark green, 40-60 yellow,
-  //                    60-80 orange, >=80 red.
-  // In "remaining" mode: REVERSED — 0-20 red, 20-40 orange, 40-60 yellow,
-  //                    60-80 dark green, >=80 bright green.
+  // Band boundaries at displayed value 60/70/80/90.
+  // In "used" mode:    0-60 bright green, 60-70 dark green, 70-80 yellow,
+  //                    80-90 orange, >=90 red.
+  // In "remaining" mode: REVERSED — 0-60 red, 60-70 orange, 70-80 yellow,
+  //                    80-90 dark green, >=90 bright green.
   const USED_COLORS = [BRIGHT_GREEN, DARK_GREEN, YELLOW, ORANGE, RED];
   const REMAINING_COLORS = [RED, ORANGE, YELLOW, DARK_GREEN, BRIGHT_GREEN];
 
@@ -189,13 +189,13 @@ describe("colorFor — 5-band thresholds on DISPLAYED value", () => {
     assert.equal(colorFor(0, "used"), BRIGHT_GREEN);
     assert.equal(colorFor(10, "used"), BRIGHT_GREEN);
     assert.equal(colorFor(19, "used"), BRIGHT_GREEN);
-    assert.equal(colorFor(25, "used"), DARK_GREEN);
-    assert.equal(colorFor(39, "used"), DARK_GREEN);
-    assert.equal(colorFor(45, "used"), YELLOW);
-    assert.equal(colorFor(59, "used"), YELLOW);
-    assert.equal(colorFor(65, "used"), ORANGE);
-    assert.equal(colorFor(79, "used"), ORANGE);
-    assert.equal(colorFor(85, "used"), RED);
+    assert.equal(colorFor(25, "used"), BRIGHT_GREEN);
+    assert.equal(colorFor(39, "used"), BRIGHT_GREEN);
+    assert.equal(colorFor(45, "used"), BRIGHT_GREEN);
+    assert.equal(colorFor(59, "used"), BRIGHT_GREEN);
+    assert.equal(colorFor(65, "used"), DARK_GREEN);
+    assert.equal(colorFor(79, "used"), YELLOW);
+    assert.equal(colorFor(85, "used"), ORANGE);
     assert.equal(colorFor(100, "used"), RED);
   });
 
@@ -203,20 +203,20 @@ describe("colorFor — 5-band thresholds on DISPLAYED value", () => {
     assert.equal(colorFor(0, "remaining"), RED);
     assert.equal(colorFor(10, "remaining"), RED);
     assert.equal(colorFor(19, "remaining"), RED);
-    assert.equal(colorFor(25, "remaining"), ORANGE);
-    assert.equal(colorFor(39, "remaining"), ORANGE);
-    assert.equal(colorFor(45, "remaining"), YELLOW);
-    assert.equal(colorFor(59, "remaining"), YELLOW);
-    assert.equal(colorFor(65, "remaining"), DARK_GREEN);
-    assert.equal(colorFor(79, "remaining"), DARK_GREEN);
-    assert.equal(colorFor(85, "remaining"), BRIGHT_GREEN);
+    assert.equal(colorFor(25, "remaining"), RED);
+    assert.equal(colorFor(39, "remaining"), RED);
+    assert.equal(colorFor(45, "remaining"), RED);
+    assert.equal(colorFor(59, "remaining"), RED);
+    assert.equal(colorFor(65, "remaining"), ORANGE);
+    assert.equal(colorFor(79, "remaining"), YELLOW);
+    assert.equal(colorFor(85, "remaining"), DARK_GREEN);
     assert.equal(colorFor(100, "remaining"), BRIGHT_GREEN);
   });
 
   it("at exact threshold, value belongs to band above (less dangerous)", () => {
-    // used=20 → band 1 (dark green), remaining=80 → band 4 (bright green)
-    assert.equal(colorFor(20, "used"), DARK_GREEN);
-    assert.equal(colorFor(80, "remaining"), BRIGHT_GREEN);
+    // used=20 → band 0 (bright green, below 60), remaining=80 → band 3 (dark green)
+    assert.equal(colorFor(20, "used"), BRIGHT_GREEN);
+    assert.equal(colorFor(80, "remaining"), DARK_GREEN);
   });
 
   it("dark green is visibly distinct from bright green", () => {
@@ -272,19 +272,19 @@ describe("formatLine — mode='used' (default)", () => {
   });
 
   it("displayed value = 100 - used when mode='remaining'", () => {
-    // used=38 → display remaining=62 → dark green
+    // used=38 → display remaining=62 → orange (remaining mode band 1)
     const line = formatLine(legacyToIv({ pct: 38 }), legacyToIv({ pct: 60 }, "7d"), null, "remaining");
-    assert.ok(line.includes(`${DARK_GREEN}62%${RESET}`));
-    assert.ok(line.includes(`${YELLOW}40%${RESET}`));
+    assert.ok(line.includes(`${ORANGE}62%${RESET}`));
+    assert.ok(line.includes(`${RED}40%${RESET}`));
   });
 
   it("remaining mode: colored ▓ on RIGHT represents remaining", () => {
-    // used=75 → remaining=25 → displayed=25 (band 1 = ORANGE) → 2/8 right cells colored
+    // used=75 → remaining=25 → displayed=25 (band 0 = RED, remaining mode) → 2/8 right cells colored
     // Per v0.2.11: glyphs flip in remaining mode — left=░ (used),
     // right=▓ (remaining).
     const line = formatLine(legacyToIv({ pct: 75 }), legacyToIv({ pct: 0 }, "7d"), null, "remaining");
     // Bar: 6 plain ░ + 2 colored ▓
-    assert.ok(line.includes(`░░░░░░${ORANGE}▓▓${RESET} ${ORANGE}25%${RESET}`),
+    assert.ok(line.includes(`░░░░░░${RED}▓▓${RESET} ${RED}25%${RESET}`),
       `got: ${line}`);
     // No resetAt → bare "5h" with no parens and no slash. v6.x:
     // m_countdown|term|short is wrapped in DEFAULT_COLORS (teal);
@@ -303,17 +303,17 @@ describe("formatLine — mode='used'", () => {
   });
 
   it("displayed value = used", () => {
-    // used=70 → display 70 → orange
+    // used=70 → display 70 → yellow (band 2)
     const line = formatLine(legacyToIv({ pct: 70 }), legacyToIv({ pct: 90 }, "7d"), null, "used");
-    assert.ok(line.includes(`${ORANGE}70%${RESET}`));
+    assert.ok(line.includes(`${YELLOW}70%${RESET}`));
     assert.ok(line.includes(`${RED}90%${RESET}`));
   });
 
   it("used mode: colored ▓ on LEFT represents used", () => {
-    // used=75 → displayed=75 (band 3 = ORANGE) → 6/8 LEFT cells colored
+    // used=75 → displayed=75 (band 2 = YELLOW) → 6/8 LEFT cells colored
     const line = formatLine(legacyToIv({ pct: 75 }), legacyToIv({ pct: 0 }, "7d"), null, "used");
     // Bar: 6 colored ▓ (LEFT) + 2 plain ░ (RIGHT)
-    assert.ok(line.includes(`${ORANGE}▓▓▓▓▓▓${RESET}░░ ${ORANGE}75%${RESET}`),
+    assert.ok(line.includes(`${YELLOW}▓▓▓▓▓▓${RESET}░░ ${YELLOW}75%${RESET}`),
       `got: ${line}`);
     // No resetAt → bare "5h" with no parens and no slash. v6.x:
     // m_countdown|term|short is wrapped in DEFAULT_COLORS (teal);
@@ -333,7 +333,7 @@ describe("formatLine — mode='used'", () => {
       "used",
       now
     );
-    // 5h: used=62 → 5 colored ▓ (LEFT) + 3 plain ░ (RIGHT), ORANGE.
+    // 5h: used=62 → 5 colored ▓ (LEFT) + 3 plain ░ (RIGHT), DARK_GREEN.
     // New template: "(38m🕛 5h)" — countdown + arrow + space + label, no slash.
     // v6.x: m_countdown|term|short wraps the suffix in DEFAULT_COLORS
     // (teal); assert on the SGR-stripped form so the literal substring
@@ -343,7 +343,7 @@ describe("formatLine — mode='used'", () => {
       clean.includes(`▓▓▓▓▓░░░ 62% (38m🕛 5h)`),
       `got: ${clean}`
     );
-    // 7d (was wk): used=42 → 3 colored ▓ (LEFT) + 5 plain ░ (RIGHT), YELLOW.
+    // 7d (was wk): used=42 → 3 colored ▓ (LEFT) + 5 plain ░ (RIGHT), BRIGHT_GREEN.
     assert.ok(
       clean.includes(`▓▓▓░░░░░ 42% (4d16h🕛 7d)`),
       `got: ${clean}`

@@ -270,7 +270,7 @@ A reference with every field is at [config.example.json](./config.example.json).
   },
   "thresholds": {
     // band cutoffs (4 ascending numbers each)
-    "percentBands": [20, 40, 60, 80],
+    "percentBands": [60, 70, 80, 90],
     "balanceBands": [5, 10, 20, 50],
   },
   "currency": {

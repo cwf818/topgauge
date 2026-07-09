@@ -58,6 +58,7 @@ import * as diagnostics from "./diagnostics.ts";
 
 const STALE = "\x1b[90m";
 const GREEN = "\x1b[38;5;41m";
+const DARK_GREEN = "\x1b[38;5;29m";
 const YELLOW = "\x1b[38;5;220m";
 const ORANGE = "\x1b[38;5;208m";
 const RED = "\x1b[38;5;196m";
@@ -2337,11 +2338,11 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     assert.equal(strip(out), "remain:37%");
   });
 
-  it("m_windowContext| bar + 5-band-colored percentage (63% lands in orange band)", () => {
+  it("m_windowContext| bar + 5-band-colored percentage (63% lands in darkGreen band)", () => {
     const out = renderTemplate(["m_windowContext"], ctxFor(fakeSnapshot())).join("\n");
     const stripped = strip(out);
     assert.match(stripped, /^[▓░]+ 63%$/);
-    assert.ok(out.includes(ORANGE), `expected ORANGE in: ${JSON.stringify(out)}`);
+    assert.ok(out.includes(DARK_GREEN), `expected DARK_GREEN in: ${JSON.stringify(out)}`);
   });
 
   it("m_windowContext| emits gray '░░░░░░░░ 0%' gauge when contextWindow.usedPct is null (v6.x placeholder)", () => {

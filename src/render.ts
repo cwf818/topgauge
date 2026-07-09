@@ -2756,7 +2756,7 @@ m_quota: Object.assign(
   // 0..100 ratio, wraps it in a synthetic Window, and emits
   // formatOneChunk — so the value color is driven by
   // colorFor(pct, "used") (i.e. thresholds.percentBands, default
-  // [20, 40, 60, 80]) and the bar chunk is sized by usedPct. NO
+  // [60, 70, 80, 90]) and the bar chunk is sized by usedPct. NO
   // label prefix — pure bar+percent shape, matches m_windowContext.
   // m_total <= 0 guard is defensive — os.totalmem is always > 0 on
   // a real machine, but a sandboxed test env could zero it.

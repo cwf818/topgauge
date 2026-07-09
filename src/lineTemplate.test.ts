@@ -1052,9 +1052,9 @@ describe("lineTemplate — m_window|term:short / m_window|term:mid :color overri
       midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
-    // Default band color for 38% used is darkGreen (\x1b[38;5;29m).
+    // Default band color for 38% used is brightGreen (\x1b[38;5;41m).
     // If the override path were mis-wired, we'd see no SGR or red instead.
-    assert.ok(line.includes("\x1b[38;5;29m38%"), `got: ${JSON.stringify(line)}`);
+    assert.ok(line.includes("\x1b[38;5;41m38%"), `got: ${JSON.stringify(line)}`);
   });
 
   it("m_window|term:short|color:garbage is a hard noop (drops and warns)", () => {
@@ -1084,7 +1084,7 @@ describe("lineTemplate — m_window|term:short / m_window|term:mid / m_windowCon
   beforeEach(() => __resetUnknownModuleWarnForTest());
   afterEach(() => __resetForTest());
 
-  it("bare m_window|term:short honors the global config (default 'used') — renders 38% at darkGreen", () => {
+  it("bare m_window|term:short honors the global config (default 'used') — renders 38% at brightGreen", () => {
     __resetForTest({
       statuslineTemplate:["m_window|term:short"],
     });
@@ -1094,11 +1094,11 @@ describe("lineTemplate — m_window|term:short / m_window|term:mid / m_windowCon
       midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
-    // Default mode = used; 38% lands in [20, 40) band → darkGreen (\x1b[38;5;29m).
-    assert.ok(line.includes("\x1b[38;5;29m38%"), `got: ${JSON.stringify(line)}`);
+    // Default mode = used; 38% lands in [0, 60) band → brightGreen (\x1b[38;5;41m).
+    assert.ok(line.includes("\x1b[38;5;41m38%"), `got: ${JSON.stringify(line)}`);
   });
 
-  it("m_window|term:short|display:remaining inverts 38% used → renders 62% at band 3 (darkGreen)", () => {
+  it("m_window|term:short|display:remaining inverts 38% used → renders 62% at band 1 (orange)", () => {
     __resetForTest({
       statuslineTemplate:["m_window|term:short|display:remaining"],
     });
@@ -1108,11 +1108,10 @@ describe("lineTemplate — m_window|term:short / m_window|term:mid / m_windowCon
       midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
-    // Inverse: 100 - 38 = 62. 62 in [60, 80) → band 3. In "remaining"
-    // mode paletteByRemaining[3] = darkGreen (\x1b[38;5;29m). Note the
-    // remaining-mode palette is REVERSED: high remaining = healthy,
-    // so band 3 (the second-most-remaining band) gets darkGreen.
-    assert.ok(line.includes("\x1b[38;5;29m62%"), `got: ${JSON.stringify(line)}`);
+    // Inverse: 100 - 38 = 62. 62 in [60, 70) → band 1. In "remaining"
+    // mode paletteByRemaining[1] = orange (\x1b[38;5;208m). Note the
+    // remaining-mode palette is REVERSED: high remaining = healthy.
+    assert.ok(line.includes("\x1b[38;5;208m62%"), `got: ${JSON.stringify(line)}`);
     // The original 38% must NOT appear.
     assert.ok(!line.includes("38%"), `got: ${JSON.stringify(line)}`);
   });
@@ -1127,8 +1126,8 @@ describe("lineTemplate — m_window|term:short / m_window|term:mid / m_windowCon
       midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
-    // 38% used → darkGreen, same as bare.
-    assert.ok(line.includes("\x1b[38;5;29m38%"), `got: ${JSON.stringify(line)}`);
+    // 38% used → brightGreen, same as bare.
+    assert.ok(line.includes("\x1b[38;5;41m38%"), `got: ${JSON.stringify(line)}`);
   });
 
   it("m_window|term:short|display:remaining|color:yellow — both params combine, 62% in yellow", () => {
@@ -1148,7 +1147,7 @@ describe("lineTemplate — m_window|term:short / m_window|term:mid / m_windowCon
     assert.ok(!line.includes("38%"), `got: ${JSON.stringify(line)}`);
   });
 
-  it("m_window|term:mid|display:remaining inverts 60% used → renders 40% at band 2 (yellow)", () => {
+  it("m_window|term:mid|display:remaining inverts 60% used → renders 40% at band 0 (red)", () => {
     __resetForTest({
       statuslineTemplate:["m_window|term:mid|display:remaining"],
     });
@@ -1159,13 +1158,13 @@ describe("lineTemplate — m_window|term:short / m_window|term:mid / m_windowCon
       balance: null,
       ageMs: null, stale: false, version: "",
     });
-    // 100 - 60 = 40. 40 lands in band 2 ([40, 60)). In "remaining"
-    // mode paletteByRemaining[2] = yellow (\x1b[38;5;220m).
-    assert.ok(line.includes("\x1b[38;5;220m40%"), `got: ${JSON.stringify(line)}`);
+    // 100 - 60 = 40. 40 lands in band 0 ([0, 60)). In "remaining"
+    // mode paletteByRemaining[0] = red (\x1b[38;5;196m).
+    assert.ok(line.includes("\x1b[38;5;196m40%"), `got: ${JSON.stringify(line)}`);
     assert.ok(!line.includes("60%"), `got: ${JSON.stringify(line)}`);
   });
 
-  it("m_windowContext|display:remaining inverts 63% used → renders 37% at band 1 (orange)", () => {
+  it("m_windowContext|display:remaining inverts 63% used → renders 37% at band 0 (red)", () => {
     // Mirror of the v0.4.0 captured stdin: context_window.used_percentage=63.
     __resetForTest({
       statuslineTemplate:["m_windowContext|display:remaining"],
@@ -1183,13 +1182,13 @@ describe("lineTemplate — m_window|term:short / m_window|term:mid / m_windowCon
         contextWindow: { contextWindowSize: 200000, contextUsedPercent: 63, contextRemainingPercent: 37 },
       },
     });
-    // 100 - 63 = 37. 37 in [20, 40) → band 1. In "remaining" mode
-    // paletteByRemaining[1] = orange (\x1b[38;5;208m).
-    assert.ok(line.includes("\x1b[38;5;208m37%"), `got: ${JSON.stringify(line)}`);
+    // 100 - 63 = 37. 37 in [0, 60) → band 0. In "remaining" mode
+    // paletteByRemaining[0] = red (\x1b[38;5;196m).
+    assert.ok(line.includes("\x1b[38;5;196m37%"), `got: ${JSON.stringify(line)}`);
     assert.ok(!line.includes("63%"), `got: ${JSON.stringify(line)}`);
   });
 
-  it("m_windowContext|display:used reproduces the bare path's 63% (orange band)", () => {
+  it("m_windowContext|display:used reproduces the bare path's 63% (darkGreen band)", () => {
     __resetForTest({
       statuslineTemplate:["m_windowContext|display:used"],
     });
@@ -1207,8 +1206,8 @@ describe("lineTemplate — m_window|term:short / m_window|term:mid / m_windowCon
       },
     });
     // ctx.mode="remaining" + inline display="used" → display wins → 63%.
-    // 63 lands in [60, 80) → orange (\x1b[38;5;208m).
-    assert.ok(line.includes("\x1b[38;5;208m63%"), `got: ${JSON.stringify(line)}`);
+    // 63 lands in [60, 70) → darkGreen (\x1b[38;5;29m).
+    assert.ok(line.includes("\x1b[38;5;29m63%"), `got: ${JSON.stringify(line)}`);
   });
 
   it("m_window|term:short|display:garbage is a hard noop (drops and warns)", () => {

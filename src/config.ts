@@ -338,7 +338,7 @@ const DEFAULT_THRESHOLDS: {
   balanceBands: [number, number, number, number];
 } = {
   // 5-band cutoffs for MiniMax percentage rendering.
-  percentBands: [20, 40, 60, 80],
+  percentBands: [60, 70, 80, 90],
   // 5-band cutoffs for DeepSeek balance rendering (absolute units, not %).
   balanceBands: [5, 10, 20, 50],
 };
