@@ -47,7 +47,7 @@ const pinDefaults = () =>
     // overrides `statuslineTemplate` directly via the second arg
     // to `__resetForTest`.
     statuslineTemplate: [
-      "m_template|_balance_simple|mode|balance",
+      "m_template|_balance_simple|mode:balance",
       "s_newline",
       "m_template|_1line",
     ],

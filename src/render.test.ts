@@ -374,7 +374,7 @@ describe("formatLine — reset suffix integration", () => {
 
   it("no resetAt → bare ' 5h' / ' 7d' with no parens and no arrow", () => {
     const line = formatLine(legacyToIv({ pct: 30 }), legacyToIv({ pct: 40 }, "7d"));
-    // v6.x: m_countdown|term|short|mid wrap in DEFAULT_COLORS (teal);
+    // v6.x: m_countdown|term:short|mid wrap in DEFAULT_COLORS (teal);
     // strip SGR before checking substring.
     const clean = strip(line);
     assert.ok(!clean.includes("🕛"));
@@ -707,7 +707,7 @@ describe("formatBalanceLine — single-currency", () => {
   // a balance provider. Tests pin the balance preset explicitly.
   beforeEach(() => {
     __resetForTest({
-      statuslineTemplate: ["m_template|_balance_simple|mode|balance"],
+      statuslineTemplate: ["m_template|_balance_simple|mode:balance"],
     });
   });
   afterEach(() => __resetForTest());
@@ -773,7 +773,7 @@ describe("formatBalanceLine — multi-currency joined by ·", () => {
   // single-currency describe above).
   beforeEach(() => {
     __resetForTest({
-      statuslineTemplate: ["m_template|_balance_simple|mode|balance"],
+      statuslineTemplate: ["m_template|_balance_simple|mode:balance"],
     });
   });
   afterEach(() => __resetForTest());
@@ -835,7 +835,7 @@ describe("m_window5h/7d — stale coloring (v0.6.0+)", () => {
     // making the line read as authoritative even though the number is
     // from a stale cache.
     __resetForTest({
-      statuslineTemplate:["m_window|term|short"],
+      statuslineTemplate:["m_window|term:short"],
       timeFormat: { minUnit: "s", maxUnitCount: 4 },
     });
     try {
@@ -883,7 +883,7 @@ describe("m_window5h/7d — stale coloring (v0.6.0+)", () => {
     // Documented v0.3.3+ behavior — explicit :color: always wins.
     // v0.6.0+: stale does NOT silently override the user's color.
     __resetForTest({
-      statuslineTemplate:["m_window|term|short|color|" + ORANGE],
+      statuslineTemplate:["m_window|term:short|color:" + ORANGE],
       timeFormat: { minUnit: "s", maxUnitCount: 4 },
     });
     try {
@@ -910,7 +910,7 @@ describe("m_window5h/7d — stale coloring (v0.6.0+)", () => {
     // ▓ run — and the leading ░ run should stay plain. v0.6.0+
     // post-bar-blocks extension.
     __resetForTest({
-      statuslineTemplate:["m_window|term|short"],
+      statuslineTemplate:["m_window|term:short"],
       timeFormat: { minUnit: "s", maxUnitCount: 4 },
     });
     try {
@@ -986,7 +986,7 @@ describe("m_countdown5h/7d — stale AND past-due renders '(n/a🕒 5h)' in STAL
   it("bare m_countdown5h emits '(n/a🕒 5h)' in STALE_COLOR when stale=true AND resetAt is past-due", () => {
     const nowMs = Date.parse("2026-06-24T12:00:00Z");
     __resetForTest({
-      statuslineTemplate: ["m_countdown|term|short"],
+      statuslineTemplate: ["m_countdown|term:short"],
       timeFormat: { minUnit: "m", maxUnitCount: 2 },
     });
     try {
@@ -1029,7 +1029,7 @@ describe("m_countdown5h/7d — stale AND past-due renders '(n/a🕒 5h)' in STAL
     // tick will roll the countdown forward, so we don't gray it.
     const nowMs = Date.parse("2026-06-24T12:00:00Z");
     __resetForTest({
-      statuslineTemplate: ["m_countdown|term|short"],
+      statuslineTemplate: ["m_countdown|term:short"],
       timeFormat: { minUnit: "m", maxUnitCount: 2 },
     });
     try {
@@ -1062,7 +1062,7 @@ describe("m_countdown5h/7d — stale AND past-due renders '(n/a🕒 5h)' in STAL
     // truthful within the fetch window; do not gray.
     const nowMs = Date.parse("2026-06-24T12:00:00Z");
     __resetForTest({
-      statuslineTemplate: ["m_countdown|term|short"],
+      statuslineTemplate: ["m_countdown|term:short"],
       timeFormat: { minUnit: "m", maxUnitCount: 2 },
     });
     try {
@@ -1089,7 +1089,7 @@ describe("m_countdown5h/7d — stale AND past-due renders '(n/a🕒 5h)' in STAL
   it("bare m_countdown|term|mid mirrors the same stale+past-due n/a rule", () => {
     const nowMs = Date.parse("2026-06-24T12:00:00Z");
     __resetForTest({
-      statuslineTemplate: ["m_countdown|term|mid"],
+      statuslineTemplate: ["m_countdown|term:mid"],
       timeFormat: { minUnit: "m", maxUnitCount: 2 },
     });
     try {
@@ -1120,7 +1120,7 @@ describe("m_countdown5h/7d — stale AND past-due renders '(n/a🕒 5h)' in STAL
     // the color is overridden.
     const nowMs = Date.parse("2026-06-24T12:00:00Z");
     __resetForTest({
-      statuslineTemplate: ["m_countdown|term|short|color|" + RED],
+      statuslineTemplate: ["m_countdown|term:short|color:" + RED],
       timeFormat: { minUnit: "m", maxUnitCount: 2 },
     });
     try {
@@ -1149,14 +1149,14 @@ describe("m_countdown5h/7d — stale AND past-due renders '(n/a🕒 5h)' in STAL
   });
 
   it("other modules are unaffected by the stale+past-due branch", () => {
-    // The m_window|term|short / m_window|term|mid stale coloring
+    // The m_window|term:short / m_window|term:mid stale coloring
     // path (v0.6.0+) is a separate concern — gated on ctx.stale
     // alone, NOT on past-due. Make sure the new branch in
     // m_countdown|term|short doesn't accidentally leak STALE_COLOR
     // into the window module.
     const nowMs = Date.parse("2026-06-24T12:00:00Z");
     __resetForTest({
-      statuslineTemplate: ["m_window|term|short", "m_countdown|term|short"],
+      statuslineTemplate: ["m_window|term:short", "m_countdown|term:short"],
       timeFormat: { minUnit: "m", maxUnitCount: 2 },
     });
     try {

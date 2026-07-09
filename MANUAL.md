@@ -13,32 +13,41 @@ A template is a JSON array of tokens. Two kinds exist:
 | `m_*` | Display module — colored chunk.  | See the per-module table below.                      |
 | `s_*` | Separator reference — literal.   | See the separator table below.                       |
 
-Tokens can be written in **bare form** (`"m_window|term|short"`) or **inline-arg
-form** (`"m_window|term|short|color|red|display|remaining"`). Inline args
+Tokens can be written in **bare form** (`"m_window|term:short"`) or **inline-arg
+form** (`"m_window|term:short|color:red|display:remaining"`). Inline args
 override per-token; bare form falls back to global config.
 
-> **Inline-arg separator is `|` (pipe) since v0.7.1.** The older
-> `:` form (`"m_window|term|short:color:red"`) is NOT recognized by the
-> dispatcher — `parseInlineArgs` splits on `|` only. This is
-> intentional: `:` collides with rendered text (e.g. `Usage:`,
-> `api:5s`, `5h:--`). The first `|` separates the prefix from the
-> arg list; subsequent `|` separate `name` and `value` segments.
+> **Inline-arg grammar is two-class since v0.8.33.** The first
+> separator is `|` (pipe); pairs inside use `:` (colon) or `=` (equals) as the
+> name/value boundary. The first `:` or `=` in a pair splits name from
+> value; everything after that is part of the value. The implicit-value
+> slot (`m_label|<text>|…`, `m_template|<name>|…`, `s_<n>`)
+> is `|`-bounded and may contain `:` or `=` freely. The **bare**
+> `|` form for pair boundaries (`"m_window|term|short"`) is **removed** —
+> the dispatcher will warn and drop the token. This is a hard breaking
+> change: rewrite any legacy config by replacing `|name|value|` with
+> `|name:value|` or `|name=value|`.
 
 ---
 
 ## 1. Inline-arg syntax
 
 ```
-<token>|<name>|<value>|<name>|<value>…
+<token>[|<implicit>][|<name>:<value>][|<name>=<value>]…
 ```
 
-- The first segment is the module name (or implicit param value).
+- The first segment is the module name; if the schema declares an
+  `implicit` slot (`m_label`, `m_template`, `s_<n>`), the FIRST
+  trailing segment is the implicit value (label text / template name /
+  separator alias). The implicit value is `|`-bounded and may contain
+  `:` or `=` freely.
+- Each subsequent pair is split on the **first** `:` or `=` — the left
+  side is the name, the right side is everything that follows (so values
+  may themselves contain `:` or `=`).
 - Order of `name:value` pairs doesn't matter; duplicates keep the last.
-- Unknown `name` or malformed `value` → dispatcher warns to stderr and
-  drops the token (no partial render).
-- For modules that take an **implicit** value (`m_label`, `s_<n>` /
-  `s_<alias>`), the first segment IS the value; remaining segments form
-  `name:value` pairs.
+- Unknown `name` or malformed pair (no `:`, no `=`, unknown name,
+  resolver-rejected value) → dispatcher warns to stderr and drops the
+  token (no partial render).
 
 ### 1.1 Shared named parameters
 
@@ -81,7 +90,7 @@ inside the template body), the inner value beats the passthrough.
 // Outer scope|project → bare m_accTokenIn inside reads project scope.
 // Inner explicit |scope|session → wins; m_accTokenIn reads session scope.
 {
-  "statuslineTemplate": ["m_template|acc|scope|project"],
+  "statuslineTemplate": ["m_template|acc|scope:project"],
   "lineTemplates": {
     "acc": [
       "m_accTokenIn",
@@ -137,10 +146,10 @@ reshuffles.
 ### 2.4 `repeat` and `wrap` (v0.7.2+)
 
 ```
-s_dot|repeat|3          → "···"
-s_dot|repeat|3|wrap|true → " · · · "
-s_space|repeat|4        → "    "   (whitespace body skips wrap padding)
-s_newline|repeat|2      → "\n\n"  (control body skips wrap padding)
+s_dot|repeat:3          → "···"
+s_dot|repeat:3|wrap:true → " · · · "
+s_space|repeat:4        → "    "   (whitespace body skips wrap padding)
+s_newline|repeat:2      → "\n\n"  (control body skips wrap padding)
 ```
 
 - `repeat` is an integer 1..8; out-of-range → drop.
@@ -162,17 +171,17 @@ provider-less ticks via the `unknown` TYPE fallback).
 | ---------------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------- | ------------------ | -------------------------------------- | ----- |
 | **Provider data (plan / balance)** |                                                                                      |                                                           |                    |                                        |       |
 | `m_modeLabel`                      | `Usage:` (plan) / `Remain:` (plan-display="remaining") / `Balance:` (balance).       | derived from `providerType` + global `display`            | (always emits)     | `color`, `nulldrop`                    | First item in default line templates.   |
-| `m_window\|term\|short\|mid\|long` (default `term=short`) | Bar + colored % of the chosen interval, e.g. `▓░░░░░░░ 9%`.   | `intervals.<term>.usedPercent` / `.remainingPercent` + `.startAt` / `.endAt` (projected through `intervalToWindow`) | plan    | `color`, `display`, `term`, `nulldrop` | v0.9.0+. `term=short` reads `intervals.shortInterval` (default 5h), `term=mid` reads `intervals.midInterval` (default 7d), `term=long` reads `intervals.longInterval` (default 30d). `stale=true` dims bar + tail to `STALE_COLOR`. `display\|remaining` flips the % sign. |
-| `m_countdown\|term\|short\|mid\|long` (default `term=short`) | `(4h47m🕔 5h)` reset countdown with fill-state arrow.    | `intervals.<term>.startAt` / `.endAt` / `.intervalMs`     | plan               | `color`, `term`, `nulldrop`            | v0.9.0+. Arrow from `resetArrows` indexed by `remainingMs / resetDurationMs`. Drops if no `startAt`/`endAt`/`intervalMs`. Renders `<label>:--` placeholder when data is missing and `nulldrop` is false. |
-| `m_quota\|term\|short\|mid\|long` (default `term=short`) | Quota display, e.g. `quota(5h):100/500` / `quota(5h):0/500` / `quota(5h):100/--`. | `intervals.<term>.usedQuota` / `.limitQuota`              | plan               | `color`, `term`, `nulldrop`            | v0.9.0+. Body rules: `used+limit` → `used/limit`; `limit only` → `0/limit`; `used only` → `used/--`. All three null → drop. |
+| `m_window\|term:short\|mid\|long` (default `term=short`) | Bar + colored % of the chosen interval, e.g. `▓░░░░░░░ 9%`.   | `intervals.<term>.usedPercent` / `.remainingPercent` + `.startAt` / `.endAt` (projected through `intervalToWindow`) | plan    | `color`, `display`, `term`, `nulldrop` | v0.9.0+. `term=short` reads `intervals.shortInterval` (default 5h), `term=mid` reads `intervals.midInterval` (default 7d), `term=long` reads `intervals.longInterval` (default 30d). `stale=true` dims bar + tail to `STALE_COLOR`. `display:remaining` flips the % sign. |
+| `m_countdown\|term:short\|mid\|long` (default `term=short`) | `(4h47m🕔 5h)` reset countdown with fill-state arrow.    | `intervals.<term>.startAt` / `.endAt` / `.intervalMs`     | plan               | `color`, `term`, `nulldrop`            | v0.9.0+. Arrow from `resetArrows` indexed by `remainingMs / resetDurationMs`. Drops if no `startAt`/`endAt`/`intervalMs`. Renders `<label>:--` placeholder when data is missing and `nulldrop` is false. |
+| `m_quota\|term:short\|mid\|long` (default `term=short`) | Quota display, e.g. `quota(5h):100/500` / `quota(5h):0/500` / `quota(5h):100/--`. | `intervals.<term>.usedQuota` / `.limitQuota`              | plan               | `color`, `term`, `nulldrop`            | v0.9.0+. Body rules: `used+limit` → `used/limit`; `limit only` → `0/limit`; `used only` → `used/--`. All three null → drop. |
 | `m_balance`                        | `CNY 110.00 · USD 5.00`.                                                            | `balance.entries[]`                                       | balance            | `color`, `nulldrop`                    | Color band driven by the LOWEST `totalBalance`. |
 | `m_age`                            | `🔗 5m ago` (fresh) / `⛓️‍💥 5m ago` (stale).                                                | `ageMs`, `stale`                                          | agnostic           | `color`, `nulldrop`                    | Emits at most once per render (ref-deduped across `m_template|` recursion). Forced-visibility fallback appends `⛓️‍💥 X ago` only when the user did NOT list `m_age` and `stale=true`. |
 | `m_version`                        | `v0.8.14` plugin version.                                                            | `version` from `.claude-plugin/plugin.json`               | agnostic           | `color`, `nulldrop`                    | Emits nothing when version string is empty. |
 | `m_memUsage`                 | System RAM usage, `Mem:15.9G/63.7G` (default label `Mem:`).                          | `os.totalmem()` / `os.freemem()` (Darwin: `vm_stat`)      | agnostic           | `color`, `nulldrop`                    | v0.8.17+. Cross-platform live sample; no caching. 1024-base, G uses `.toFixed(1)`, M/K use `.toFixed(0)`. Query failure → `Mem:n/a` placeholder. Label is user-configurable via `labels.labelMemUsage` (default `"Mem:"`, mirrors ccstatusline). |
 | `m_label\|<text>`                   | Literal `<text>`.                                                                    | inline                                                    | agnostic           | `color`, `nulldrop`                    | `<text>` is the implicit first segment — anything `\|` in the value goes into the `name:value` parse. |
-| `m_template\|<key>[\|type\|plan\|balance]` | Inserts `lineTemplates.<key>` in place. Recursively expanded (loader strips nested `m_template` at load time). | inline key                                  | filtered by `type` | `type` (legacy alias: `mode`), plus any other args get **passthrough** (§1.2) | `type\|plan` skips on a BALANCE provider and vice versa. Default `type=plan`. Legacy `mode` is still accepted (same resolver, same semantics); when both `type` and `mode` are present on the same token, `type` wins. Built-in presets use the `_` prefix — see §4. |
+| `m_template\|<key>[\|type:plan\|balance]` | Inserts `lineTemplates.<key>` in place. Recursively expanded (loader strips nested `m_template` at load time). | inline key                                  | filtered by `type` | `type` (legacy alias: `mode`), plus any other args get **passthrough** (§1.2) | `type:plan` skips on a BALANCE provider and vice versa. Default `type=plan`. Legacy `mode` is still accepted (same resolver, same semantics); when both `type` and `mode` are present on the same token, `type` wins. Built-in presets use the `_` prefix — see §4. |
 | **Per-turn / Acc / Sum family**    |                                                                                      |                                                           |                    |                                        |       |
-| `m_tokenIn` / `m_accTokenIn` / `m_sumTokenIn` | per-turn: `in:154` · acc: `acc(ccs):163.5k` · sum: `in:240k` | per-turn: stdin · acc: `status.json` `accTokenIn[scope]` · sum: cross-project JSONL scan | agnostic           | per-turn: `color`, `nulldrop` · acc: `color`, `nulldrop`, `scope` · sum: `color`, `nulldrop`, `model`, `window`, `align` | Three semantic variants of the same metric. Drops when stdin lacks the field; per-turn value=0 renders as `in:0` (value-zero rule). Acc default scope `ccsession`; sum reads `state/cache.json` cross-project TTL slot. v0.8.32+: `m_sum*` accepts `|align|<true|false>` (default false) to opt into declared-windowId resolution — `align=true` resolves `|window|<id>` against an `interval.windowId` and runs plan-anchored; `align=false` (default) goes straight to free-form dhms wall-clock. Bare `m_sum*` defaults to `window=all`. |
+| `m_tokenIn` / `m_accTokenIn` / `m_sumTokenIn` | per-turn: `in:154` · acc: `acc(ccs):163.5k` · sum: `in:240k` | per-turn: stdin · acc: `status.json` `accTokenIn[scope]` · sum: cross-project JSONL scan | agnostic           | per-turn: `color`, `nulldrop` · acc: `color`, `nulldrop`, `scope` · sum: `color`, `nulldrop`, `model`, `window`, `align` | Three semantic variants of the same metric. Drops when stdin lacks the field; per-turn value=0 renders as `in:0` (value-zero rule). Acc default scope `ccsession`; sum reads `state/cache.json` cross-project TTL slot. v0.8.32+: `m_sum*` accepts `align:true\|false` (default false) to opt into declared-windowId resolution — `align:true` resolves `window:<id>` against an `interval.windowId` and runs plan-anchored; `align:false` (default) goes straight to free-form dhms wall-clock. Bare `m_sum*` defaults to `window=all`. |
 | `m_tokenOut` / `m_accTokenOut` / `m_sumTokenOut` | per-turn: `out:135` · acc: `acc(ccs):120k` · sum: `out:180k` | per-turn: stdin · acc: `status.json` `accTokenOut[scope]` · sum: cross-project JSONL scan | agnostic           | same as `m_tokenIn` row                  | Same as above. |
 | `m_tokenCachedIn` / `m_accTokenCachedIn` / `m_sumTokenCachedIn` | per-turn: `cache:62k` · acc: `acc(ccs):1.2M` · sum: `cache:880k` | per-turn: stdin · acc: `status.json` `accTokenCachedIn[scope]` · sum: cross-project JSONL scan | agnostic           | same as `m_tokenIn` row                  | Per-turn renamed from `m_cacheRead` / `m_cachedTokenIn` in v0.8.0. |
 | `m_tokenInTotal` / `m_accTokenTotalIn` / `m_sumTokenTotalIn` | per-turn: `in:42k` · acc: `acc(ccs):42k` · sum: `in:240k` | per-turn: `tokens.totals.tokenTotalIn` · acc: `accTokenIn + accTokenCachedIn` · sum: in + cachedIn over window | agnostic           | same as `m_tokenIn` row                  | Per-turn = stdin cumulative input (excludes cache reads); acc/sum variants add cache reads. v0.8.0+ family. |
@@ -211,9 +220,9 @@ out. On fetch / parse / walk failure the renderer silently falls
 back to the bundled local QUOTES list.
 
 ```text
-m_quote|address|https://v1.hitokoto.cn/|quote|hitokoto|author|from_who
-m_quote|address|https://api.quotable.io/random|quote|content|author|author
-m_quote|address|https://api.xygeng.cn/one|quote|data.content|author|data.name
+m_quote|address:https://v1.hitokoto.cn/|quote:hitokoto|author:from_who
+m_quote|address:https://api.quotable.io/random|quote:content|author:author
+m_quote|address:https://api.xygeng.cn/one|quote:data.content|author:data.name
 ```
 
 ### Removed in v0.8.0 (no alias)
@@ -303,7 +312,7 @@ the rendered output into "above the break" and "below the break" chunks:
   output (whatever `TOPGAUGE_CC_UPSTREAM` contains).
 - Everything BELOW is **appended** after the upstream.
 
-This is how `["m_template|_standard", "s_newline", "m_template|_balance_simple|type|balance"]`
+This is how `["m_template|_standard", "s_newline", "m_template|_balance_simple|type:balance"]`
 renders: a multi-line plan section + a multi-line balance section,
 sandwiched around the upstream statusline.
 
@@ -336,7 +345,7 @@ Usage:
 {
   "statuslineTemplate": ["m_template|_standard"],
   // Or, for a DeepSeek (BALANCE) provider, the explicit form:
-  // "statuslineTemplate": ["m_template|_balance_simple|type|balance"]
+  // "statuslineTemplate": ["m_template|_balance_simple|type:balance"]
 }
 ```
 
@@ -375,30 +384,30 @@ The `_` prefix marks a built-in preset — user-defined
 // (v0.8.32+: `|window|5h` resolves to free-form dhms wall-clock
 // by default (align=false skips the windowId lookup). To opt into
 // a plan-anchored scan against shortInterval's resetStartAt, add
-// `|align|true` after the windowId-resolution token. See the
+// `|align:true` after the windowId-resolution token. See the
 // `align` row in §1.1 for the full opt-in matrix.)
 "statuslineTemplate": [
-  "m_template|plan|type|plan",
+  "m_template|plan|type:plan",
   "s_newline",
-  "m_template|balance|type|balance"
+  "m_template|balance|type:balance"
 ],
 "lineTemplates": {
   "plan": [
-    "m_window|term|short|color|red|display|remaining",
+    "m_window|term:short|color:red|display:remaining",
     "s_space",
-    "m_countdown|term|short",
+    "m_countdown|term:short",
     "s_dot",
     "s_space",
-    "m_window|term|mid",
+    "m_window|term:mid",
     "s_space",
-    "m_countdown|term|mid",
+    "m_countdown|term:mid",
     "s_newline",
     // Wall-clock 5h — the new bare-default behavior.
     "m_sumTokenIn|window|5h",
     "s_dot",
     "s_space",
     // Plan-aligned against shortInterval's resetStartAt.
-    "m_sumTokenHitRate|window|5h|align|true"
+    "m_sumTokenHitRate|window:5h|align:true"
   ],
   "balance": [
     "m_balance",
