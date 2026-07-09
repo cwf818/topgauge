@@ -1,0 +1,84 @@
+{
+  "_about": "topgauge-cc BALANCE 标准 schema —— 插件(用户脚本)的输出契约。插件读取 provider API 原始响应,把它转换(或裁剪)成本 schema 的形状,运行时再喂给 src/api.balance.ts:parseBalance。设计原则:1) currency 是 ISO-4217 字符串(如 'CNY' / 'USD'),不是符号;2) totalBalance 是已规约的 number(字符串 '110.00' 也可,但 parseBalance 会用 asNumber 兜底;建议插件直接规约成 number);3) isAvailable 显式声明 true / false;字段缺失 / null 时 fallback 为 true(乐观渲染 entries);4) 多 currency 全部塞进 entries[],渲染器按 ' · ' 拼接 + 取最低 totalBalance 驱动颜色。",
+  "_rendererNotes": [
+    "render.ts:formatBalanceLine  按 entries 顺序 ' · ' 拼接,每条渲染成 'currency:totalBalance'(前缀由 labels.labelBalance 控制)。",
+    "parseBalance 入口会算 minValue = min(entries[].totalBalance) 驱动 colorFor 的 5-band 调色板。",
+    "isAvailable 三态契约:false → 不渲染 entries(账户冻结等异常态);true / 1 / \"true\" → 正常渲染;字段缺失 / null / undefined → fallback 为 true(乐观渲染,显示 entries)。entries=[] + isAvailable=false → 渲染 placeholder;entries=[] + isAvailable=true → 视为 'no data' 走 n/a。"
+  ],
+  "schemaVersion": "1.0",
+  "type": "object",
+  "required": ["entries"],
+  "additionalProperties": false,
+  "properties": {
+    "$comment_meta": {
+      "type": "object",
+      "description": "可选元数据 —— 插件自报家门 + 时间戳,便于 diagnostics.jsonl 溯源",
+      "additionalProperties": false,
+      "properties": {
+        "providerId": { "type": "string", "description": "插件 ID,任意字符串(如 'deepseek-prod')" },
+        "fetchedAt":  { "type": "number", "description": "插件抓取原始响应时的 epoch ms" },
+        "note":       { "type": "string", "description": "自由注释" }
+      }
+    },
+    "isAvailable": {
+      "type": ["boolean", "null"],
+      "description": "账户是否可用。三态契约:显式 true / 1 / \"true\" → 正常渲染 entries;显式 false → 不渲染(账户冻结等异常态);字段缺失 / null / undefined → fallback 为 true(乐观渲染,显示 entries)。插件应当显式输出 boolean 以避免歧义;缺失字段时按 true 处理。"
+    },
+    "entries": {
+      "type": "array",
+      "description": "余额条目。DeepSeek 等多币种 provider 每币种一条,单币种 provider 一条。空数组 + isAvailable=false → placeholder;空数组 + isAvailable=true → 视为 'no data' 走 n/a。",
+      "items": { "$ref": "#/$defs/BalanceEntry" }
+    }
+  },
+  "$defs": {
+    "BalanceEntry": {
+      "type": "object",
+      "description": "一个币种的余额快照",
+      "required": ["currency", "totalBalance"],
+      "additionalProperties": false,
+      "properties": {
+        "currency": {
+          "type": "string",
+          "description": "ISO-4217 货币代码(如 'CNY' / 'USD' / 'EUR')。约定 3 字母大写,但 parseBalance 不强制 —— 用户配置 labels.labelCurrency 后可以直接渲染成 '¥' / '$' 等符号。"
+        },
+        "totalBalance": {
+          "type": "number",
+          "description": "总余额(已规约的 number)。插件应负责把 '110.00' 字符串 / BigInt / Decimal 统一成 number。建议插件在转 JSON.stringify 之前用 Number() 强转。",
+          "minimum": 0
+        }
+      }
+    }
+  },
+
+  "example_single": {
+    "_about": "示例 1:单币种(DeepSeek 默认返回 CNY)。插件把原始 total_balance '110.00' 规约成 110,然后挂在 entries[0] 上。",
+    "isAvailable": true,
+    "entries": [
+      { "currency": "CNY", "totalBalance": 110.00 }
+    ]
+  },
+
+  "example_multi": {
+    "_about": "示例 2:多币种(自定义 provider 同时返回 CNY + USD 两条)。entries 数组按 provider 原顺序保留;渲染器按 ' · ' 拼接。",
+    "isAvailable": true,
+    "entries": [
+      { "currency": "CNY", "totalBalance": 110.00 },
+      { "currency": "USD", "totalBalance": 3.50 }
+    ]
+  },
+
+  "example_unavailable": {
+    "_about": "示例 3:账户不可用。isAvailable=false 时 entries 仍可保留 —— 用户看到 '账户冻结但还有余额'的提示。",
+    "isAvailable": false,
+    "entries": [
+      { "currency": "CNY", "totalBalance": 110.00 }
+    ]
+  },
+
+  "example_missing_flag": {
+    "_about": "示例 4:isAvailable 字段缺失。整个 isAvailable key 不存在 —— 按 fallback 契约视为 true,正常渲染 entries。这是大多数非 DeepSeek 系 provider 的常见 shape。",
+    "entries": [
+      { "currency": "CNY", "totalBalance": 110.00 }
+    ]
+  }
+}

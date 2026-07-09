@@ -127,6 +127,54 @@ describe("parseBalance — unavailable / missing fields", () => {
     assert.equal(parseBalance({ is_available: "true", balance_infos: [] })!.isAvailable, true);
     assert.equal(parseBalance({ is_available: "false", balance_infos: [] })!.isAvailable, false);
   });
+
+  // ----- vX.X.X+ — optimistic-fallback contract on missing is_available -----
+  //
+  // Standard schema (src/__fixtures__/balance.schema.json) drops
+  // `isAvailable` from the required list. Most non-DeepSeek providers
+  // don't ship the flag at all — when a plugin forgets to set it,
+  // parseBalance must treat the response as available so the user
+  // still sees the balance. Only an explicit `false` (or string
+  // `"false"`) lands on the unavailable branch.
+  it("missing is_available key → fallback true, renders entries", () => {
+    const b = parseBalance({
+      balance_infos: [{ currency: "CNY", total_balance: "110.00" }],
+    });
+    assert.ok(b);
+    assert.equal(b!.isAvailable, true);
+    assert.equal(b!.entries.length, 1);
+    assert.equal(b!.entries[0].currency, "CNY");
+    assert.equal(b!.entries[0].totalBalance, 110);
+  });
+  it("is_available: null → fallback true, renders entries", () => {
+    const b = parseBalance({
+      is_available: null,
+      balance_infos: [{ currency: "CNY", total_balance: 50 }],
+    });
+    assert.ok(b);
+    assert.equal(b!.isAvailable, true);
+    assert.equal(b!.entries.length, 1);
+  });
+  it("is_available: false (with entries) → does NOT render entries (minValue still computed)", () => {
+    // The unavailable branch still surfaces entries + minValue so the
+    // renderer can choose to display a "frozen" / "suspended" hint with
+    // the balance list attached. The contract is the `isAvailable`
+    // flag, not the entries list — renderer's call.
+    const b = parseBalance({
+      is_available: false,
+      balance_infos: [{ currency: "CNY", total_balance: 110 }],
+    });
+    assert.ok(b);
+    assert.equal(b!.isAvailable, false);
+    assert.equal(b!.entries.length, 1);
+    assert.equal(b!.minValue, 110);
+  });
+  it("case-insensitive string 'FALSE' → false (preserve v0.5.x tolerance)", () => {
+    assert.equal(
+      parseBalance({ is_available: "FALSE", balance_infos: [] })!.isAvailable,
+      false,
+    );
+  });
 });
 
 // ----- v0.6.0+ HTTP override plumbing for fetchBalance -----

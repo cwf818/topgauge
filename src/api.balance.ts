@@ -61,13 +61,26 @@ export function parseBalance(raw: unknown): Balance | null {
   if (!raw || typeof raw !== "object") return null;
   const root = raw as Record<string, unknown>;
 
-  // DeepSeek uses `is_available: true | false`. Tolerate other truthy/falsy
-  // forms (e.g. 1 / "true") so a schema drift doesn't blank the line.
+  // DeepSeek uses `is_available: true | false`. The contract for the
+  // standard balance schema (src/__fixtures__/balance.schema.json) is:
+  //   explicit false (or string "false")  → isAvailable = false
+  //                                           (account locked / suspended)
+  //   explicit true  (or 1, "true")        → isAvailable = true
+  //   missing / null / undefined           → fallback = true
+  //                                           (optimistic render; most
+  //                                            non-DeepSeek providers
+  //                                            don't ship the flag at all)
+  //
+  // Implementation: build the "is explicitly false" gate, invert it.
+  // The string "false" branch preserves the v0.5.x tolerance contract
+  // (see `api.deepseek.test.ts:tolerates truthy/falsy variants`) — a
+  // string-encoded `false` from a misconfigured plugin still falls
+  // into the unavailable branch instead of rendering placeholder.
   const availRaw = root.is_available;
-  const isAvailable =
-    availRaw === true ||
-    availRaw === 1 ||
-    (typeof availRaw === "string" && availRaw.toLowerCase() === "true");
+  const explicitlyFalse =
+    availRaw === false ||
+    (typeof availRaw === "string" && availRaw.toLowerCase() === "false");
+  const isAvailable = !explicitlyFalse;
 
   const arr = root.balance_infos;
   let entries: BalanceEntry[] = [];
