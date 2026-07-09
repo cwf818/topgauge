@@ -217,7 +217,7 @@ export type TokenSample = {
 // `current` = post-turn snapshot (used by m_tokenIn, m_tokenOut,
 //            m_tokenCachedIn, m_tokenHitRate, m_tokenInSpeed,
 //            m_tokenOutSpeed). `totals` = session cumulative (used by
-//            m_tokenInTotal, m_tokenTotalOut, m_tokenTotal).
+//            m_tokenInTotal, m_tokenTotalOut, m_tokenTotalIn).
 //            `cost` = stdin.cost block. `contextWindow` = context
 //            window size + used% (m_contextSize, m_contextUsedPercent,
 //            m_windowContext). The session-identity / metadata

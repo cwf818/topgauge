@@ -212,6 +212,21 @@ function labelFor(axis: LabelAxis): string {
   }
 }
 
+// vX.X.X+ — for the bare MODULES render path (which receives a
+// pre-prefixed string from helpers like computeTickDelta /
+// computeTickSpeed / accBody): strip the leading label verbatim
+// when ctx.passThrough?.valueOnly === "true". Cheap string-prefix
+// check — label defaults are short ASCII ("in:", "out:", etc.)
+// and the value-only path is opt-in. Falls through to the original
+// value when the prefix doesn't match (defensive: the placeholder
+// path might emit "n/a" without a label, and we don't want to
+// chop it).
+function stripLabelIfValueOnly(value: string, axis: LabelAxis, strip: boolean): string {
+  if (!strip) return value;
+  const prefix = labelFor(axis);
+  return value.startsWith(prefix) ? value.slice(prefix.length) : value;
+}
+
 // v0.8.17+ — system RAM byte formatter. 1024-base (matches
 // ccstatusline / htop / macOS Activity Monitor convention). G tier
 // uses .toFixed(1), M/K tiers use .toFixed(0). Returns "n/a" on
@@ -1572,7 +1587,14 @@ function accBody(
   ctx: RenderContext,
   field: "in" | "out" | "cached" | "total" | "apiMs" | "apiCalls",
   scope?: "session" | "project" | "model",
+  stripLabel?: boolean,
 ): string {
+  // vX.X.X+ — |valueOnly|true propagates from a bare m_acc* module
+  // (read via ctx.passThrough?.valueOnly) or from an inline-form
+  // m_acc* renderer (explicit stripLabel arg from passThroughOr).
+  // When set, every prefix below collapses to "" so the rendered
+  // body is the bare number.
+  const strip = stripLabel ?? ctx.passThrough?.valueOnly === "true";
   const useScope = scope ?? "session";
   const v = peekAcc(useScope, ctx);
   if (!v) {
@@ -1582,7 +1604,7 @@ function accBody(
     // the "field not shipped" → "--" contract, so we don't fire
     // accCachePrimer here on a missing slot — the placeholder
     // shape is the only honest signal in that case.
-    return placeholderAcc(field, useScope);
+    return placeholderAcc(field, useScope, strip);
   }
   // v0.8.10-alpha.3 — removed the "field not shipped" cache guard.
 // cache_read_input_tokens absence on the current stdin does not
@@ -1621,11 +1643,14 @@ function accBody(
   // fields via labels.labelApi / labels.labelApiCalls.
   let prefix: string;
   let body: string;
+  // vX.X.X+ — when stripLabel is on, every prefix resolves to ""
+  // so the rendered body is the bare number / dhms / count.
+  const p = (axis: LabelAxis): string => strip ? "" : labelFor(axis);
   switch (field) {
-    case "in": prefix = labelFor("in"); body = formatCompactToken(n); break;
-    case "out": prefix = labelFor("out"); body = formatCompactToken(n); break;
-    case "cached": prefix = labelFor("cacheIn"); body = formatCompactToken(n); break;
-    case "total": prefix = labelFor("totalIn"); body = formatCompactToken(n); break;
+    case "in": prefix = p("in"); body = formatCompactToken(n); break;
+    case "out": prefix = p("out"); body = formatCompactToken(n); break;
+    case "cached": prefix = p("cacheIn"); body = formatCompactToken(n); break;
+    case "total": prefix = p("totalIn"); body = formatCompactToken(n); break;
     // v0.8.x — m_accApiMs now renders `api:<dhms>` to mirror m_apiMs.
     // The accumulator value (accApiMs) is session-cumulative
     // totalApiMs, so the formatted string grows monotonically as
@@ -1633,14 +1658,14 @@ function accBody(
     // v0.8.13+ — prefix is configurable via labels.labelApi
     // (labelFor("apiMs")); default "api:" preserves the v0.8.x
     // literal so existing renders stay byte-identical.
-    case "apiMs": prefix = labelFor("apiMs"); body = formatRemainingMs(n); break;
+    case "apiMs": prefix = p("apiMs"); body = formatRemainingMs(n); break;
     // v0.8.x — m_accApiCalls mirrors m_apiCalls's `calls:N` shape
     // (the value-zero rule says count:0 still renders, since
     // zero is a real measured count, not a "no data" signal).
     // v0.8.13+ — prefix is configurable via labels.labelApiCalls
     // (labelFor("apiCalls")); default "calls:" preserves the
     // v0.8.x literal so existing renders stay byte-identical.
-    case "apiCalls": prefix = labelFor("apiCalls"); body = String(n); break;
+    case "apiCalls": prefix = p("apiCalls"); body = String(n); break;
   }
   return `${prefix}${body}`;
 }
@@ -1677,6 +1702,7 @@ function accBody(
 function placeholderAcc(
   field: "in" | "out" | "cached" | "total" | "apiMs" | "apiCalls" | "hitRate" | "startTime",
   _scope: "session" | "project" | "model",
+  stripLabel?: boolean,
 ): string {
   // v0.8.0+ labels.* — the four token-axis fields read their
   // prefix from labelFor so the placeholder matches the user's
@@ -1691,16 +1717,21 @@ function placeholderAcc(
   // knob instead of the v0.8.x hardcoded literal.
   // v0.8.24+ — startTime joined for m_accStartTime. The
   // "start:n/a" placeholder mirrors the in/out/apiMs shape.
+  // vX.X.X+ — when stripLabel is on (forwarded from the m_acc*
+  // MODULES entry that read ctx.passThrough?.valueOnly === "true"),
+  // every prefix collapses to "" so the placeholder reads "n/a" /
+  // "n/a%" with no leading label — mirrors the live-render path.
+  const p = (axis: LabelAxis): string => stripLabel ? "" : labelFor(axis);
   let prefix: string;
   switch (field) {
-    case "in": prefix = labelFor("in"); break;
-    case "out": prefix = labelFor("out"); break;
-    case "cached": prefix = labelFor("cacheIn"); break;
-    case "total": prefix = labelFor("totalIn"); break;
-    case "apiMs": prefix = labelFor("apiMs"); break;
-    case "apiCalls": prefix = labelFor("apiCalls"); break;
-    case "hitRate": prefix = labelFor("hitRate"); break;
-    case "startTime": prefix = labelFor("startTime"); break;
+    case "in": prefix = p("in"); break;
+    case "out": prefix = p("out"); break;
+    case "cached": prefix = p("cacheIn"); break;
+    case "total": prefix = p("totalIn"); break;
+    case "apiMs": prefix = p("apiMs"); break;
+    case "apiCalls": prefix = p("apiCalls"); break;
+    case "hitRate": prefix = p("hitRate"); break;
+    case "startTime": prefix = p("startTime"); break;
   }
   // v0.8.10-alpha.3 — placeholderAcc simplified: no fieldNotShipped
 // branch. cache_read absence on stdin no longer triggers the "--"
@@ -1832,10 +1863,14 @@ m_quota: Object.assign(
   // landed, this module renders "in:--" — same stable-slot
   // pattern as the speed modules — so the user can SEE whether
   // the current turn produced output or just sat idle. For the
-  // session-cumulative intent, see m_tokenInTotal / m_tokenTotal
-  // / m_tokenSession.
+  // session-cumulative intent, see m_tokenInTotal / m_tokenTotalOut
+  // / m_tokenTotalIn.
   m_tokenIn: (c) => {
     const r = computeTickDelta(c, "in");
+    // vX.X.X+ — |valueOnly|true strips the leading label from
+    // the pre-prefixed r.value (computeTickDelta builds
+    // `${labelFor("in")}${body}`).
+    const body = stripLabelIfValueOnly(r.value, "in", c.passThrough?.valueOnly === "true");
     // v1.0 — setPrevTick moved to status-store.ts:processTick
     // Stage 3. Render is read-only.
     // v0.8.30+ — bare default tint (brightGreen) on positive
@@ -1846,47 +1881,24 @@ m_quota: Object.assign(
     // (delta_api=0 → no API call landed) both apply, so the
     // number shown is "live stdin, not a measured delta" and
     // gray-wraps to flag that. 0 and n/a stay plain.
-    if (r.numeric == null || r.numeric === 0) return r.value;
-    if (r.stale) return `${STALE_COLOR}${r.value}${RESET}`;
-    return wrapValueDefault("m_tokenIn", r.numeric, r.value, undefined);
+    if (r.numeric == null || r.numeric === 0) return body;
+    if (r.stale) return `${STALE_COLOR}${body}${RESET}`;
+    return wrapValueDefault("m_tokenIn", r.numeric, body, undefined);
   },
   // Per-API-call output tokens (see m_tokenIn for the gate
   // rationale — output-only turns, thinking-only turns, idle
   // turns all produce different "out:--" / "out:N" signals).
   // v0.8.30+ — bare default tint (red) on positive value; see
   // m_tokenIn for the wrap contract and the STALE_COLOR rule.
+  // vX.X.X+ — |valueOnly|true strips the leading label.
   m_tokenOut: (c) => {
     const r = computeTickDelta(c, "out");
+    const body = stripLabelIfValueOnly(r.value, "out", c.passThrough?.valueOnly === "true");
     // v1.0 — setPrevTick moved to status-store.ts:processTick
     // Stage 3. Render is read-only.
-    if (r.numeric == null || r.numeric === 0) return r.value;
-    if (r.stale) return `${STALE_COLOR}${r.value}${RESET}`;
-    return wrapValueDefault("m_tokenOut", r.numeric, r.value, undefined);
-  },
-  // Session cumulative in + out + cache (cache = ctx_creation + ctx_read
-  // from the latest per-turn snapshot — close enough for "total tokens
-  // spent in this session" intent; users wanting exact counts can split
-  // into m_tokenIn / m_tokenOut).
-  m_tokenTotal: (c) => {
-    const t = c.tokens;
-    if (!t) return placeholderBare("m_tokenTotal", c);
-    const inT = t.totals.tokenTotalIn ?? 0;
-    const outT = t.totals.tokenTotalOut ?? 0;
-    const cache =
-      (t.current.tokenCacheCreation ?? 0) + (t.current.tokenCachedIn ?? 0);
-    return `tot:${formatCompactToken(inT + outT + cache)}`;
-  },
-  // Alias for m_tokenTotal — clearer when used in a template that
-  // also has m_token5h/m_token7d (so the three read as "session / 5h /
-  // 7d" rather than "tot / 5h / 7d").
-  m_tokenSession: (c) => {
-    const t = c.tokens;
-    if (!t) return placeholderBare("m_tokenSession", c);
-    const inT = t.totals.tokenTotalIn ?? 0;
-    const outT = t.totals.tokenTotalOut ?? 0;
-    const cache =
-      (t.current.tokenCacheCreation ?? 0) + (t.current.tokenCachedIn ?? 0);
-    return `session:${formatCompactToken(inT + outT + cache)}`;
+    if (r.numeric == null || r.numeric === 0) return body;
+    if (r.stale) return `${STALE_COLOR}${body}${RESET}`;
+    return wrapValueDefault("m_tokenOut", r.numeric, body, undefined);
   },
   // v0.8.0+ — renamed from `m_ctx`. The new semantic: "context
   // size" = `context_window.total_input_tokens` (the cumulative
@@ -1907,9 +1919,11 @@ m_quota: Object.assign(
   // override the context-occupancy prefix without touching the
   // v0.8.22 hardcoded literal.
   m_contextSize: (c) => {
+    // vX.X.X+ — |valueOnly|true drops the "size:" prefix.
+    const prefix = c.passThrough?.valueOnly === "true" ? "" : labelFor("contextSize");
     const total = c.tokens?.totals?.tokenTotalIn;
     if (total == null) return placeholderBare("m_contextSize", c);
-    return `${labelFor("contextSize")}${formatCompactToken(total)}`;
+    return `${prefix}${formatCompactToken(total)}`;
   },
   // v0.8.0+ — semantic change: per-turn hit rate, not session-aggregate.
   // New formula: m_tokenCachedIn / m_tokenTotalIn (per-turn snapshot)
@@ -1924,6 +1938,9 @@ m_quota: Object.assign(
   // "hit:0.0%" — the "0 直接显示" rule. Missing-totals or
   // missing-cacheRead → "hit:n/a" placeholder.
   m_tokenHitRate: (c) => {
+    // vX.X.X+ — |valueOnly|true drops the "hit:" prefix from
+    // every branch (cached fallback, idle-stale, live, zero).
+    const prefix = c.passThrough?.valueOnly === "true" ? "" : "hit:";
     const t = c.tokens;
     if (!t) return placeholderBare("m_tokenHitRate", c);
     const total = t.totals?.tokenTotalIn;
@@ -1942,14 +1959,14 @@ m_quota: Object.assign(
         if (cached != null) {
           return wrapPlainDefault(
             "m_tokenHitRate",
-            `hit:${cached.toFixed(cachePctPrecision())}%`,
+            `${prefix}${cached.toFixed(cachePctPrecision())}%`,
             STALE_COLOR,
           );
         }
       }
       return placeholderBare("m_tokenHitRate", c);
     }
-    if (total === 0) return `${STALE_COLOR}hit:0.0%${RESET}`;
+    if (total === 0) return `${STALE_COLOR}${prefix}0.0%${RESET}`;
     const pct = (cacheRead / total) * 100;
     // v0.8.x — cache the active measurement so subsequent ticks
     // that lack cacheRead can fall back to it (mirrors setLastSpeed
@@ -1973,12 +1990,12 @@ m_quota: Object.assign(
     if (!r.hasMeasurement) {
       return wrapPlainDefault(
         "m_tokenHitRate",
-        `hit:${pct.toFixed(cachePctPrecision())}%`,
+        `${prefix}${pct.toFixed(cachePctPrecision())}%`,
         STALE_COLOR,
       );
     }
     const color = cacheHitColor(pct);
-    return `${color}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;
+    return `${color}${prefix}${pct.toFixed(cachePctPrecision())}%${RESET}`;
   },
   // v0.8.0+ — renamed from `m_cacheRead`. The old name's `cache`
   // prefix collided conceptually with m_tokenHitRate (which is the
@@ -1998,9 +2015,9 @@ m_quota: Object.assign(
     // v0.8.13 — color unified with the m_token* sibling family:
     // bare form emits PLAIN text (no STALE_COLOR wrap). Matches
     // m_tokenIn / m_tokenOut / m_tokenInTotal / m_tokenTotalOut /
-    // m_tokenTotalIn / m_tokenTotal / m_tokenSession, which all
-    // delegate to wrapPlain and render with no SGR by default.
-    // The user's `:color|<c>` inline override still applies.
+    // m_tokenTotalIn, which all delegate to wrapPlain and render
+    // with no SGR by default. The user's `:color|<c>` inline
+    // override still applies.
     //
     // v0.8.13 — cacheRead=null (field not shipped by stdin) renders
     // as "cache:0" (same as the real-zero case). The truly
@@ -2012,7 +2029,9 @@ m_quota: Object.assign(
     // brown SGR (DEFAULT_COLORS.m_tokenCachedIn). value=0
     // stays plain (the value-zero rule); null already collapsed
     // to "cache:0" above and is also plain.
-    const prefix = labelFor("cacheIn");
+    // vX.X.X+ — |valueOnly|true drops the leading "cache:" prefix
+    // from every branch (live, zero, null-fallback).
+    const prefix = c.passThrough?.valueOnly === "true" ? "" : labelFor("cacheIn");
     const t = c.tokens?.current;
     if (!t) return `${prefix}0`;
     if (t.tokenCachedIn == null) return `${prefix}0`;
@@ -2029,6 +2048,9 @@ m_quota: Object.assign(
   // stale" pattern: cost is calculated from live stdin values and
   // wrapped in STALE_COLOR.
   m_tokenCost: (c) => {
+    // vX.X.X+ — |valueOnly|true drops the "cost:" prefix from
+    // both the idle-stale branch and the live wrap branch.
+    const prefix = c.passThrough?.valueOnly === "true" ? "" : labelFor("cost");
     const t = c.tokens;
     if (!t || !t.sessionId) return placeholderBare("m_tokenCost", c);
     const tp = cfg().tokenPrice;
@@ -2042,10 +2064,10 @@ m_quota: Object.assign(
     const liveCost = ((tp.in / 1_000_000) * liveIn) + ((tp.out / 1_000_000) * liveOut) + ((tp.cachedIn / 1_000_000) * liveCached);
     if (!r.hasMeasurement) {
       // Idle tick: live stdin values × price, stale-colored
-      return `${STALE_COLOR}${labelFor("cost")}${formatCost(liveCost)}${RESET}`;
+      return `${STALE_COLOR}${prefix}${formatCost(liveCost)}${RESET}`;
     }
     const cost = ((tp.in / 1_000_000) * r.in) + ((tp.out / 1_000_000) * r.out) + ((tp.cachedIn / 1_000_000) * r.cachedIn);
-    return wrapValueDefault("m_tokenCost", cost, `${labelFor("cost")}${formatCost(cost)}`, undefined);
+    return wrapValueDefault("m_tokenCost", cost, `${prefix}${formatCost(cost)}`, undefined);
   },
   // v0.4.0+ — per-API-call input speed. Reads the previous-tick
   // snapshot from cache (keyed by sessionId) and computes
@@ -2068,19 +2090,27 @@ m_quota: Object.assign(
       ? speedScaleColor("in", probe.tps ?? 0)
       : STALE_COLOR; // unused — computeTickSpeed forces STALE
     const r = computeTickSpeed(c, "in", color);
-    // v1.0 — setPrevTick moved to status-store.ts:processTick Stage 3. Render is read-only.
-    return r.value;
+    // vX.X.X+ — |valueOnly|true strips the leading label from
+    // computeTickSpeed's pre-prefixed output (e.g. STALE_COLOR
+    // + "in:" + format + RESET). The "in:" label sits between
+    // the SGR opener and the value; we strip the literal
+    // labelFor("inSpeed") substring when valueOnly is set.
+    if (c.passThrough?.valueOnly !== "true") return r.value;
+    const lbl = labelFor("inSpeed");
+    return r.value.includes(lbl) ? r.value.replace(lbl, "") : r.value;
   },
   // v0.4.0+ — per-API-call output speed (see m_tokenInSpeed for
   // the math + drop conditions).
+  // vX.X.X+ — |valueOnly|true strips the leading label.
   m_tokenOutSpeed: (c) => {
     const probe = computeTickSpeed(c, "out", STALE_COLOR);
     const color = probe.active
       ? speedScaleColor("out", probe.tps ?? 0)
       : STALE_COLOR;
     const r = computeTickSpeed(c, "out", color);
-    // v1.0 — setPrevTick moved to status-store.ts:processTick Stage 3. Render is read-only.
-    return r.value;
+    if (c.passThrough?.valueOnly !== "true") return r.value;
+    const lbl = labelFor("outSpeed");
+    return r.value.includes(lbl) ? r.value.replace(lbl, "") : r.value;
   },
   // v0.8.x cwf-tickStatus-v2 — m_totalToken* / m_totalTokenWithCacheIn
   // REMOVED. Use the m_acc* family with scope=session (default):
@@ -2190,6 +2220,8 @@ m_quota: Object.assign(
   // When all prices are zero (the default) the module falls back to
   // placeholder "cost:n/a". Scope resolved via passThrough (default session).
   m_accTokenCost: (c) => {
+    // vX.X.X+ — |valueOnly|true drops the "cost:" prefix.
+    const prefix = c.passThrough?.valueOnly === "true" ? "" : labelFor("cost");
     const scope = passThroughScope(c);
     const useScope = scope ?? "session";
     const v = peekAcc(useScope, c);
@@ -2199,7 +2231,7 @@ m_quota: Object.assign(
     if (totalPrice <= 0) return placeholderBare("m_accTokenCost", c);
     // tokenPrice values are per-million-tokens; divide by 1,000,000.
     const cost = ((tp.in / 1_000_000) * v.accTokenIn) + ((tp.out / 1_000_000) * v.accTokenOut) + ((tp.cachedIn / 1_000_000) * v.accTokenCachedIn);
-    return wrapValueDefault("m_accTokenCost", cost, `${labelFor("cost")}${formatCost(cost)}`, undefined);
+    return wrapValueDefault("m_accTokenCost", cost, `${prefix}${formatCost(cost)}`, undefined);
   },
   // v0.8.13+ — m_accTokenInSpeed / m_accTokenOutSpeed — session-
   // cumulative throughput (t/s) computed from the chosen scope's
@@ -2222,7 +2254,10 @@ m_quota: Object.assign(
       ? speedScaleColor("in", probe.tps ?? 0)
       : STALE_COLOR; // unused — computeAccSpeed emits "direction:n/a"
     const r = computeAccSpeed(c, scope, "in", color);
-    return r.value;
+    // vX.X.X+ — |valueOnly|true strips the leading label.
+    if (c.passThrough?.valueOnly !== "true") return r.value;
+    const lbl = labelFor("inSpeed");
+    return r.value.includes(lbl) ? r.value.replace(lbl, "") : r.value;
   },
   m_accTokenOutSpeed: (c) => {
     const scope = passThroughScope(c) ?? "session";
@@ -2231,7 +2266,9 @@ m_quota: Object.assign(
       ? speedScaleColor("out", probe.tps ?? 0)
       : STALE_COLOR;
     const r = computeAccSpeed(c, scope, "out", color);
-    return r.value;
+    if (c.passThrough?.valueOnly !== "true") return r.value;
+    const lbl = labelFor("outSpeed");
+    return r.value.includes(lbl) ? r.value.replace(lbl, "") : r.value;
   },
   // m_accTokenHitRate — session-aggregate formula
   // (accTokenCachedIn / (accTokenCachedIn + accTokenIn) * 100), the v0.4.x semantic
@@ -2242,12 +2279,15 @@ m_quota: Object.assign(
   // v0.8.10-alpha.3 — reads TickStatusValue.accTokenHitRate directly
   // (data-processor pre-computes at setAvg time).
   m_accTokenHitRate: (c) => {
+    // vX.X.X+ — |valueOnly|true drops the "hit:" prefix.
+    const stripLabel = c.passThrough?.valueOnly === "true";
     const useScope = passThroughScope(c) ?? "session";
     const v = peekAcc(useScope, c);
-    if (!v) return placeholderAcc("hitRate", useScope);
+    if (!v) return placeholderAcc("hitRate", useScope, stripLabel);
     const pct = v.accTokenHitRate;
     const color = cacheHitColor(pct);
-    return `${color}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;
+    const prefix = stripLabel ? "" : "hit:";
+    return `${color}${prefix}${pct.toFixed(cachePctPrecision())}%${RESET}`;
   },
   // v0.8.24+ — start of the tick statistics window. Reads
   // TickStatusValue.startAt for the chosen scope (default
@@ -2261,12 +2301,15 @@ m_quota: Object.assign(
   // body to YYYY-MM-DD HH:MM:SS. Default stays HH:MM:SS so
   // existing renders are byte-identical.
   m_accStartTime: (c) => {
+    // vX.X.X+ — |valueOnly|true drops the "start:" prefix.
+    const stripLabel = c.passThrough?.valueOnly === "true";
     const useScope = passThroughScope(c) ?? "session";
     const v = peekAcc(useScope, c);
     const startAt = v?.startAt ?? null;
-    if (startAt == null) return placeholderAcc("startTime", useScope);
+    if (startAt == null) return placeholderAcc("startTime", useScope, stripLabel);
     const abs = c.passThrough?.abs === "true";
-    return `${labelFor("startTime")}${formatAbsTime(startAt, { abs })}`;
+    const prefix = stripLabel ? "" : labelFor("startTime");
+    return `${prefix}${formatAbsTime(startAt, { abs })}`;
   },
   // v0.8.0+ — sum/avg advanced statistics. 5 plain sums (in/out/
   // cached/total/apiMs) + 3 ratios (tokenHitRate + tokenInSpeed +
@@ -2291,10 +2334,12 @@ m_quota: Object.assign(
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderBare("m_sumTokenIn", c);
+    // vX.X.X+ — |valueOnly|true drops the "in:" prefix.
+    const prefix = c.passThrough?.valueOnly === "true" ? "" : labelFor("in");
     return wrapValueDefault(
       "m_sumTokenIn",
       agg.sumIn,
-      `${labelFor("in")}${formatCompactToken(agg.sumIn)}`,
+      `${prefix}${formatCompactToken(agg.sumIn)}`,
       undefined,
     );
   },
@@ -2306,10 +2351,12 @@ m_quota: Object.assign(
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderBare("m_sumTokenOut", c);
+    // vX.X.X+ — |valueOnly|true drops the "out:" prefix.
+    const prefix = c.passThrough?.valueOnly === "true" ? "" : labelFor("out");
     return wrapValueDefault(
       "m_sumTokenOut",
       agg.sumOut,
-      `${labelFor("out")}${formatCompactToken(agg.sumOut)}`,
+      `${prefix}${formatCompactToken(agg.sumOut)}`,
       undefined,
     );
   },
@@ -2319,9 +2366,11 @@ m_quota: Object.assign(
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderBare("m_sumTokenCachedIn", c);
+    // vX.X.X+ — |valueOnly|true drops the "cache:" prefix.
+    const prefix = c.passThrough?.valueOnly === "true" ? "" : labelFor("cacheIn");
     // v0.8.13+ — non-zero, non-null default tint (brown) on
     // positive sums; value=0 stays plain (value-zero rule).
-    return wrapValueDefault("m_sumTokenCachedIn", agg.sumCached, `${labelFor("cacheIn")}${formatCompactToken(agg.sumCached)}`, undefined);
+    return wrapValueDefault("m_sumTokenCachedIn", agg.sumCached, `${prefix}${formatCompactToken(agg.sumCached)}`, undefined);
   },
   m_sumTokenTotalIn: (c) => {
     // v0.8.7+ — bare m_sum* reads c.passThrough (forwarded by an outer m_template); v0.8.14+ — zero-row renders placeholder (was: drop)
@@ -2329,7 +2378,9 @@ m_quota: Object.assign(
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderBare("m_sumTokenTotalIn", c);
-    return wrapValueDefault("m_sumTokenTotalIn", agg.sumTotalIn, `${labelFor("totalIn")}${formatCompactToken(agg.sumTotalIn)}`, undefined);
+    // vX.X.X+ — |valueOnly|true drops the "total:" prefix.
+    const prefix = c.passThrough?.valueOnly === "true" ? "" : labelFor("totalIn");
+    return wrapValueDefault("m_sumTokenTotalIn", agg.sumTotalIn, `${prefix}${formatCompactToken(agg.sumTotalIn)}`, undefined);
   },
   // vX.X.X+ — windowed token cost. Computed from sumIn/Out/Cached ×
   // tokenPrice. When all prices are zero (default) → placeholder.
@@ -2341,8 +2392,10 @@ m_quota: Object.assign(
     const tp = cfg().tokenPrice;
     const totalPrice = tp.in + tp.out + tp.cachedIn;
     if (totalPrice <= 0) return placeholderBare("m_sumTokenCost", c);
+    // vX.X.X+ — |valueOnly|true drops the "cost:" prefix.
+    const prefix = c.passThrough?.valueOnly === "true" ? "" : labelFor("cost");
     const cost = ((tp.in / 1_000_000) * agg.sumIn) + ((tp.out / 1_000_000) * agg.sumOut) + ((tp.cachedIn / 1_000_000) * agg.sumCached);
-    return wrapValueDefault("m_sumTokenCost", cost, `${labelFor("cost")}${formatCost(cost)}`, undefined);
+    return wrapValueDefault("m_sumTokenCost", cost, `${prefix}${formatCost(cost)}`, undefined);
   },
   m_sumApiMs: (c) => {
     // v0.8.7+ — bare m_sum* reads c.passThrough (forwarded by an outer m_template); v0.8.14+ — zero-row renders placeholder (was: drop)
@@ -2350,9 +2403,11 @@ m_quota: Object.assign(
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderBare("m_sumApiMs", c);
+    // vX.X.X+ — |valueOnly|true drops the "api:" prefix.
+    const prefix = c.passThrough?.valueOnly === "true" ? "" : labelFor("apiMs");
     // v0.8.13+ — prefix routes through labelFor(labels.labelApi);
     // default "api:" preserves the v0.8.x literal.
-    return wrapValueDefault("m_sumApiMs", agg.sumApiMs, `${labelFor("apiMs")}${formatRemainingMs(agg.sumApiMs)}`, undefined);
+    return wrapValueDefault("m_sumApiMs", agg.sumApiMs, `${prefix}${formatRemainingMs(agg.sumApiMs)}`, undefined);
   },
   // v0.8.x — m_avg* renamed to m_sum* to align the namespace with
   // the cross-project JSONL scan family (m_sumTokenIn/Out/...).
@@ -2370,7 +2425,9 @@ m_quota: Object.assign(
     const denom = agg.sumIn + agg.sumCached;
     if (agg.rows === 0 || denom === 0) return placeholderBare("m_sumTokenHitRate", c);
     const pct = (agg.sumCached / denom) * 100;
-    return `${cacheHitColor(pct)}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;
+    // vX.X.X+ — |valueOnly|true drops the "hit:" prefix.
+    const prefix = c.passThrough?.valueOnly === "true" ? "" : "hit:";
+    return `${cacheHitColor(pct)}${prefix}${pct.toFixed(cachePctPrecision())}%${RESET}`;
   },
   m_sumTokenInSpeed: (c) => {
     // v0.8.7+ — bare m_sum* reads c.passThrough (forwarded by an outer m_template); v0.8.14+ — zero-row renders placeholder (was: drop)
@@ -2385,8 +2442,10 @@ m_quota: Object.assign(
     // v0.8.13+ — prefix routes through labelFor(labels.labelInSpeed)
     // so the speed module is independently configurable from
     // labels.labelIn (default "in:" preserves today's literal).
+    // vX.X.X+ — |valueOnly|true drops the "in:" prefix.
     const color = speedScaleColor("in", tps);
-    return `${color}${labelFor("inSpeed")}${formatSpeed(tps)}${RESET}`;
+    const prefix = c.passThrough?.valueOnly === "true" ? "" : labelFor("inSpeed");
+    return `${color}${prefix}${formatSpeed(tps)}${RESET}`;
   },
   m_sumTokenOutSpeed: (c) => {
     // v0.8.7+ — bare m_sum* reads c.passThrough (forwarded by an outer m_template); v0.8.14+ — zero-row renders placeholder (was: drop)
@@ -2398,7 +2457,9 @@ m_quota: Object.assign(
     // v0.8.13+ — prefix routes through labelFor(labels.labelOutSpeed);
     // default "out:" preserves today's literal.
     const color = speedScaleColor("out", tps);
-    return `${color}${labelFor("outSpeed")}${formatSpeed(tps)}${RESET}`;
+    // vX.X.X+ — |valueOnly|true drops the "out:" prefix.
+    const prefix = c.passThrough?.valueOnly === "true" ? "" : labelFor("outSpeed");
+    return `${color}${prefix}${formatSpeed(tps)}${RESET}`;
   },
   // v0.8.x — total count of API calls (rows with apiMs > 0) in the
   // window. Honors :model|, :window|, :align| like the other
@@ -2412,11 +2473,13 @@ m_quota: Object.assign(
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
     if (agg.calls === 0) return placeholderBare("m_sumApiCalls", c);
+    // vX.X.X+ — |valueOnly|true drops the "calls:" prefix.
+    const prefix = c.passThrough?.valueOnly === "true" ? "" : labelFor("apiCalls");
     // v0.8.13+ — non-zero, non-null default tint (cyan) on
     // positive counts; value=0 short-circuits to null above.
     // v0.8.13+ — prefix routes through labelFor(labels.labelApiCalls);
     // default "calls:" preserves the v0.8.x literal.
-    return wrapValueDefault("m_sumApiCalls", agg.calls, `${labelFor("apiCalls")}${agg.calls}`, undefined);
+    return wrapValueDefault("m_sumApiCalls", agg.calls, `${prefix}${agg.calls}`, undefined);
   },
   // v0.8.24+ — start of the tick statistics window across the
   // filtered JSONL rows. Aggregates min(s.startAt) over the
@@ -2440,6 +2503,8 @@ m_quota: Object.assign(
   // resetStartAt missing on the Window → fall back to
   // agg.firstAt (the plan anchor is unavailable, not absent).
   m_sumStartTime: (c) => {
+    // vX.X.X+ — |valueOnly|true drops the "start:" prefix.
+    const prefix = c.passThrough?.valueOnly === "true" ? "" : labelFor("startTime");
     const filter = parseWindowScope(c, c.passThrough ?? {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
@@ -2461,14 +2526,14 @@ m_quota: Object.assign(
       ) {
         const anchorMs = Date.parse(w.resetStartAt);
         if (Number.isFinite(anchorMs)) {
-          return `${labelFor("startTime")}${formatAbsTime(anchorMs, { abs })}`;
+          return `${prefix}${formatAbsTime(anchorMs, { abs })}`;
         }
       }
     }
     if (!Number.isFinite(agg.firstAt) || agg.firstAt <= 0) {
       return placeholderBare("m_sumStartTime", c);
     }
-    return `${labelFor("startTime")}${formatAbsTime(agg.firstAt, { abs })}`;
+    return `${prefix}${formatAbsTime(agg.firstAt, { abs })}`;
   },
   // v0.8.24+ — end of the tick statistics window across the
   // filtered JSONL rows. Aggregates max(s.lastAt) over the
@@ -2485,6 +2550,8 @@ m_quota: Object.assign(
   // the Window itself is null, which collapses to the
   // empirical path).
   m_sumEndTime: (c) => {
+    // vX.X.X+ — |valueOnly|true drops the "end:" prefix.
+    const prefix = c.passThrough?.valueOnly === "true" ? "" : labelFor("endTime");
     const filter = parseWindowScope(c, c.passThrough ?? {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
@@ -2501,14 +2568,14 @@ m_quota: Object.assign(
       if (w != null && typeof w.resetAt === "string") {
         const anchorMs = Date.parse(w.resetAt);
         if (Number.isFinite(anchorMs)) {
-          return `${labelFor("endTime")}${formatAbsTime(anchorMs, { abs })}`;
+          return `${prefix}${formatAbsTime(anchorMs, { abs })}`;
         }
       }
     }
     if (!Number.isFinite(agg.lastAt) || agg.lastAt <= 0) {
       return placeholderBare("m_sumEndTime", c);
     }
-    return `${labelFor("endTime")}${formatAbsTime(agg.lastAt, { abs })}`;
+    return `${prefix}${formatAbsTime(agg.lastAt, { abs })}`;
   },
   // v0.3.6+ — bare `m_quote` (no inline args). Picks a quote from
   // the hourly window and renders it plain (no SGR wrapper). Opt-in
@@ -2604,6 +2671,8 @@ m_quota: Object.assign(
   // next tick's computeAndCacheTickDelta will overwrite with
   // the freshest snapshot.
   m_apiMs: (c) => {
+    // vX.X.X+ — |valueOnly|true drops the "api:" prefix.
+    const prefix = c.passThrough?.valueOnly === "true" ? "" : labelFor("apiMs");
     const t = c.tokens;
     if (!t || !t.sessionId) return placeholderBare("m_apiMs", c);
     const r = getDeltaForRender();
@@ -2621,7 +2690,7 @@ m_quota: Object.assign(
       if (cached != null) {
         return wrapPlainDefault(
           "m_apiMs",
-          `${labelFor("apiMs")}${formatRemainingMs(cached)}`,
+          `${prefix}${formatRemainingMs(cached)}`,
           STALE_COLOR,
         );
       }
@@ -2636,7 +2705,7 @@ m_quota: Object.assign(
     // wins on the cached/idle branch above.
     // v0.8.13+ — prefix routes through labelFor(labels.labelApi);
     // default "api:" preserves the v0.8.x literal.
-    return wrapValueDefault("m_apiMs", r.apiMs, `${labelFor("apiMs")}${formatRemainingMs(r.apiMs)}`, undefined);
+    return wrapValueDefault("m_apiMs", r.apiMs, `${prefix}${formatRemainingMs(r.apiMs)}`, undefined);
   },
   // Session-cumulative lines added (stdin.cost.total_lines_added).
   // v6.x: missing field → "+ --" placeholder (was: drop). Zero is
@@ -2655,12 +2724,14 @@ m_quota: Object.assign(
   // v0.8.30+ — bare default tint (brightGreen) on positive value;
   // 0 and n/a stay plain per the value-zero rule.
   m_tokenInTotal: (c) => {
+    // vX.X.X+ — |valueOnly|true drops the "in:" prefix.
+    const prefix = c.passThrough?.valueOnly === "true" ? "" : labelFor("in");
     const n = c.tokens?.totals.tokenTotalIn;
     if (n == null) return placeholderBare("m_tokenInTotal", c);
     return wrapValueDefault(
       "m_tokenInTotal",
       n,
-      `${labelFor("in")}${formatCompactToken(n)}`,
+      `${prefix}${formatCompactToken(n)}`,
       undefined,
     );
   },
@@ -2674,12 +2745,14 @@ m_quota: Object.assign(
   // `m_accTokenOut`'s in-memory accumulator rollup.
   // v0.8.30+ — bare default tint (red) on positive value.
   m_tokenTotalOut: (c) => {
+    // vX.X.X+ — |valueOnly|true drops the "out:" prefix.
+    const prefix = c.passThrough?.valueOnly === "true" ? "" : labelFor("out");
     const n = c.tokens?.totals.tokenTotalOut;
     if (n == null) return placeholderBare("m_tokenTotalOut", c);
     return wrapValueDefault(
       "m_tokenTotalOut",
       n,
-      `${labelFor("out")}${formatCompactToken(n)}`,
+      `${prefix}${formatCompactToken(n)}`,
       undefined,
     );
   },
@@ -2692,6 +2765,8 @@ m_quota: Object.assign(
   // m_tokenInTotal's data path; the two names exist so callers
   // can pick the family whose label matches their config.
   m_tokenTotalIn: (c) => {
+    // vX.X.X+ — |valueOnly|true drops the "total:" prefix.
+    const prefix = c.passThrough?.valueOnly === "true" ? "" : labelFor("totalIn");
     const n = c.tokens?.totals.tokenTotalIn;
     // v0.8.13+ — non-zero, non-null default tint (blue). When
     // totals.tokenTotalIn is a positive number the body is
@@ -2702,7 +2777,7 @@ m_quota: Object.assign(
     return wrapValueDefault(
       "m_tokenTotalIn",
       n,
-      `${labelFor("totalIn")}${formatCompactToken(n)}`,
+      `${prefix}${formatCompactToken(n)}`,
       undefined,
     );
   },
@@ -2713,6 +2788,8 @@ m_quota: Object.assign(
   // labelFor(labels.labelApiCalls); default "calls:" preserves
   // the v0.8.x literal so existing renders are byte-identical.
   m_apiCalls: (c) => {
+    // vX.X.X+ — |valueOnly|true drops the "calls:" prefix.
+    const prefix = c.passThrough?.valueOnly === "true" ? "" : labelFor("apiCalls");
     const cwd = c.tokens?.cwd;
     if (!cwd) return placeholderBare("m_apiCalls", c);
     const acc = statusStore.readAccumulator("project", { cwd });
@@ -2722,8 +2799,8 @@ m_quota: Object.assign(
     // stays plain (the value-zero rule — same as
     // m_tokenIn/m_tokenOut "in:0"/"out:0"; see
     // [[render-value-zero-rule]]).
-    if (!acc) return `${labelFor("apiCalls")}0`;
-    return wrapValueDefault("m_apiCalls", acc.accApiCalls, `${labelFor("apiCalls")}${acc.accApiCalls}`, undefined);
+    if (!acc) return `${prefix}0`;
+    return wrapValueDefault("m_apiCalls", acc.accApiCalls, `${prefix}${acc.accApiCalls}`, undefined);
   },
   // v0.8.0+ — renamed from `m_contextSize`. The old name now lives
   // at `m_contextSize` with a different source (the cumulative
@@ -2736,9 +2813,11 @@ m_quota: Object.assign(
   // labelFor("contextWindowsSize") (labels.labelContextWindowsSize;
   // default "size:").
   m_contextWindowsSize: (c) => {
+    // vX.X.X+ — |valueOnly|true drops the "size:" prefix.
+    const prefix = c.passThrough?.valueOnly === "true" ? "" : labelFor("contextWindowsSize");
     const sz = c.tokens?.contextWindow?.contextWindowSize;
     return sz != null
-      ? wrapPlainDefault("m_contextWindowsSize", `${labelFor("contextWindowsSize")}${formatCompactToken(sz)}`, undefined)
+      ? wrapPlainDefault("m_contextWindowsSize", `${prefix}${formatCompactToken(sz)}`, undefined)
       : placeholderBare("m_contextWindowsSize", c);
   },
   // v0.8.0+ — renamed from `m_contextUsed` (the `Percent` suffix
@@ -2748,9 +2827,11 @@ m_quota: Object.assign(
   // v0.8.23+ — prefix routes through labelFor("contextUsedPercent")
   // (labels.labelContextUsedPercent; default "used:").
   m_contextUsedPercent: (c) => {
+    // vX.X.X+ — |valueOnly|true drops the "used:" prefix.
+    const prefix = c.passThrough?.valueOnly === "true" ? "" : labelFor("contextUsedPercent");
     const pct = c.tokens?.contextWindow?.contextUsedPercent;
     return pct != null
-      ? wrapPlainDefault("m_contextUsedPercent", `${labelFor("contextUsedPercent")}${pct}%`, undefined)
+      ? wrapPlainDefault("m_contextUsedPercent", `${prefix}${pct}%`, undefined)
       : placeholderBare("m_contextUsedPercent", c);
   },
   // v0.8.0+ — new per-turn module. Sibling of m_contextUsedPercent,
@@ -2760,9 +2841,11 @@ m_quota: Object.assign(
   // routes through labelFor("contextRemainingPercent")
   // (labels.labelContextRemainingPercent; default "remain:").
   m_contextRemainingPercent: (c) => {
+    // vX.X.X+ — |valueOnly|true drops the "remain:" prefix.
+    const prefix = c.passThrough?.valueOnly === "true" ? "" : labelFor("contextRemainingPercent");
     const pct = c.tokens?.contextWindow?.contextRemainingPercent;
     return pct != null
-      ? wrapPlainDefault("m_contextRemainingPercent", `${labelFor("contextRemainingPercent")}${pct}%`, undefined)
+      ? wrapPlainDefault("m_contextRemainingPercent", `${prefix}${pct}%`, undefined)
       : placeholderBare("m_contextRemainingPercent", c);
   },
   // Context window bar + 5-band-colored percentage. v6.x: bare
@@ -2800,11 +2883,13 @@ m_quota: Object.assign(
   // (not wrapValueDefault) because the body is a string, not a
   // numeric value that needs the value-zero/--branching.
   m_memUsage: (c) => {
+    // vX.X.X+ — |valueOnly|true drops the "Mem:" prefix.
+    const prefix = c.passThrough?.valueOnly === "true" ? "" : labelFor("memUsage");
     const m = getMemUsage();
     if (!m) return placeholderBare("m_memUsage", c);
     return wrapPlainDefault(
       "m_memUsage",
-      `${labelFor("memUsage")}${formatMemBytes(m.used)}/${formatMemBytes(m.total)}`,
+      `${prefix}${formatMemBytes(m.used)}/${formatMemBytes(m.total)}`,
       undefined,
     );
   },
@@ -3814,6 +3899,28 @@ const ABS_PARAM = {
   },
 } as const;
 
+// vX.X.X+ — boolean toggle that strips the leading label prefix
+// from the rendered body. Applies to every label-using m_* module
+// (~36 modules: the per-turn / m_acc* / m_sum* / m_memUsage
+// families). Default `false` so v0.8.x renders stay
+// byte-identical after upgrade. When `true`, the leading
+// `labelFor(axis)` prefix is dropped from BOTH the live render
+// path AND the placeholder path:
+//   m_tokenIn|valueOnly:true           → "1.2K"   (was "in:1.2K")
+//   m_tokenIn|valueOnly:true (no data) → "n/a"    (was "in:n/a")
+// Forwarded through m_template via the passthrough whitelist, so
+// an outer `m_template|<key>|valueOnly:true` drives every
+// label-using inner module. Accepts only literal `true` / `false`
+// so typos fail loud at the inline-args resolver rather than
+// silently no-op'ing — mirrors the discipline used by ALIGN_PARAM
+// and ABS_PARAM.
+const VALUEONLY_PARAM = {
+  named: {
+    valueOnly: (raw: string): ResolvedValue | null =>
+      raw === "true" || raw === "false" ? raw : null,
+  },
+} as const;
+
 // ----- v0.4.0+ placeholder shapes for nulldrop:false -----------------------
 //
 // Each constant is a closure over the inline-args params + ctx so the
@@ -3931,7 +4038,10 @@ type PlaceholderBody = (
 // === "in:" etc., and the v0.8.13+ axes default to today's
 // literals ("api:" / "calls:" / "in:" / "out:" for speed).
 function placeholderLabelOr(axis: LabelAxis): PlaceholderBody {
-  return (_p, _c) => `${labelFor(axis)}n/a`;
+  // vX.X.X+ — when |valueOnly|true is set (via inline args or via
+  // m_template passthrough), drop the leading label prefix so the
+  // placeholder matches the live-render path's "value only" shape.
+  return (p, _c) => `${p.valueOnly === "true" ? "" : labelFor(axis)}n/a`;
 }
 
 const PLACEHOLDERS: Record<string, PlaceholderBody> = {
@@ -3983,21 +4093,21 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   // renders stay byte-identical until the user overrides the
   // label. Reading at placeholder-fire time keeps the rendered
   // prefix in sync with any post-load config override.
-  m_accTokenHitRate: (_p, _c) => `${labelFor("hitRate")}n/a%`,
+  m_accTokenHitRate: (p, _c) => `${p.valueOnly === "true" ? "" : labelFor("hitRate")}n/a%`,
   m_tokenCachedIn: placeholderDashesUnit("cache:0"),
-  m_tokenHitRate: (_p, _c) => `${labelFor("hitRate")}n/a`,
+  m_tokenHitRate: (p, _c) => `${p.valueOnly === "true" ? "" : labelFor("hitRate")}n/a`,
   // v0.8.23+ — context-window placeholders route through the
   // dedicated labelContext* axes (labels.labelContextSize /
   // labelContextWindowsSize / labelContextUsedPercent /
   // labelContextRemainingPercent; defaults "size:" / "size:" /
   // "used:" / "remain:" preserve the v0.8.22 hardcoded literals).
-  m_contextSize: (_p, _c) => `${labelFor("contextSize")}n/a`,
-  m_contextWindowsSize: (_p, _c) => `${labelFor("contextWindowsSize")}n/a`,
+  m_contextSize: (p, _c) => `${p.valueOnly === "true" ? "" : labelFor("contextSize")}n/a`,
+  m_contextWindowsSize: (p, _c) => `${p.valueOnly === "true" ? "" : labelFor("contextWindowsSize")}n/a`,
   // m_contextUsedPercent's natural shape is "${pct}%" — the
   // placeholder preserves the unit suffix so users see "used:n/a%"
   // rather than bare "n/a" when usedPct is null.
-  m_contextUsedPercent: (_p, _c) => `${labelFor("contextUsedPercent")}n/a%`,
-  m_contextRemainingPercent: (_p, _c) => `${labelFor("contextRemainingPercent")}n/a%`,
+  m_contextUsedPercent: (p, _c) => `${p.valueOnly === "true" ? "" : labelFor("contextUsedPercent")}n/a%`,
+  m_contextRemainingPercent: (p, _c) => `${p.valueOnly === "true" ? "" : labelFor("contextRemainingPercent")}n/a%`,
   // number+unit — placeholder shape is the module's normal body
   // with "--" swapped in for the numeric value (e.g. "5h:--",
   // "+ --", "-- t/s"). Empty body = bare dash.
@@ -4034,7 +4144,7 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   // v0.8.22+ — prefix routes through labels.labelTokenHitRate
   // via labelFor("hitRate") so the user can override the
   // per-turn / acc / sum hit-rate prefix as a single knob.
-  m_sumTokenHitRate: (_p, _c) => `${labelFor("hitRate")}n/a%`,
+  m_sumTokenHitRate: (p, _c) => `${p.valueOnly === "true" ? "" : labelFor("hitRate")}n/a%`,
   // v0.8.13+ — speed axes get their own labelFor slot
   // (labels.labelInSpeed / labels.labelOutSpeed) so a user can
   // rename speed prefixes independently of the in/out token-axis
@@ -4590,15 +4700,13 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_balance: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_age: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_version: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
-  m_tokenIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
-  m_tokenOut: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
-  m_tokenTotal: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
-  m_tokenSession: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
-  m_contextSize: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
-  m_tokenHitRate: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
-  m_tokenCachedIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
-  m_tokenInSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
-  m_tokenOutSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_tokenIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...VALUEONLY_PARAM.named } },
+  m_tokenOut: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...VALUEONLY_PARAM.named } },
+  m_contextSize: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...VALUEONLY_PARAM.named } },
+  m_tokenHitRate: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...VALUEONLY_PARAM.named } },
+  m_tokenCachedIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...VALUEONLY_PARAM.named } },
+  m_tokenInSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...VALUEONLY_PARAM.named } },
+  m_tokenOutSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...VALUEONLY_PARAM.named } },
   // v0.8.x cwf-tickStatus-v2 — m_totalToken* / m_totalTokenWithCacheIn
   // REMOVED. The m_acc* family replaces them.
   // v0.8.0+ — m_acc* family accepts :scope:<session|project|model>
@@ -4606,44 +4714,46 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   // override + :nulldrop| opt-out. The legacy "ccsession" scope
   // was REMOVED in this revision and surfaces as badarg at
   // module-eval time (see resolveAccScope).
-  m_accTokenIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
-  m_accTokenOut: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
-  m_accTokenCachedIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
-  m_accTokenTotalIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
-  m_accApiMs: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
-  m_accApiCalls: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
+  m_accTokenIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named, ...VALUEONLY_PARAM.named } },
+  m_accTokenOut: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named, ...VALUEONLY_PARAM.named } },
+  m_accTokenCachedIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named, ...VALUEONLY_PARAM.named } },
+  m_accTokenTotalIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named, ...VALUEONLY_PARAM.named } },
+  m_accApiMs: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named, ...VALUEONLY_PARAM.named } },
+  m_accApiCalls: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named, ...VALUEONLY_PARAM.named } },
   // v0.8.13+ — m_accTokenInSpeed / m_accTokenOutSpeed. Same arg
   // surface as the other m_acc* modules (color / nulldrop / scope).
-  m_accTokenInSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
-  m_accTokenOutSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
-  m_accTokenHitRate: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
+  m_accTokenInSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named, ...VALUEONLY_PARAM.named } },
+  m_accTokenOutSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named, ...VALUEONLY_PARAM.named } },
+  m_accTokenHitRate: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named, ...VALUEONLY_PARAM.named } },
   // v0.8.24+ — start of the tick statistics window. Same arg
   // surface as the other m_acc* modules (color / nulldrop / scope).
   // v0.8.25+ — |abs|<true|false> toggles YYYY-MM-DD HH:MM:SS vs HH:MM:SS.
-  m_accStartTime: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named, ...ABS_PARAM.named } },
+  // vX.X.X+ — |valueOnly|<true|false> strips the label prefix (default false).
+  m_accStartTime: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named, ...ABS_PARAM.named, ...VALUEONLY_PARAM.named } },
   // v0.8.0+ — sum/avg advanced statistics. All 8 accept the same
   // 5 inline args: :model|<active|name|all>, :window|<dhms|all>,
   // :align|<true|false>, :color|<c>, :nulldrop|<b>. The WINDOW
   // resolver rejects malformed dhms strings at parse time →
   // badarg → dispatcher warn + drop. Same for the MODEL/ALIGN
   // schemas.
-  m_sumTokenIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
-  m_sumTokenOut: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
-  m_sumTokenCachedIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
-  m_sumTokenTotalIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
-  m_sumApiMs: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
-  m_sumTokenHitRate: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
-  m_sumTokenInSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
-  m_sumTokenOutSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
-  m_sumApiCalls: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
+  m_sumTokenIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named, ...VALUEONLY_PARAM.named } },
+  m_sumTokenOut: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named, ...VALUEONLY_PARAM.named } },
+  m_sumTokenCachedIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named, ...VALUEONLY_PARAM.named } },
+  m_sumTokenTotalIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named, ...VALUEONLY_PARAM.named } },
+  m_sumApiMs: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named, ...VALUEONLY_PARAM.named } },
+  m_sumTokenHitRate: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named, ...VALUEONLY_PARAM.named } },
+  m_sumTokenInSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named, ...VALUEONLY_PARAM.named } },
+  m_sumTokenOutSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named, ...VALUEONLY_PARAM.named } },
+  m_sumApiCalls: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named, ...VALUEONLY_PARAM.named } },
   // v0.8.24+ — start/end of the tick statistics window. Same 5-axis
   // arg surface as the other m_sum* modules (model/window/align +
   // color/nulldrop). Empty window / all-legacy rows → placeholder
   // (rendered via the matching m_sumStartTime / m_sumEndTime
   // PLACEHOLDERS entry — see `placeholderBare` at the dispatcher).
   // v0.8.25+ — |abs|<true|false> toggles YYYY-MM-DD HH:MM:SS vs HH:MM:SS.
-  m_sumStartTime: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named, ...ABS_PARAM.named } },
-  m_sumEndTime: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named, ...ABS_PARAM.named } },
+  // vX.X.X+ — |valueOnly|<true|false> strips the label prefix (default false).
+  m_sumStartTime: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named, ...ABS_PARAM.named, ...VALUEONLY_PARAM.named } },
+  m_sumEndTime: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named, ...ABS_PARAM.named, ...VALUEONLY_PARAM.named } },
   // v0.3.6+ — quote module. Accepts `:freq|<numeric-time>` and
   // `:color|<sgr|shortcut|rainbow|rand-rainbow|hue>`. The freq
   // grammar is the single-unit time format `<digits><unit>` (bare
@@ -4679,16 +4789,16 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   // v0.8.0+ — per-turn API-ms delta. Same inline-args grammar as
   // m_sessionDuration (color + nulldrop). The dispatcher accepts
   // both `:color|` and `:nulldrop|` overrides via this schema.
-  m_apiMs: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_apiMs: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...VALUEONLY_PARAM.named } },
   m_linesAdded: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_linesRemoved: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
-  m_tokenInTotal: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
-  m_tokenTotalOut: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
-  m_tokenTotalIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
-  m_apiCalls: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
-  m_contextWindowsSize: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
-  m_contextUsedPercent: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
-  m_contextRemainingPercent: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_tokenInTotal: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...VALUEONLY_PARAM.named } },
+  m_tokenTotalOut: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...VALUEONLY_PARAM.named } },
+  m_tokenTotalIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...VALUEONLY_PARAM.named } },
+  m_apiCalls: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...VALUEONLY_PARAM.named } },
+  m_contextWindowsSize: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...VALUEONLY_PARAM.named } },
+  m_contextUsedPercent: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...VALUEONLY_PARAM.named } },
+  m_contextRemainingPercent: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...VALUEONLY_PARAM.named } },
   m_windowContext: { named: { ...COLOR_PARAM.named, ...DISPLAY_PARAM.named, ...NULDROP_PARAM.named } },
   // v0.8.16 — TTL gauge inline-args. Same shape as the rest of
   // the named-args family (color + nulldrop). `:color|<c>` REPLACES
@@ -4701,7 +4811,7 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   // of the named-args family (color + nulldrop). No scale / band
   // color for the value itself: the body is a string ("X.XG/Y.YG")
   // and the per-module DEFAULT_COLORS tint applies by default.
-  m_memUsage: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_memUsage: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...VALUEONLY_PARAM.named } },
   // v0.8.36+ — m_windowMemUsage inline-args. Same shape as
   // m_windowContext: color + display + nulldrop. |color|<c>
   // overrides the 5-band percentBands color; |display|<used|
@@ -4711,14 +4821,14 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_windowMemUsage: { named: { ...COLOR_PARAM.named, ...DISPLAY_PARAM.named, ...NULDROP_PARAM.named } },
   // vX.X.X+ — per-turn token cost inline-args. Same shape as the
   // per-turn m_token* family (color + nulldrop).
-  m_tokenCost: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  m_tokenCost: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...VALUEONLY_PARAM.named } },
   // vX.X.X+ — accumulated token cost inline-args. Same arg surface
   // as m_accApiCalls (color + nulldrop + scope).
-  m_accTokenCost: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
+  m_accTokenCost: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named, ...VALUEONLY_PARAM.named } },
   // vX.X.X+ — windowed token cost inline-args. Same 5-axis arg
   // surface as the other m_sum* modules (color + nulldrop + model +
   // window + align).
-  m_sumTokenCost: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
+  m_sumTokenCost: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named, ...VALUEONLY_PARAM.named } },
   // v0.4.0+ — sub-template reference. First argument is the key
   // into cfg().lineTemplates (the user's reusable-fragment
   // registry). Optional `:type|<plan|balance>` filter (default
@@ -4776,6 +4886,11 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
       ...MODEL_PARAM.named,
       ...WINDOW_PARAM.named,
       ...ALIGN_PARAM.named,
+      // vX.X.X+ — |valueOnly|<true|false> forwarded so an outer
+      // m_template|<key>|valueOnly:true cascades to every
+      // label-using inner module (per-turn / m_acc* / m_sum* /
+      // m_memUsage). Default false.
+      ...VALUEONLY_PARAM.named,
     },
   },
 };
@@ -5117,6 +5232,11 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   },
   m_tokenIn: (params, ctx) => {
     const r = computeTickDelta(ctx, "in");
+    // vX.X.X+ — |valueOnly|true strips the leading label from
+    // the pre-prefixed r.value (computeTickDelta builds
+    // `${labelFor("in")}${body}`).
+    const stripLabel = params.valueOnly === "true";
+    const body = stripLabelIfValueOnly(r.value, "in", stripLabel);
     // v1.0 — setPrevTick moved to status-store.ts:processTick Stage 3. Render is read-only.
     // v0.8.30+ — bare default tint (brightGreen) on positive
     // value when the tick is active (hasMeasurement=true).
@@ -5129,42 +5249,37 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // cosmetic preference — but the override is more specific
     // than the implicit STALE_COLOR).
     const userColor = params.color as string | undefined;
-    if (r.numeric == null || r.numeric === 0) return r.value;
+    if (r.numeric == null || r.numeric === 0) return body;
     if (r.stale) {
-      return userColor ? `${userColor}${r.value}${RESET}` : `${STALE_COLOR}${r.value}${RESET}`;
+      return userColor ? `${userColor}${body}${RESET}` : `${STALE_COLOR}${body}${RESET}`;
     }
-    return wrapValueDefault("m_tokenIn", r.numeric, r.value, userColor);
+    return wrapValueDefault("m_tokenIn", r.numeric, body, userColor);
   },
   m_tokenOut: (params, ctx) => {
     const r = computeTickDelta(ctx, "out");
+    // vX.X.X+ — |valueOnly|true strips the leading label.
+    const stripLabel = params.valueOnly === "true";
+    const body = stripLabelIfValueOnly(r.value, "out", stripLabel);
     // v1.0 — setPrevTick moved to status-store.ts:processTick Stage 3. Render is read-only.
     // v0.8.30+ — see m_tokenIn inline for the wrap contract.
     const userColor = params.color as string | undefined;
-    if (r.numeric == null || r.numeric === 0) return r.value;
+    if (r.numeric == null || r.numeric === 0) return body;
     if (r.stale) {
-      return userColor ? `${userColor}${r.value}${RESET}` : `${STALE_COLOR}${r.value}${RESET}`;
+      return userColor ? `${userColor}${body}${RESET}` : `${STALE_COLOR}${body}${RESET}`;
     }
-    return wrapValueDefault("m_tokenOut", r.numeric, r.value, userColor);
-  },
-  m_tokenTotal: (params, ctx) => {
-    const body = inlineTokenTotalLabel(ctx);
-    if (body == null) return placeholderWithColor("m_tokenTotal", params, ctx);
-    return wrapPlain(body, params.color as string | undefined);
-  },
-  m_tokenSession: (params, ctx) => {
-    const body = inlineTokenSessionLabel(ctx);
-    if (body == null) return placeholderWithColor("m_tokenSession", params, ctx);
-    return wrapPlain(body, params.color as string | undefined);
+    return wrapValueDefault("m_tokenOut", r.numeric, body, userColor);
   },
   // v0.8.0+ — inline form of m_contextSize (cumulative occupancy,
   // total_input_tokens). See MODULES entry for the new semantic.
   // v0.8.23+ — prefix routes through labelFor("contextSize")
   // (labels.labelContextSize; default "size:").
   m_contextSize: (params, ctx) => {
+    // vX.X.X+ — |valueOnly|true drops the "size:" prefix.
+    const prefix = params.valueOnly === "true" ? "" : labelFor("contextSize");
     const total = ctx.tokens?.totals?.tokenTotalIn;
     if (total == null) return placeholderWithColor("m_contextSize", params, ctx);
     return wrapPlain(
-      `${labelFor("contextSize")}${formatCompactToken(total)}`,
+      `${prefix}${formatCompactToken(total)}`,
       params.color as string | undefined,
     );
   },
@@ -5174,6 +5289,8 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   // per-turn hit rate. The session-aggregate formula moved to
   // m_accTokenHitRate.
   m_tokenHitRate: (params, ctx) => {
+    // vX.X.X+ — |valueOnly|true drops the "hit:" prefix.
+    const prefix = params.valueOnly === "true" ? "" : "hit:";
     const t = ctx.tokens;
     if (!t) return placeholderWithColor("m_tokenHitRate", params, ctx);
     const total = t.totals?.tokenTotalIn;
@@ -5192,14 +5309,14 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
         if (cached != null) {
           return wrapPlainDefault(
             "m_tokenHitRate",
-            `hit:${cached.toFixed(cachePctPrecision())}%`,
+            `${prefix}${cached.toFixed(cachePctPrecision())}%`,
             STALE_COLOR,
           );
         }
       }
       return placeholderWithColor("m_tokenHitRate", params, ctx);
     }
-    if (total === 0) return `${STALE_COLOR}hit:0.0%${RESET}`;
+    if (total === 0) return `${STALE_COLOR}${prefix}0.0%${RESET}`;
     const pct = (cacheRead / total) * 100;
     // v1.0 — setLastTokenHitRate moved to status-store.ts:processTick
     // Stage 5. Render is read-only.
@@ -5214,12 +5331,12 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (!r.hasMeasurement) {
       return wrapPlainDefault(
         "m_tokenHitRate",
-        `hit:${pct.toFixed(cachePctPrecision())}%`,
+        `${prefix}${pct.toFixed(cachePctPrecision())}%`,
         STALE_COLOR,
       );
     }
     const color = (params.color as string | undefined) ?? cacheHitColor(pct);
-    return `${color}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;
+    return `${color}${prefix}${pct.toFixed(cachePctPrecision())}%${RESET}`;
   },
   // v0.8.0+ — renamed from `m_cacheRead` (see MODULES entry). The
   // `(XX%)` share suffix was dropped in v0.8.6+ — use m_tokenHitRate
@@ -5239,7 +5356,8 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // cacheRead value is a positive number, the chunk is wrapped
     // in DEFAULT_COLORS.m_tokenCachedIn (brown). value=0
     // (either explicit or null-as-zero collapse) stays plain.
-    const prefix = labelFor("cacheIn");
+    // vX.X.X+ — |valueOnly|true drops the "cache:" prefix.
+    const prefix = params.valueOnly === "true" ? "" : labelFor("cacheIn");
     const t = ctx.tokens?.current;
     if (!t) return wrapValueDefault("m_tokenCachedIn", 0, `${prefix}0`, params.color as string | undefined);
     if (t.tokenCachedIn == null) return wrapValueDefault("m_tokenCachedIn", 0, `${prefix}0`, params.color as string | undefined);
@@ -5252,7 +5370,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   },
   // vX.X.X+ — per-turn token cost inline. Mirrors m_tokenCost MODULES
   // body (computed from current.* × tokenPrice). Same arg surface as
-  // m_tokenCachedIn (color + nulldrop).
+  // m_tokenCachedIn (color + nulldrop + valueOnly).
   m_tokenCost: (params, ctx) => {
     const t = ctx.tokens;
     if (!t || !t.sessionId) return placeholderWithColor("m_tokenCost", params, ctx);
@@ -5266,12 +5384,14 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // tokenPrice values are per-million-tokens; divide by 1,000,000.
     const liveCost = ((tp.in / 1_000_000) * liveIn) + ((tp.out / 1_000_000) * liveOut) + ((tp.cachedIn / 1_000_000) * liveCached);
     const userColor = params.color as string | undefined;
+    // vX.X.X+ — |valueOnly|true drops the "cost:" prefix.
+    const prefix = params.valueOnly === "true" ? "" : labelFor("cost");
     if (!r.hasMeasurement) {
       const color = userColor ?? STALE_COLOR;
-      return `${color}${labelFor("cost")}${formatCost(liveCost)}${RESET}`;
+      return `${color}${prefix}${formatCost(liveCost)}${RESET}`;
     }
     const cost = ((tp.in / 1_000_000) * r.in) + ((tp.out / 1_000_000) * r.out) + ((tp.cachedIn / 1_000_000) * r.cachedIn);
-    return wrapValueDefault("m_tokenCost", cost, `${labelFor("cost")}${formatCost(cost)}`, userColor);
+    return wrapValueDefault("m_tokenCost", cost, `${prefix}${formatCost(cost)}`, userColor);
   },
   // v0.4.0+ — :color|scale (or no :color| at all) → 5-band
   // scale color on the active tick, STALE_COLOR on the
@@ -5288,6 +5408,10 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
         : (userColor ?? STALE_COLOR);
     const r = computeTickSpeed(ctx, "in", activeColor);
     // v1.0 — setPrevTick moved to status-store.ts:processTick Stage 3. Render is read-only.
+    // vX.X.X+ — |valueOnly|true strips the "in:" prefix. computeTickSpeed
+    // pre-prefixes the value with labelFor("inSpeed"), so we strip that
+    // substring (colored chunk is downstream of the label).
+    if (params.valueOnly === "true") return r.value.replace(labelFor("inSpeed"), "");
     return r.value;
   },
   m_tokenOutSpeed: (params, ctx) => {
@@ -5299,6 +5423,8 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
         : (userColor ?? STALE_COLOR);
     const r = computeTickSpeed(ctx, "out", activeColor);
     // v1.0 — setPrevTick moved to status-store.ts:processTick Stage 3. Render is read-only.
+    // vX.X.X+ — |valueOnly|true strips the "out:" prefix.
+    if (params.valueOnly === "true") return r.value.replace(labelFor("outSpeed"), "");
     return r.value;
   },
   // v0.8.x cwf-tickStatus-v2 — m_totalToken* / m_totalTokenWithCacheIn
@@ -5322,7 +5448,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // applies: acc:0 stays plain.
     const v = peekAcc(scope, ctx);
     const n = v ? v.accTokenIn : 0;
-    return wrapValueDefault("m_accTokenIn", n, accBody(ctx, "in", scope), passThroughOr<string>(params, ctx, "color"));
+    return wrapValueDefault("m_accTokenIn", n, accBody(ctx, "in", scope, passThroughOr<string>(params, ctx, "valueOnly") === "true"), passThroughOr<string>(params, ctx, "color"));
   },
   m_accTokenOut: (params, ctx) => {
     const scope = resolveAccScope(params, ctx);
@@ -5330,31 +5456,31 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // m_accTokenIn for the wrap contract.
     const v = peekAcc(scope, ctx);
     const n = v ? v.accTokenOut : 0;
-    return wrapValueDefault("m_accTokenOut", n, accBody(ctx, "out", scope), passThroughOr<string>(params, ctx, "color"));
+    return wrapValueDefault("m_accTokenOut", n, accBody(ctx, "out", scope, passThroughOr<string>(params, ctx, "valueOnly") === "true"), passThroughOr<string>(params, ctx, "color"));
   },
   m_accTokenCachedIn: (params, ctx) => {
     const scope = resolveAccScope(params, ctx);
     const v = peekAcc(scope, ctx);
     const n = v ? v.accTokenCachedIn : 0;
-    return wrapValueDefault("m_accTokenCachedIn", n, accBody(ctx, "cached", scope), passThroughOr<string>(params, ctx, "color"));
+    return wrapValueDefault("m_accTokenCachedIn", n, accBody(ctx, "cached", scope, passThroughOr<string>(params, ctx, "valueOnly") === "true"), passThroughOr<string>(params, ctx, "color"));
   },
   m_accTokenTotalIn: (params, ctx) => {
     const scope = resolveAccScope(params, ctx);
     const v = peekAcc(scope, ctx);
     const n = v ? v.accTokenIn + v.accTokenCachedIn : 0;
-    return wrapValueDefault("m_accTokenTotalIn", n, accBody(ctx, "total", scope), passThroughOr<string>(params, ctx, "color"));
+    return wrapValueDefault("m_accTokenTotalIn", n, accBody(ctx, "total", scope, passThroughOr<string>(params, ctx, "valueOnly") === "true"), passThroughOr<string>(params, ctx, "color"));
   },
   m_accApiMs: (params, ctx) => {
     const scope = resolveAccScope(params, ctx);
     const v = peekAcc(scope, ctx);
     const n = v ? v.accApiMs : 0;
-    return wrapValueDefault("m_accApiMs", n, accBody(ctx, "apiMs", scope), passThroughOr<string>(params, ctx, "color"));
+    return wrapValueDefault("m_accApiMs", n, accBody(ctx, "apiMs", scope, passThroughOr<string>(params, ctx, "valueOnly") === "true"), passThroughOr<string>(params, ctx, "color"));
   },
   m_accApiCalls: (params, ctx) => {
     const scope = resolveAccScope(params, ctx);
     const v = peekAcc(scope, ctx);
     const n = v ? v.accApiCalls : 0;
-    return wrapValueDefault("m_accApiCalls", n, accBody(ctx, "apiCalls", scope), passThroughOr<string>(params, ctx, "color"));
+    return wrapValueDefault("m_accApiCalls", n, accBody(ctx, "apiCalls", scope, passThroughOr<string>(params, ctx, "valueOnly") === "true"), passThroughOr<string>(params, ctx, "color"));
   },
   // vX.X.X+ — accumulated token cost inline. Computed from peekAcc ×
   // tokenPrice. Same arg surface as m_accApiCalls (color/nulldrop/scope).
@@ -5366,7 +5492,9 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const totalPrice = tp.in + tp.out + tp.cachedIn;
     if (totalPrice <= 0) return placeholderWithColor("m_accTokenCost", params, ctx);
     const cost = ((tp.in / 1_000_000) * v.accTokenIn) + ((tp.out / 1_000_000) * v.accTokenOut) + ((tp.cachedIn / 1_000_000) * v.accTokenCachedIn);
-    return wrapValueDefault("m_accTokenCost", cost, `${labelFor("cost")}${formatCost(cost)}`, passThroughOr<string>(params, ctx, "color"));
+    // vX.X.X+ — |valueOnly|true drops the "cost:" prefix.
+    const prefix = passThroughOr<string>(params, ctx, "valueOnly") === "true" ? "" : labelFor("cost");
+    return wrapValueDefault("m_accTokenCost", cost, `${prefix}${formatCost(cost)}`, passThroughOr<string>(params, ctx, "color"));
   },
   // v0.8.13+ — inline m_accTokenInSpeed / m_accTokenOutSpeed.
   // Mirrors m_tokenInSpeed / m_tokenOutSpeed contract: `:color|scale`
@@ -5382,6 +5510,8 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
         ? (probe.active ? speedScaleColor("in", probe.tps ?? 0) : STALE_COLOR)
         : userColor;
     const r = computeAccSpeed(ctx, scope, "in", activeColor);
+    // vX.X.X+ — |valueOnly|true strips the "in:" prefix from r.value.
+    if (passThroughOr<string>(params, ctx, "valueOnly") === "true") return r.value.replace(labelFor("inSpeed"), "");
     return r.value;
   },
   m_accTokenOutSpeed: (params, ctx) => {
@@ -5393,6 +5523,8 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
         ? (probe.active ? speedScaleColor("out", probe.tps ?? 0) : STALE_COLOR)
         : userColor;
     const r = computeAccSpeed(ctx, scope, "out", activeColor);
+    // vX.X.X+ — |valueOnly|true strips the "out:" prefix from r.value.
+    if (passThroughOr<string>(params, ctx, "valueOnly") === "true") return r.value.replace(labelFor("outSpeed"), "");
     return r.value;
   },
   // Hit rate is special: session-scoped by default. Pass
@@ -5401,10 +5533,12 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   m_accTokenHitRate: (params, ctx) => {
     const scope = resolveAccScope(params, ctx);
     const v = peekAcc(scope, ctx);
-    if (!v) return placeholderAcc("hitRate", scope);
+    if (!v) return placeholderAcc("hitRate", scope, passThroughOr<string>(params, ctx, "valueOnly") === "true");
     const pct = v.accTokenHitRate;
     const color = passThroughOr<string>(params, ctx, "color") ?? cacheHitColor(pct);
-    return `${color}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;
+    // vX.X.X+ — |valueOnly|true drops the "hit:" prefix.
+    const prefix = passThroughOr<string>(params, ctx, "valueOnly") === "true" ? "" : "hit:";
+    return `${color}${prefix}${pct.toFixed(cachePctPrecision())}%${RESET}`;
   },
   // v0.8.24+ — start of the tick statistics window. Inline form
   // supports :scope: (default session) and :color: override on
@@ -5413,12 +5547,15 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   m_accStartTime: (params, ctx) => {
     const scope = resolveAccScope(params, ctx);
     const v = peekAcc(scope, ctx);
+    // vX.X.X+ — |valueOnly|true drops the "start:" prefix.
+    const strip = passThroughOr<string>(params, ctx, "valueOnly") === "true";
     const startAt = v?.startAt ?? null;
-    if (startAt == null) return placeholderAcc("startTime", scope);
+    if (startAt == null) return placeholderAcc("startTime", scope, strip);
     const userColor = passThroughOr<string>(params, ctx, "color");
     // v0.8.25+ — |abs|inline override; default off so v0.8.24 renders are byte-identical.
     const abs = passThroughOr<string>(params, ctx, "abs") === "true";
-    return wrapPlain(`${labelFor("startTime")}${formatAbsTime(startAt, { abs })}`, userColor);
+    const prefix = strip ? "" : labelFor("startTime");
+    return wrapPlain(`${prefix}${formatAbsTime(startAt, { abs })}`, userColor);
   },
   // v0.8.0+ — sum/avg inline renderers. Same body shape as the
   // bare-form MODULES entries; the inline path passes params so
@@ -5435,10 +5572,12 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // v0.8.30+ — bare default tint (brightGreen) on positive
     // sum; user `|color|<c>` override wins; sum=0 stays plain
     // (value-zero rule).
+    // vX.X.X+ — |valueOnly|true drops the "in:" prefix.
+    const prefix = passThroughOr<string>(params, ctx, "valueOnly") === "true" ? "" : labelFor("in");
     return wrapValueDefault(
       "m_sumTokenIn",
       agg.sumIn,
-      `${labelFor("in")}${formatCompactToken(agg.sumIn)}`,
+      `${prefix}${formatCompactToken(agg.sumIn)}`,
       passThroughOr<string>(params, ctx, "color"),
     );
   },
@@ -5450,10 +5589,12 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (agg.rows === 0) return placeholderWithColor("m_sumTokenOut", params, ctx);
     // v0.8.30+ — bare default tint (red) on positive sum; see
     // m_sumTokenIn for the wrap contract.
+    // vX.X.X+ — |valueOnly|true drops the "out:" prefix.
+    const prefix = passThroughOr<string>(params, ctx, "valueOnly") === "true" ? "" : labelFor("out");
     return wrapValueDefault(
       "m_sumTokenOut",
       agg.sumOut,
-      `${labelFor("out")}${formatCompactToken(agg.sumOut)}`,
+      `${prefix}${formatCompactToken(agg.sumOut)}`,
       passThroughOr<string>(params, ctx, "color"),
     );
   },
@@ -5463,7 +5604,9 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (!filter) return INLINE_BADARG;
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderWithColor("m_sumTokenCachedIn", params, ctx);
-    return wrapValueDefault("m_sumTokenCachedIn", agg.sumCached, `${labelFor("cacheIn")}${formatCompactToken(agg.sumCached)}`, passThroughOr<string>(params, ctx, "color"));
+    // vX.X.X+ — |valueOnly|true drops the "cache:" prefix.
+    const prefix = passThroughOr<string>(params, ctx, "valueOnly") === "true" ? "" : labelFor("cacheIn");
+    return wrapValueDefault("m_sumTokenCachedIn", agg.sumCached, `${prefix}${formatCompactToken(agg.sumCached)}`, passThroughOr<string>(params, ctx, "color"));
   },
   m_sumTokenTotalIn: (params, ctx) => {
     const merged = mergePassThrough(params, ctx);
@@ -5471,7 +5614,9 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (!filter) return INLINE_BADARG;
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderWithColor("m_sumTokenTotalIn", params, ctx);
-    return wrapValueDefault("m_sumTokenTotalIn", agg.sumTotalIn, `${labelFor("totalIn")}${formatCompactToken(agg.sumTotalIn)}`, passThroughOr<string>(params, ctx, "color"));
+    // vX.X.X+ — |valueOnly|true drops the "total:" prefix.
+    const prefix = passThroughOr<string>(params, ctx, "valueOnly") === "true" ? "" : labelFor("totalIn");
+    return wrapValueDefault("m_sumTokenTotalIn", agg.sumTotalIn, `${prefix}${formatCompactToken(agg.sumTotalIn)}`, passThroughOr<string>(params, ctx, "color"));
   },
   // vX.X.X+ — windowed token cost inline. Same 5-axis arg surface
   // as the other m_sum* modules (model/window/align + color/nulldrop).
@@ -5485,7 +5630,9 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const totalPrice = tp.in + tp.out + tp.cachedIn;
     if (totalPrice <= 0) return placeholderWithColor("m_sumTokenCost", params, ctx);
     const cost = ((tp.in / 1_000_000) * agg.sumIn) + ((tp.out / 1_000_000) * agg.sumOut) + ((tp.cachedIn / 1_000_000) * agg.sumCached);
-    return wrapValueDefault("m_sumTokenCost", cost, `${labelFor("cost")}${formatCost(cost)}`, passThroughOr<string>(params, ctx, "color"));
+    // vX.X.X+ — |valueOnly|true drops the "cost:" prefix.
+    const prefix = passThroughOr<string>(params, ctx, "valueOnly") === "true" ? "" : labelFor("cost");
+    return wrapValueDefault("m_sumTokenCost", cost, `${prefix}${formatCost(cost)}`, passThroughOr<string>(params, ctx, "color"));
   },
   m_sumApiMs: (params, ctx) => {
     const merged = mergePassThrough(params, ctx);
@@ -5495,7 +5642,9 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (agg.rows === 0) return placeholderWithColor("m_sumApiMs", params, ctx);
     // v0.8.13+ — prefix routes through labelFor(labels.labelApi);
     // default "api:" preserves the v0.8.x literal.
-    return wrapValueDefault("m_sumApiMs", agg.sumApiMs, `${labelFor("apiMs")}${formatRemainingMs(agg.sumApiMs)}`, passThroughOr<string>(params, ctx, "color"));
+    // vX.X.X+ — |valueOnly|true drops the "api:" prefix.
+    const prefix = passThroughOr<string>(params, ctx, "valueOnly") === "true" ? "" : labelFor("apiMs");
+    return wrapValueDefault("m_sumApiMs", agg.sumApiMs, `${prefix}${formatRemainingMs(agg.sumApiMs)}`, passThroughOr<string>(params, ctx, "color"));
   },
   m_sumTokenHitRate: (params, ctx) => {
     const merged = mergePassThrough(params, ctx);
@@ -5505,7 +5654,9 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const denom = agg.sumIn + agg.sumCached;
     if (agg.rows === 0 || denom === 0) return placeholderWithColor("m_sumTokenHitRate", params, ctx);
     const pct = (agg.sumCached / denom) * 100;
-    return `${cacheHitColor(pct)}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;
+    // vX.X.X+ — |valueOnly|true drops the "hit:" prefix.
+    const prefix = passThroughOr<string>(params, ctx, "valueOnly") === "true" ? "" : "hit:";
+    return `${cacheHitColor(pct)}${prefix}${pct.toFixed(cachePctPrecision())}%${RESET}`;
   },
   m_sumTokenInSpeed: (params, ctx) => {
     const merged = mergePassThrough(params, ctx);
@@ -5522,12 +5673,14 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // `:color|<c>` → that color, no `:color|` → scale default).
     // v0.8.13+ — prefix routes through labelFor(labels.labelInSpeed);
     // default "in:" preserves today's literal.
+    // vX.X.X+ — |valueOnly|true drops the "in:" prefix.
     const userColor = passThroughOr<string>(params, ctx, "color");
+    const prefix = passThroughOr<string>(params, ctx, "valueOnly") === "true" ? "" : labelFor("inSpeed");
     const color =
       userColor === SCALE_COLOR_SENTINEL || userColor == null
         ? speedScaleColor("in", tps)
         : userColor;
-    return `${color}${labelFor("inSpeed")}${formatSpeed(tps)}${RESET}`;
+    return `${color}${prefix}${formatSpeed(tps)}${RESET}`;
   },
   m_sumTokenOutSpeed: (params, ctx) => {
     const merged = mergePassThrough(params, ctx);
@@ -5538,12 +5691,14 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const tps = (agg.sumOut / agg.sumApiMs) * 1000;
     // v0.8.13+ — prefix routes through labelFor(labels.labelOutSpeed);
     // default "out:" preserves today's literal.
+    // vX.X.X+ — |valueOnly|true drops the "out:" prefix.
     const userColor = passThroughOr<string>(params, ctx, "color");
+    const prefix = passThroughOr<string>(params, ctx, "valueOnly") === "true" ? "" : labelFor("outSpeed");
     const color =
       userColor === SCALE_COLOR_SENTINEL || userColor == null
         ? speedScaleColor("out", tps)
         : userColor;
-    return `${color}${labelFor("outSpeed")}${formatSpeed(tps)}${RESET}`;
+    return `${color}${prefix}${formatSpeed(tps)}${RESET}`;
   },
   // v0.8.x — total count of API calls in window. See MODULES twin.
   m_sumApiCalls: (params, ctx) => {
@@ -5554,7 +5709,9 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (agg.calls === 0) return placeholderWithColor("m_sumApiCalls", params, ctx);
     // v0.8.13+ — prefix routes through labelFor(labels.labelApiCalls);
     // default "calls:" preserves the v0.8.x literal.
-    return wrapValueDefault("m_sumApiCalls", agg.calls, `${labelFor("apiCalls")}${agg.calls}`, passThroughOr<string>(params, ctx, "color"));
+    // vX.X.X+ — |valueOnly|true drops the "calls:" prefix.
+    const prefix = passThroughOr<string>(params, ctx, "valueOnly") === "true" ? "" : labelFor("apiCalls");
+    return wrapValueDefault("m_sumApiCalls", agg.calls, `${prefix}${agg.calls}`, passThroughOr<string>(params, ctx, "color"));
   },
   // v0.8.24+ — start of the tick statistics window across the
   // filtered JSONL rows. min(s.startAt) over the
@@ -5569,6 +5726,8 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (agg.rows === 0) return placeholderWithColor("m_sumStartTime", params, ctx);
     const abs = passThroughOr<string>(params, ctx, "abs") === "true";
     const color = passThroughOr<string>(params, ctx, "color");
+    // vX.X.X+ — |valueOnly|true drops the "start:" prefix.
+    const prefix = passThroughOr<string>(params, ctx, "valueOnly") === "true" ? "" : labelFor("startTime");
     // vX.X.X — mirror of the bare-form branch above: align=true
     // + declared-windowId resolution sets `alignActive=true +
     // interval!=null`, which gates the plan-anchor rendering
@@ -5583,14 +5742,14 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
       ) {
         const anchorMs = Date.parse(w.resetStartAt);
         if (Number.isFinite(anchorMs)) {
-          return wrapPlain(`${labelFor("startTime")}${formatAbsTime(anchorMs, { abs })}`, color);
+          return wrapPlain(`${prefix}${formatAbsTime(anchorMs, { abs })}`, color);
         }
       }
     }
     if (!Number.isFinite(agg.firstAt) || agg.firstAt <= 0) {
       return placeholderWithColor("m_sumStartTime", params, ctx);
     }
-    return wrapPlain(`${labelFor("startTime")}${formatAbsTime(agg.firstAt, { abs })}`, color);
+    return wrapPlain(`${prefix}${formatAbsTime(agg.firstAt, { abs })}`, color);
   },
   // v0.8.24+ — end of the tick statistics window across the
   // filtered JSONL rows. max(s.lastAt) over the filtered sample
@@ -5609,6 +5768,8 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (agg.rows === 0) return placeholderWithColor("m_sumEndTime", params, ctx);
     const abs = passThroughOr<string>(params, ctx, "abs") === "true";
     const color = passThroughOr<string>(params, ctx, "color");
+    // vX.X.X+ — |valueOnly|true drops the "end:" prefix.
+    const prefix = passThroughOr<string>(params, ctx, "valueOnly") === "true" ? "" : labelFor("endTime");
     // vX.X.X — mirror of the bare-form branch above. align=true +
     // declared-windowId resolution → plan window's resetAt close
     // instant; everything else (align=false default, or dhms /
@@ -5620,14 +5781,14 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
       if (w != null && typeof w.resetAt === "string") {
         const anchorMs = Date.parse(w.resetAt);
         if (Number.isFinite(anchorMs)) {
-          return wrapPlain(`${labelFor("endTime")}${formatAbsTime(anchorMs, { abs })}`, color);
+          return wrapPlain(`${prefix}${formatAbsTime(anchorMs, { abs })}`, color);
         }
       }
     }
     if (!Number.isFinite(agg.lastAt) || agg.lastAt <= 0) {
       return placeholderWithColor("m_sumEndTime", params, ctx);
     }
-    return wrapPlain(`${labelFor("endTime")}${formatAbsTime(agg.lastAt, { abs })}`, color);
+    return wrapPlain(`${prefix}${formatAbsTime(agg.lastAt, { abs })}`, color);
   },
   m_quote: (params, ctx) => {
     // v0.8.21+ — when `address` is non-empty, fetch the remote
@@ -5771,6 +5932,8 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const t = ctx.tokens;
     if (!t || !t.sessionId) return placeholderWithColor("m_apiMs", params, ctx);
     const r = getDeltaForRender();
+    // vX.X.X+ — |valueOnly|true drops the "api:" prefix.
+    const prefix = params.valueOnly === "true" ? "" : labelFor("apiMs");
     // v1.0 — setPrevTick moved to status-store.ts:processTick Stage 3. Render is read-only.
     if (!r.hasMeasurement) {
       // v0.8.x — TTL-bounded cache fallback (mirrors MODULES path
@@ -5787,7 +5950,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
         // choice. See computeTickSpeed.
         return wrapPlainDefault(
           "m_apiMs",
-          `${labelFor("apiMs")}${formatRemainingMs(cached)}`,
+          `${prefix}${formatRemainingMs(cached)}`,
           STALE_COLOR,
         );
       }
@@ -5801,7 +5964,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // rule); STALE_COLOR still wins on the cached/idle branch
     // above. v0.8.13+ — prefix routes through labelFor
     // (labels.labelApi); default "api:" preserves the v0.8.x literal.
-    return wrapValueDefault("m_apiMs", r.apiMs, `${labelFor("apiMs")}${formatRemainingMs(r.apiMs)}`, params.color as string | undefined);
+    return wrapValueDefault("m_apiMs", r.apiMs, `${prefix}${formatRemainingMs(r.apiMs)}`, params.color as string | undefined);
   },
   m_linesAdded: (params, ctx) => {
     const n = ctx.tokens?.cost.totalLinesAdded;
@@ -5818,10 +5981,12 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (!t || t.totals.tokenTotalIn == null) return placeholderWithColor("m_tokenInTotal", params, ctx);
     // v0.8.30+ — bare default tint (brightGreen) on positive
     // value; user `|color|<c>` override wins; 0 stays plain.
+    // vX.X.X+ — |valueOnly|true drops the "in:" prefix.
+    const prefix = params.valueOnly === "true" ? "" : labelFor("in");
     return wrapValueDefault(
       "m_tokenInTotal",
       t.totals.tokenTotalIn,
-      `${labelFor("in")}${formatCompactToken(t.totals.tokenTotalIn)}`,
+      `${prefix}${formatCompactToken(t.totals.tokenTotalIn)}`,
       params.color as string | undefined,
     );
   },
@@ -5830,10 +5995,12 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (!t || t.totals.tokenTotalOut == null) return placeholderWithColor("m_tokenTotalOut", params, ctx);
     // v0.8.30+ — bare default tint (red) on positive value; see
     // m_tokenInTotal inline for the wrap contract.
+    // vX.X.X+ — |valueOnly|true drops the "out:" prefix.
+    const prefix = params.valueOnly === "true" ? "" : labelFor("out");
     return wrapValueDefault(
       "m_tokenTotalOut",
       t.totals.tokenTotalOut,
-      `${labelFor("out")}${formatCompactToken(t.totals.tokenTotalOut)}`,
+      `${prefix}${formatCompactToken(t.totals.tokenTotalOut)}`,
       params.color as string | undefined,
     );
   },
@@ -5848,10 +6015,12 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   m_tokenTotalIn: (params, ctx) => {
     const t = ctx.tokens;
     if (!t || t.totals.tokenTotalIn == null) return placeholderWithColor("m_tokenTotalIn", params, ctx);
+    // vX.X.X+ — |valueOnly|true drops the "total:" prefix.
+    const prefix = params.valueOnly === "true" ? "" : labelFor("totalIn");
     return wrapValueDefault(
       "m_tokenTotalIn",
       t.totals.tokenTotalIn,
-      `${labelFor("totalIn")}${formatCompactToken(t.totals.tokenTotalIn)}`,
+      `${prefix}${formatCompactToken(t.totals.tokenTotalIn)}`,
       params.color as string | undefined,
     );
   },
@@ -5872,10 +6041,12 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const cwd = ctx.tokens?.cwd;
     // v0.8.13+ — prefix routes through labelFor(labels.labelApiCalls);
     // default "calls:" preserves the v0.8.x literal.
-    if (!cwd) return wrapPlainDefault("m_apiCalls", `${labelFor("apiCalls")}0`, params.color as string | undefined);
+    // vX.X.X+ — |valueOnly|true drops the "calls:" prefix.
+    const prefix = params.valueOnly === "true" ? "" : labelFor("apiCalls");
+    if (!cwd) return wrapPlainDefault("m_apiCalls", `${prefix}0`, params.color as string | undefined);
     const acc = statusStore.readAccumulator("project", { cwd });
-    if (!acc) return wrapPlainDefault("m_apiCalls", `${labelFor("apiCalls")}0`, params.color as string | undefined);
-    return wrapValueDefault("m_apiCalls", acc.accApiCalls, `${labelFor("apiCalls")}${acc.accApiCalls}`, params.color as string | undefined);
+    if (!acc) return wrapPlainDefault("m_apiCalls", `${prefix}0`, params.color as string | undefined);
+    return wrapValueDefault("m_apiCalls", acc.accApiCalls, `${prefix}${acc.accApiCalls}`, params.color as string | undefined);
   },
   // v0.8.0+ — inline form of m_contextWindowsSize (capacity).
   // v0.8.23+ — context-window inline forms route through the
@@ -5885,19 +6056,25 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   m_contextWindowsSize: (params, ctx) => {
     const sz = ctx.tokens?.contextWindow?.contextWindowSize;
     if (sz == null) return placeholderWithColor("m_contextWindowsSize", params, ctx);
-    return wrapPlainDefault("m_contextWindowsSize", `${labelFor("contextWindowsSize")}${formatCompactToken(sz)}`, params.color as string | undefined);
+    // vX.X.X+ — |valueOnly|true drops the "size:" prefix.
+    const prefix = params.valueOnly === "true" ? "" : labelFor("contextWindowsSize");
+    return wrapPlainDefault("m_contextWindowsSize", `${prefix}${formatCompactToken(sz)}`, params.color as string | undefined);
   },
   // v0.8.0+ — inline form of m_contextUsedPercent.
   m_contextUsedPercent: (params, ctx) => {
     const pct = ctx.tokens?.contextWindow?.contextUsedPercent;
     if (pct == null) return placeholderWithColor("m_contextUsedPercent", params, ctx);
-    return wrapPlainDefault("m_contextUsedPercent", `${labelFor("contextUsedPercent")}${pct}%`, params.color as string | undefined);
+    // vX.X.X+ — |valueOnly|true drops the "used:" prefix.
+    const prefix = params.valueOnly === "true" ? "" : labelFor("contextUsedPercent");
+    return wrapPlainDefault("m_contextUsedPercent", `${prefix}${pct}%`, params.color as string | undefined);
   },
   // v0.8.0+ — inline form of m_contextRemainingPercent.
   m_contextRemainingPercent: (params, ctx) => {
     const pct = ctx.tokens?.contextWindow?.contextRemainingPercent;
     if (pct == null) return placeholderWithColor("m_contextRemainingPercent", params, ctx);
-    return wrapPlainDefault("m_contextRemainingPercent", `${labelFor("contextRemainingPercent")}${pct}%`, params.color as string | undefined);
+    // vX.X.X+ — |valueOnly|true drops the "remain:" prefix.
+    const prefix = params.valueOnly === "true" ? "" : labelFor("contextRemainingPercent");
+    return wrapPlainDefault("m_contextRemainingPercent", `${prefix}${pct}%`, params.color as string | undefined);
   },
   m_windowContext: (params, ctx) => {
     if (!ctx.contextWindow) return placeholderWithColor("m_windowContext", params, ctx);
@@ -5935,7 +6112,9 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   m_memUsage: (params, ctx) => {
     const m = getMemUsage();
     if (!m) return placeholderWithColor("m_memUsage", params, ctx);
-    const body = `${labelFor("memUsage")}${formatMemBytes(m.used)}/${formatMemBytes(m.total)}`;
+    // vX.X.X+ — |valueOnly|true drops the "Mem:" prefix.
+    const prefix = params.valueOnly === "true" ? "" : labelFor("memUsage");
+    const body = `${prefix}${formatMemBytes(m.used)}/${formatMemBytes(m.total)}`;
     return wrapPlainDefault("m_memUsage", body, params.color as string | undefined);
   },
   // v0.8.36+ — inline form of m_windowMemUsage. Mirror of the
@@ -6011,32 +6190,6 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     return lines.join("\n");
   },
 };
-
-// Extract the `m_tokenTotal` body as a pure helper so the inline
-// renderer can call it without duplicating the computation.
-// v6.x: when there's no snapshot at all, return the placeholder
-// shape directly (without SGR wrap — the inline renderer applies
-// STALE_COLOR + RESET when it gets a non-null string back, so
-// returning the plain placeholder body here is the right division
-// of labor). Mirrors the bare MODULES path's placeholderBare call.
-function inlineTokenTotalLabel(ctx: RenderContext): string | null {
-  const t = ctx.tokens;
-  if (!t) return "tot:n/a";
-  const inT = t.totals.tokenTotalIn ?? 0;
-  const outT = t.totals.tokenTotalOut ?? 0;
-  const cache = (t.current.tokenCacheCreation ?? 0) + (t.current.tokenCachedIn ?? 0);
-  return `tot:${formatCompactToken(inT + outT + cache)}`;
-}
-
-// Same for `m_tokenSession`. v6.x: missing tokens → "session:n/a".
-function inlineTokenSessionLabel(ctx: RenderContext): string | null {
-  const t = ctx.tokens;
-  if (!t) return "session:n/a";
-  const inT = t.totals.tokenTotalIn ?? 0;
-  const outT = t.totals.tokenTotalOut ?? 0;
-  const cache = (t.current.tokenCacheCreation ?? 0) + (t.current.tokenCachedIn ?? 0);
-  return `session:${formatCompactToken(inT + outT + cache)}`;
-}
 
 // v0.x.x+ — Two-class separator scheme for inline args.
 // First-class separator is `|` (single-purpose: structural, splits
@@ -6253,29 +6406,20 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
       } else if (tok.startsWith("m_tokenInTotal|")) {
         // Longer prefix must come BEFORE m_tokenIn: would match first;
         // m_tokenIn: would shadow m_tokenInTotal|color|… if ordered
-        // the other way. Same rationale for m_tokenTotalOut vs
-        // m_tokenOut.
+        // the other way.
         inline = expandInlineToken(tok, "m_tokenInTotal", 15, ctx);
       } else if (tok.startsWith("m_tokenTotalOut|")) {
-        // m_tokenTotalOut: (16 chars) must come BEFORE m_tokenTotal:
-        // (13 chars) so the longer literal wins — otherwise
-        // `m_tokenTotalOut|color|red` would match the m_tokenTotal:
-        // branch with remainder "Out|color|red" and parse-fail.
+        // m_tokenTotalOut: (16 chars) must come BEFORE m_tokenOut:
+        // (12 chars) so the longer literal wins — otherwise
+        // `m_tokenTotalOut|color|red` would match the m_tokenOut:
+        // branch with remainder "TotalOut|color|red" and parse-fail.
         inline = expandInlineToken(tok, "m_tokenTotalOut", 16, ctx);
       } else if (tok.startsWith("m_apiCalls|")) {
         // m_apiCalls|color|<c> / |nulldrop|… → skip "m_apiCalls|"
         // (length 11).
         inline = expandInlineToken(tok, "m_apiCalls", 11, ctx);
       } else if (tok.startsWith("m_tokenTotalIn|")) {
-        // m_tokenTotalIn: → skip prefix+colon (15 chars). Listed
-        // BEFORE m_tokenTotal: which would otherwise shadow it
-        // (m_tokenTotal: is a 13-char prefix; m_tokenTotalIn: starts
-        // with the same 13 chars).
         inline = expandInlineToken(tok, "m_tokenTotalIn", 15, ctx);
-      } else if (tok.startsWith("m_tokenTotal|")) {
-        inline = expandInlineToken(tok, "m_tokenTotal", 13, ctx);
-      } else if (tok.startsWith("m_tokenSession|")) {
-        inline = expandInlineToken(tok, "m_tokenSession", 15, ctx);
       } else if (tok.startsWith("m_contextSize|")) {
         inline = expandInlineToken(tok, "m_contextSize", 14, ctx);
       } else if (tok.startsWith("m_tokenHitRate|")) {

@@ -75,6 +75,7 @@ exceptions are called out in §3.
 | `wrap`      | `true` \| `false`                                                              | `true`             | **`m_quote` only.** Wrap the body in `~…~` (off when `wrap|false`).                                                                                |
 | `insecureTls` | `true` \| `false`                                                            | `false`            | **`m_quote` only (v0.8.21+).** Pass `curl -k` so TLS validation is skipped against the address. Use only against trusted dev endpoints.            |
 | `abs`       | `true` \| `false`                                                              | `false`            | **`m_accStartTime` / `m_sumStartTime` / `m_sumEndTime` only (v0.8.25+).** When `true`, widens the time body from `HH:MM:SS` to `YYYY-MM-DD HH:MM:SS` (sv-SE, 24h). Pass-through to inner modules via outer `m_template|<key>|abs|true`. |
+| `valueOnly` | `true` \| `false`                                                              | `false`            | **All label-using `m_*` modules (~36 modules: per-turn, `m_acc*`, `m_sum*`, `m_memUsage`; vX.X.X+).** When `true`, strip the leading label prefix from BOTH the live render path AND the placeholder path — e.g. `m_tokenIn\|valueOnly:true` → `1.2K` (was `in:1.2K`); missing data → `n/a` (was `in:n/a`). Accepts only literal `true` / `false` (typos fail loud at the inline-args resolver and drop the chunk). Defaults to `false` so v0.8.x renders stay byte-identical. Forwarded through `m_template` via the passthrough whitelist. |
 | `repeat`    | `<1..8>` (integer)                                                             | `1`                | **`s_*` only (v0.7.2+).** Multiply the separator body.                                                                                             |
 | `wrap`      | `true` \| `false`                                                              | `true`             | **`s_*` only (v0.7.2+).** When `true` and the body is printable, pad with one space on each side (so `s_dot|wrap|true` → `" · "`). NOTE: shared name with the m_quote `wrap` arg above; scope is per-module. |
 
@@ -243,7 +244,6 @@ Standalone modules — no acc/sum variant, no 3-tuple sibling.
 
 | Module | Renders | Source | Inline args | Notes |
 | ------ | ------- | ------ | ----------- | ----- |
-| `m_tokenTotal` (alias `m_tokenSession`) | Per-turn in+out, `total:289`. | `tokens.current.tokenIn + tokenOut` | `color`, `nulldrop` | Standalone per-turn combined metric. |
 | `m_contextSize` | Cumulative context input tokens, `size:163.5k`. | `tokens.totals.tokenTotalIn` | `color`, `nulldrop` | Renamed from `m_ctx` in v0.8.0. |
 | `m_contextWindowsSize` | Capacity of the context window, `size:200k`. (typo in name preserved.) | `context_window.size` | `color`, `nulldrop` | Single-layer context-window metadata. |
 | `m_contextUsedPercent` | Percentage of capacity used, `used:82%`. | `context_window.usedPct` | `color`, `nulldrop` | Renamed from `m_contextUsed` in v0.8.0. |

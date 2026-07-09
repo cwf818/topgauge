@@ -1457,20 +1457,6 @@ describe("renderTemplate — m_token* modules", () => {
     // "in:38 out:155 · size:163.5k"
     assert.equal(strip(out), "in:38 out:155 · size:163.5k");
   });
-
-  it("m_tokenSession / m_tokenTotal: same numeric totals (input+output+cache)", () => {
-    // Both modules compute in+out+cache identically. Only the prefix
-    // differs ("session:" vs "tot:") — useful when the user wants
-    // both labels visible in different templates.
-    const sess = renderTemplate(["m_tokenSession"], ctxFor(fakeSnapshot())).join("\n");
-    const tot = renderTemplate(["m_tokenTotal"], ctxFor(fakeSnapshot())).join("\n");
-    const sessVal = strip(sess).replace(/^session:/, "");
-    const totVal = strip(tot).replace(/^tot:/, "");
-    assert.equal(sessVal, totVal);
-    assert.equal(sessVal, "327.1k");
-    assert.ok(strip(sess).startsWith("session:"));
-    assert.ok(strip(tot).startsWith("tot:"));
-  });
 });
 
 // ----- v0.8.0+ per-turn API-ms delta (m_apiMs) ---------------------------
@@ -6964,5 +6950,155 @@ describe("renderTemplate — m_tokenCost family (vX.X.X+)", () => {
     // effective: 30*0.01 + 20*0.02 + 10*0.005 = 0.3 + 0.4 + 0.05 = 0.75
     // formatCost: ≥0.1 < 1 → 2dp → "0.75"
     assert.equal(strip(out), "cost:0.750");
+  });
+});
+
+describe("renderTemplate — |valueOnly| inline arg — label strip on label-using m_* modules (vX.X.X+)", () => {
+  // vX.X.X+ — opt-in label-prefix strip. Accepts only literal
+  // "true" / "false" (bad value → badarg → drop). Default false
+  // so v0.8.x renders stay byte-identical. Applies to BOTH the
+  // live render path AND the placeholder path. Forwarded through
+  // m_template via the passthrough whitelist.
+  beforeEach(() => {
+    __resetForTest();
+  });
+
+  // -------- 1. strip on real value --------
+  it("m_tokenIn|valueOnly:true strips 'in:' from a real value", () => {
+    setPrevTick("sess-vo", { totalApiMs: 0 }, "D:\\test");
+    const snap = fakeSnapshot();
+    processTick(snap.cwd, snap);
+    statusStore.commit();
+    const out = renderTemplate(["m_tokenIn|valueOnly:true"], ctxFor(snap)).join("\n");
+    // delta = 38 (current.input - prev.input=0); strip "in:" prefix.
+    assert.equal(strip(out), "38");
+  });
+
+  // -------- 2. explicit false keeps prefix (regression guard) --------
+  it("m_tokenIn|valueOnly:false keeps 'in:' prefix (regression guard for explicit-false)", () => {
+    setPrevTick("sess-vo", { totalApiMs: 0 }, "D:\\test");
+    const snap = fakeSnapshot();
+    processTick(snap.cwd, snap);
+    statusStore.commit();
+    const out = renderTemplate(["m_tokenIn|valueOnly:false"], ctxFor(snap)).join("\n");
+    assert.equal(strip(out), "in:38");
+  });
+
+  // -------- 3. bare (no arg) keeps prefix (v0.8.x byte-identical) --------
+  it("bare m_tokenIn (no valueOnly arg) keeps 'in:' prefix (v0.8.x byte-identical)", () => {
+    setPrevTick("sess-vo", { totalApiMs: 0 }, "D:\\test");
+    const snap = fakeSnapshot();
+    processTick(snap.cwd, snap);
+    statusStore.commit();
+    const out = renderTemplate(["m_tokenIn"], ctxFor(snap)).join("\n");
+    assert.equal(strip(out), "in:38");
+  });
+
+  // -------- 4. strip on placeholder --------
+  it("m_tokenIn|valueOnly:true with missing data → 'n/a' (placeholder also stripped)", () => {
+    // tokens=null-equivalent path: t.sessionId missing → placeholder.
+    const snap = fakeSnapshot({ sessionId: "" });
+    const out = renderTemplate(["m_tokenIn|valueOnly:true"], ctxFor(snap)).join("\n");
+    assert.equal(strip(out), "n/a");
+  });
+
+  // -------- 5. color independence --------
+  it("m_tokenCost|valueOnly:true|color|cyan strips 'cost:' but keeps SGR wrap", () => {
+    // |valueOnly| is independent of |color|. With valueOnly=true
+    // the prefix is gone but the user's |color| SGR wrap remains.
+    const cfg = configStore.get();
+    cfg.tokenPrice = { in: 10_000, out: 20_000, cachedIn: 5_000, currency: "USD" };
+    setPrevTick("sess-vo", { totalApiMs: 0 }, "D:\\test");
+    const snap = fakeSnapshot();
+    processTick(snap.cwd, snap);
+    statusStore.commit();
+    const out = renderTemplate(["m_tokenCost|valueOnly:true|color:cyan"], ctxFor(snap)).join("\n");
+    // cost = 38*0.01 + 155*0.02 + 163441*0.005 = 820.685 → 2dp → "820.69"
+    // valueOnly strips "cost:" prefix; |color|cyan applies SGR wrap.
+    // We don't assert exact ANSI bytes — just that the printable
+    // body is "820.69" with no "cost:" anywhere in it.
+    assert.equal(strip(out), "820.69");
+    assert.doesNotMatch(out, /cost:/);
+  });
+
+  // -------- 6. bad value → badarg → drop --------
+  it("m_tokenIn|valueOnly|yes rejects unknown value (parse-fail → badarg → drop)", () => {
+    // |valueOnly|yes is not literal "true"/"false" — VALUEONLY_PARAM
+    // resolver returns null → token drops with a stderr warn.
+    __resetUnknownModuleWarnForTest();
+    const origWrite = process.stderr.write.bind(process.stderr);
+    const writes: string[] = [];
+    (process.stderr.write as unknown) = (chunk: string | Uint8Array): boolean => {
+      writes.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+      return true;
+    };
+    try {
+      const snap = fakeSnapshot();
+      const out = renderTemplate(["m_tokenIn|valueOnly:yes"], ctxFor(snap)).join("\n");
+      // badarg → empty render
+      assert.equal(out, "");
+      // warnUnknownModuleOnce writes to stderr; capture it.
+      assert.ok(writes.some((w) => /unknown lineTemplate module/i.test(w)), `expected stderr warn; got ${JSON.stringify(writes)}`);
+    } finally {
+      (process.stderr.write as unknown) = origWrite;
+    }
+  });
+
+  // -------- 7. m_template passthrough --------
+  it("m_template|<key>|valueOnly:true forwards to inner m_tokenIn (passthrough cascade)", () => {
+    // Set up a template containing m_tokenIn, then call it with
+    // an outer |valueOnly:true|. The inner module has no
+    // |valueOnly|, so the only way it strips is via passThrough.
+    __resetForTest({ lineTemplates: { vo: ["m_tokenIn"] } });
+    setPrevTick("sess-vo", { totalApiMs: 0 }, "D:\\test");
+    const snap = fakeSnapshot();
+    processTick(snap.cwd, snap);
+    statusStore.commit();
+    const out = renderTemplate(["m_template|vo|valueOnly:true"], ctxFor(snap)).join("\n");
+    assert.equal(strip(out), "38");
+  });
+
+  // -------- 8. cross-axis strip (labelTokenIn shared with m_tokenInTotal) --------
+  it("m_tokenInTotal|valueOnly:true strips 'in:' prefix (cross-axis verification)", () => {
+    // m_tokenInTotal shares the labelTokenIn axis with m_tokenIn;
+    // both must inherit the strip when |valueOnly| is set.
+    const snap = fakeSnapshot({ totals: { tokenTotalIn: 12345, tokenTotalOut: 0 } });
+    const out = renderTemplate(["m_tokenInTotal|valueOnly:true"], ctxFor(snap)).join("\n");
+    // formatCompactToken(12345) → "12.3K" (or similar)
+    assert.doesNotMatch(strip(out), /^in:/);
+    // And it should be a non-empty body
+    assert.ok(strip(out).length > 0);
+  });
+
+  // -------- 9. acc family strip --------
+  it("m_accTokenIn|valueOnly:true strips 'in:' prefix on the acc slot", () => {
+    // Seed the SESSION slot for sess-vo with the desired value
+    // (42000) and matching deltaTokenIn so setAvg writes the
+    // pre-add value. processTick then contributes 0 (current is
+    // zeroed), leaving the slot at 42000 → "42.0k".
+    setAvg(
+      "sess-vo",
+      { accTokenIn: 42000, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1, accTokenTotalIn: 0, accTokenHitRate: 0 },
+      "D:\\test",
+      { modelDisplayName: "MiniMax-M3", deltaApiCalls: 1, currentApiMs: 1000, deltaTokenIn: 42000, deltaTokenOut: 0, deltaTokenCachedIn: 0, deltaApiMs: 1000 },
+    );
+    const snap = fakeSnapshot({
+      sessionId: "sess-vo",
+      // Zero current so processTick contributes 0 to the slot.
+      current: { tokenIn: 0, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
+      cost: { totalDurationMs: 0, totalApiDurationMs: 0, totalLinesAdded: null, totalLinesRemoved: null },
+    });
+    processTick(snap.cwd, snap);
+    statusStore.commit();
+    const out = renderTemplate(["m_accTokenIn|valueOnly:true"], ctxFor(snap)).join("\n");
+    // formatCompactToken(42000) = "42.0k"; |valueOnly| strips "in:".
+    assert.equal(strip(out), "42.0k");
+  });
+
+  // -------- 10. acc placeholder strip --------
+  it("m_accTokenIn|valueOnly:true with no slot → 'n/a' (placeholder strip)", () => {
+    const snap = fakeSnapshot({ sessionId: "sess-vo-empty" });
+    const out = renderTemplate(["m_accTokenIn|valueOnly:true"], ctxFor(snap)).join("\n");
+    assert.equal(strip(out), "n/a");
   });
 });

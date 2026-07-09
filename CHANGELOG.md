@@ -1,5 +1,69 @@
 # Changelog
 
+## v0.8.43
+
+### Remove
+
+- **`m_tokenTotal` and `m_tokenSession` modules (hard delete).**
+  Both modules rendered the same metric (`totals.input + totals.output +
+  current.tokenCacheCreation + current.tokenCachedIn`) under two
+  different hardcoded prefixes — `tot:` and `session:` respectively.
+  Neither prefix is bound to `labels.*`, so they bypassed the
+  v0.8.22 labels-unified cleanup and the v0.8.42 `|valueOnly|`
+  inline arg was inapplicable to them. Removed per the user's
+  "delete m_tokenTotal and m_tokenSession" directive and per the
+  [[new-feature-convention]] memory (2026-07-09) — no compat
+  shim, no alias fallback. Users who want the per-turn in+out
+  combined metric should compose the two axes inline (e.g.
+  `m_tokenIn + m_tokenOut`) or read `totals.tokenTotalIn +
+  totals.tokenTotalOut` via their own template extension. Existing
+  config.json lineTemplates that reference either module will
+  surface an `unknown lineTemplate module 'm_tokenTotal' /
+  'm_tokenSession'; ignoring` warning once per process and the
+  chunk will drop — same contract as any unrecognized module
+  token.
+  - Removed from `MODULES` and `INLINE_RENDERERS` maps.
+  - Removed from `INLINE_SCHEMAS` registry.
+  - Removed from inline dispatch (both `m_tokenTotal|` and
+    `m_tokenSession|` branches).
+  - Removed shared helpers `inlineTokenTotalLabel` /
+    `inlineTokenSessionLabel`.
+  - Removed test in `src/render-tokens.test.ts`
+    ("m_tokenSession / m_tokenTotal: same numeric totals").
+  - Removed row from MANUAL.md §1.4 standalone modules table.
+  - Removed row from README.md module index.
+  - Cleaned `m_tokenTotalOut` / `m_tokenTotalIn` inline dispatch
+    comments — the v0.8.42-era "must come BEFORE m_tokenTotal:"
+    prefix-shadowing warning is no longer necessary.
+  - Updated the v0.8.42 changelog entry to reflect the new
+    non-label-using-modules exclusion list (m_tokenTotal /
+    m_tokenSession are gone, not excluded).
+
+## v0.8.42
+
+### Add
+
+- **`|valueOnly|<true|false>` inline arg on all label-using
+  `m_*` modules (~36 modules: per-turn tokens / cost / speed /
+  hit-rate / api-ms / api-calls, `m_acc*` family, `m_sum*`
+  family, `m_memUsage`, `m_contextSize` / `m_contextWindowsSize`
+  / `m_contextUsedPercent` / `m_contextRemainingPercent`,
+  `m_tokenInTotal` / `m_tokenTotalOut` / `m_tokenTotalIn`,
+  `m_accStartTime`, `m_sumStartTime`, `m_sumEndTime`).** Opt-in
+  prefix strip — `m_tokenIn|valueOnly:true` renders `1.2K`
+  (was `in:1.2K`), missing data → `n/a` (was `in:n/a`). Accepts
+  only literal `true` / `false` (typos fail loud at the
+  inline-args resolver and drop the chunk). Defaults to `false`
+  so v0.8.x renders stay byte-identical. Forwarded through
+  `m_template` via the passthrough whitelist so an outer
+  `m_template|<key>|valueOnly:true` cascades to every
+  label-using inner module. Non-label-using modules (window,
+  countdown, quota, balance, age, version, session, model,
+  repo, branch, gitStatus, ccVersion, sessionDuration,
+  sessionApiDuration, linesAdded, linesRemoved, windowContext,
+  cacheTtlStatus, statTtlStatus, windowMemUsage, quote, m_template,
+  `s_*`) are out of scope by construction.
+
 ## v0.8.36
 
 ### Add
