@@ -5845,11 +5845,23 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // comparison target is ctx.providerType. "unknown" never matches
     // either arg, so unknown providers silently drop m_template
     // references — same behavior as before.
-    const want =
-      ((params.type as "plan" | "balance" | undefined) ??
-        (params.mode as "plan" | "balance" | undefined)) ??
-      "plan";
-    if (ctx.providerType !== want) return null;
+    //
+    // v0.8.37 — when the user does NOT pass `type` OR `mode`, the
+    // fragment is provider-agnostic and renders under BOTH "plan"
+    // and "balance" providers (context-level templates like
+    // `context` / `git_info` / `realtime` / `tokens_acc` /
+    // `tokens_stat` typically fall in this bucket — they read from
+    // stdin + per-project state, not from provider-specific fields,
+    // and the user's intent is "show this on every tick regardless
+    // of provider"). The previous "default = plan" silently dropped
+    // these on the balance provider. Explicit `|mode:plan` or
+    // `|mode:balance` still does strict-match (verified by
+    // lineTemplate.test.ts:1942).
+    const wantExplicit =
+      (params.type as "plan" | "balance" | undefined) ??
+      (params.mode as "plan" | "balance" | undefined);
+    if (wantExplicit != null && ctx.providerType !== wantExplicit) return null;
+    if (wantExplicit == null && ctx.providerType === "unknown") return null;
     // v0.8.7+ — passthrough: build a passThrough view from every
     // param except the THREE intrinsics (`key` is the lookup target;
     // `type` + `mode` are the providerType filter, both names of the

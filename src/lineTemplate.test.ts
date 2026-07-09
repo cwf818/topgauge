@@ -1971,7 +1971,67 @@ describe("m_template — mode filter drops on mismatch (deepseek vs plan)", () =
   });
 });
 
-// v0.8.7+ — m_template passthrough, end-to-end via renderProviderLine.
+// v0.8.37 — `m_template|<key>` with NO `|type|mode` arg is
+// provider-agnostic. The fragment renders under BOTH "plan" and
+// "balance" providers; only "unknown" drops it. This is the fix
+// for the v0.8.36 regression where context-level templates
+// (`context` / `git_info` / `realtime` / `tokens_acc` /
+// `tokens_stat`) silently disappeared on the deepseek provider
+// because the bare-default "plan" filter dropped them on
+// providerType === "balance". Explicit `|mode:plan` /
+// `|mode:balance` is still strict-match (see describe above).
+describe("m_template — provider-agnostic fragment (no |mode arg, v0.8.37)", () => {
+  beforeEach(() => {
+    __resetForTest({
+      lineTemplates: {
+        // Provider-agnostic fragment — no provider-specific modules
+        // inside, so a successful render is purely the m_template
+        // entry deciding to recurse.
+        agnostic: ["m_modeLabel"],
+      },
+      statuslineTemplate: ["m_template|agnostic"],
+    });
+  });
+  afterEach(() => __resetForTest());
+
+  it("renders on minimax (plan) — backward compat", () => {
+    const line = renderProviderLine("minimax", {
+      mode: "used",
+      nowMs: Date.now(),
+      shortInterval: { label: "5h", startTime: 0, endTime: 1, remainingPercent: 0, usedPercent: 100 },
+      ageMs: null,
+      stale: false,
+      version: "",
+    });
+    assert.ok(strip(line).includes("Usage:"), `got: ${line}`);
+  });
+
+  it("renders on deepseek (balance) — the v0.8.37 fix", () => {
+    const line = renderProviderLine("deepseek", {
+      mode: "used",
+      nowMs: Date.now(),
+      balance: { isAvailable: true, entries: [{ currency: "USD", totalBalance: 25 }], minValue: 25 },
+      ageMs: null,
+      stale: false,
+      version: "",
+    });
+    // m_modeLabel routes to the balance label inside ctx.providerType
+    // === "balance". The test only cares that the fragment is NOT
+    // dropped at the m_template gate.
+    assert.ok(strip(line).length > 0, `got: ${line}`);
+  });
+
+  it("drops on unknown provider — preserves v0.8.36 unknown-drop behavior", () => {
+    const line = renderProviderLine("some-unsupported-provider", {
+      mode: "used",
+      nowMs: Date.now(),
+      ageMs: null,
+      stale: false,
+      version: "",
+    });
+    assert.equal(strip(line), "", `got: ${line}`);
+  });
+});
 // Demonstrates the user's motivating use case: one shared
 // `token_acc` fragment + 2 callers passing different scopes → 2
 // distinct renders. The bare m_accTokenIn inside the fragment
