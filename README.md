@@ -270,8 +270,8 @@ A reference with every field is at [config.example.json](./config.example.json).
   },
   "thresholds": {
     // band cutoffs (4 ascending numbers each)
-    "minimaxPercent": [20, 40, 60, 80],
-    "deepseekBalance": [5, 10, 20, 50],
+    "percentBands": [20, 40, 60, 80],
+    "balanceBands": [5, 10, 20, 50],
   },
   "currency": {
     // DeepSeek per-currency rendering

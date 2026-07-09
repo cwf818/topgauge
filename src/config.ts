@@ -334,13 +334,13 @@ const DEFAULT_CACHE_HIT_COLORS = {
 const DEFAULT_CACHE_HIT_THRESHOLDS: [number, number] = [50, 80];
 
 const DEFAULT_THRESHOLDS: {
-  minimaxPercent: [number, number, number, number];
-  deepseekBalance: [number, number, number, number];
+  percentBands: [number, number, number, number];
+  balanceBands: [number, number, number, number];
 } = {
   // 5-band cutoffs for MiniMax percentage rendering.
-  minimaxPercent: [20, 40, 60, 80],
+  percentBands: [20, 40, 60, 80],
   // 5-band cutoffs for DeepSeek balance rendering (absolute units, not %).
-  deepseekBalance: [5, 10, 20, 50],
+  balanceBands: [5, 10, 20, 50],
 };
 
 const DEFAULT_CURRENCY: {
@@ -1118,21 +1118,21 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
     const t = raw.thresholds;
     if (t && typeof t === "object" && !Array.isArray(t)) {
       const tm = t as Record<string, unknown>;
-      if ("minimaxPercent" in tm) {
-        if (isAscending4Tuple(tm.minimaxPercent)) {
-          out.thresholds.minimaxPercent = tm.minimaxPercent;
+      if ("percentBands" in tm) {
+        if (isAscending4Tuple(tm.percentBands)) {
+          out.thresholds.percentBands = tm.percentBands;
         } else {
           warn(
-            "thresholds.minimaxPercent must be 4 ascending numbers; using default",
+            "thresholds.percentBands must be 4 ascending numbers; using default",
           );
         }
       }
-      if ("deepseekBalance" in tm) {
-        if (isAscending4Tuple(tm.deepseekBalance)) {
-          out.thresholds.deepseekBalance = tm.deepseekBalance;
+      if ("balanceBands" in tm) {
+        if (isAscending4Tuple(tm.balanceBands)) {
+          out.thresholds.balanceBands = tm.balanceBands;
         } else {
           warn(
-            "thresholds.deepseekBalance must be 4 ascending numbers; using default",
+            "thresholds.balanceBands must be 4 ascending numbers; using default",
           );
         }
       }

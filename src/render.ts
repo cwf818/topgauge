@@ -330,7 +330,7 @@ export const BROKEN_COLOR = configStore.get().colors.broken;
 // red, because less used = healthier. We achieve this by indexing into the
 // SAME 5-color palette from opposite ends.
 function colorThresholds(): readonly number[] {
-  return cfg().thresholds.minimaxPercent;
+  return cfg().thresholds.percentBands;
 }
 
 // 5-color palette indexed by band (0..4). In "remaining" mode, band 0
@@ -884,7 +884,7 @@ export function formatLine(
 // "remaining" mode of the MiniMax render.
 
 function balanceThresholds(): readonly number[] {
-  return cfg().thresholds.deepseekBalance;
+  return cfg().thresholds.balanceBands;
 }
 
 // Lowest value → RED, then orange → yellow → dark green → bright green.

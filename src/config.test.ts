@@ -75,7 +75,7 @@ describe("loadConfig — valid override", () => {
       join(tmpDir, "config.json"),
       JSON.stringify({
         colors: { red: "brightBlack", yellow: "\x1b[38;5;226m" },
-        thresholds: { minimaxPercent: [10, 30, 50, 70] },
+        thresholds: { percentBands: [10, 30, 50, 70] },
         bar: { width: 12 },
       }),
     );
@@ -83,8 +83,8 @@ describe("loadConfig — valid override", () => {
     assert.equal(cfg.colors.red, "\x1b[90m"); // brightBlack shortcut
     assert.equal(cfg.colors.yellow, "\x1b[38;5;226m");
     assert.equal(cfg.colors.brightGreen, DEFAULT_CONFIG.colors.brightGreen); // untouched
-    assert.deepEqual(cfg.thresholds.minimaxPercent, [10, 30, 50, 70]);
-    assert.deepEqual(cfg.thresholds.deepseekBalance, [5, 10, 20, 50]); // untouched
+    assert.deepEqual(cfg.thresholds.percentBands, [10, 30, 50, 70]);
+    assert.deepEqual(cfg.thresholds.balanceBands, [5, 10, 20, 50]); // untouched
     assert.equal(cfg.bar.width, 12);
   });
 
@@ -166,21 +166,21 @@ describe("loadConfig — partial / per-section validation", () => {
   it("rejects ascending thresholds that are not 4-tuple", async () => {
     writeFileSync(
       join(tmpDir, "config.json"),
-      JSON.stringify({ thresholds: { minimaxPercent: [20, 40] } }),
+      JSON.stringify({ thresholds: { percentBands: [20, 40] } }),
     );
     const cfg = await loadConfig();
-    assert.deepEqual(cfg.thresholds.minimaxPercent, [20, 40, 60, 80]);
-    assert.match(capturedStderr, /thresholds\.minimaxPercent/);
+    assert.deepEqual(cfg.thresholds.percentBands, [20, 40, 60, 80]);
+    assert.match(capturedStderr, /thresholds\.percentBands/);
   });
 
   it("rejects non-ascending threshold tuples", async () => {
     writeFileSync(
       join(tmpDir, "config.json"),
-      JSON.stringify({ thresholds: { minimaxPercent: [40, 20, 60, 80] } }),
+      JSON.stringify({ thresholds: { percentBands: [40, 20, 60, 80] } }),
     );
     const cfg = await loadConfig();
-    assert.deepEqual(cfg.thresholds.minimaxPercent, [20, 40, 60, 80]);
-    assert.match(capturedStderr, /thresholds\.minimaxPercent/);
+    assert.deepEqual(cfg.thresholds.percentBands, [20, 40, 60, 80]);
+    assert.match(capturedStderr, /thresholds\.percentBands/);
   });
 
   it("rejects display values outside the enum", async () => {
