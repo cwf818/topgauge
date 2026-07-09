@@ -998,6 +998,109 @@ describe("lineTemplate — m_modeLabel:color inline-args tokens", () => {
   });
 });
 
+// v0.8.41+ — m_modeLabel also accepts `display` to override the
+// prefix label's mode locally. Plan path: |display:remaining flips
+// "Usage:" → "Remain:" without changing the global `display` config.
+// Balance path: `display` is ignored (Balance: is mode-agnostic).
+describe("lineTemplate — m_modeLabel|display inline-args tokens", () => {
+  beforeEach(() => __resetUnknownModuleWarnForTest());
+  afterEach(() => __resetForTest());
+
+  it("bare m_modeLabel on a plan template with mode='used' renders Usage:", () => {
+    __resetForTest({ statuslineTemplate:["m_modeLabel"] });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      shortInterval: null, midInterval: null, balance: null,
+      ageMs: null, stale: false, version: "",
+    });
+    // Bare m_modeLabel emits unwrapped text — DEFAULT_COLORS
+    // ["m_modeLabel"] = NAMED_PALETTE.stale which is undefined
+    // (stale is not in NAMED_PALETTE; the bare module has no
+    // default tint). SGR wrapping is opt-in via |color:<c>.
+    assert.equal(line, "Usage:", `got: ${JSON.stringify(line)}`);
+  });
+
+  it("bare m_modeLabel on a plan template with mode='remaining' renders Remain:", () => {
+    __resetForTest({ display: "remaining", statuslineTemplate:["m_modeLabel"] });
+    try {
+      const line = renderProviderLine("minimax", {
+        mode: "remaining", nowMs: Date.now(),
+        shortInterval: null, midInterval: null, balance: null,
+        ageMs: null, stale: false, version: "",
+      });
+      assert.equal(line, "Remain:", `got: ${JSON.stringify(line)}`);
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("m_modeLabel|display:remaining flips Usage: → Remain: even when ctx.mode='used'", () => {
+    __resetForTest({
+      statuslineTemplate:["m_modeLabel|display:remaining"],
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      shortInterval: null, midInterval: null, balance: null,
+      ageMs: null, stale: false, version: "",
+    });
+    assert.equal(line, "Remain:", `got: ${JSON.stringify(line)}`);
+  });
+
+  it("m_modeLabel|display:used flips Remain: → Usage: even when ctx.mode='remaining'", () => {
+    __resetForTest({
+      statuslineTemplate:["m_modeLabel|display:used"],
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "remaining", nowMs: Date.now(),
+      shortInterval: null, midInterval: null, balance: null,
+      ageMs: null, stale: false, version: "",
+    });
+    assert.equal(line, "Usage:", `got: ${JSON.stringify(line)}`);
+  });
+
+  it("m_modeLabel|display:remaining is ignored on a balance provider (still Balance:)", () => {
+    __resetForTest({
+      statuslineTemplate:["m_modeLabel|display:remaining"],
+    });
+    const line = renderProviderLine("deepseek", {
+      mode: "used", nowMs: Date.now(),
+      balance: { isAvailable: true, entries: [{ currency: "USD", totalBalance: 25 }], minValue: 25 },
+      ageMs: null, stale: false, version: "",
+    });
+    assert.equal(line, "Balance:", `got: ${JSON.stringify(line)}`);
+  });
+
+  it("m_modeLabel|display:remaining|color:red combines — color wins, label is 'Remain:'", () => {
+    // The two inline args compose: color wraps, display flips the label.
+    // SGR wrapping fires only because color is explicit; without it the
+    // bare path emits plain text.
+    __resetForTest({
+      statuslineTemplate:["m_modeLabel|display:remaining|color:red"],
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      shortInterval: null, midInterval: null, balance: null,
+      ageMs: null, stale: false, version: "",
+    });
+    assert.equal(line, "\x1b[38;5;196mRemain:\x1b[0m", `got: ${JSON.stringify(line)}`);
+  });
+
+  it("m_modeLabel|display:garbage is a hard noop (drops and warns)", () => {
+    __resetForTest({
+      statuslineTemplate:["m_modeLabel|display:garbage"],
+    });
+    const { value: line, warns } = withCapturedStderr(() =>
+      renderProviderLine("minimax", {
+        mode: "used", nowMs: Date.now(),
+        shortInterval: null, midInterval: null, balance: null,
+        ageMs: null, stale: false, version: "",
+      }),
+    );
+    assert.equal(line, "", `got: ${JSON.stringify(line)}`);
+    assert.equal(warns.filter((w) => w.includes("unknown lineTemplate module")).length, 1);
+  });
+});
+
 // v0.3.3+ — every existing module accepts an optional `:color:<c>`
 // override. These tests cover both:
 //   - plain-text modules (m_version, m_tokenIn, …) — the override

@@ -4598,8 +4598,12 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_modeLabel: {
     // No implicit — the string is derived from ctx. The first segment,
     // if present, MUST be a name in `named` (i.e. starts a name:value
-    // pair). Otherwise the token is malformed.
-    named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named },
+    // pair). Otherwise the token is malformed. v0.8.41+: also
+    // accepts `display` to override the prefix label's mode locally
+    // (e.g. `m_modeLabel|display:remaining` flips "Usage:" →
+    // "Remain:" without changing the global `display` config).
+    // Ignored on the balance path (Balance: is mode-agnostic).
+    named: { ...COLOR_PARAM.named, ...DISPLAY_PARAM.named, ...NULDROP_PARAM.named },
   },
   // v0.3.3+ — every existing module also accepts an optional :color|
   // override. Schema is empty (`{}`) when the module takes no implicit
@@ -5040,9 +5044,14 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // label, else the mode-aware label. v6.x: inline form now ALSO
     // tints with DEFAULT_COLORS["m_modeLabel"] (=stale gray) so bare
     // vs inline parity holds for the prefix label too.
+    // v0.8.41+: `display` inline arg overrides the label's mode locally
+    // (e.g. `m_modeLabel|display:remaining` flips "Usage:" → "Remain:"
+    // without changing the global `display` config). Ignored on the
+    // balance path — Balance: has no used/remaining distinction.
+    const mode = (params.display as DisplayMode | undefined) ?? ctx.mode;
     const s = ctx.providerType === "balance"
       ? cfg().modeLabels.balance
-      : cfg().modeLabels[ctx.mode];
+      : cfg().modeLabels[mode];
     return wrapPlainDefault("m_modeLabel", s, params.color as string | undefined);
   },
   m_window: (params, ctx) => {
