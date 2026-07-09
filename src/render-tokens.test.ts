@@ -11,6 +11,7 @@ import {
   cacheHitColor,
   formatAbsTime,
   formatCompactToken,
+  formatCost,
   formatMemBytes,
   formatSpeed,
   getFieldByPath,
@@ -235,6 +236,37 @@ describe("formatCompactToken", () => {
     assert.equal(formatCompactToken(NaN), "0");
     assert.equal(formatCompactToken(-1), "0");
     assert.equal(formatCompactToken(Infinity), "0");
+  });
+});
+
+describe("formatCost (vX.X.X+ m_tokenCost family)", () => {
+  it("< 0.01 → 5 decimal places", () => {
+    assert.equal(formatCost(0.00123), "0.00123");
+    assert.equal(formatCost(0.0099), "0.00990");
+  });
+  it("< 0.1 → 4 decimal places", () => {
+    assert.equal(formatCost(0.05), "0.0500");
+    assert.equal(formatCost(0.0999), "0.0999");
+  });
+  it("< 1 → 3 decimal places", () => {
+    assert.equal(formatCost(0.42), "0.420");
+    assert.equal(formatCost(0.99), "0.990");
+  });
+  it("< 1000 → 2 decimal places", () => {
+    assert.equal(formatCost(12.34), "12.34");
+    assert.equal(formatCost(999.9), "999.90");
+  });
+  it("≥ 1000 → 2 decimal places", () => {
+    assert.equal(formatCost(1000), "1000.00");
+    assert.equal(formatCost(1234.56), "1234.56");
+  });
+  it("zero → '0.00'", () => {
+    assert.equal(formatCost(0), "0.00");
+  });
+  it("negative / non-finite → '0.00'", () => {
+    assert.equal(formatCost(-1), "0.00");
+    assert.equal(formatCost(NaN), "0.00");
+    assert.equal(formatCost(Infinity), "0.00");
   });
 });
 
@@ -6738,5 +6770,211 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
     ).join("\n");
     // Plan anchor unavailable → empirical firstAt wins.
     assert.equal(strip(out), `start:${formatAbsTime(empiricalStart)}`);
+  });
+});
+
+// vX.X.X+ — m_tokenCost / m_accTokenCost / m_sumTokenCost family
+describe("renderTemplate — m_tokenCost family (vX.X.X+)", () => {
+  beforeEach(() => {
+    // Set a known tokenPrice (per million tokens). The effective per-token
+    // prices are in/1e6, out/1e6, cachedIn/1e6. The top-level beforeEach
+    // already called beginTickForTest and reset prev tick state.
+    const cfg = configStore.get();
+    cfg.tokenPrice = { in: 10_000, out: 20_000, cachedIn: 5_000, currency: "USD" };
+  });
+
+  // ------------------------------------------------------------------
+  // m_tokenCost (per-turn)
+  // ------------------------------------------------------------------
+  it("m_tokenCost renders 'cost:N' when tokenPrice is configured", () => {
+    setPrevTick("sess-test", { totalApiMs: 0 }, "D:\\test");
+    const snap = fakeSnapshot(); // current.input=38, current.output=155, cachedIn=163441
+    processTick(snap.cwd, snap);
+    statusStore.commit();
+    const out = renderTemplate(["m_tokenCost"], ctxFor(snap)).join("\n");
+    // effective per-token: in=10000/1e6=0.01, out=20000/1e6=0.02, cached=5000/1e6=0.005
+    // cost = 38*0.01 + 155*0.02 + 163441*0.005 = 0.38 + 3.1 + 817.205 = 820.685
+    // formatCost: ≥1 → 2dp → (820.685).toFixed(2) = "820.69"
+    assert.equal(strip(out), "cost:820.69");
+  });
+
+  it("m_tokenCost with zero prices → placeholder", () => {
+    const cfg = configStore.get();
+    cfg.tokenPrice = { in: 0, out: 0, cachedIn: 0, currency: "USD" };
+    const snap = fakeSnapshot();
+    const out = renderTemplate(["m_tokenCost"], ctxFor(snap)).join("\n");
+    assert.match(strip(out), /cost:n\/a/);
+  });
+
+  it("m_tokenCost full cost calculation (all three axes)", () => {
+    setPrevTick("sess-test", { totalApiMs: 0 }, "D:\\test");
+    const snap = fakeSnapshot({ current: { tokenIn: 100, tokenOut: 50, tokenCacheCreation: 0, tokenCachedIn: 20 } });
+    processTick(snap.cwd, snap);
+    statusStore.commit();
+    const out = renderTemplate(["m_tokenCost"], ctxFor(snap)).join("\n");
+    // effective: 100*0.01 + 50*0.02 + 20*0.005 = 1.0 + 1.0 + 0.1 = 2.1
+    assert.equal(strip(out), "cost:2.10");
+  });
+
+  it("m_tokenCost idle tick (deltaApi=0) → STALE_COLOR wrap", () => {
+    // v0.8.30.1+ idle pattern: seed prev with SAME totalApiDurationMs
+    // as current so deltaApi=0 → hasMeasurement=false. The number
+    // shown is the live stdin cost wrapped in STALE_COLOR (same
+    // pattern as m_tokenIn's idle test at line 798).
+    setPrevTick("sess-test", { totalApiMs: 60_000 }, "D:\\test");
+    const snap = fakeSnapshot();
+    const out = renderTemplate(["m_tokenCost"], ctxFor(snap)).join("\n");
+    // idle: live stdin values × price, STALE_COLORed
+    // cost = 820.685 → formatCost "820.7"
+    assert.ok(out.includes("\x1b[90m"), "idle tick should use STALE_COLOR");
+    assert.ok(out.includes("cost:820.69"), "idle tick should show live cost");
+  });
+
+  it("m_tokenCost|color|red inline override", () => {
+    setPrevTick("sess-test", { totalApiMs: 0 }, "D:\\test");
+    const snap = fakeSnapshot();
+    processTick(snap.cwd, snap);
+    statusStore.commit();
+    const out = renderTemplate(["m_tokenCost|color:red"], ctxFor(snap)).join("\n");
+    assert.ok(out.includes("cost:820.69"));
+  });
+
+  it("m_tokenCost only inPrice set, out and cachedIn zero", () => {
+    const cfg = configStore.get();
+    cfg.tokenPrice = { in: 5_000, out: 0, cachedIn: 0, currency: "USD" };
+    setPrevTick("sess-test", { totalApiMs: 0 }, "D:\\test");
+    const snap = fakeSnapshot({ current: { tokenIn: 200, tokenOut: 999, tokenCacheCreation: 0, tokenCachedIn: 999 } });
+    processTick(snap.cwd, snap);
+    statusStore.commit();
+    const out = renderTemplate(["m_tokenCost"], ctxFor(snap)).join("\n");
+    // 200*0.005 = 1.0
+    assert.equal(strip(out), "cost:1.00");
+  });
+
+  // ------------------------------------------------------------------
+  // m_accTokenCost (accumulated)
+  // ------------------------------------------------------------------
+  it("m_accTokenCost on empty slot → placeholder", () => {
+    const snap = fakeSnapshot();
+    const out = renderTemplate(["m_accTokenCost"], ctxFor(snap)).join("\n");
+    assert.match(strip(out), /cost:n\/a/);
+  });
+
+  it("m_accTokenCost after one valid tick", () => {
+    setPrevTick("sess-test", { totalApiMs: 0 }, "D:\\test");
+    const snap = fakeSnapshot();
+    processTick(snap.cwd, snap);
+    statusStore.commit();
+    const out = renderTemplate(["m_accTokenCost"], ctxFor(snap)).join("\n");
+    // cost = 38*0.01 + 155*0.02 + 163441*0.005 = 820.685
+    assert.equal(strip(out), "cost:820.69");
+  });
+
+  it("m_accTokenCost second tick accumulates", () => {
+    setPrevTick("sess-test", { totalApiMs: 0 }, "D:\\test");
+    const snap1 = fakeSnapshot(); // totalApiMs=60_000
+    processTick(snap1.cwd, snap1);
+    statusStore.commit();
+    // Second tick: different values AND higher totalApiDurationMs so
+    // deltaApi = 120_000 - 60_000 = 60_000 > 0 → valid tick.
+    setPrevTick("sess-test", { totalApiMs: 60_000 }, "D:\\test");
+    const snap2 = fakeSnapshot({
+      current: { tokenIn: 50, tokenOut: 100, tokenCacheCreation: 0, tokenCachedIn: 5 },
+      cost: { totalDurationMs: 1_200_000, totalApiDurationMs: 120_000, totalLinesAdded: 3965, totalLinesRemoved: 967 },
+    });
+    processTick(snap2.cwd, snap2);
+    statusStore.commit();
+    const out = renderTemplate(["m_accTokenCost"], ctxFor(snap2)).join("\n");
+    // tick1: 38*0.01 + 155*0.02 + 163441*0.005 = 0.38 + 3.1 + 817.205 = 820.685
+    // tick2: 50*0.01 + 100*0.02 + 5*0.005 = 0.5 + 2.0 + 0.025 = 2.525
+    // total: 820.685 + 2.525 = 823.21 → formatCost rounds to 823.2 (1dp)
+    assert.equal(strip(out), "cost:823.21");
+  });
+
+  it("m_accTokenCost|scope|project project-wide cost", () => {
+    setPrevTick("sess-test", { totalApiMs: 0 }, "D:\\test");
+    const snap = fakeSnapshot();
+    processTick(snap.cwd, snap);
+    statusStore.commit();
+    const out = renderTemplate(["m_accTokenCost|scope:project"], ctxFor(snap)).join("\n");
+    // Same values as session scope for a single-tick test
+    assert.equal(strip(out), "cost:820.69");
+  });
+
+  it("m_accTokenCost|color|red inline override", () => {
+    setPrevTick("sess-test", { totalApiMs: 0 }, "D:\\test");
+    const snap = fakeSnapshot();
+    processTick(snap.cwd, snap);
+    statusStore.commit();
+    const out = renderTemplate(["m_accTokenCost|color:red"], ctxFor(snap)).join("\n");
+    assert.ok(out.includes("cost:820.69"));
+  });
+
+  // ------------------------------------------------------------------
+  // m_sumTokenCost (cross-project sum / windowed)
+  // Use setStatCacheForTest to seed the aggregate cache directly
+  // (avoids JSONL file isolation complexity).
+  // ------------------------------------------------------------------
+  it("m_sumTokenCost with no samples → placeholder", () => {
+    __resetStatCacheForTest();
+    const snap = fakeSnapshot();
+    const out = renderTemplate(["m_sumTokenCost|window:all|model:all"], ctxFor(snap)).join("\n");
+    assert.match(strip(out), /cost:n\/a/);
+  });
+
+  it("m_sumTokenCost with samples → sum(in*price + out*price + cached*price)", () => {
+    __resetStatCacheForTest();
+    setStatCacheForTest(
+      "stat:all:all:false",
+      { sumIn: 300, sumOut: 150, sumCached: 70, sumTotalIn: 450, sumApiMs: 120_000, rows: 2, calls: 2, lastAt: Date.now(), firstAt: Date.now() - 10_000, generatedAt: Date.now() },
+      300_000,
+    );
+    const snap = fakeSnapshot();
+    const out = renderTemplate(["m_sumTokenCost|window:all|model:all"], ctxFor(snap)).join("\n");
+    // effective: 300*0.01 + 150*0.02 + 70*0.005 = 3.0 + 3.0 + 0.35 = 6.35
+    // formatCost: ≥1 < 1000 → 1dp → (6.35).toFixed(1) = "6.3" (banker's rounding)
+    assert.equal(strip(out), "cost:6.35");
+  });
+
+  it("m_sumTokenCost|window|5h bounded window", () => {
+    __resetStatCacheForTest();
+    setStatCacheForTest(
+      "stat:all:5h:false",
+      { sumIn: 80, sumOut: 40, sumCached: 10, sumTotalIn: 90, sumApiMs: 30_000, rows: 1, calls: 1, lastAt: Date.now(), firstAt: Date.now() - 1000, generatedAt: Date.now() },
+      300_000,
+    );
+    const snap = fakeSnapshot();
+    const out = renderTemplate(["m_sumTokenCost|window:5h|model:all"], ctxFor(snap)).join("\n");
+    // effective: 80*0.01 + 40*0.02 + 10*0.005 = 0.8 + 0.8 + 0.05 = 1.65
+    // formatCost: ≥1 < 1000 → 1dp → "1.7"
+    assert.equal(strip(out), "cost:1.65");
+  });
+
+  it("m_sumTokenCost|model|active model-filtered", () => {
+    __resetStatCacheForTest();
+    setStatCacheForTest(
+      "stat:MiniMax-M3:all:false",
+      { sumIn: 50, sumOut: 25, sumCached: 5, sumTotalIn: 55, sumApiMs: 15_000, rows: 1, calls: 1, lastAt: Date.now(), firstAt: Date.now() - 1000, generatedAt: Date.now() },
+      300_000,
+    );
+    const snap = fakeSnapshot({ modelDisplayName: "MiniMax-M3" });
+    const out = renderTemplate(["m_sumTokenCost|window:all|model:active"], ctxFor(snap)).join("\n");
+    // effective: 50*0.01 + 25*0.02 + 5*0.005 = 0.5 + 0.5 + 0.025 = 1.025
+    // formatCost: ≥1 → 2dp → (1.025).toFixed(2) = "1.02"
+    assert.equal(strip(out), "cost:1.02");
+  });
+
+  it("m_sumTokenCost|window|all (default) scans all", () => {
+    __resetStatCacheForTest();
+    setStatCacheForTest(
+      "stat:all:all:false",
+      { sumIn: 30, sumOut: 20, sumCached: 10, sumTotalIn: 30, sumApiMs: 10_000, rows: 1, calls: 1, lastAt: Date.now(), firstAt: Date.now() - 1000, generatedAt: Date.now() },
+      300_000,
+    );
+    const snap = fakeSnapshot();
+    const out = renderTemplate(["m_sumTokenCost|window:all|model:all"], ctxFor(snap)).join("\n");
+    // effective: 30*0.01 + 20*0.02 + 10*0.005 = 0.3 + 0.4 + 0.05 = 0.75
+    // formatCost: ≥0.1 < 1 → 2dp → "0.75"
+    assert.equal(strip(out), "cost:0.750");
   });
 });

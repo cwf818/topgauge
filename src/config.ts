@@ -598,6 +598,10 @@ const DEFAULT_CONFIG: {
     // `"quota:"` preserves a clean axis to override via
     // config.json. Renders as e.g. `quota(5h):123/500`.
     labelQuota: string;
+    // vX.X.X+ — token cost module prefix. Read by m_tokenCost /
+    // m_accTokenCost / m_sumTokenCost. Default "cost:" preserves
+    // a clean axis to override via config.json.
+    labelTokenCost: string;
   };
   colors: typeof DEFAULT_COLORS;
   cacheHitColors: typeof DEFAULT_CACHE_HIT_COLORS;
@@ -619,6 +623,15 @@ const DEFAULT_CONFIG: {
   // `["m_template|_X"]` form with a one-shot warn.
   statuslineTemplate: string[];
   tokenFormat: typeof DEFAULT_TOKEN_FORMAT;
+  // vX.X.X+ — per-token pricing for the m_tokenCost / m_accTokenCost /
+  // m_sumTokenCost modules. All prices default to 0 (opt-in). When all
+  // three are 0 the cost modules render placeholder / "n/a".
+  tokenPrice: {
+    in: number;      // price per input token
+    out: number;     // price per output token
+    cachedIn: number;// price per cache-read token
+    currency: string;// currency code e.g. "USD", "CNY"
+  };
   // Plugin version, populated at startup by index.ts from
   // .claude-plugin/plugin.json. The m_version display module reads
   // this field; tests inject values via __resetForTest.
@@ -687,6 +700,10 @@ const DEFAULT_CONFIG: {
     // v0.8.x "labelFoo:" convention (trailing colon included
     // so the renderer can concat without a separator).
     labelQuota: "quota:",
+    // vX.X.X+ — token cost module prefix default. Matches the
+    // existing "labelFoo:" convention (trailing colon included
+    // so the renderer can concat without a separator).
+    labelTokenCost: "cost:",
   },
   colors: DEFAULT_COLORS,
   cacheHitColors: DEFAULT_CACHE_HIT_COLORS,
@@ -700,6 +717,13 @@ const DEFAULT_CONFIG: {
   lineTemplates: DEFAULT_LINE_TEMPLATES,
   statuslineTemplate: DEFAULT_STATUSLINE_TEMPLATE,
   tokenFormat: DEFAULT_TOKEN_FORMAT,
+  // vX.X.X+ — per-token pricing defaults (all zero — opt-in).
+  tokenPrice: {
+    in: 0,
+    out: 0,
+    cachedIn: 0,
+    currency: "USD",
+  },
   version: "",
   providers: DEFAULT_PROVIDERS,
   intervals: {
@@ -995,6 +1019,8 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
         // v0.9.0+ — quota module prefix. Net-new axis; default
         // "quota:" preserved (see DEFAULT_CONFIG.labels above).
         "labelQuota",
+        // vX.X.X+ — token cost module prefix.
+        "labelTokenCost",
       ];
       for (const f of fields) {
         if (typeof lm[f] === "string") {
@@ -1553,6 +1579,33 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
       out.quoteInsecureTls = v;
     } else {
       warn("quoteInsecureTls must be a boolean; using default");
+    }
+  }
+
+  // vX.X.X+ — tokenPrice: opt-in pricing for m_tokenCost family.
+  // All sub-keys optional; missing/invalid → keep default (zero).
+  if ("tokenPrice" in raw) {
+    const tp = raw.tokenPrice;
+    if (tp && typeof tp === "object" && !Array.isArray(tp)) {
+      const tpm = tp as Record<string, unknown>;
+      for (const key of ["in", "out", "cachedIn"] as const) {
+        if (key in tpm) {
+          if (typeof tpm[key] === "number" && Number.isFinite(tpm[key]) && (tpm[key] as number) >= 0) {
+            out.tokenPrice[key] = tpm[key] as number;
+          } else {
+            warn(`tokenPrice.${key} must be a non-negative number; using default`);
+          }
+        }
+      }
+      if ("currency" in tpm) {
+        if (typeof tpm.currency === "string" && tpm.currency.length > 0) {
+          out.tokenPrice.currency = tpm.currency.toUpperCase();
+        } else {
+          warn("tokenPrice.currency must be a non-empty string; using default");
+        }
+      }
+    } else {
+      warn("tokenPrice must be an object; using default");
     }
   }
 

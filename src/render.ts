@@ -174,7 +174,8 @@ type LabelAxis =
   | "hitRate"   // v0.8.22+ — lifted out of hardcoded literal
   | "contextSize" | "contextWindowsSize" | "contextUsedPercent" | "contextRemainingPercent" // v0.8.23+
   | "startTime" | "endTime" // v0.8.24+ — start/end of the tick statistics window
-  | "quota";   // v0.9.0+ — quota module prefix ("quota(5h):123/500")
+  | "quota"   // v0.9.0+ — quota module prefix ("quota(5h):123/500")
+  | "cost";   // vX.X.X+ — token cost module prefix ("cost:$0.0123")
 function labelFor(axis: LabelAxis): string {
   const labels = cfg().labels;
   switch (axis) {
@@ -204,6 +205,10 @@ function labelFor(axis: LabelAxis): string {
     // config.ts:DEFAULT_CONFIG.labels.labelQuota). Reads "used/limit"
     // in `m_quota|term|short`'s body, e.g. "quota(5h):123/500".
     case "quota": return labels.labelQuota;
+    // vX.X.X+ — token cost module prefix. Default "cost:" (set in
+    // config.ts:DEFAULT_CONFIG.labels.labelTokenCost). Read by
+    // m_tokenCost / m_accTokenCost / m_sumTokenCost.
+    case "cost": return labels.labelTokenCost;
   }
 }
 
@@ -2016,6 +2021,30 @@ m_quota: Object.assign(
       undefined,
     );
   },
+  // vX.X.X+ — per-turn token cost. Computed from current.* × tokenPrice.
+  // When all prices are zero (the default) the module falls back to
+  // placeholder "cost:n/a". Idle ticks mirror m_tokenIn's "live but
+  // stale" pattern: cost is calculated from live stdin values and
+  // wrapped in STALE_COLOR.
+  m_tokenCost: (c) => {
+    const t = c.tokens;
+    if (!t || !t.sessionId) return placeholderBare("m_tokenCost", c);
+    const tp = cfg().tokenPrice;
+    const totalPrice = tp.in + tp.out + tp.cachedIn;
+    if (totalPrice <= 0) return placeholderBare("m_tokenCost", c);
+    const r = getDeltaForRender();
+    const liveIn = t.current.tokenIn ?? 0;
+    const liveOut = t.current.tokenOut ?? 0;
+    const liveCached = t.current.tokenCachedIn ?? 0;
+    // tokenPrice values are per-million-tokens; divide by 1,000,000.
+    const liveCost = ((tp.in / 1_000_000) * liveIn) + ((tp.out / 1_000_000) * liveOut) + ((tp.cachedIn / 1_000_000) * liveCached);
+    if (!r.hasMeasurement) {
+      // Idle tick: live stdin values × price, stale-colored
+      return `${STALE_COLOR}${labelFor("cost")}${formatCost(liveCost)}${RESET}`;
+    }
+    const cost = ((tp.in / 1_000_000) * r.in) + ((tp.out / 1_000_000) * r.out) + ((tp.cachedIn / 1_000_000) * r.cachedIn);
+    return wrapValueDefault("m_tokenCost", cost, `${labelFor("cost")}${formatCost(cost)}`, undefined);
+  },
   // v0.4.0+ — per-API-call input speed. Reads the previous-tick
   // snapshot from cache (keyed by sessionId) and computes
   // delta(current.input) / delta(cost.totalApiDurationMs) * 1000.
@@ -2154,6 +2183,22 @@ m_quota: Object.assign(
     const n = v ? v.accApiCalls : 0;
     return wrapValueDefault("m_accApiCalls", n, accBody(c, "apiCalls", scope), undefined);
   },
+  // vX.X.X+ — accumulated token cost. Computed at render time from
+  // peekAcc(scope).{accTokenIn,accTokenOut,accTokenCachedIn} × tokenPrice.
+  // When all prices are zero (the default) the module falls back to
+  // placeholder "cost:n/a". Scope resolved via passThrough (default session).
+  m_accTokenCost: (c) => {
+    const scope = passThroughScope(c);
+    const useScope = scope ?? "session";
+    const v = peekAcc(useScope, c);
+    if (!v) return placeholderBare("m_accTokenCost", c);
+    const tp = cfg().tokenPrice;
+    const totalPrice = tp.in + tp.out + tp.cachedIn;
+    if (totalPrice <= 0) return placeholderBare("m_accTokenCost", c);
+    // tokenPrice values are per-million-tokens; divide by 1,000,000.
+    const cost = ((tp.in / 1_000_000) * v.accTokenIn) + ((tp.out / 1_000_000) * v.accTokenOut) + ((tp.cachedIn / 1_000_000) * v.accTokenCachedIn);
+    return wrapValueDefault("m_accTokenCost", cost, `${labelFor("cost")}${formatCost(cost)}`, undefined);
+  },
   // v0.8.13+ — m_accTokenInSpeed / m_accTokenOutSpeed — session-
   // cumulative throughput (t/s) computed from the chosen scope's
   // accumulator: accTokenIn / accApiMs * 1000 (or accTokenOut).
@@ -2283,6 +2328,19 @@ m_quota: Object.assign(
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderBare("m_sumTokenTotalIn", c);
     return wrapValueDefault("m_sumTokenTotalIn", agg.sumTotalIn, `${labelFor("totalIn")}${formatCompactToken(agg.sumTotalIn)}`, undefined);
+  },
+  // vX.X.X+ — windowed token cost. Computed from sumIn/Out/Cached ×
+  // tokenPrice. When all prices are zero (default) → placeholder.
+  m_sumTokenCost: (c) => {
+    const filter = parseWindowScope(c, c.passThrough ?? {});
+    if (!filter) return null;
+    const agg = fetchSumAggregate(filter);
+    if (agg.rows === 0) return placeholderBare("m_sumTokenCost", c);
+    const tp = cfg().tokenPrice;
+    const totalPrice = tp.in + tp.out + tp.cachedIn;
+    if (totalPrice <= 0) return placeholderBare("m_sumTokenCost", c);
+    const cost = ((tp.in / 1_000_000) * agg.sumIn) + ((tp.out / 1_000_000) * agg.sumOut) + ((tp.cachedIn / 1_000_000) * agg.sumCached);
+    return wrapValueDefault("m_sumTokenCost", cost, `${labelFor("cost")}${formatCost(cost)}`, undefined);
   },
   m_sumApiMs: (c) => {
     // v0.8.7+ — bare m_sum* reads c.passThrough (forwarded by an outer m_template); v0.8.14+ — zero-row renders placeholder (was: drop)
@@ -2801,6 +2859,21 @@ export function formatSpeed(tps: number | null): string {
   return `${tps.toFixed(precision)} t/s`;
 }
 
+// vX.X.X+ — tiered-precision cost formatter for m_tokenCost family.
+// At least 2 decimal places, at most 5:
+//   < 0.01 → 5dp, < 0.1 → 4dp, < 1 → 3dp, >= 1 → 2dp
+// Non-finite / negative → "0.00". Caller attaches currency prefix via labelFor("cost").
+export function formatCost(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return "0.00";
+  if (n === 0) return "0.00";
+  let precision: number;
+  if (n < 0.01) precision = 5;
+  else if (n < 0.1) precision = 4;
+  else if (n < 1) precision = 3;
+  else precision = 2;
+  return n.toFixed(precision);
+}
+
 // v0.4.0+ — 5-band color picker for the speed scale.
 // Faster = greener; slower = redder. Same color palette
 // shape as the existing 5-band gauge modules
@@ -3296,6 +3369,13 @@ const DEFAULT_COLORS: Record<string, string> = {
   // that defensively index DEFAULT_COLORS. Mirrors m_memUsage
   // cyan so an upgrade preserves a familiar hue.
   m_windowMemUsage: NAMED_PALETTE.cyan,
+  // vX.X.X+ — cost module default tint. Gold/yellow from the
+  // config-driven palette — monetary values sit in the yellow/
+  // orange family, distinct from the green/red/blue/brown of
+  // the existing token-flow modules.
+  m_tokenCost: configStore.get().colors.yellow,
+  m_accTokenCost: configStore.get().colors.yellow,
+  m_sumTokenCost: configStore.get().colors.yellow,
 };
 
 // Snapshot of `cfg().colors` + the `brightBlack` input shortcut. Read
@@ -4029,6 +4109,11 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   m_countdown: placeholderDashesUnitFn((c) => `${c.shortInterval?.label ?? "5h"}:--`),
   m_balance: placeholderNA("balance:"),
   m_quota: placeholderQuota,
+  // vX.X.X+ — token cost module placeholders. Render "cost:n/a" so
+  // the placeholder stays in lockstep with labelTokenCost overrides.
+  m_tokenCost: placeholderLabelOr("cost"),
+  m_accTokenCost: placeholderLabelOr("cost"),
+  m_sumTokenCost: placeholderLabelOr("cost"),
 };
 
 // Render a placeholder body unless the user has explicitly opted
@@ -4642,6 +4727,16 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   // which percentage is shown (parallel to m_windowContext);
   // |nulldrop|<bool> drops the chunk on null.
   m_windowMemUsage: { named: { ...COLOR_PARAM.named, ...DISPLAY_PARAM.named, ...NULDROP_PARAM.named } },
+  // vX.X.X+ — per-turn token cost inline-args. Same shape as the
+  // per-turn m_token* family (color + nulldrop).
+  m_tokenCost: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  // vX.X.X+ — accumulated token cost inline-args. Same arg surface
+  // as m_accApiCalls (color + nulldrop + scope).
+  m_accTokenCost: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
+  // vX.X.X+ — windowed token cost inline-args. Same 5-axis arg
+  // surface as the other m_sum* modules (color + nulldrop + model +
+  // window + align).
+  m_sumTokenCost: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...MODEL_PARAM.named, ...WINDOW_PARAM.named, ...ALIGN_PARAM.named } },
   // v0.4.0+ — sub-template reference. First argument is the key
   // into cfg().lineTemplates (the user's reusable-fragment
   // registry). Optional `:type|<plan|balance>` filter (default
@@ -5168,6 +5263,29 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
       params.color as string | undefined,
     );
   },
+  // vX.X.X+ — per-turn token cost inline. Mirrors m_tokenCost MODULES
+  // body (computed from current.* × tokenPrice). Same arg surface as
+  // m_tokenCachedIn (color + nulldrop).
+  m_tokenCost: (params, ctx) => {
+    const t = ctx.tokens;
+    if (!t || !t.sessionId) return placeholderWithColor("m_tokenCost", params, ctx);
+    const tp = cfg().tokenPrice;
+    const totalPrice = tp.in + tp.out + tp.cachedIn;
+    if (totalPrice <= 0) return placeholderWithColor("m_tokenCost", params, ctx);
+    const r = getDeltaForRender();
+    const liveIn = t.current.tokenIn ?? 0;
+    const liveOut = t.current.tokenOut ?? 0;
+    const liveCached = t.current.tokenCachedIn ?? 0;
+    // tokenPrice values are per-million-tokens; divide by 1,000,000.
+    const liveCost = ((tp.in / 1_000_000) * liveIn) + ((tp.out / 1_000_000) * liveOut) + ((tp.cachedIn / 1_000_000) * liveCached);
+    const userColor = params.color as string | undefined;
+    if (!r.hasMeasurement) {
+      const color = userColor ?? STALE_COLOR;
+      return `${color}${labelFor("cost")}${formatCost(liveCost)}${RESET}`;
+    }
+    const cost = ((tp.in / 1_000_000) * r.in) + ((tp.out / 1_000_000) * r.out) + ((tp.cachedIn / 1_000_000) * r.cachedIn);
+    return wrapValueDefault("m_tokenCost", cost, `${labelFor("cost")}${formatCost(cost)}`, userColor);
+  },
   // v0.4.0+ — :color|scale (or no :color| at all) → 5-band
   // scale color on the active tick, STALE_COLOR on the
   // cached/inactive tick. :color|<shortcut|SGR> → that exact
@@ -5250,6 +5368,18 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const v = peekAcc(scope, ctx);
     const n = v ? v.accApiCalls : 0;
     return wrapValueDefault("m_accApiCalls", n, accBody(ctx, "apiCalls", scope), passThroughOr<string>(params, ctx, "color"));
+  },
+  // vX.X.X+ — accumulated token cost inline. Computed from peekAcc ×
+  // tokenPrice. Same arg surface as m_accApiCalls (color/nulldrop/scope).
+  m_accTokenCost: (params, ctx) => {
+    const scope = resolveAccScope(params, ctx);
+    const v = peekAcc(scope, ctx);
+    if (!v) return placeholderWithColor("m_accTokenCost", params, ctx);
+    const tp = cfg().tokenPrice;
+    const totalPrice = tp.in + tp.out + tp.cachedIn;
+    if (totalPrice <= 0) return placeholderWithColor("m_accTokenCost", params, ctx);
+    const cost = ((tp.in / 1_000_000) * v.accTokenIn) + ((tp.out / 1_000_000) * v.accTokenOut) + ((tp.cachedIn / 1_000_000) * v.accTokenCachedIn);
+    return wrapValueDefault("m_accTokenCost", cost, `${labelFor("cost")}${formatCost(cost)}`, passThroughOr<string>(params, ctx, "color"));
   },
   // v0.8.13+ — inline m_accTokenInSpeed / m_accTokenOutSpeed.
   // Mirrors m_tokenInSpeed / m_tokenOutSpeed contract: `:color|scale`
@@ -5355,6 +5485,20 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderWithColor("m_sumTokenTotalIn", params, ctx);
     return wrapValueDefault("m_sumTokenTotalIn", agg.sumTotalIn, `${labelFor("totalIn")}${formatCompactToken(agg.sumTotalIn)}`, passThroughOr<string>(params, ctx, "color"));
+  },
+  // vX.X.X+ — windowed token cost inline. Same 5-axis arg surface
+  // as the other m_sum* modules (model/window/align + color/nulldrop).
+  m_sumTokenCost: (params, ctx) => {
+    const merged = mergePassThrough(params, ctx);
+    const filter = parseWindowScope(ctx, merged);
+    if (!filter) return INLINE_BADARG;
+    const agg = fetchSumAggregate(filter);
+    if (agg.rows === 0) return placeholderWithColor("m_sumTokenCost", params, ctx);
+    const tp = cfg().tokenPrice;
+    const totalPrice = tp.in + tp.out + tp.cachedIn;
+    if (totalPrice <= 0) return placeholderWithColor("m_sumTokenCost", params, ctx);
+    const cost = ((tp.in / 1_000_000) * agg.sumIn) + ((tp.out / 1_000_000) * agg.sumOut) + ((tp.cachedIn / 1_000_000) * agg.sumCached);
+    return wrapValueDefault("m_sumTokenCost", cost, `${labelFor("cost")}${formatCost(cost)}`, passThroughOr<string>(params, ctx, "color"));
   },
   m_sumApiMs: (params, ctx) => {
     const merged = mergePassThrough(params, ctx);
@@ -6141,6 +6285,8 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         inline = expandInlineToken(tok, "m_tokenHitRate", 15, ctx);
       } else if (tok.startsWith("m_tokenCachedIn|")) {
         inline = expandInlineToken(tok, "m_tokenCachedIn", 16, ctx);
+      } else if (tok.startsWith("m_tokenCost|")) {
+        inline = expandInlineToken(tok, "m_tokenCost", 12, ctx);
       } else if (tok.startsWith("m_tokenInSpeed|")) {
         inline = expandInlineToken(tok, "m_tokenInSpeed", 15, ctx);
       } else if (tok.startsWith("m_tokenOutSpeed|")) {
@@ -6166,6 +6312,10 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         // literal wins — `m_accTokenOutSpeed|...|xxx` would
         // otherwise match the m_accTokenOut branch and parse-fail.
         inline = expandInlineToken(tok, "m_accTokenOutSpeed", 19, ctx);
+      } else if (tok.startsWith("m_accTokenCost|")) {
+        // vX.X.X+ — m_accTokenCost → skip prefix+pipe (15 chars).
+        // Listed before m_accTokenOut (14) so the longer literal wins.
+        inline = expandInlineToken(tok, "m_accTokenCost", 15, ctx);
       } else if (tok.startsWith("m_accTokenOut|")) {
         // m_accTokenOut → skip prefix+pipe (14 chars).
         inline = expandInlineToken(tok, "m_accTokenOut", 14, ctx);
@@ -6205,6 +6355,13 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         // startsWith("m_sumTokenOut|").
         // v0.8.13+ — fixed skipLen from buggy 20 to 19 (off-by-one).
         inline = expandInlineToken(tok, "m_sumTokenOutSpeed", 19, ctx);
+      } else if (tok.startsWith("m_sumTokenCost|")) {
+        // vX.X.X+ — m_sumTokenCost → skip prefix+pipe (15 chars).
+        // Listed before m_sumTokenCachedIn (19) / m_sumTokenIn (13) /
+        // m_sumTokenOut (14) — diverges at position 11 ('C' vs 'I'/'O'),
+        // but convention is longer-first within the m_sum* cluster.
+        // Length 15: "m_sumTokenCost" = 14 chars + "|" = 15.
+        inline = expandInlineToken(tok, "m_sumTokenCost", 15, ctx);
       } else if (tok.startsWith("m_sumTokenCachedIn|")) {
         // 19 chars; siblings m_sumTokenIn (12) / m_sumTokenOut (13) /
         // m_sumTokenTotalIn (17) / m_sumApiMs (10) /
