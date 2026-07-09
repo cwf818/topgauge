@@ -225,25 +225,9 @@ describe("status-store — v0.8.29 cold-slot JSONL replay", () => {
     assert.ok(slot!.startAt != null, "startAt stamped by setAvg");
   });
 
-  // ----- 6. ccsession is NEVER replayed, even with full JSONL -----
-  it("ccsession is NOT replayed: cold slot + full JSONL → setAvg populates from this tick", () => {
-    // Seed JSONL with rows that would aggregate to a meaningful
-    // ccsession value if it were replayed. The ccsession scope
-    // is excluded from REPLAY_SCOPES, so the slot starts empty
-    // and setAvg populates it from this tick's delta only.
-    statusStore.appendSample("D:\\test", "sess-test", makeSample({ at: 1_000_001, in: 100, out: 50, apiMs: 1000, startAt: 400_000 }));
-    statusStore.appendSample("D:\\test", "sess-test", makeSample({ at: 1_000_002, in: 200, out: 100, apiMs: 2000, startAt: 400_000 }));
-
-    statusStore.processAndSaveTick("D:\\test", validTokens());
-
-    const slot = statusStore.readAccumulator("ccsession", { cwd: "D:\\test" });
-    assert.ok(slot, "ccsession slot exists (setAvg still runs)");
-    // Only this tick's delta. JSONL's 300/150/3 calls is NOT
-    // merged in — ccsession is process-lifetime, not cumulative.
-    assert.equal(slot!.accTokenIn, 100, "this tick's contribution only");
-    assert.equal(slot!.accTokenOut, 50, "this tick's contribution only");
-    assert.equal(slot!.accApiCalls, 1, "this tick's call count only");
-  });
+  // (Case 6 — ccsession is NEVER replayed: REMOVED in this revision
+  // along with the ccsession scope itself. The remaining three
+  // scopes (session / project / model) are all in REPLAY_SCOPES.)
 
   // ----- 7. Invalid tick (no sessionId) → replay short-circuits at the gate -----
   it("invalid tick (sessionId missing): replay short-circuits, no JSONL read", () => {
@@ -265,66 +249,8 @@ describe("status-store — v0.8.29 cold-slot JSONL replay", () => {
     assert.equal(slot, null, "no slot — replay gated, setAvg gated");
   });
 
-  // ----- 8. Regression tick + cold session slot: replay runs, ccsession startAt refreshed -----
-  it("regression tick: replay runs for session slot, ccsession startAt refreshes (but setAvg repopulates accumulators on a valid tick)", () => {
-    // Cold slot scenario: state.json missing, JSONL has 3 rows
-    // for the session slot. ccsession is excluded from replay
-    // so it starts cold too.
-    statusStore.appendSample("D:\\test", "sess-test", makeSample({ at: 1_000_001, in: 100, out: 50, apiMs: 1000, startAt: 200_000 }));
-    statusStore.appendSample("D:\\test", "sess-test", makeSample({ at: 1_000_002, in: 200, out: 80, apiMs: 1500, startAt: 200_000 }));
-    statusStore.appendSample("D:\\test", "sess-test", makeSample({ at: 1_000_003, in: 50, out: 30, apiMs: 500, startAt: 200_000 }));
-
-    // First tick (cold ccsession) — sets ccsession.startAt to a value.
-    statusStore.processAndSaveTick("D:\\test", validTokens());
-    const ccsessAfterFirst = statusStore.readAccumulator("ccsession", { cwd: "D:\\test" });
-    assert.ok(ccsessAfterFirst?.startAt != null, "ccsession has startAt after first tick");
-    const firstStartAt = ccsessAfterFirst!.startAt!;
-    // Spin a tick boundary so the regression tick's Date.now() is
-    // strictly greater than firstStartAt.
-    const spin = Date.now();
-    while (Date.now() === spin) { /* spin 1ms */ }
-
-    // Regression tick: totalDurationMs drops from 500_000 (first tick)
-    // to 130_000 (above the 120_000 cold-start guard). current < prev
-    // → detectRegression fires. The session slot was warm after the
-    // first tick, so the replay guard skips it (no re-replay).
-    statusStore.processAndSaveTick("D:\\test", validTokens({
-      cost: { totalDurationMs: 130_000, totalApiDurationMs: 1500, totalLinesAdded: 0, totalLinesRemoved: 0 },
-    }));
-
-    // Session slot: warm → replay was skipped → setAvg just
-    // additively merged this tick's delta. accTokenIn =
-    // (100+200+50) [first tick replay] + 100 [first tick delta]
-    // + 100 [second tick delta] = 550.
-    const sessAfterRegression = statusStore.readAccumulator("session", {
-      sessionId: "sess-test",
-      cwd: "D:\\test",
-    });
-    assert.ok(sessAfterRegression, "session slot exists after regression tick");
-    assert.equal(
-      sessAfterRegression!.accTokenIn,
-      100 + 200 + 50 + 100 + 100,
-      "warm session: replay skipped, 2 ticks of delta on top of first-tick replay",
-    );
-    assert.equal(sessAfterRegression!.startAt, 200_000, "warm session startAt preserved (not refreshed)");
-
-    // ccsession slot: regression-reset mark empties it (accTokenIn=0,
-    // accApiCalls=0, startAt=Date.now()), but then on this VALID
-    // tick setAvg's ccsession bumpDeltaScope re-populates it with
-    // this tick's delta. The durable effect of the regression mark
-    // is the startAt refresh; the accumulators get immediately
-    // re-filled by the same tick's bump.
-    const ccsessAfterRegression = statusStore.readAccumulator("ccsession", { cwd: "D:\\test" });
-    assert.ok(ccsessAfterRegression, "ccsession slot exists after regression tick");
-    assert.equal(ccsessAfterRegression!.accTokenIn, 100, "valid tick re-fills ccsession after reset");
-    assert.equal(ccsessAfterRegression!.accApiCalls, 1, "valid tick re-fills ccsession after reset");
-    // startAt refreshed to Date.now() (>= the regression tick's now).
-    assert.ok(ccsessAfterRegression!.startAt != null, "startAt present");
-    assert.ok(
-      ccsessAfterRegression!.startAt! > firstStartAt,
-      "regression-reset refreshes startAt forward (>= the regression tick's Date.now())",
-    );
-  });
+  // (Case 8 — ccsession regression-reset interplay: REMOVED in this
+  // revision along with the ccsession scope itself.)
 
   // ----- 9a. startAt edge case: all rows have startAt=null → Date.now() fallback -----
   it("startAt: all rows have startAt=null → replayed startAt = Date.now() (Date.now() fallback)", () => {
@@ -452,27 +378,5 @@ describe("status-store — v0.8.29 cold-slot JSONL replay", () => {
     assert.ok(content.includes("scope=session"), "scope=session row emitted");
     rmSync(tmpB, { recursive: true, force: true });
     rmSync(stateB, { recursive: true, force: true });
-  });
-
-  // ----- 11. ccsession stays at zero even with full JSONL (parallel to test 6, no replay) -----
-  it("ccsession stays at zero even with full JSONL history (no replay path)", () => {
-    // Three sessions' worth of JSONL, all under the same cwd. The
-    // ccsession slot must still start empty on the first tick.
-    for (let i = 0; i < 5; i++) {
-      statusStore.appendSample("D:\\test", "sess-A", makeSample({ at: 1_000_001 + i, in: 50, out: 25, apiMs: 500, startAt: 10_000 }));
-    }
-    for (let i = 0; i < 5; i++) {
-      statusStore.appendSample("D:\\test", "sess-B", makeSample({ at: 1_000_010 + i, in: 100, out: 50, apiMs: 1000, startAt: 15_000 }));
-    }
-
-    statusStore.processAndSaveTick("D:\\test", validTokens());
-
-    const ccsess = statusStore.readAccumulator("ccsession", { cwd: "D:\\test" });
-    assert.ok(ccsess, "ccsession slot exists (setAvg still runs)");
-    // ccsession aggregates 10 rows of JSONL via setAvg's per-tick delta
-    // only — the JSONL history is irrelevant. The "this tick" is
-    // tokenIn=100 → ccsession.accTokenIn = 100.
-    assert.equal(ccsess!.accTokenIn, 100, "ccsession ignores JSONL history");
-    assert.equal(ccsess!.accApiCalls, 1, "ccsession counts this tick's call only");
   });
 });

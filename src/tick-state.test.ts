@@ -213,21 +213,22 @@ describe("data-processor — validation gate", () => {
 });
 
 describe("data-processor — one-write-per-active-tick", () => {
-  it("5 mark() calls + commit → 1 disk write of the merged store", () => {
+  it("4 mark() calls + commit → 1 disk write of the merged store", () => {
     statusStore.beginTick("D:\\test", validTokens());
     statusStore.mark("tickStatus:sess-test", statusStore.emptyTickStatus());
-    statusStore.mark(statusStore.CCSESSION_KEY, statusStore.emptyTickStatus());
     statusStore.mark("lastActive:in", { direction: "in", tps: 12.5 });
     statusStore.mark("lastActive:out", { direction: "out", tps: 8.3 });
     statusStore.mark(statusStore.PREV_TICK_KEY, statusStore.emptyPrevTickStatus());
     statusStore.commit();
 
-    // The on-disk file should be a single JSON object with all 5 keys.
+    // The on-disk file should be a single JSON object with all 4 keys.
+    // (Pre-ccsession-removal this was 5 — the ccsession mark no
+    // longer exists.)
     const raw = readFileSync(join(_tmpDir, "status.json"), "utf8");
     const store = JSON.parse(raw) as Record<string, unknown>;
     assert.equal(
-      Object.keys(store).length, 5,
-      "exactly 5 entries persisted in one write",
+      Object.keys(store).length, 4,
+      "exactly 4 entries persisted in one write",
     );
   });
 });
@@ -242,61 +243,6 @@ describe("data-processor — crash-before-flush", () => {
       existsSync(join(_tmpDir, "status.json")), false,
       "no file written — write is deferred to commit",
     );
-  });
-});
-
-describe("data-processor — regression-reset + commit interplay", () => {
-  // v1.0 — accPrimer's "immediate statusStore.writeTickStatus"
-  // bypass is GONE. The regression-reset is now a regular
-  // statusStore.mark(CCSESSION_KEY, emptyTickStatus()) that the
-  // data-processor (processTick Stage 1) fires BEFORE the same
-  // tick's setAvg (Stage 4). Both flush through a SINGLE commit.
-  // Last-mark-wins means setAvg's later mark can either replace
-  // the empty reset (delta accumulated) OR be skipped (tick with
-  // no delta → reset stays empty). Pin both shapes here.
-  it("ccsession reset mark + setAgg accumulation → last-mark-wins at commit", () => {
-    // First tick: seed prev with apiMs=0.
-    statusStore.beginTick("D:\\test", validTokens());
-    statusStore.mark(statusStore.PREV_TICK_KEY, statusStore.emptyPrevTickStatus());
-    statusStore.commit();
-
-    // Second tick: regression-reset mark first (empty ccsession),
-    // then setAgg-style mark lands with accTokenIn=1000. processTick
-    // does exactly this order.
-    statusStore.resetTickStateForTest();
-    statusStore.beginTick("D:\\test", validTokens());
-    statusStore.mark(statusStore.CCSESSION_KEY, statusStore.emptyTickStatus());
-    statusStore.mark(statusStore.CCSESSION_KEY, {
-      ...statusStore.emptyTickStatus(),
-      accTokenIn: 1000,
-    });
-    statusStore.commit();
-
-    const raw = readFileSync(join(_tmpDir, "status.json"), "utf8");
-    const store = JSON.parse(raw) as Record<string, { kind: string; value: { accTokenIn: number } }>;
-    // setAgg's later mark wins (last-mark-wins via the flat Map).
-    assert.equal(store[statusStore.CCSESSION_KEY]?.value.accTokenIn, 1000);
-  });
-
-  it("ccsession reset mark with NO subsequent delta → reset persists empty", () => {
-    // Regression-reset fires, but a same-tick hasDelta=false (e.g.
-    // current totals == prev totals) means setAgg never lands.
-    // The reset entry should be the on-disk truth.
-    statusStore.beginTick("D:\\test", validTokens());
-    statusStore.mark(statusStore.PREV_TICK_KEY, statusStore.emptyPrevTickStatus());
-    statusStore.commit();
-
-    statusStore.resetTickStateForTest();
-    statusStore.beginTick("D:\\test", validTokens());
-    statusStore.mark(statusStore.CCSESSION_KEY, statusStore.emptyTickStatus());
-    // NO setAgg mark follows — simulating hasDelta=false.
-    statusStore.commit();
-
-    const raw = readFileSync(join(_tmpDir, "status.json"), "utf8");
-    const store = JSON.parse(raw) as Record<string, { kind: string; value: { accTokenIn: number; accTokenOut: number } }>;
-    const v = store[statusStore.CCSESSION_KEY]?.value;
-    assert.equal(v.accTokenIn, 0);
-    assert.equal(v.accTokenOut, 0);
   });
 });
 
@@ -536,12 +482,11 @@ describe("data-processor — MAX_SAMPLE_API_MS sanity ceiling (v0.8.24)", () => 
 // v0.8.24 — startAt field on TickStatusValue / AvgSnapshot.
 // The slot's "first-write" wall-clock instant. Read by
 // m_accStartTime (per-slot) and (in aggregated form) by
-// m_sumStartTime (cross-project min over JSONL rows). The
-// ccsession slot is refreshed on detectRegression, so a Claude
-// Code process restart re-opens the window. Other slots
-// (session / project / model) are stamped once on the first
-// valid write and never refreshed — there's no roll-over
-// semantic for those.
+// m_sumStartTime (cross-project min over JSONL rows). All three
+// surviving slots (session / project / model) are stamped once
+// on the first valid write and never refreshed — there's no
+// roll-over semantic for those. (Pre-cleanup ccsession used to
+// refresh on detectRegression; that scope was REMOVED.)
 describe("data-processor — startAt first-write stamp (v0.8.24)", () => {
   it("setAvg first-write stamps startAt = Date.now() on a fresh session slot", () => {
     // setAvg's mark() call requires a prior beginTick to
@@ -616,50 +561,12 @@ describe("data-processor — startAt first-write stamp (v0.8.24)", () => {
     assert.equal(second, first, "v0.8.24 — subsequent write preserves startAt");
   });
 
-  it("ccsession regression-reset refreshes startAt", () => {
-    // First tick: prime a ccsession slot via processAndSaveTick
-    // (which fires processTick → setAvg → mark(CCSESSION_KEY)).
-    // totalDurationMs=500_000 is above the 120_000 cold-start
-    // guard so the regression detector sees a normal tick on
-    // this first invocation.
-    statusStore.processAndSaveTick("D:\\test", validTokens());
-    const first = statusStore.readAccumulator("ccsession", { cwd: "D:\\test" })?.startAt;
-    assert.ok(first != null, "first ccsession tick stamped startAt");
-
-    // Wait a measurable interval so the refreshed startAt is
-    // strictly later than the original.
-    const waitUntil = Date.now() + 5;
-    while (Date.now() < waitUntil) { /* spin */ }
-
-    // Second tick: writePrevTickStatus to seed a prev tick
-    // with totalDurationMs=600_000 (post-cold-start) so the
-    // next beginTick sees a backward jump and detectRegression
-    // fires.
-    statusStore.writePrevTickStatus("D:\\test", {
-      ...statusStore.emptyPrevTickStatus(),
-      totalApiMs: 1000,
-      totalDurationMs: 600_000,
-      sessionId: "sess-test",
-      cwd: "D:\\test",
-      model: null,
-    });
-    statusStore.resetTickStateForTest();
-    // current.totalDurationMs=300_000 < prev 600_000 — both
-    // above cold-start, so regression fires.
-    statusStore.processAndSaveTick("D:\\test", validTokens({
-      cost: { totalDurationMs: 300_000, totalApiDurationMs: 1100, totalLinesAdded: 0, totalLinesRemoved: 0 },
-    }));
-    const after = statusStore.readAccumulator("ccsession", { cwd: "D:\\test" })?.startAt;
-    assert.ok(after != null, "post-regression ccsession startAt present");
-    // The regression stamp may equal first if the
-    // processAndSaveTick path is very fast (same Date.now() ms
-    // bucket). The strict guarantee: startAt is still a valid
-    // number that survived the reset. The "refresh" claim is
-    // verified by the ccsession non-reset test below — that
-    // one confirms startAt is preserved when no regression
-    // fires, so the refresh can be inferred by exclusion.
-    assert.ok(after! > 0, "v0.8.24 — regression-reset preserves a valid startAt");
-  });
+  // (Case "ccsession regression-reset refreshes startAt" was
+  // REMOVED in this revision along with the ccsession scope
+  // itself. The regression-reset path now only refreshes the
+  // in-memory pending map for the surviving three scopes —
+  // session / project / model — which have no roll-over
+  // semantic, so the test no longer applies.)
 
   it("parseStore backfills startAt: null for legacy state.json rows", () => {
     // Hand-craft a legacy row (no startAt field) at the session
@@ -687,21 +594,5 @@ describe("data-processor — startAt first-write stamp (v0.8.24)", () => {
     const got = statusStore.peekAvg("sess-legacy", "D:\\test");
     assert.ok(got, "legacy row loaded");
     assert.equal(got!.startAt, null, "v0.8.24 — legacy startAt backfilled to null");
-  });
-
-  it("non-reset ccsession write preserves startAt", () => {
-    // First ccsession write: stamp.
-    statusStore.processAndSaveTick("D:\\test", validTokens());
-    const first = statusStore.readAccumulator("ccsession", { cwd: "D:\\test" })?.startAt;
-    assert.ok(first != null);
-
-    // Second ccsession write: NO regression (totalDurationMs
-    // monotonic, > 120_000 cold-start). ccsession slot's
-    // startAt must NOT be refreshed.
-    statusStore.processAndSaveTick("D:\\test", validTokens({
-      cost: { totalDurationMs: 700_000, totalApiDurationMs: 2000, totalLinesAdded: 0, totalLinesRemoved: 0 },
-    }));
-    const second = statusStore.readAccumulator("ccsession", { cwd: "D:\\test" })?.startAt;
-    assert.equal(second, first, "v0.8.24 — non-reset ccsession write preserves startAt");
   });
 });

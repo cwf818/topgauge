@@ -1100,7 +1100,7 @@ describe("renderTemplate — m_token* modules", () => {
     assert.equal(strip(out), "cache:163.4k");
   });
 
-  it("m_accTokenCachedIn missing stdin field → 'cache:n/a' (v0.8.10-alpha.3 default ccsession scope, no slot)", () => {
+  it("m_accTokenCachedIn missing stdin field → 'cache:n/a' (v0.8.10-alpha.3 default session scope, no slot)", () => {
     const out = renderTemplate(
       ["m_accTokenCachedIn"],
       ctxFor(fakeSnapshot({ current: { tokenIn: 38, tokenOut: 155, tokenCacheCreation: 0, tokenCachedIn: null } })),
@@ -3065,7 +3065,7 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     // baseline across sessions, and on `commit()` being skipped
     // (cwd=null) so the bare call's lastActive:in never reached
     // disk for the scaled call to read back. After dropping the
-    // sessionId guard (the ccsession reset must trigger whenever
+    // sessionId guard (so the regression check fires whenever
     // totalApiMs rolls backward, regardless of sessionId), each
     // call needs its own `beginTickForTest(null, null)` — null cwd
     // keeps commit() a no-op AND stops status-store's per-cwd
@@ -3642,19 +3642,20 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
 
   it("inner explicit scope wins over m_template passthrough (内层 > 透传)", () => {
     // Use statusStore.writeTickStatus directly so the seed lands
-    // ONLY on the project slot — the ccsession slot stays
-    // empty. (setAvg would write both layers because the
-    // ccsession write is gated by the same extras.deltaTokenIn that
-    // the project write uses.) Then inner m_accTokenIn|scope|ccsession
-    // should route to the empty ccsession slot, not the seeded
-    // project slot — proving the inner-explicit-wins contract.
+    // ONLY on the project slot — the session slot (the inner
+    // routed target) stays empty. Then inner
+    // `m_accTokenIn|scope|session` should route to the empty
+    // session slot, not the seeded project slot — proving the
+    // inner-explicit-wins contract. (Post-ccsession removal the
+    // inner example targets session instead of ccsession; the
+    // validation mechanism is unchanged.)
     const projectKey = `tickStatus:${projectHash("D:\\WorkSpace\\pt3")}`;
     statusStore.writeTickStatus("D:\\WorkSpace\\pt3", projectKey, {
       ...statusStore.emptyTickStatus(),
       accTokenIn: 77,
     });
     __resetForTest({
-      lineTemplates: { foo: ["m_accTokenIn|scope:ccsession"] },
+      lineTemplates: { foo: ["m_accTokenIn|scope:session"] },
     });
     const tokens = fakeSnapshot({
       sessionId: "sess-pt3",
@@ -3663,14 +3664,11 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
       cost: { totalDurationMs: 0, totalApiDurationMs: 0, totalLinesAdded: null, totalLinesRemoved: null },
     });
     const out = renderTemplate(["m_template|foo|scope:project"], ctxFor(tokens)).join("\n");
-    // Inner wins → ccsession slot. accPrimer fires on the
-    // m_accTokenIn call, but with current.input=0 and
-    // currentApiMs=0 → deltaApi=0 → hasDelta=false → primer
-    // early-returns at render.ts:1676 without writing. So the
-    // ccsession slot stays empty → "in:n/a" (peekAcc returns
-    // null → placeholderAcc).
-    // The passthrough (scope=project) would have surfaced 77 —
-    // if we see 77, the inner-wins contract broke.
+    // Inner wins → session slot. The session slot was never
+    // written (we only seeded project=77) → placeholderAcc
+    // surfaces "in:n/a". The passthrough (scope=project) would
+    // have surfaced 77 — if we see 77, the inner-wins contract
+    // broke.
     assert.equal(strip(out), "in:n/a", `inner scope must beat passthrough; got: ${JSON.stringify(out)}`);
   });
 
@@ -4150,7 +4148,7 @@ describe("renderTemplate — named separator aliases (v0.4.x)", () => {
   });
 });
 
-// ----- v0.8.0+ acc modules (per-session / per-project / per-model / per-ccsession) -----
+// ----- v0.8.0+ acc modules (per-session / per-project / per-model) -----
 //
 // Six new modules expose the four-layer accumulator that setAvg
 // writes each tick:
@@ -4322,14 +4320,14 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     assert.equal(strip(out), "total:327.0k");
   });
 
-  it("m_accApiMs| default scope (ccsession) delta-accumulates under unified contract", () => {
-    // v0.8.10-alpha.2 (per user refinement 2026-07-04): when
-    // there is no previous tick, apiMs is back-derived as
-    // tokenOut * 1000 / 50 (the v0.4.x legacy fallback). The
-    // fakeSnapshot defaults give tokenOut=155, so apiMs =
-    // 155 * 1000 / 50 = 3100. accApiMs accumulates the seeded
-    // 60_000 plus the derived 3_100 (= 63_100ms), rendering as
-    // "api:1m".
+  it("m_accApiMs| default scope (session) delta-accumulates under unified contract", () => {
+    // Default scope moved from ccsession → session in this
+    // revision. The ccsession slot no longer exists, so the
+    // bare `m_accApiMs` form now reads the per-session slot.
+    // The seeding math is identical to the prior ccsession
+    // contract (sedder 60_000 + first-tick fallback = 63_100),
+    // because all three surviving scopes DELTA-ACCUMULATE the
+    // same scalar under the unified contract.
     setAvg(
       "sess-acc-api",
       { accTokenIn: 0, accTokenOut: 0, accApiMs: 60_000, accTokenCachedIn: 0, accApiCalls: 1 , accTokenTotalIn: 0, accTokenHitRate: 0 },
@@ -4351,12 +4349,6 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       ["m_accApiMs"],
       ctxFor(snap),
     ).join("\n");
-    // v0.8.x scope contract (refined 2026-07-04) — ALL 4 scopes
-    // (session/project/model/ccsession) DELTA-ACCUMULATE the
-    // accApiMs scalar. Under the v0.8.10-alpha.2 first-tick
-    // fallback (apiMs = tokenOut*1000/50 = 3100 for default
-    // fakeSnapshot), ccsession accumulates 60_000 (seed) + 3_100
-    // (fallback-derived) = 63_100ms ≈ "api:1m".
     assert.equal(strip(out), "api:1m");
   });
 
@@ -4364,11 +4356,11 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
   // slot in status.json, mirroring m_apiCalls's `calls:N` shape.
   // value=0 still renders (value-zero rule — count:0 is real data,
   // not a placeholder). Tokens=null or no-slot → "calls:n/a".
-  it("m_accApiCalls|scope|session reads accApiCalls from per-session slot", () => {
-    // Default scope is ccsession; for the session slot we must
-    // pass `|scope|session` explicitly. setAvg's deltas fire
-    // accPrimer when renderTemplate runs, which adds 1 to
-    // accApiCalls (deltaApiCalls) — so the seeded 7 + 1 = 8.
+  it("m_accApiCalls| default scope (session) reads per-session accApiCalls", () => {
+    // Default scope moved from ccsession → session in this
+    // revision; the bare `m_accApiCalls` form now reads the
+    // same per-session slot that the prior |scope:session form
+    // did. Seeded 7 + deltaApiCalls=1 → 8.
     setAvg(
       "sess-acc-calls",
       { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 7 , accTokenTotalIn: 0, accTokenHitRate: 0 },
@@ -4387,43 +4379,10 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     processTick(snap.cwd, snap);
     statusStore.commit();
     const out = renderTemplate(
-      ["m_accApiCalls|scope:session"],
-      ctxFor(snap),
-    ).join("\n");
-    assert.equal(strip(out), "calls:8");
-  });
-
-  it("m_accApiCalls| ccsession default scope → reads tickStatus:ccsession", () => {
-    // The ccsession slot uses `incrementCount` (deltaApiCalls
-    // from setAvg's extras), NOT snap.accApiCalls. The ccsession
-    // path was designed for "count of API calls that fired this
-    // tick", not the cumulative count. So setAvg's seeded 7
-    // lands on the SESSION slot (via snap.accApiCalls) but only
-    // +1 lands on ccsession (via deltaApiCalls=1). The primer
-    // then adds another +1 from this render's deltaApiCalls.
-    // Net: ccsession = 0 + 1 (seed) + 1 (primer) = 2.
-    setAvg(
-      "any-sid-ccs",
-      { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 7 , accTokenTotalIn: 0, accTokenHitRate: 0 },
-      "D:\\test",
-      {
-        modelDisplayName: "MiniMax-M3",
-        deltaApiCalls: 1,
-        currentApiMs: 0,
-        deltaTokenIn: 0,
-        deltaTokenOut: 0,
-        deltaTokenCachedIn: 0,
-        deltaApiMs: 0,
-      },
-    );
-    const snap = fakeSnapshot({ sessionId: "any-sid-ccs" });
-    processTick(snap.cwd, snap);
-    statusStore.commit();
-    const out = renderTemplate(
       ["m_accApiCalls"],
       ctxFor(snap),
     ).join("\n");
-    assert.equal(strip(out), "calls:2");
+    assert.equal(strip(out), "calls:8");
   });
 
   it("m_accApiCalls| value=0 still renders as 'calls:N' (value-zero rule; primer adds 1)", () => {
@@ -5787,7 +5746,7 @@ describe("renderTemplate — v0.8.0+ labels.* config customization", () => {
 //   + accTokenTotalIn          (per-tick-delta-accumulator of totalIn)
 // The on-disk file's `tickStatus:<sid>` entry must reflect the new
 // field set after a render that exercises the per-tick pipeline.
-describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + prevTickStatus singleton + 4 scopes incl. ccsession)", () => {
+describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + prevTickStatus singleton + 3 scopes)", () => {
   // The v0.8.0 "tickStatus field renames" describe block was
   // rewritten for v0.8.x cwf-tickStatus-v2. What changed:
   //   - tickStatus:<sid>.value is now ACC-ONLY (no in/out/cachedIn/
@@ -5796,9 +5755,9 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
   //   - m_totalToken* / m_totalTokenWithCacheIn REMOVED (no alias).
   //   - The project-wide slot key changed from `tickStatus` (no
   //     suffix) to `tickStatus:<projectHash(cwd)>`.
-  //   - New ccsession scope: `tickStatus:ccsession` (singleton, no
-  //     suffix), reset on totalApiMs regression.
-  //   - m_acc* family:scope:ccsession added.
+  //   - m_acc* family defaults to scope=session (per-session,
+  //     clear-bounded). scope=ccsession was REMOVED in this
+  //     revision and surfaces as badarg (see resolveAccScope).
   //
   // The tests below pin the new on-disk layout.
 
@@ -5931,14 +5890,13 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
   });
 
   // v0.8.x — scope contract for accApiMs (user rule 2026-07-04,
-// refined 2026-07-04 to unify all 4 scopes on delta-accumulation):
-//   ALL 4 scopes (session / project / model / ccsession):
-//     accApiMs += deltaApiMs (delta-accumulator)
-//   ccsession ADDITIONALLY: zero the entire slot on a
-//     backwards `totalApiMs` step (Claude Code process restart).
-//   The earlier ccsession absolute-mirror was retracted to
-//   avoid ambiguity — under non-autostart, mirror and
-//   accumulator diverge.
+// unifying the surviving 3 scopes on delta-accumulation):
+//   ALL 3 scopes (session / project / model):
+//     accApiMs += deltaApiMs (delta-accumulator).
+//   The ccsession scope (which previously ADDITIONALLY zeroed
+//   the entire slot on a backwards `totalApiMs` step / claude-
+//   code-process-restart) was REMOVED in this revision; its
+//   per-process regression-reset quirk has no surviving target.
   describe("scope contract — accApiMs handler per scope", () => {
     it("scope=session: accApiMs accumulates deltaApiMs (not absolute)", () => {
       setPrevTick("sess-scope-api",
@@ -5994,158 +5952,6 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
       assert.ok(proj);
       assert.equal(proj.accApiMs, 50_000,
         "project-slot accApiMs accumulates deltaApiMs: 20_000 (tick1) + 30_000 (tick2) = 50_000");
-    });
-
-    it("scope=ccsession: accApiMs delta-accumulator (unified contract, refined 2026-07-04)", () => {
-      // v0.8.x — refined 2026-07-04: ALL 4 scopes (session /
-      // project / model / ccsession) now DELTA-ACCUMULATE the
-      // accApiMs scalar. The earlier ccsession-mirror contract
-      // was retracted to avoid ambiguity (the absolute mirror
-      // and the delta-accumulator only differ when the plugin
-      // doesn't auto-start with the system).
-      //
-      // Read the ccsession slot via tickState's pending map
-      // (NOT disk) — the per-cwd status path resolver is
-      // shared across all cwds in this test file, so a disk
-      // read picks up stale prev from prior tests. The pending
-      // map is in-memory and reflects this tick's writes only.
-      //
-      // Seed prev DIRECTLY via statusStore.writePrevTickStatus —
-      // setPrevTick only marks in-memory pending, but
-      // beginTickForTest calls loadFromDisk which overwrites
-      // pending. The direct write is the only way to ensure the
-      // baseline persists into the next beginTick load.
-      statusStore.writePrevTickStatus("D:\\test", {
-        totalApiMs: 30_000,
-        totalDurationMs: 500_000,
-        sessionId: "sess-ccs-api", cwd: "D:\\test", model: null,
-        contextUsedPercent: null,
-      });
-      // prev=30_000, fakeSnapshot defaults totalApiMs=60_000 →
-      // deltaApi=30_000 → ccsession.accApiMs += 30_000.
-      const snap = fakeSnapshot({
-        sessionId: "sess-ccs-api",
-        cwd: "D:\\test",
-      });
-      beginTickForTest("D:\\test", snap);
-      processTick(snap.cwd, snap);
-      statusStore.commit();
-      renderTemplate(["m_accApiMs|scope:ccsession"],
-        ctxFor(snap));
-      const ccsEntry = statusStore.getState().pending[statusStore.CCSESSION_KEY];
-      assert.ok(ccsEntry && ccsEntry.kind === "tickStatus");
-      assert.equal(ccsEntry.value.accApiMs, 30_000,
-        "ccsession-slot accApiMs accumulates deltaApiMs (60_000 - 30_000 = 30_000), NOT the absolute 60_000");
-    });
-
-    it("scope=ccsession regression: accApiMs zeroed on regression tick (unified contract)", () => {
-      // Seed prev DIRECTLY via statusStore.writePrevTickStatus —
-      // see sibling test for rationale.
-      // First tick: prev=0, currentApi=100_000 → deltaApi=100_000
-      // → ccsession.accApiMs += 100_000
-      statusStore.writePrevTickStatus("D:\\test", {
-        totalApiMs: 0,
-        totalDurationMs: 500_000,
-        sessionId: "sess-ccs-reg", cwd: "D:\\test", model: null,
-        contextUsedPercent: null,
-      });
-      const snap1 = fakeSnapshot({
-        sessionId: "sess-ccs-reg",
-        cwd: "D:\\test",
-        current: { tokenIn: 100, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
-        cost: { totalDurationMs: 600_000, totalApiDurationMs: 100_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
-      });
-      beginTickForTest("D:\\test", snap1);
-      processTick(snap1.cwd, snap1);
-      statusStore.commit();
-      renderTemplate(["m_accApiMs|scope:ccsession"],
-        ctxFor(snap1));
-      let ccsEntry = statusStore.getState().pending[statusStore.CCSESSION_KEY];
-      assert.ok(ccsEntry && ccsEntry.kind === "tickStatus");
-      assert.equal(ccsEntry.value.accApiMs, 100_000, "first tick: ccsession accumulates deltaApiMs = 100_000");
-      // Regression tick: prev=100_000, current drops to 50_000 →
-      // accPrimer's regression-reset path zeros the slot.
-      // deltaApi<0 → hasDelta=false → setAvg early-returns, so
-      // the ccsession slot stays at 0 (no immediate re-seed).
-      // v0.8.23+ — totalDurationMs also rolled backward (1.5M
-      // → 600_000), both ≥ 120_000 cold-start threshold, so the
-      // new regression signal fires correctly.
-      statusStore.writePrevTickStatus("D:\\test", {
-        totalApiMs: 100_000,
-        totalDurationMs: 1_500_000,
-        sessionId: "sess-ccs-reg", cwd: "D:\\test", model: null,
-        contextUsedPercent: null,
-      });
-      const snap2 = fakeSnapshot({
-        sessionId: "sess-ccs-reg",
-        cwd: "D:\\test",
-        current: { tokenIn: 200, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
-        cost: { totalDurationMs: 600_000, totalApiDurationMs: 50_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
-      });
-      beginTickForTest("D:\\test", snap2);
-      processTick(snap2.cwd, snap2);
-      statusStore.commit();
-      renderTemplate(["m_accApiMs|scope:ccsession"],
-        ctxFor(snap2));
-      ccsEntry = statusStore.getState().pending[statusStore.CCSESSION_KEY];
-      assert.ok(ccsEntry && ccsEntry.kind === "tickStatus");
-      assert.equal(ccsEntry.value.accApiMs, 0,
-        "regression tick: ccsession accApiMs zeroed by accPrimer (the only ccsession-specific quirk under the unified contract)");
-    });
-
-    it("scope=ccsession regression: isolated regression reset preserves on-disk slot correctly", () => {
-      // Mirrors the existing regression test at line 4275 but checks
-      // accApiMs (not accTokenIn) — pins that the ccsession slot's
-      // accApiMs is reset to 0 on a regression tick under the
-      // unified delta-accumulator contract.
-      // Read via statusStore.pending (NOT disk) — see sibling test.
-      statusStore.writePrevTickStatus("D:\\test", {
-        totalApiMs: 0,
-        totalDurationMs: 500_000,
-        sessionId: "sess-ccs-api-reset", cwd: "D:\\test", model: null,
-        contextUsedPercent: null,
-      });
-      // Seed ccsession via a normal first tick: totalApiMs=100_000 → deltaApi=100_000
-      const snap1 = fakeSnapshot({
-        sessionId: "sess-ccs-api-reset",
-        cwd: "D:\\test",
-        current: { tokenIn: 100, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
-        cost: { totalDurationMs: 600_000, totalApiDurationMs: 100_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
-      });
-      beginTickForTest("D:\\test", snap1);
-      processTick(snap1.cwd, snap1);
-      statusStore.commit();
-      renderTemplate(["m_accApiMs|scope:ccsession"],
-        ctxFor(snap1));
-      let ccsEntry = statusStore.getState().pending[statusStore.CCSESSION_KEY];
-      assert.ok(ccsEntry && ccsEntry.kind === "tickStatus");
-      assert.equal(ccsEntry.value.accApiMs, 100_000, "first tick: ccsession accumulates deltaApiMs = 100_000");
-      // Now seed prev with apiMs=100_000; regression tick drops
-      // totalApiMs to 50_000. accPrimer zeros the ccsession slot;
-      // hasDelta=false → setAvg doesn't fire → slot stays at 0.
-      statusStore.writePrevTickStatus("D:\\test", {
-        totalApiMs: 100_000,
-        totalDurationMs: 1_500_000,
-        sessionId: "sess-ccs-api-reset", cwd: "D:\\test", model: null,
-        contextUsedPercent: null,
-      });
-      // v0.8.23+ — totalDurationMs also rolled backward (1.5M
-      // → 600_000), both ≥ 120_000 cold-start threshold.
-      const snap2 = fakeSnapshot({
-        sessionId: "sess-ccs-api-reset",
-        cwd: "D:\\test",
-        current: { tokenIn: 200, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
-        cost: { totalDurationMs: 600_000, totalApiDurationMs: 50_000, totalLinesAdded: 0, totalLinesRemoved: 0 },
-      });
-      beginTickForTest("D:\\test", snap2);
-      processTick(snap2.cwd, snap2);
-      statusStore.commit();
-      renderTemplate(["m_accApiMs|scope:ccsession"],
-        ctxFor(snap2));
-      ccsEntry = statusStore.getState().pending[statusStore.CCSESSION_KEY];
-      assert.ok(ccsEntry && ccsEntry.kind === "tickStatus");
-      assert.equal(ccsEntry.value.accApiMs, 0,
-        "regression tick: ccsession accApiMs zeroed by accPrimer (delta-accumulator reset, NOT summed 100_000 + (-50_000))");
     });
 
     it("scope=model: accApiMs accumulates deltaApiMs (not absolute)", () => {
@@ -6496,7 +6302,7 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
 
   it("bare m_accStartTime on a fresh session (no writes) → 'start:n/a' placeholder", () => {
     // No setAvg → slot doesn't exist → placeholderAcc("startTime").
-    // The bare form on a ccsession with no prior writes must
+    // The bare form on a session with no prior writes must
     // show the placeholder so the user can see "no data yet",
     // not a hidden drop.
     const out = renderTemplate(
@@ -6668,21 +6474,21 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
   it("legacy state.json without startAt → bare m_accStartTime renders 'start:n/a'", () => {
     // Hand-craft a legacy tickStatus row (no startAt field)
     // and verify the bare-form m_accStartTime falls through to
-    // placeholderAcc("startTime", "ccsession"). The
-    // ccsession-scope read goes through readAccumulator which
-    // propagates the backfilled startAt: null.
-    statusStore.writeTickStatus("D:\\test", statusStore.CCSESSION_KEY, {
+    // placeholderAcc("startTime", "session"). The session-scope
+    // read goes through readAccumulator which propagates the
+    // backfilled startAt: null. (Pre-ccsession-removal this test
+    // targeted tickStatus:ccsession; the slot identity changed
+    // to the surviving session slot, semantics unchanged.)
+    const sessionKey = `tickStatus:sess-legacy-cc`;
+    statusStore.writeTickStatus("D:\\test", sessionKey, {
       accTokenIn: 0, accTokenOut: 0, accTokenCachedIn: 0,
       accApiMs: 0, accApiCalls: 0, accTokenTotalIn: 0, accTokenHitRate: 0,
       // startAt: <absent on purpose>
     } as any);
     const out = renderTemplate(
-      ["m_accStartTime"],
+      ["m_accStartTime|scope:session"],
       ctxFor(fakeSnapshot({ sessionId: "sess-legacy-cc", cwd: "D:\\test" })),
     ).join("\n");
-    // The bare form defaults to ccsession scope. Legacy row
-    // has no startAt → peekAcc returns startAt: null →
-    // placeholderAcc("startTime", "ccsession") = "start:n/a".
     assert.equal(strip(out), "start:n/a");
   });
 

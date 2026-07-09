@@ -57,10 +57,8 @@ export type TickStatusValue = {
   // v0.8.24+ — wall-clock instant this slot received its first
   // valid write (Unix ms). Stamped by setAvg / bumpDeltaScope
   // on first write (when readTickStatus returns null OR
-  // startAt is null). Refreshed by the ccsession regression-
-  // reset mark so a cc process restart re-opens the window.
-  // `null` = "no writes yet" → m_accStartTime renders the
-  // "start:n/a" placeholder.
+  // startAt is null). `null` = "no writes yet" → m_accStartTime
+  // renders the "start:n/a" placeholder.
   startAt?: number | null;
 };
 // the ONLY field the next tick subtracts against is `totalApiMs`
@@ -96,7 +94,6 @@ export type LastActiveValue = {
   tps: number;
 };
 
-export const CCSESSION_KEY = "tickStatus:ccsession";
 export const PREV_TICK_KEY = "prevTickStatus";
 
 export type Entry =
@@ -405,7 +402,7 @@ function parseStore(raw: string): Store {
       };
       continue;
     }
-    if (key === CCSESSION_KEY || key.startsWith("tickStatus:")) {
+    if (key.startsWith("tickStatus:")) {
       const v = e.value as Record<string, unknown>;
       const accTokenIn = typeof v.accTokenIn === "number" ? v.accTokenIn
         : typeof v.accIn === "number" ? v.accIn : 0;
@@ -514,9 +511,7 @@ export function emptyTickStatus(): TickStatusValue {
     accTokenHitRate: 0,
     // v0.8.24+ — "no writes yet" sentinel. setAvg /
     // bumpDeltaScope stamp Date.now() on the first valid
-    // write; the ccsession regression-reset mark also
-    // refreshes this to Date.now() so a process restart
-    // re-opens the window.
+    // write.
     startAt: null,
   };
 }
@@ -551,12 +546,12 @@ function makeEntry(key: string, value: Entry["value"]): Entry {
   ) {
     return { at: Date.now(), kind: "lastActive", value: value as LastActiveValue };
   }
-  if (key === CCSESSION_KEY || key.startsWith("tickStatus:")) {
+  if (key.startsWith("tickStatus:")) {
     return { at: Date.now(), kind: "tickStatus", value: value as TickStatusValue };
   }
   throw new Error(
     `status-store: unknown key "${key}" — must be ${PREV_TICK_KEY}, ` +
-      `tickStatus:<dim>, ${CCSESSION_KEY}, or lastActive:<in|out|apiMs|tokenHitRate>`,
+      `tickStatus:<dim>, or lastActive:<in|out|apiMs|tokenHitRate>`,
   );
 }
 
@@ -839,9 +834,6 @@ export function readAllSamples(sinceMs: number): TokenSample[] {
 //
 // This block mirrors the m_sum* pattern (readAllSamples / cache.stat.json
 // TTL) for the three persistent m_acc* scopes (session / project / model).
-// ccsession is intentionally NOT replayed — it tracks one claude-code
-// process invocation, so historical JSONL is semantically unrelated. The
-// regression-reset mark at Stage 1 is the only legitimate ccsession zero.
 //
 // Replay runs in processTick Stage 0 — BEFORE setAvg mutates the slot. The
 // recovered aggregate is mark()'ed into _tickState.pending, so:
@@ -961,8 +953,6 @@ function readProjectSamples(cwd: string, sinceMs: number): TokenSample[] {
 //   - JSONL has zero matching rows (no history to recover; the
 //     current tick's setAvg will populate from this tick's delta)
 //   - missing sessionId / cwd / modelDisplayName (no slot to recover)
-// ccsession is intentionally NOT handled here — see REPLAY_SCOPES at
-// the call site (processTick Stage 0).
 export function replayAccInit(
   scope: "session" | "project" | "model",
   args: {
@@ -1236,13 +1226,11 @@ let _tickState: TickState | null = null;
 
 // v0.8.11-alpha — the prev cursor carries ONLY totalApiMs. Returns
 // it (as the baseline for `apiMs = current - baseline`) or null when
-// there's no history. The "session" / "ccsession" distinction lives
-// entirely on the value side of this comparison: if the time-series
-// rolled forward, the difference is the api-call duration; if it
-// rolled backward, the cumulative counter restarted (cc restarted)
-// and detectRegression flags the tick as a reset. Nothing about
-// sessionId identity participates in this math — the numeric
-// direction IS the truth.
+// there's no history. The signal is purely numeric: a forward roll
+// is an api-call duration; a backward roll means the cumulative
+// counter restarted (cc restarted) and detectRegression flags the
+// tick as a reset. Nothing about sessionId identity participates in
+// this math — the numeric direction IS the truth.
 function resolvePreviousBaseline(
   tokens: TokenSnapshot | null,
   prev: PrevTickStatusValue | null,
@@ -1312,17 +1300,14 @@ function applyContextUsedPercentCarryOver(
 //      under 120_000 (2 minutes), the cc process is brand-new and
 //      we treat the backward jump as expected — the prev baseline
 //      is from a different process and will be replaced by the
-//      current value before the next tick. The ccsession-slot zero
-//      reset still fires on a real restart, but at the moment of
-//      cold start it would be a no-op anyway (the slot is empty).
+//      current value before the next tick.
 //
 //   2. **contextUsedPercent===0 stdin-error guard** (carried over
 //      from v0.8.15-alpha) — when the caller observes
 //      `contextUsedPercent===0` AND no carry-over applies (prev
 //      null), `totalDurationMs` may roll backward as a side effect
 //      of the malformed probe rather than a real cc restart.
-//      Suppress the regression flag in that case so the ccsession
-//      slot doesn't get zeroed on a noisy probe. When carry-over
+//      Suppress the regression flag in that case. When carry-over
 //      substitutes a non-zero prev value, contextUsedPercent is
 //      already != 0 by the time detectRegression runs
 //      (normalizeTick applies carry-over first), so the guard
@@ -1568,11 +1553,9 @@ export function commit(): void {
   const s = _tickState;
   if (!s) return;
   if (!s.cwd) return;
-  // v0.8.10-alpha.2 — flush on dirty regardless of `valid`. The
-  // regression-reset mark (ccsession slot zero) needs to reach disk
-  // on the regression tick itself even though the tick is invalid
-  // (apiMs = -1). Validation gate now governs sample-row emission
-  // only (see processTick — `s.sample` stays null on invalid).
+  // v0.8.10-alpha.2 — flush on dirty regardless of `valid`.
+  // Validation gate now governs sample-row emission only
+  // (see processTick — `s.sample` stays null on invalid).
   // v1.0 invariant preserved: at most one full-file rewrite per
   // tick (one or zero).
   if (!s.dirty) return;
@@ -1658,7 +1641,7 @@ export function peekAvg(
 }
 
 export function readAccumulator(
-  scope: "session" | "project" | "model" | "ccsession",
+  scope: "session" | "project" | "model",
   args: {
     sessionId?: string | null;
     cwd?: string | null;
@@ -1672,8 +1655,6 @@ export function readAccumulator(
   } else if (scope === "project") {
     if (!args.cwd) return null;
     key = `tickStatus:${projectHash(args.cwd)}`;
-  } else if (scope === "ccsession") {
-    key = CCSESSION_KEY;
   } else {
     if (!args.modelDisplayName) return null;
     key = `tickStatus:${args.modelDisplayName}`;
@@ -1860,14 +1841,8 @@ export function setAvg(
     const current = readTickStatus(cwd, key) ?? emptyTickStatus();
     const next: TickStatusValue = { ...current };
     // v0.8.24+ — same first-write stamp rule as the session
-    // slot. For project/model/ccsession, the "first write"
-    // branch fires on:
-    //   - project: the first tick in this projectHash (no
-    //     prior history)
-    //   - ccsession: the first tick in this cc process AND
-    //     every tick after a regression-reset (which zeros
-    //     startAt via emptyTickStatus)
-    //   - model: the first tick for this modelDisplayName
+    // slot. For project/model, the "first write" branch fires
+    // when the slot's startAt is null (no prior history).
     if (next.startAt == null) {
       next.startAt = Date.now();
     }
@@ -1875,10 +1850,9 @@ export function setAvg(
     next.accTokenOut += deltaTokenOut;
     next.accTokenCachedIn += deltaTokenCachedIn;
     next.accApiMs += deltaApiMs;
-    // v0.8.10-alpha.2 — all 4 scopes (session / project /
-    // model / ccsession) accumulate `accTokenTotalIn`
-    // additively: `+= tokenTotalIn` per tick, identical to
-    // accTokenIn / accTokenOut / accTokenCachedIn.
+    // v0.8.10-alpha.2 — session / project / model all accumulate
+    // `accTokenTotalIn` additively: `+= tokenTotalIn` per tick,
+    // identical to accTokenIn / accTokenOut / accTokenCachedIn.
     next.accTokenTotalIn += deltaTokenTotalIn;
     next.accApiCalls += incrementCalls;
     // v0.8.10-alpha.3 — same derived-field recompute as the
@@ -1893,9 +1867,6 @@ export function setAvg(
 
   if (cwd && (incrementCalls > 0 || deltaTokenIn || deltaTokenOut || deltaTokenCachedIn || deltaApiMs || deltaTokenTotalIn)) {
     bumpDeltaScope(`tickStatus:${projectHash(cwd)}`);
-  }
-  if (incrementCalls > 0 || deltaTokenIn || deltaTokenOut || deltaTokenCachedIn || deltaApiMs || deltaTokenTotalIn) {
-    bumpDeltaScope(CCSESSION_KEY);
   }
   if (extras?.modelDisplayName && (incrementCalls > 0 || deltaTokenIn || deltaTokenOut || deltaTokenCachedIn || deltaApiMs || deltaTokenTotalIn)) {
     bumpDeltaScope(`tickStatus:${extras.modelDisplayName}`);
@@ -1928,11 +1899,6 @@ export function processTick(
   // merge this tick's delta on top of the recovered base, and
   // commit() flushes everything in a single full-file rewrite
   // (v1.0 invariant preserved).
-  //
-  // ccsession is intentionally excluded — it tracks one claude-code
-  // process invocation, so historical JSONL is semantically
-  // unrelated. The regression-reset mark at Stage 1 is the only
-  // legitimate ccsession zero.
   //
   // Replay runs even when s.valid is false (invalid tick —
   // cwd + sessionId are still known). The recovered aggregate
@@ -1970,33 +1936,11 @@ export function processTick(
     }
   }
 
-  // v0.8.10-alpha.2 — regression-reset (ccsession slot zero) and
-  // prev-tick baseline update fire BEFORE the validity guard, so
-  // they reach disk even on a regression tick (apiMs == -1 → invalid).
-  // The commit gate in commit() is no longer gated on `valid`, so
-  // `dirty === true` is sufficient to flush `pending`.
-  if (process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE === "1") {
-    appendDiag(
-      "info",
-      "smoke-ccsession",
-      `invalidRegression=${snapshot?.invalidRegression} totalApiMs=${snapshot?.totalApiMs ?? "null"} hasSnapshot=${snapshot != null} sid=${tokens?.sessionId ?? "null"} valid=${s.valid}`,
-      Date.now(),
-      cwd ?? undefined,
-      "status-store.processTick",
-    );
-  }
-  if (snapshot?.invalidRegression) {
-    // v0.8.24+ — ccsession regression-reset also refreshes
-    // startAt to Date.now() so m_accStartTime reads the
-    // post-reset "process clock start" instant on the very
-    // first frame, not "n/a" → next-tick. emptyTickStatus()
-    // sets startAt: null; we explicitly stamp Date.now() here
-    // so the ccsession slot is in a "ready to render" state
-    // the moment the reset fires.
-    const reset = emptyTickStatus();
-    reset.startAt = Date.now();
-    mark(CCSESSION_KEY, reset);
-  }
+  // v0.8.10-alpha.2 — prev-tick baseline update fires BEFORE the
+  // validity guard, so it reaches disk even on an invalid tick
+  // (apiMs == -1). The commit gate in commit() is no longer gated
+  // on `valid`, so `dirty === true` is sufficient to flush
+  // `pending`.
 
   if (!s.valid || !snapshot || !tokens?.sessionId) {
     s.sample = null;

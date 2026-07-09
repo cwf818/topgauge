@@ -1100,41 +1100,34 @@ type Module = ((ctx: RenderContext) => string | null) & {
 // Two slot families with clearly separated roles:
 //
 //   (A) tickStatus:<...>  — PURE ACCUMULATORS (the user-defined
-//       rule: "tickStatus 只表示累计状态"). Four dimensions, all
+//       rule: "tickStatus 只表示累计状态"). Three dimensions, all
 //       written by setAvg's atomic path:
 //
 //         tickStatus:<sessionId>   per-session (clear-bounded)
 //         tickStatus:<projectHash> per-project (cwd-bounded, NO prefix)
 //         tickStatus:<model>       per-model (modelDisplayName)
-//         tickStatus:ccsession     per-claude-code-process (singleton,
-//                                  no sessionId suffix; reset on
-//                                  totalApiMs regression — see setAvg)
 //
 //       value shape (TickStatusValue, acc-only — no per-tick fields):
 //         accTokenIn         — accumulated current.input
 //         accTokenOut        — accumulated current.output
 //         accTokenCachedIn   — accumulated current.cacheRead
 //         accTokenTotalIn    — per-tick-delta-accumulator of totalIn
-//         accApiMs           — scope-dependent (see scope contract below)
+//         accApiMs           — += deltaApiMs (delta-accumulator
+//                              across all three scopes; the
+//                              sessionId change naturally zeros
+//                              the session slot, the projectHash
+//                              change naturally zeros the project
+//                              slot, and a brand-new model name
+//                              starts the model slot from 0)
 //         accApiCalls        — accumulated API-call count
 //
-//       accApiMs SCOPE CONTRACT (v0.8.x — user rule 2026-07-04):
-//         scope=session   : += deltaApiMs (delta-accumulator;
-//                           missing slot → seeded from 0)
-//         scope=project   : += deltaApiMs (delta-accumulator)
-//         scope=model     : += deltaApiMs (delta-accumulator)
-//         scope=ccsession : = cost.totalApiDurationMs (mirrors
-//                           stdin's monotonic field; on a
-//                           regression the entire slot is zeroed
-//                           by accPrimer so the new process can
-//                           re-seed from 0)
 //
 //   (B) prevTickStatus  — SINGLETON, NOT per-dimension. Holds the
 //       last tick's stdin snapshot. Used by the writer to (i)
-//       compute the per-tick delta and (ii) detect a ccsession
-//       reset (current totalApiMs < prevTickStatus.totalApiMs
-//       means the Claude Code process restarted; the ccsession
-//       accumulator must reset before this tick's delta is added).
+//       compute the per-tick delta and (ii) detect a regression
+//       (current totalApiMs < prevTickStatus.totalApiMs means the
+//       Claude Code process restarted; the tick is dropped from
+//       the sample row, since the baseline no longer applies).
 //
 //       value shape (PrevTickStatusValue):
 //         in/out/cachedIn/totalIn/totalApiMs — previous tick's values
@@ -1228,21 +1221,18 @@ export function __resetPrevTickForTest(
 // import surface.
 export { peekAvg } from "./status-store.ts";
 
-// v0.8.x cwf-tickStatus-v2 — read the four-layer accumulator at a
-// chosen scope. Used by the m_acc* module family. The four
+// v0.8.x cwf-tickStatus-v2 — read the three-layer accumulator at
+// a chosen scope. Used by the m_acc* module family. The three
 // scopes:
 //
 //   session  → tickStatus:<sessionId>          (clear-bounded)
 //   project  → tickStatus:<projectHash(cwd)>   (cwd-bounded; no prefix)
 //   model    → tickStatus:<modelDisplayName>   (per-model)
-//   ccsession→ tickStatus:ccsession            (claude-code-process;
-//                                              reset on totalApiMs
-//                                              regression — see setAvg)
 //
 // Returns null when the slot has never been written, so the
 // module can render a placeholder rather than fabricating a "0".
 function peekAcc(
-  scope: "session" | "project" | "model" | "ccsession",
+  scope: "session" | "project" | "model",
   ctx: RenderContext,
 ): AvgSnapshot | null {
   const t = ctx.tokens;
@@ -1258,83 +1248,19 @@ function peekAcc(
   });
 }
 
-// Canonical write path for the four-layer accumulator. Reads the
-// current tickStatus:<sid> entry (or starts from zero), adds the
-// per-tick deltas, and writes the unified shape back — including
-// the new `accApiCalls` field (see accApiCalls contract above).
-// Also bumps the project-wide `tickStatus:<projectHash>`, the
-// per-process `tickStatus:ccsession`, and (when available)
-// `tickStatus:<modelDisplayName>` entries with the SAME delta so
-// every scoping level reflects this tick.
+// Canonical write path was retired to src/status-store.ts (see
+// `setAvg` there). The -processor (processTick Stages 4 + 4b) is
+// the sole caller; this module is read-only. Re-exported below
+// for back-compat with test fixtures.
 //
-// v0.8.x cwf-tickStatus-v2 (scope contract — user rule 2026-07-04,
-// refined 2026-07-04 to unify all 4 scopes on delta-accumulation):
-//   - tickStatus:<sid>   : DELTA-ACCUMULATE for all scalar
-//                          fields (in/out/cached/totalIn/apiMs/
-//                          apiCount). A new session starts from
-//                          zero because the on-disk slot key
-//                          changes (`tickStatus:<sid>` is unique
-//                          per sessionId).
-//   - tickStatus:<hash>  : DELTA-ACCUMULATE across sessions/ticks
-//                          (same scalar fields).
-//   - tickStatus:ccsession: DELTA-ACCUMULATE for all scalar
-//                          fields (matches the other 3 scopes).
-//                          ADDITIONALLY, on a regression
-//                          (current < prev.totalApiMs) the
-//                          accPrimer regression-reset path
-//                          zeroes the entire slot — the Claude
-//                          Code process restarted, the new
-//                          accumulator must start from 0.
-//   - tickStatus:<model> : DELTA-ACCUMULATE for all scalar
-//                          fields (in/out/cached/totalIn/apiMs/
-//                          apiCount).
-//
-// Earlier v0.8.x drafts tried to MIRROR stdin's absolute
-// cost.totalApiDurationMs for the ccsession slot (the rationale
-// being: ccsession is bounded by the CC process lifetime, not by
-// any individual session, so the absolute mirror is unambiguous).
-// Per user rule 2026-07-04's refinement, that mirror was
-// RETRACTED to avoid ambiguity: unless the plugin auto-starts
-// with the system, the absolute mirror and the delta-accumulator
-// produce different values on a process restart. To keep a single
-// consistent semantic, all 4 scopes now DELTA-ACCUMULATE; the
-// regression-reset check (zero on a backwards `totalApiMs` step)
-// is the only ccsession-specific quirk.
-//
-// `snap` field meanings (v0.8.x — no `totalIn`, the
-// session-cumulative totalIn lives in prevTickStatus now):
-//   snap.accTokenIn      = session-cumulative current.input
-//   snap.accTokenOut     = session-cumulative current.output
-//   snap.accApiMs     = legacy ABSOLUTE cost.totalApiDurationMs —
-//                     DEPRECATED as of v0.8.x. The per-session
-//                     accApiMs is now a delta-accumulator (see
-//                     extras.deltaApiMs below). Retained in the
-//                     signature for backward compat — no
-//                     production caller reads it anymore.
-//   snap.accTokenCachedIn  = session-cumulative current.cacheRead
-//   snap.accApiCalls = session-cumulative count of API calls
-//   snap.accTokenTotalIn = per-tick-delta-accumulator of totalIn
-//
-// Caller passes the delta math (computeAndCacheTickDelta already
-// produced it). Per-tick `in`/`out`/`cachedIn`/`totalIn`/
-// `totalApiMs` fields are NOT stored on tickStatus — they live
-// in the singleton `prevTickStatus` slot, which the caller
-// updates via setPrevTick BEFORE/AFTER calling setAvg.
-//
-// `extras.deltaApiMs` is the per-tick INCREMENT of
-// cost.totalApiDurationMs (current - prev.totalApiMs). Used as
-// the additive input for scope=session / project / model; for
-// scope=ccsession it's IGNORED — ccsession mirrors the
-// absolute stdin field via `extras.currentApiMs` instead.
-//
-// IMPORTANT: every scope (session / project / model / ccsession)
-// now DELTA-ACCUMULATES the in/out/cached/totalIn/apiCount
-// scalars. The only difference across scopes is the
-// accApiMs handling — only ccsession mirrors the absolute
-// stdin field, all others accumulate deltaApiMs.
-// v1.0 — setAvg moved to src/status-store.ts. The -processor
-// (processTick Stages 4 + 4b) is the sole caller now. Re-exported
-// here for back-compat with test fixtures.
+// Scope contract (post-ccsession cleanup): the three surviving
+// scopes all DELTA-ACCUMULATE the in/out/cached/totalIn/apiMs/
+// apiCount scalars. The ccsession-specific regression-reset
+// quirk was removed: a Claude Code process restart no longer
+// zeroes a separate per-process slot, because that slot no
+// longer exists. The relevant regression detection in
+// detectRegression still fires (it gates sample-row emission);
+// it just no longer needs a ccsession-specific mark path.
 export { setAvg } from "./status-store.ts";
 // AvgSnapshot / peekAvg re-exports sit at the top of the file.
 
@@ -1473,11 +1399,11 @@ function computeTickSpeed(
 }
 
 // v0.8.13+ — m_accTokenInSpeed / m_accTokenOutSpeed helper. Reads
-// from the chosen scope's accumulator (session / project / model /
-// ccsession) and computes the throughput as
-// accToken* / accApiMs * 1000 (t/s). Mirrors the structure of
-// computeTickSpeed (the per-turn twin), but pulls values from
-// peekAcc rather than the per-tick delta. Returns:
+// from the chosen scope's accumulator (session / project / model)
+// and computes the throughput as accToken* / accApiMs * 1000
+// (t/s). Mirrors the structure of computeTickSpeed (the per-turn
+// twin), but pulls values from peekAcc rather than the per-tick
+// delta. Returns:
 //   - "n/a" placeholder when scope has never been written
 //     (no v from peekAcc) — same `direction:n/a` shape as
 //     the per-turn sibling.
@@ -1488,7 +1414,7 @@ function computeTickSpeed(
 //     case).
 function computeAccSpeed(
   ctx: RenderContext,
-  scope: "session" | "project" | "model" | "ccsession",
+  scope: "session" | "project" | "model",
   direction: "in" | "out",
   color: string,
 ): {
@@ -1608,7 +1534,7 @@ function computeTickDelta(
 // module family (and its computeTickTotals helper) was REMOVED
 // in this version. The accumulator access for "session-cumulative
 // in/out/cache" now goes through the m_acc* family with
-// scope=ccsession (the default). For example:
+// scope=session (the default). For example:
 //   m_totalTokenIn          → m_accTokenIn
 //   m_totalTokenOut         → m_accTokenOut
 //   m_totalTokenWithCacheIn → m_accTokenCachedIn
@@ -1619,12 +1545,11 @@ function computeTickDelta(
 // v1.0 — body factory for the m_acc* family. Renders the
 // chosen accumulator field at a chosen scope. Output shape:
 //
-//   scope=ccsession (default) → "acc(ccs):N"
-//   scope=session             → "acc:N"
-//   scope=project             → "acc(total):N"
-//   scope=model               → "acc(<modelDisplayName>):N"
+//   scope=session (default) → "acc:N"
+//   scope=project           → "acc(total):N"
+//   scope=model             → "acc(<modelDisplayName>):N"
 //
-// Reads the four-layer accumulator via peekAcc. The -processor
+// Reads the three-layer accumulator via peekAcc. The -processor
 // (src/status-store.ts:processTick) has already written the
 // per-tick deltas to tickState.pending BEFORE render begins, so
 // this is a pure read. Placeholder when the chosen slot has never
@@ -1639,9 +1564,9 @@ function computeTickDelta(
 function accBody(
   ctx: RenderContext,
   field: "in" | "out" | "cached" | "total" | "apiMs" | "apiCalls",
-  scope?: "session" | "project" | "model" | "ccsession",
+  scope?: "session" | "project" | "model",
 ): string {
-  const useScope = scope ?? "ccsession";
+  const useScope = scope ?? "session";
   const v = peekAcc(useScope, ctx);
   if (!v) {
     // v0.8.x cwf-tickStatus-v2 — the accTokenCachedIn track only writes
@@ -1654,10 +1579,10 @@ function accBody(
   }
   // v0.8.10-alpha.3 — removed the "field not shipped" cache guard.
 // cache_read_input_tokens absence on the current stdin does not
-// imply an empty slot at any scope (session / project / model /
-// ccsession all accumulate across ticks). Renderers that hit a
-// missing slot fall through to the existing `if (!v)` branch above
-// and produce `prefix:n/a` via placeholderAcc.
+// imply an empty slot at any scope (session / project / model
+// all accumulate across ticks). Renderers that hit a missing
+// slot fall through to the existing `if (!v)` branch above and
+// produce `prefix:n/a` via placeholderAcc.
   // v1.0 — accCachePrimer is gone. The -processor already
   // wrote accTokenCachedIn (Stage 4b) when stdin shipped
   // cache_read_input_tokens. Re-read after Stage 4b in case the
@@ -1726,15 +1651,15 @@ function accBody(
 // users can compose them in a lineTemplate without having to
 // re-bind the prefix. The scope distinction is still visible
 // via the surrounding context (m_acc* siblings use the same
-// default ccsession scope, m_tokenHitRate is per-turn).
+// default session scope, m_tokenHitRate is per-turn).
 //
 // v0.8.10-alpha.3 — collapsed. The render pipeline no longer
 // computes the ratio (it was: accTokenCachedIn / (accTokenCachedIn
 // + accTokenIn) * 100). The data-processor now writes the
 // pre-computed ratio to TickStatusValue.accTokenHitRate at every
-// setAvg scope (session / project / model / ccsession) and the
-// module reads it straight. Zero-acc case maps to 0 (rendered as
-// "hit:0.0%"). Missing-slot case → placeholderAcc("hitRate", …).
+// setAvg scope (session / project / model) and the module reads
+// it straight. Zero-acc case maps to 0 (rendered as "hit:0.0%").
+// Missing-slot case → placeholderAcc("hitRate", …).
 
 // m_acc* placeholder shape: "acc:n/a" for plain fields, "acc:n/a%"
 // for the hit-rate module. Used when the chosen scope has no
@@ -1744,7 +1669,7 @@ function accBody(
 // distinguishes scopes (e.g. "acc(total):n/a") has a hook.
 function placeholderAcc(
   field: "in" | "out" | "cached" | "total" | "apiMs" | "apiCalls" | "hitRate" | "startTime",
-  _scope: "session" | "project" | "model" | "ccsession",
+  _scope: "session" | "project" | "model",
 ): string {
   // v0.8.0+ labels.* — the four token-axis fields read their
   // prefix from labelFor so the placeholder matches the user's
@@ -2127,19 +2052,20 @@ m_quota: Object.assign(
     return r.value;
   },
   // v0.8.x cwf-tickStatus-v2 — m_totalToken* / m_totalTokenWithCacheIn
-  // REMOVED. Use the m_acc* family with scope=ccsession (default):
+  // REMOVED. Use the m_acc* family with scope=session (default):
   //   m_totalTokenIn          → m_accTokenIn
   //   m_totalTokenOut         → m_accTokenOut
   //   m_totalTokenWithCacheIn → m_accTokenCachedIn
   // v0.8.0+ — six per-session/per-model/per-project accumulators
   // (m_accTokenIn / m_accTokenOut / m_accTokenCachedIn /
   // m_accTokenTotalIn / m_accApiMs / m_accTokenHitRate). They all
-  // read the four-layer accumulator (ccsession / session / project /
-  // model) via peekAcc and render in the same shape:
+  // read the three-layer accumulator (session / project / model)
+  // via peekAcc and render in the same shape:
   //
-  //   m_accTokenIn                 → "acc(ccs):163.5k"   (ccsession default)
-  //   m_accTokenIn:scope:project   → "acc(total):42.3k"
-  //   m_accTokenIn:scope:model     → "acc(MiniMax-M3):12.4k"
+  //   m_accTokenIn                 → "in:163.5k"        (session default)
+  //   m_accTokenIn:scope:project   → "in:42.3k"         (project cross-session)
+  //   m_accTokenIn:scope:model     → "in:12.4k"         (model cross-session)
+  //   m_accTokenIn:scope:ccsession → badarg             (REMOVED in this rev)
   //
   // The acc value is a real measured number, not a delta — 0 is
   // rendered as "acc:0" (the value-zero rule). The placeholder path
@@ -2169,7 +2095,7 @@ m_quota: Object.assign(
     // through peekAcc to drive the wrap decision so the tint
     // matches what gets rendered.
     const scope = passThroughScope(c);
-    const useScope = scope ?? "ccsession";
+    const useScope = scope ?? "session";
     const v = peekAcc(useScope, c);
     const n = v ? v.accTokenIn : 0;
     return wrapValueDefault("m_accTokenIn", n, accBody(c, "in", scope), undefined);
@@ -2178,7 +2104,7 @@ m_quota: Object.assign(
     // v0.8.30+ — bare default tint (red) on positive value; see
     // m_accTokenIn for the wrap contract.
     const scope = passThroughScope(c);
-    const useScope = scope ?? "ccsession";
+    const useScope = scope ?? "session";
     const v = peekAcc(useScope, c);
     const n = v ? v.accTokenOut : 0;
     return wrapValueDefault("m_accTokenOut", n, accBody(c, "out", scope), undefined);
@@ -2191,14 +2117,14 @@ m_quota: Object.assign(
   // returned inside accBody).
   m_accTokenCachedIn: (c) => {
     const scope = passThroughScope(c);
-    const useScope = scope ?? "ccsession";
+    const useScope = scope ?? "session";
     const v = peekAcc(useScope, c);
     const n = v ? v.accTokenCachedIn : 0;
     return wrapValueDefault("m_accTokenCachedIn", n, accBody(c, "cached", scope), undefined);
   },
   m_accTokenTotalIn: (c) => {
     const scope = passThroughScope(c);
-    const useScope = scope ?? "ccsession";
+    const useScope = scope ?? "session";
     const v = peekAcc(useScope, c);
     // accBody computes total as accTokenIn + accTokenCachedIn;
     // mirror that here for the wrap decision so the tint
@@ -2208,22 +2134,22 @@ m_quota: Object.assign(
   },
   m_accApiMs: (c) => {
     const scope = passThroughScope(c);
-    const useScope = scope ?? "ccsession";
+    const useScope = scope ?? "session";
     const v = peekAcc(useScope, c);
     const n = v ? v.accApiMs : 0;
     return wrapValueDefault("m_accApiMs", n, accBody(c, "apiMs", scope), undefined);
   },
   // v0.8.x — m_accApiCalls mirrors m_apiCalls (`calls:N`) but reads
   // the chosen scope's accApiCalls slot from status.json. Default
-  // scope is ccsession (per-process, resets only on totalApiMs
-  // regression). Inline `m_accApiCalls|scope|project` etc. to widen
-  // or narrow. value=0 still renders as `calls:0` (the value-zero
-  // rule — count:0 is real data, not a placeholder).
+  // scope is session (per-session accumulator; clear-bounded).
+  // Inline `m_accApiCalls|scope|project` etc. to widen or narrow.
+  // value=0 still renders as `calls:0` (the value-zero rule —
+  // count:0 is real data, not a placeholder).
   // v0.8.13+ — non-zero, non-null default tint wraps the chunk
   // cyan via DEFAULT_COLORS.m_accApiCalls.
   m_accApiCalls: (c) => {
     const scope = passThroughScope(c);
-    const useScope = scope ?? "ccsession";
+    const useScope = scope ?? "session";
     const v = peekAcc(useScope, c);
     const n = v ? v.accApiCalls : 0;
     return wrapValueDefault("m_accApiCalls", n, accBody(c, "apiCalls", scope), undefined);
@@ -2238,12 +2164,12 @@ m_quota: Object.assign(
   //   `:color|<shortcut|SGR>` → that exact color.
   //   passive reading (peekAcc returned null → no scope ever
   //   primed) → "direction:n/a" placeholder.
-  // Default scope ccsession matches the rest of the m_acc* family;
+  // Default scope session matches the rest of the m_acc* family;
   // inline `|scope|project` etc. widens/narrows the rollup.
   // Two-call pattern (probe + render) mirrors m_tokenInSpeed so
   // the active case picks the band color from the actual tps.
   m_accTokenInSpeed: (c) => {
-    const scope = passThroughScope(c) ?? "ccsession";
+    const scope = passThroughScope(c) ?? "session";
     const probe = computeAccSpeed(c, scope, "in", STALE_COLOR);
     const color = probe.active
       ? speedScaleColor("in", probe.tps ?? 0)
@@ -2252,7 +2178,7 @@ m_quota: Object.assign(
     return r.value;
   },
   m_accTokenOutSpeed: (c) => {
-    const scope = passThroughScope(c) ?? "ccsession";
+    const scope = passThroughScope(c) ?? "session";
     const probe = computeAccSpeed(c, scope, "out", STALE_COLOR);
     const color = probe.active
       ? speedScaleColor("out", probe.tps ?? 0)
@@ -2269,7 +2195,7 @@ m_quota: Object.assign(
   // v0.8.10-alpha.3 — reads TickStatusValue.accTokenHitRate directly
   // (data-processor pre-computes at setAvg time).
   m_accTokenHitRate: (c) => {
-    const useScope = passThroughScope(c) ?? "ccsession";
+    const useScope = passThroughScope(c) ?? "session";
     const v = peekAcc(useScope, c);
     if (!v) return placeholderAcc("hitRate", useScope);
     const pct = v.accTokenHitRate;
@@ -2278,19 +2204,17 @@ m_quota: Object.assign(
   },
   // v0.8.24+ — start of the tick statistics window. Reads
   // TickStatusValue.startAt for the chosen scope (default
-  // ccsession, matching the other m_acc* modules) and renders
+  // session, matching the other m_acc* modules) and renders
   // `<labelStartTime>HH:MM:SS` (sv-SE locale, 24h clock). The
   // startAt field is first-write-stamped by setAvg; a legacy
   // state.json with no startAt falls through to the
-  // `start:n/a` placeholder. ccsession's startAt is refreshed
-  // by detectRegression, so a Claude Code process restart shows
-  // the new boot instant immediately on the next tick.
+  // `start:n/a` placeholder.
   // v0.8.25+ — bare form honors `passThrough.abs === "true"`
   // (set by an outer `m_template|...|abs|true`) to widen the
   // body to YYYY-MM-DD HH:MM:SS. Default stays HH:MM:SS so
   // existing renders are byte-identical.
   m_accStartTime: (c) => {
-    const useScope = passThroughScope(c) ?? "ccsession";
+    const useScope = passThroughScope(c) ?? "session";
     const v = peekAcc(useScope, c);
     const startAt = v?.startAt ?? null;
     if (startAt == null) return placeholderAcc("startTime", useScope);
@@ -3289,9 +3213,9 @@ const DEFAULT_COLORS: Record<string, string> = {
   m_linesAdded: "\x1b[1;38;5;22m",   // bold + dark green (muted git-style added)
   m_linesRemoved: "\x1b[1;38;5;88m", // bold + dim red (muted git-style removed)
   // m_apiCalls (per-turn project-wide counter), m_accApiCalls
-  // (session/project/model/ccsession accumulator), and
-  // m_sumApiCalls (windowed cross-project count) all share the
-  // cyan SGR on positive values; "calls:0" stays plain.
+  // (session/project/model accumulator), and m_sumApiCalls
+  // (windowed cross-project count) all share the cyan SGR on
+  // positive values; "calls:0" stays plain.
   m_apiCalls: NAMED_PALETTE.cyan,
   m_accApiCalls: NAMED_PALETTE.cyan,
   m_sumApiCalls: NAMED_PALETTE.cyan,
@@ -3663,20 +3587,23 @@ function formatSepBody(body: string, repeat: string, wrap: string): string {
   return out;
 }
 
-// v0.8.0+ — four-layer accumulator scope selector (used by
-// m_acc*). Accepts "ccsession" (default), "session", "project",
-// or "model". Anything else is a parse-fail and the inline token
-// is dropped (same as :color|<garbage>). The model scope is a
-// no-op when the
-// live TokenSnapshot has no modelDisplayName (the placeholder
-// path fires); project scope reads the project-wide slot, which
-// is null until at least one tick has accumulated into it.
+// v0.8.0+ — three-layer accumulator scope selector (used by
+// m_acc*). Accepts "session" (default), "project", or "model".
+// "ccsession" was REMOVED in this revision and is intentionally
+// rejected with badarg (see resolveAccScope / passThroughScope);
+// the SCOPE_PARAM here only enumerates surviving scopes, so a
+// stray "ccsession" string fails the accept-set check at the
+// param level (and the resolve* helpers would throw anyway for
+// passthrough-only paths). Anything else is a parse-fail and the
+// inline token is dropped (same as :color|<garbage>). The model
+// scope is a no-op when the live TokenSnapshot has no
+// modelDisplayName (the placeholder path fires); project scope
+// reads the project-wide slot, which is null until at least one
+// tick has accumulated into it.
 const SCOPE_PARAM = {
   named: {
-    // v0.8.x cwf-tickStatus-v2 — added "ccsession" scope to
-    // m_acc*:scope:|...| (per-claude-code-process singleton).
     scope: (raw: string): ResolvedValue | null =>
-      raw === "session" || raw === "project" || raw === "model" || raw === "ccsession" ? raw : null,
+      raw === "session" || raw === "project" || raw === "model" ? raw : null,
   },
 } as const;
 
@@ -3912,7 +3839,7 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   // label-axis modules (in/out/cache/total).
   m_apiCalls: placeholderLabelOr("apiCalls"),
   // v0.8.x cwf-tickStatus-v2 — m_totalToken* / m_totalTokenWithCacheIn
-  // REMOVED. Use the m_acc* family with scope=ccsession (default).
+  // REMOVED. Use the m_acc* family with scope=session (default).
   // m_acc* — v0.8.0+ labels.*: the four token-axis acc modules
   // (m_accTokenIn/Out/CachedIn/TotalIn) share their prefix with
   // the per-turn siblings via labelFor. m_accTokenHitRate
@@ -4579,9 +4506,11 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   m_tokenOutSpeed: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   // v0.8.x cwf-tickStatus-v2 — m_totalToken* / m_totalTokenWithCacheIn
   // REMOVED. The m_acc* family replaces them.
-  // v0.8.0+ — m_acc* family accepts :scope:<ccsession|session|project|model>
-  // (default ccsession for the bare form) and the standard :color|
-  // override + :nulldrop| opt-out.
+  // v0.8.0+ — m_acc* family accepts :scope:<session|project|model>
+  // (default session for the bare form) and the standard :color|
+  // override + :nulldrop| opt-out. The legacy "ccsession" scope
+  // was REMOVED in this revision and surfaces as badarg at
+  // module-eval time (see resolveAccScope).
   m_accTokenIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
   m_accTokenOut: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
   m_accTokenCachedIn: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named, ...SCOPE_PARAM.named } },
@@ -4834,18 +4763,52 @@ function mergePassThrough(
   return out;
 }
 
-// v0.8.7+ — extract a `scope` value from `ctx.passThrough` for
-// MODULES-bare-path renderers (which don't go through INLINE_RENDERERS
-// and therefore can't call `passThroughOr(params, ctx, "scope")`).
-// Returns undefined when passthrough is absent or the value isn't a
-// known scope — `accBody` then applies its own default (ccsession).
-// Centralized here so the bare path stays a one-liner at the call
-// site and validation logic lives in one place.
+// Inline-form scope resolution for the m_acc* family. Reads from
+// the inline params first, falls back to passThrough, then to
+// "session". Throws badarg on the REMOVED "ccsession" scope so a
+// leftover user config surfaces immediately at module-eval time
+// instead of silently falling back to the new default. The single
+// chokepoint keeps the m_acc* dispatchers thin and ensures the
+// bare form (no params, no passThrough) and the inline form
+// (`m_accTokenIn|scope|project`) share the same reject path.
+function resolveAccScope(
+  params: Record<string, ResolvedValue | undefined>,
+  ctx: RenderContext,
+): "session" | "project" | "model" {
+  const raw = passThroughOr<ResolvedValue>(params, ctx, "scope");
+  const v = raw === undefined || raw === null ? undefined : raw;
+  if (v === "ccsession") {
+    throw new Error(
+      `badarg: scope="ccsession" is no longer supported — ` +
+        `the m_acc* family now covers only session/project/model ` +
+        `(use one of those, or omit :scope: for the session default)`,
+    );
+  }
+  if (v === "session" || v === "project" || v === "model") return v;
+  return "session";
+}
+
+// v0.8.7+ — passThroughScope handles MODULES-bare-path renderers
+// that don't go through INLINE_RENDERERS and therefore can't call
+// `passThroughOr(params, ctx, "scope")` — they only see
+// `ctx.passThrough`. The legacy "ccsession" scope was REMOVED in
+// this revision and is rejected with badarg so a leftover user
+// config surfaces immediately rather than silently falling back
+// to the new default. Returns undefined when passthrough is
+// absent or the value is not a recognized scope (the caller then
+// applies its own default).
 function passThroughScope(
   ctx: RenderContext,
-): "session" | "project" | "model" | "ccsession" | undefined {
+): "session" | "project" | "model" | undefined {
   const v = ctx.passThrough?.scope;
-  if (v === "session" || v === "project" || v === "model" || v === "ccsession") {
+  if (v === "ccsession") {
+    throw new Error(
+      `badarg: scope="${v}" is no longer supported — ` +
+        `the m_acc* family now covers only session/project/model ` +
+        `(use one of those, or omit :scope: for the session default)`,
+    );
+  }
+  if (v === "session" || v === "project" || v === "model") {
     return v;
   }
   return undefined;
@@ -5199,20 +5162,20 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     return r.value;
   },
   // v0.8.x cwf-tickStatus-v2 — m_totalToken* / m_totalTokenWithCacheIn
-  // REMOVED. Use the m_acc* family (scope=ccsession default).
+  // REMOVED. Use the m_acc* family (scope=session default).
   // v0.8.0+ — 6 acc modules (m_accTokenIn / Out / CachedIn / TotalIn /
-  // ApiMs / CacheHitRate). Four-layer granularity via :scope:
-  //   ccsession (default) — per-claude-code-process (singleton; reset
-  //                        on cost.totalApiDurationMs regression)
-  //   session — per-session accumulator
+  // ApiMs / CacheHitRate). Three-layer granularity via :scope:
+  //   session (default) — per-claude-code-session (clear-bounded)
   //   project — crosses session boundaries within the same cwd
   //   model — crosses session boundaries within the same model
   // All read from the v0.8.0 AccSnapshot slot populated by setAvg
   // (which writes 3 slots per tick: session/project/model). The
   // scope→slot mapping is hidden inside peekAcc; renderers just
-  // pass the resolved scope through.
+  // pass the resolved scope through. The legacy `scope=ccsession`
+  // surface was REMOVED; a leftover config surfaces as badarg
+  // (see resolveAccScope).
   m_accTokenIn: (params, ctx) => {
-    const scope = passThroughOr<"session" | "project" | "model" | "ccsession">(params, ctx, "scope") ?? "ccsession";
+    const scope = resolveAccScope(params, ctx);
     // v0.8.30+ — bare default tint (brightGreen) on positive
     // accumulator value. `wrapValueDefault` replaces the
     // previous `wrapPlainDefault` so the value-zero rule
@@ -5222,7 +5185,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     return wrapValueDefault("m_accTokenIn", n, accBody(ctx, "in", scope), passThroughOr<string>(params, ctx, "color"));
   },
   m_accTokenOut: (params, ctx) => {
-    const scope = passThroughOr<"session" | "project" | "model" | "ccsession">(params, ctx, "scope") ?? "ccsession";
+    const scope = resolveAccScope(params, ctx);
     // v0.8.30+ — bare default tint (red) on positive value; see
     // m_accTokenIn for the wrap contract.
     const v = peekAcc(scope, ctx);
@@ -5230,25 +5193,25 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     return wrapValueDefault("m_accTokenOut", n, accBody(ctx, "out", scope), passThroughOr<string>(params, ctx, "color"));
   },
   m_accTokenCachedIn: (params, ctx) => {
-    const scope = passThroughOr<"session" | "project" | "model" | "ccsession">(params, ctx, "scope") ?? "ccsession";
+    const scope = resolveAccScope(params, ctx);
     const v = peekAcc(scope, ctx);
     const n = v ? v.accTokenCachedIn : 0;
     return wrapValueDefault("m_accTokenCachedIn", n, accBody(ctx, "cached", scope), passThroughOr<string>(params, ctx, "color"));
   },
   m_accTokenTotalIn: (params, ctx) => {
-    const scope = passThroughOr<"session" | "project" | "model" | "ccsession">(params, ctx, "scope") ?? "ccsession";
+    const scope = resolveAccScope(params, ctx);
     const v = peekAcc(scope, ctx);
     const n = v ? v.accTokenIn + v.accTokenCachedIn : 0;
     return wrapValueDefault("m_accTokenTotalIn", n, accBody(ctx, "total", scope), passThroughOr<string>(params, ctx, "color"));
   },
   m_accApiMs: (params, ctx) => {
-    const scope = passThroughOr<"session" | "project" | "model" | "ccsession">(params, ctx, "scope") ?? "ccsession";
+    const scope = resolveAccScope(params, ctx);
     const v = peekAcc(scope, ctx);
     const n = v ? v.accApiMs : 0;
     return wrapValueDefault("m_accApiMs", n, accBody(ctx, "apiMs", scope), passThroughOr<string>(params, ctx, "color"));
   },
   m_accApiCalls: (params, ctx) => {
-    const scope = passThroughOr<"session" | "project" | "model" | "ccsession">(params, ctx, "scope") ?? "ccsession";
+    const scope = resolveAccScope(params, ctx);
     const v = peekAcc(scope, ctx);
     const n = v ? v.accApiCalls : 0;
     return wrapValueDefault("m_accApiCalls", n, accBody(ctx, "apiCalls", scope), passThroughOr<string>(params, ctx, "color"));
@@ -5259,7 +5222,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   // user's explicit `:color|<c>` wins over the scale, and the
   // `peekAcc==null` path emits "direction:n/a".
   m_accTokenInSpeed: (params, ctx) => {
-    const scope = passThroughOr<"session" | "project" | "model" | "ccsession">(params, ctx, "scope") ?? "ccsession";
+    const scope = resolveAccScope(params, ctx);
     const probe = computeAccSpeed(ctx, scope, "in", STALE_COLOR);
     const userColor = passThroughOr<string>(params, ctx, "color");
     const activeColor =
@@ -5270,7 +5233,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     return r.value;
   },
   m_accTokenOutSpeed: (params, ctx) => {
-    const scope = passThroughOr<"session" | "project" | "model" | "ccsession">(params, ctx, "scope") ?? "ccsession";
+    const scope = resolveAccScope(params, ctx);
     const probe = computeAccSpeed(ctx, scope, "out", STALE_COLOR);
     const userColor = passThroughOr<string>(params, ctx, "color");
     const activeColor =
@@ -5280,12 +5243,11 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const r = computeAccSpeed(ctx, scope, "out", activeColor);
     return r.value;
   },
-  // Hit rate is special: ccsession-scoped by default (per-process
-  // lifetime). Pass :scope:session/:scope:project/:scope:model to
-  // opt into a narrower or wider aggregate.
+  // Hit rate is special: session-scoped by default. Pass
+  // :scope:project / :scope:model to widen the rollup.
   // v0.8.10-alpha.3 — reads TickStatusValue.accTokenHitRate directly.
   m_accTokenHitRate: (params, ctx) => {
-    const scope = passThroughOr<"session" | "project" | "model" | "ccsession">(params, ctx, "scope") ?? "ccsession";
+    const scope = resolveAccScope(params, ctx);
     const v = peekAcc(scope, ctx);
     if (!v) return placeholderAcc("hitRate", scope);
     const pct = v.accTokenHitRate;
@@ -5293,11 +5255,11 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     return `${color}hit:${pct.toFixed(cachePctPrecision())}%${RESET}`;
   },
   // v0.8.24+ — start of the tick statistics window. Inline form
-  // supports :scope: (default ccsession) and :color: override on
+  // supports :scope: (default session) and :color: override on
   // the rendered "HH:MM:SS" body. Missing slot / legacy
   // state.json without startAt → `start:n/a` placeholder.
   m_accStartTime: (params, ctx) => {
-    const scope = passThroughOr<"session" | "project" | "model" | "ccsession">(params, ctx, "scope") ?? "ccsession";
+    const scope = resolveAccScope(params, ctx);
     const v = peekAcc(scope, ctx);
     const startAt = v?.startAt ?? null;
     if (startAt == null) return placeholderAcc("startTime", scope);
