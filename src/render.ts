@@ -327,30 +327,27 @@ export const STALE_COLOR = configStore.get().colors.stale;
 // terminals, no 256-color palette dependence.
 export const BROKEN_COLOR = configStore.get().colors.broken;
 
-// 5-band thresholds applied to the **displayed** value (so remaining/used
-// modes share the same numeric thresholds — only the meaning flips).
-// In "remaining" mode the bands run high → low: bright green / dark green /
-// yellow / orange / red, because more remaining = healthier. In "used" mode
-// the bands run low → high: bright green / dark green / yellow / orange /
-// red, because less used = healthier. We achieve this by indexing into the
-// SAME 5-color palette from opposite ends.
+// v0.8.37.1 — thresholds.percentBands is indexed against usedPct
+// regardless of display mode. Both modes share the same danger axis
+// ("how much of the window have I spent?") so the color follows
+// usedPct-derived band 0..4 from paletteByUsed() alone. The
+// v0.8.36-era reverse-palette trick was removed: under the
+// asymmetric default [60,70,80,90] it produced non-intuitive colors
+// at the high-remaining end (remaining=60 → ORANGE when users
+// expected DARK_GREEN). Mode-symmetric semantic: remaining=N
+// mirrors used=100-N; both display modes agree at the same danger
+// level.
 function colorThresholds(): readonly number[] {
   return cfg().thresholds.percentBands;
 }
 
-// 5-color palette indexed by band (0..4). In "remaining" mode, band 0
-// (lowest remaining) gets RED and band 4 (most remaining) gets BRIGHT_GREEN.
-// In "used" mode the mapping is reversed.
+// 5-color palette indexed by band (0..4). Band 0 = healthy (bright
+// green), band 4 = exhausted (red). The band axis is the USED
+// percentage, so this palette is used directly in both display
+// modes (remaining mode derives the band from 100 - remainingPct).
 function paletteByUsed(): readonly string[] {
   const c = cfg().colors;
   return [c.brightGreen, c.darkGreen, c.yellow, c.orange, c.red];
-}
-
-// In "remaining" mode we want the LOW band → red, so this is the
-// REVERSE of paletteByUsed().
-function paletteByRemaining(): readonly string[] {
-  const c = cfg().colors;
-  return [c.red, c.orange, c.yellow, c.darkGreen, c.brightGreen];
 }
 
 function bandIndex(value: number, thresholds: readonly number[]): number {
@@ -368,8 +365,13 @@ function bandIndex(value: number, thresholds: readonly number[]): number {
 }
 
 export function colorFor(displayedPct: number, mode: DisplayMode): string {
-  const idx = bandIndex(displayedPct, colorThresholds());
-  if (mode === "remaining") return paletteByRemaining()[idx];
+  // Index the palette against usedPct regardless of display mode.
+  // In "remaining" mode the user is staring at a remaining percentage,
+  // but the danger axis is still "how much have I spent?" — so flip
+  // to usedPct before banding. result: remaining=60 → used=40 →
+  // band 0 (bright green) under the [60,70,80,90] default.
+  const usedPct = mode === "remaining" ? 100 - displayedPct : displayedPct;
+  const idx = bandIndex(usedPct, colorThresholds());
   return paletteByUsed()[idx];
 }
 

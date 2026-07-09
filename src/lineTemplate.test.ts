@@ -1098,7 +1098,7 @@ describe("lineTemplate — m_window|term:short / m_window|term:mid / m_windowCon
     assert.ok(line.includes("\x1b[38;5;41m38%"), `got: ${JSON.stringify(line)}`);
   });
 
-  it("m_window|term:short|display:remaining inverts 38% used → renders 62% at band 1 (orange)", () => {
+  it("m_window|term:short|display:remaining inverts 38% used → renders 62% at band 0 (bright green)", () => {
     __resetForTest({
       statuslineTemplate:["m_window|term:short|display:remaining"],
     });
@@ -1108,10 +1108,11 @@ describe("lineTemplate — m_window|term:short / m_window|term:mid / m_windowCon
       midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
     });
-    // Inverse: 100 - 38 = 62. 62 in [60, 70) → band 1. In "remaining"
-    // mode paletteByRemaining[1] = orange (\x1b[38;5;208m). Note the
-    // remaining-mode palette is REVERSED: high remaining = healthy.
-    assert.ok(line.includes("\x1b[38;5;208m62%"), `got: ${JSON.stringify(line)}`);
+    // Inverse: 100 - 38 = 62. v0.8.37.1 mode-symmetric: remaining=62
+    // → usedPct=38 → band 0 ([0, 60)) → bright green
+    // (\x1b[38;5;41m). The danger axis is "how much have I spent?"
+    // regardless of which side of the bar the percentage is shown on.
+    assert.ok(line.includes("\x1b[38;5;41m62%"), `got: ${JSON.stringify(line)}`);
     // The original 38% must NOT appear.
     assert.ok(!line.includes("38%"), `got: ${JSON.stringify(line)}`);
   });
@@ -1147,7 +1148,7 @@ describe("lineTemplate — m_window|term:short / m_window|term:mid / m_windowCon
     assert.ok(!line.includes("38%"), `got: ${JSON.stringify(line)}`);
   });
 
-  it("m_window|term:mid|display:remaining inverts 60% used → renders 40% at band 0 (red)", () => {
+  it("m_window|term:mid|display:remaining inverts 60% used → renders 40% at band 1 (dark green)", () => {
     __resetForTest({
       statuslineTemplate:["m_window|term:mid|display:remaining"],
     });
@@ -1158,13 +1159,14 @@ describe("lineTemplate — m_window|term:short / m_window|term:mid / m_windowCon
       balance: null,
       ageMs: null, stale: false, version: "",
     });
-    // 100 - 60 = 40. 40 lands in band 0 ([0, 60)). In "remaining"
-    // mode paletteByRemaining[0] = red (\x1b[38;5;196m).
-    assert.ok(line.includes("\x1b[38;5;196m40%"), `got: ${JSON.stringify(line)}`);
+    // 100 - 60 = 40. v0.8.37.1 mode-symmetric: remaining=40 →
+    // usedPct=60 → exact threshold → band above (band 1) →
+    // dark green (\x1b[38;5;29m).
+    assert.ok(line.includes("\x1b[38;5;29m40%"), `got: ${JSON.stringify(line)}`);
     assert.ok(!line.includes("60%"), `got: ${JSON.stringify(line)}`);
   });
 
-  it("m_windowContext|display:remaining inverts 63% used → renders 37% at band 0 (red)", () => {
+  it("m_windowContext|display:remaining inverts 63% used → renders 37% at band 1 (dark green)", () => {
     // Mirror of the v0.4.0 captured stdin: context_window.used_percentage=63.
     __resetForTest({
       statuslineTemplate:["m_windowContext|display:remaining"],
@@ -1182,9 +1184,10 @@ describe("lineTemplate — m_window|term:short / m_window|term:mid / m_windowCon
         contextWindow: { contextWindowSize: 200000, contextUsedPercent: 63, contextRemainingPercent: 37 },
       },
     });
-    // 100 - 63 = 37. 37 in [0, 60) → band 0. In "remaining" mode
-    // paletteByRemaining[0] = red (\x1b[38;5;196m).
-    assert.ok(line.includes("\x1b[38;5;196m37%"), `got: ${JSON.stringify(line)}`);
+    // 100 - 63 = 37. v0.8.37.1 mode-symmetric: remaining=37 →
+    // usedPct=63 → band 1 (DARK_GREEN, \x1b[38;5;29m) under
+    // [60,70,80,90] (63 >= 60 and < 70).
+    assert.ok(line.includes("\x1b[38;5;29m37%"), `got: ${JSON.stringify(line)}`);
     assert.ok(!line.includes("63%"), `got: ${JSON.stringify(line)}`);
   });
 
