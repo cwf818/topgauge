@@ -1,6 +1,6 @@
 // v0.2.21: tests for the providers registry. The previous
 // `isMiniMaxBaseUrl` / `isDeepSeekBaseUrl` cases moved into api.test.ts
-// / api.deepseek.test.ts (and exercise the deprecated shims); this
+// / api.balance.test.ts (and exercise the deprecated shims); this
 // file covers the new config-driven matching + dispatch surface.
 //
 // All tests pin the config to the built-in defaults via

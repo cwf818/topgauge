@@ -716,7 +716,7 @@ describe("diagnostics — integration with fetchRemains / fetchBalance (v0.6.x+)
   });
 
   it("fetchRemains 5xx → fetch site records the diagnostic AND throws", async () => {
-    const { fetchRemains } = await import("./api.ts");
+    const { fetchRemains } = await import("./api.plan.ts");
     globalThis.fetch = (async () => new Response("oops", { status: 503 })) as typeof fetch;
     await assert.rejects(
       () => fetchRemains("t", "https://x/y", undefined, null),
@@ -736,7 +736,7 @@ describe("diagnostics — integration with fetchRemains / fetchBalance (v0.6.x+)
   });
 
   it("fetchRemains network error → fetch site records the diagnostic AND throws", async () => {
-    const { fetchRemains } = await import("./api.ts");
+    const { fetchRemains } = await import("./api.plan.ts");
     globalThis.fetch = (async () => {
       throw new Error("fetch failed: ECONNREFUSED");
     }) as typeof fetch;
@@ -755,7 +755,7 @@ describe("diagnostics — integration with fetchRemains / fetchBalance (v0.6.x+)
   });
 
   it("fetchBalance 5xx → fetch site records the diagnostic AND throws", async () => {
-    const { fetchBalance } = await import("./api.deepseek.ts");
+    const { fetchBalance } = await import("./api.balance.ts");
     globalThis.fetch = (async () => new Response("oops", { status: 502 })) as typeof fetch;
     await assert.rejects(
       () => fetchBalance("t", "https://api.deepseek.com/user/balance", undefined, null),
@@ -769,7 +769,7 @@ describe("diagnostics — integration with fetchRemains / fetchBalance (v0.6.x+)
   });
 
   it("fetchBalance network error → fetch site records the diagnostic AND throws", async () => {
-    const { fetchBalance } = await import("./api.deepseek.ts");
+    const { fetchBalance } = await import("./api.balance.ts");
     globalThis.fetch = (async () => {
       throw new Error("fetch failed: ECONNREFUSED");
     }) as typeof fetch;
@@ -786,7 +786,7 @@ describe("diagnostics — integration with fetchRemains / fetchBalance (v0.6.x+)
   });
 
   it("does NOT log the auth token (token-leak regression guard)", async () => {
-    const { fetchRemains } = await import("./api.ts");
+    const { fetchRemains } = await import("./api.plan.ts");
     globalThis.fetch = (async () => new Response("nope", { status: 401 })) as typeof fetch;
     const SECRET = "sk-very-secret-12345";
     await assert.rejects(
@@ -805,7 +805,7 @@ describe("diagnostics — integration with fetchRemains / fetchBalance (v0.6.x+)
   });
 
   it("successful fetch (200) does NOT write a diagnostic", async () => {
-    const { fetchRemains } = await import("./api.ts");
+    const { fetchRemains } = await import("./api.plan.ts");
     const provider = {
       TYPE: "TOKEN_PLAN" as const,
       BASE_URL_COMPARED_TO: "https://x",

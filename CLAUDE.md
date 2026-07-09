@@ -28,8 +28,8 @@ There is no separate `lint` step; `typecheck` covers it. Tests run with built-in
 src/
   index.ts            # entry — stdin drain, provider dispatch, cache, render, compose, loadConfig()
   types.ts            # Provider union: 'minimax' | 'deepseek' | null
-  api.ts              # MiniMax fetch + tolerant parser for /v1/token_plan/remains
-  api.deepseek.ts     # DeepSeek fetch + parser for /user/balance + URL gate
+  api.plan.ts         # TOKEN_PLAN fetch + tolerant parser for /v1/token_plan/remains
+  api.balance.ts      # BALANCE fetch + parser for /user/balance + URL gate
   render.ts           # v1.0 READ-ONLY against tickState.pending: pctBar + ANSI color thresholds + formatLine + formatBalanceLine; NO setAvg/setPrevTick/setLastSpeed calls (those moved to data-processor.ts)
   data-processor.ts   # v1.0 processTick + setPrevTick + setAvg + setLastSpeed/ApiMs/TokenHitRate + computeAndCacheTickDeltaPure + getDeltaForRender — owns ALL writes to tickState.pending
   cache.ts            # TTL + stale-on-error (Map<key, {at, value}>) — TTL passed in by index.ts from configStore
@@ -66,7 +66,7 @@ Claude Code's `statusLine.command` spawns a child process that reads a session J
 
 1. `statusLine.command` (written by `scripts/lib/edit-settings.mjs` `write-managed` op) is a `bash -c '…'` snippet that, at invocation time, `ls -d`s every directory under `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache/topgauge-cc/topgauge-cc/*/`, sorts by version (`sort -t. -k1,1n …`), tails the highest, and execs `scripts/wrapper.sh` from that `plugin_dir`. Same pattern claude-hud uses. This makes the command **version-independent** — when `/plugin install` rolls the cache forward (0.2.5 → 0.2.6), the existing `statusLine` keeps working without re-running `install.sh`. The command then optionally runs the bash script at `$TOPGAUGE_CC_UPSTREAM_CMD` (so the user can compose with another statusline, e.g. `ccstatusline` or `claude-hud`), captures its stdout into the `TOPGAUGE_CC_UPSTREAM` env var, then execs `dist/index.js` forwarding stdin. If `TOPGAUGE_CC_UPSTREAM_CMD` is unset, `TOPGAUGE_CC_UPSTREAM` is empty and this plugin becomes the sole statusline. Note: `TOPGAUGE_CC_UPSTREAM_CMD` is an **absolute path** to a bash script (a shebang + `exec bash -c '...'` wrapper written by install.sh), not a shell command line — older v0.1.10–v0.1.11 used `bash -c` against the path and silently failed; v0.1.12 runs it as a script (`bash "$TOPGAUGE_CC_UPSTREAM_CMD"`).
 2. `src/index.ts` reads stdin (drains it; we don't use the session fields), gates on `ANTHROPIC_BASE_URL` containing `minimaxi.com`, and reads `process.env.ANTHROPIC_AUTH_TOKEN` as the Bearer token for the API call.
-3. The API response is parsed by `parseRemains` in `src/api.ts`. It accepts two shapes:
+3. The API response is parsed by `parseRemains` in `src/api.plan.ts`. It accepts two shapes:
    - **Real shape** (verified against `https://www.minimaxi.com/v1/token_plan/remains` on 2026-06-24): `{ model_remains: [{ model_name, current_interval_remaining_percent, current_weekly_remaining_percent, start_time, end_time, weekly_start_time, weekly_end_time, … }, …], base_resp: { status_code } }`. We pick the entry with the **lowest interval remaining %** as the source of truth (the most-active model). `start_time`/`end_time` (and their weekly counterparts) populate `Window.resetStartAt` and `Window.resetDurationMs` so the renderer can pick a window-fill-aware reset arrow.
    - **Legacy/fallback shape**: `{ data: { five_hour: { remaining, limit }, weekly: { remaining, limit } } }` — for any provider that returns the simpler schema (no start fields → reset arrow falls back to `resetArrows[0]`).
 4. Cache: `src/cache.ts` holds a single 60-second TTL entry. On fetch failure it returns the stale value so the statusline doesn't blank.
@@ -192,7 +192,7 @@ After install, run `/topgauge-cc:install` to wire the wrapper into `settings.jso
 ## Testing notes
 
 - `npm test` runs all 64 tests in ~250ms. No network calls in tests — they exercise pure functions and fixtures.
-- The captured real response lives at `src/__fixtures__/remains.real.json` and is the source of truth for the parser's shape assumptions. If MiniMax changes the API, capture a fresh response and update both the fixture and `src/api.ts`.
+- The captured real response lives at `src/__fixtures__/remains.real.json` and is the source of truth for the parser's shape assumptions. If MiniMax changes the API, capture a fresh response and update both the fixture and `src/api.plan.ts`.
 - Live smoke test (no Claude Code needed): `echo '{}' | ANTHROPIC_BASE_URL=https://api.minimaxi.com/anthropic ANTHROPIC_AUTH_TOKEN=<token> node dist/index.js`.
 - Live install smoke test: `bash scripts/install.sh --dry-run` then `bash scripts/install.sh` then `bash scripts/uninstall.sh` (or `bash scripts/uninstall.sh --dry-run` first).
 - Live uninstall smoke test: `bash scripts/uninstall.sh --dry-run` then `bash scripts/uninstall.sh`. Re-run to confirm idempotency.

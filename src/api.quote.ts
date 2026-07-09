@@ -1,5 +1,5 @@
 // v0.8.21+ — fetcher for `m_quote|address|…|field|…` tokens.
-// Mirrors the data-driven shape of src/api.ts (fetch + tolerant
+// Mirrors the data-driven shape of src/api.plan.ts (fetch + tolerant
 // JSON parse + diagnostics) and the cache-aside pattern in
 // src/index.ts:fetchProviderData (disk-shadowed TTL cache,
 // stale-on-error via peek).

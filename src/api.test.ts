@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { parseRemains, fetchRemains } from "./api.ts";
+import { parseRemains, fetchRemains } from "./api.plan.ts";
 import type { IntervalConfig, ProviderEntry } from "./types.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -54,7 +54,7 @@ const minimaxDefaultIntervals: IntervalConfig = {
 // helper does the same projection for live callers; tests inline the
 // logic here so we don't import the renderer (which would pull in
 // configStore + index side effects).
-function intervalToWindow(iv: import("./api.ts").Remains["shortInterval"]): {
+function intervalToWindow(iv: import("./api.plan.ts").Remains["shortInterval"]): {
   pct: number;
   resetAt: string | undefined;
   resetStartAt: string | undefined;

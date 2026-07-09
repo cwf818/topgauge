@@ -1302,7 +1302,7 @@ The verified real shape (captured 2026-06-24 against `https://www.minimaxi.com/v
 }
 ```
 
-The plugin picks the entry with the **lowest interval remaining %** as the source of truth (the most-active model). If you capture a fresh response and the shape diverges, save it as `src/__fixtures__/remains.real.json` and tighten the parser in `src/api.ts`.
+The plugin picks the entry with the **lowest interval remaining %** as the source of truth (the most-active model). If you capture a fresh response and the shape diverges, save it as `src/__fixtures__/remains.real.json` and tighten the parser in `src/api.plan.ts`.
 
 The DeepSeek response shape is simpler — `{ is_available: bool, balance_infos: [{ currency, total_balance, granted_balance, topped_up_balance }, ...] }` — and the parser iterates **all** entries so every currency the account holds is rendered.
 
@@ -1343,8 +1343,8 @@ src/
   index.ts            # entry — stdin drain, provider dispatch, cache, render, compose
   types.ts            # Provider = string | null; ProviderType / CompareMethod / ProviderEntry
   providers.ts        # URL matching, fetcher / template / fail-label dispatch (v0.2.21)
-  api.ts              # MiniMax fetch + tolerant parser for /v1/token_plan/remains
-  api.deepseek.ts     # DeepSeek fetch + parser for /user/balance
+  api.plan.ts         # TOKEN_PLAN fetch + tolerant parser for /v1/token_plan/remains
+  api.balance.ts      # BALANCE fetch + parser for /user/balance
   render.ts           # pure: pctBar + ANSI color thresholds + formatLine + formatBalanceLine
   cache.ts            # 60s TTL + stale-on-error; getWithAge returns cache age on within-TTL hit
   composition.ts      # reads TOPGAUGE_CC_UPSTREAM, prepends (preserving ANSI/multi-line) and appends line

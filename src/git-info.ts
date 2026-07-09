@@ -21,7 +21,7 @@
 //
 // Cache:
 //   Map<cwd, { at: ms; value: GitInfo | null }>, default TTL 60s.
-//   Matches the api.ts cache TTL — git status freshness isn't
+//   Matches the api.plan.ts cache TTL — git status freshness isn't
 //   user-critical at sub-minute resolution. Stale-on-error: if a
 //   refresh throws, return the previous value (even if expired) so
 //   the statusline doesn't blank. The resetTtlForTest export lets

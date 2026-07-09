@@ -101,7 +101,7 @@ export async function fetchBalance(
   provider: ProviderEntry | null = null,
 ): Promise<Balance | null> {
   // v0.6.0+ — entry.BEARER_KEY wins over the env-sourced `token`
-  // arg, matching the fetchRemains contract. See api.ts for the
+  // arg, matching the fetchRemains contract. See api.plan.ts for the
   // full rationale on the empty-token early return.
   const authToken = provider?.BEARER_KEY ?? token;
   if (!authToken) return null;

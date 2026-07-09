@@ -1643,7 +1643,7 @@ function mergeConfig(raw: Record<string, unknown>): Config {
 //
 // The 7 path fields are stored as raw strings here; runtime
 // resolution (against the provider response) happens in
-// src/api.ts:parseRemains via the path-expr.ts grammar. We don't
+// src/api.plan.ts:parseRemains via the path-expr.ts grammar. We don't
 // pre-validate paths at config-load time (the response shape
 // isn't known yet) — only the SHAPE of each path field
 // (string-only).

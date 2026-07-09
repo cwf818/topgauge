@@ -72,7 +72,7 @@ export type Window = {
 // config block (top-level or per-provider override) plus the
 // built-in defaults. See `IntervalKey` / `IntervalSlotConfig` in
 // src/types.ts for the user-facing schema; see `parseRemains` in
-// src/api.ts for the resolution rules (percent / time / quota group
+// src/api.plan.ts for the resolution rules (percent / time / quota group
 // derivation + 3-step intervalMs fallback chain).
 //
 // The renderer (m_window / m_countdown / m_quota) reads these fields
@@ -441,7 +441,7 @@ export function pctBar(usedPctValue: number, width = configStore.get().bar.width
 // v0.9.0+ — project an `Interval` into the `Window` shape the
 // gauge / countdown renderers consume. Returns null when the
 // interval has no usable percent data (the same condition that
-// drives the v0.8.x `slotsToWindow` in src/api.ts:160-175 to return
+// drives the v0.8.x `slotsToWindow` in src/api.plan.ts:160-175 to return
 // null). Mirrors the v0.8.x projection rules:
 //
 //   pct             ← usedPercent (or 100 - remainingPercent if
@@ -514,7 +514,7 @@ function renderQuotaBody(iv: Interval): string | null {
 }
 
 // v0.9.0+ — epoch-ms → ISO timestamp. Local to render.ts (same
-// impl as the v0.8.x src/api.ts:tsToIso; hoisted here so
+// impl as the v0.8.x src/api.plan.ts:tsToIso; hoisted here so
 // intervalToWindow can use it without dragging the api module
 // into render's hot path).
 function tsToIso(ms: number | null): string | null {
@@ -4227,7 +4227,7 @@ const QUOTE_INSECURE_TLS_PARAM = {
 } as const;
 
 // v0.8.18+ — walk a JSON value along a dot-separated path, mirroring
-// the recursive shape inspection in `parseRemains` (api.ts). At each
+// the recursive shape inspection in `parseRemains` (api.plan.ts). At each
 // step: if the current value is a string, return it (and IGNORE the
 // rest of the path — the field param is only meaningful for object
 // / array navigation). If it's an object, treat the segment as a
@@ -4270,7 +4270,7 @@ export function getFieldByPath(value: unknown, path: string): string | null {
 
 // v0.8.19+ — fetch a remote quote payload via `curl` (synchronous).
 // Mirrors the tolerant shape inspection pattern from
-// src/api.ts:parseRemains (try JSON parse → walk path → return
+// src/api.plan.ts:parseRemains (try JSON parse → walk path → return
 // string). `renderTemplate` is sync (per-tick deadline in the
 // statusline slot) so the renderer can't await; `curl -sSf` is
 // shipped on every modern OS (Win10+1803, macOS, Linux distros)

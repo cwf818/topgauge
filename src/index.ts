@@ -27,8 +27,8 @@
 // the right fetcher based on the matched provider's `TYPE`.
 
 import * as cache from "./cache.ts";
-import { type Remains } from "./api.ts";
-import { type Balance } from "./api.deepseek.ts";
+import { type Remains } from "./api.plan.ts";
+import { type Balance } from "./api.balance.ts";
 import type { Provider } from "./types.ts";
 import { compose } from "./composition.ts";
 import { type FetchResult, buildProviderLine } from "./dispatch.ts";
@@ -169,7 +169,7 @@ async function fetchProviderData(
     // Network / HTTP error. Stale-on-error: keep showing the last good value.
     // The fetch site (fetchRemains / fetchBalance) is responsible for
     // logging the underlying error to diagnostics; we just translate
-    // the throw to a FetchResult here. See api.ts / api.deepseek.ts.
+    // the throw to a FetchResult here. See api.plan.ts / api.balance.ts.
     const stale =
       entry.TYPE === "TOKEN_PLAN" ? peekCache<Remains>() : peekCache<Balance>();
     if (stale) return { kind: "stale", data: stale.value, ageMs: stale.ageMs };

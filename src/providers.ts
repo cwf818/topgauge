@@ -15,8 +15,8 @@ import type {
   ProviderEntry,
   ProviderType,
 } from "./types.ts";
-import { fetchRemains } from "./api.ts";
-import { fetchBalance } from "./api.deepseek.ts";
+import { fetchRemains } from "./api.plan.ts";
+import { fetchBalance } from "./api.balance.ts";
 
 // ----- URL matching -----
 
