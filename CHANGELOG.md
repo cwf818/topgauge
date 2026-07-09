@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.8.36
+
+### Add
+
+- **`m_windowMemUsage` module — system RAM used percentage with
+  5-band `percentBands` coloring.** New sibling of `m_memUsage`
+  (which renders the absolute-bytes shape `Mem:15.9G/63.7G` with
+  a fixed cyan tint). `m_windowMemUsage` reads the same
+  `getMemUsage()` helper but normalizes to a 0..100 ratio and
+  routes the color through `colorFor(pct, "used")` so a user who
+  tunes `thresholds.percentBands` (default `[20, 40, 60, 80]`)
+  gets the matching RAM-band color automatically — brightGreen
+  below 20%, darkGreen below 40%, yellow below 60%, orange
+  below 80%, red at 80%+. Renders e.g. `RAM%:45.3%`. Opt-in:
+  the default `lineTemplate` does NOT include it, so existing
+  renders stay byte-identical after upgrade.
+  - Bare form: `m_windowMemUsage` — uses band color.
+  - Inline form: `m_windowMemUsage|color:<c>|nulldrop:<bool>` —
+    `|color|<c>` overrides the band color (override always
+    wins, matching every other inline module); `|nulldrop|<bool>`
+    drops the chunk on null. Missing or zero-total
+    `getMemUsage()` → `RAM%:n/a` placeholder wrapped in
+    `STALE_COLOR` (bare) or the user's `|color|` (inline).
+  - Label configurable via `labels.labelWindowMemUsage` (default
+    `"RAM%:"`). Distinct from `labels.labelMemUsage` so the two
+    coexisting modules can be told apart at a glance.
+  - Files: `src/render.ts` (LabelAxis case, MODULES entry,
+    INLINE_RENDERERS entry, INLINE_SCHEMAS entry, dispatcher
+    chain, PLACEHOLDERS, DEFAULT_COLORS), `src/config.ts`
+    (label type/default/validator), `src/render-tokens.test.ts`
+    (4 regression tests mirroring the `m_memUsage` pattern).
+
 ## v0.8.34
 
 ### Fix

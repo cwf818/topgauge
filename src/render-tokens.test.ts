@@ -5736,6 +5736,61 @@ describe("renderTemplate — v0.8.0+ labels.* config customization", () => {
     // the override path uses palette token "red" → resolveColor).
     assert.match(out, /\x1b\[(?:31|38;5;\d+)m/);
   });
+
+  // v0.8.36+ — m_windowMemUsage label customization. Default is
+  // "RAM%:" (distinct from m_memUsage's "Mem:" so the two
+  // coexisting modules can be told apart at a glance). Body
+  // shape is "<label><pct>%" where pct is computed as
+  // used/total*100. The pct value is non-deterministic on the
+  // host, so the assertion is prefix + shape only.
+  it("labelWindowMemUsage override reaches m_windowMemUsage prefix", () => {
+    withLabels({ labelWindowMemUsage: "SysRAM%:" }, () => {
+      const a = renderTemplate(
+        ["m_windowMemUsage"],
+        ctxFor(fakeSnapshot()),
+      ).join("\n");
+      // "SysRAM:n/a" when getMemUsage() returns null (Darwin
+      // vm_stat parse failure or sandboxed os.*); otherwise
+      // "SysRAM:NN.N%". Either form verifies that
+      // labelWindowMemUsage reaches the renderer.
+      assert.match(strip(a), /^SysRAM%:(n\/a|\d+(\.\d+)?%)$/);
+    });
+  });
+
+  it("labelWindowMemUsage defaults to 'RAM%:' byte-identically", () => {
+    // No override — defaults must reproduce the v0.8.36 literal
+    // "RAM%:" so the module has a stable, distinctive prefix.
+    const out = renderTemplate(
+      ["m_windowMemUsage"],
+      ctxFor(fakeSnapshot()),
+    ).join("\n");
+    assert.match(strip(out), /^RAM%:(n\/a|\d+(\.\d+)?%)$/);
+  });
+
+  it("m_windowMemUsage|color|red override applies the user's SGR", () => {
+    const out = renderTemplate(
+      ["m_windowMemUsage|color:red"],
+      ctxFor(fakeSnapshot()),
+    ).join("\n");
+    // Default band color is driven by colorFor(pct, "used");
+    // when the user supplies |color|red, the override wins.
+    // Prefix stays "RAM%:" regardless of color. The SGR for
+    // "red" contains "31" (bare-31) or "38;5;<n>" (palette).
+    assert.match(strip(out), /^RAM%:(n\/a|\d+(\.\d+)?%)$/);
+    assert.match(out, /\x1b\[(?:31|38;5;\d+)m/);
+  });
+
+  it("m_windowMemUsage|nulldrop|true drops the placeholder when getMemUsage() returns null", () => {
+    // Mirror m_memUsage's test: assert nulldrop on a null result
+    // path drops the placeholder. When getMemUsage() succeeds,
+    // the value path emits and nulldrop is a no-op on the success
+    // path (matches m_memUsage's contract).
+    const out = renderTemplate(
+      ["m_windowMemUsage|nulldrop:true"],
+      ctxFor(fakeSnapshot()),
+    ).join("\n");
+    assert.doesNotMatch(strip(out), /n\/a/);
+  });
 });
 
 // v0.8.0+ — tickStatus field renames and additions. The on-disk

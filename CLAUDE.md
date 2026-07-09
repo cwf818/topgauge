@@ -30,6 +30,15 @@ src/
   types.ts            # Provider union: 'minimax' | 'deepseek' | null
   api.plan.ts         # TOKEN_PLAN fetch + tolerant parser for /v1/token_plan/remains
   api.balance.ts      # BALANCE fetch + parser for /user/balance + URL gate
+  # v0.8.36+ — m_windowMemUsage is the percentage-form sibling of
+  # m_memUsage (which renders absolute bytes "Mem:X.XG/Y.YG" with
+  # a fixed cyan tint). m_windowMemUsage normalizes to a 0..100
+  # ratio and routes the color through colorFor(pct, "used") so
+  # thresholds.percentBands drives the hue. Opt-in; not in any
+  # default lineTemplate. Manual ${color}${label}${value}${RESET}
+  # wrap (NOT wrapPlainDefault) because the band color must drive
+  # the value tint — wrapPlainDefault's DEFAULT_COLORS path would
+  # shadow it.
   render.ts           # v1.0 READ-ONLY against tickState.pending: pctBar + ANSI color thresholds + formatLine + formatBalanceLine; NO setAvg/setPrevTick/setLastSpeed calls (those moved to data-processor.ts)
   data-processor.ts   # v1.0 processTick + setPrevTick + setAvg + setLastSpeed/ApiMs/TokenHitRate + computeAndCacheTickDeltaPure + getDeltaForRender — owns ALL writes to tickState.pending
   cache.ts            # TTL + stale-on-error (Map<key, {at, value}>) — TTL passed in by index.ts from configStore
@@ -55,7 +64,6 @@ scripts/
   clean.sh            # trim old .bak.<ts> files, keeping only the most recent per file
   lib/edit-settings.mjs # ESM helper used by install.sh
   dev-uninstall.sh    # DEV-ONLY thin shim → exec uninstall.sh
-dist/
   index.js            # gitignored, esbuild bundle, the actual entry point
 settings.example.json # template (NEVER commit a real settings.json)
 ```

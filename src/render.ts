@@ -170,7 +170,7 @@ function cfg() {
 type LabelAxis =
   | "in" | "out" | "cacheIn" | "totalIn"
   | "inSpeed" | "outSpeed" | "apiMs" | "apiCalls"
-  | "memUsage"
+  | "memUsage" | "windowMemUsage" // v0.8.36+ — m_windowMemUsage prefix axis
   | "hitRate"   // v0.8.22+ — lifted out of hardcoded literal
   | "contextSize" | "contextWindowsSize" | "contextUsedPercent" | "contextRemainingPercent" // v0.8.23+
   | "startTime" | "endTime" // v0.8.24+ — start/end of the tick statistics window
@@ -187,6 +187,11 @@ function labelFor(axis: LabelAxis): string {
     case "apiMs": return labels.labelApiMs;
     case "apiCalls": return labels.labelApiCalls;
     case "memUsage": return labels.labelMemUsage;
+    // v0.8.36+ — m_windowMemUsage prefix axis. Default "RAM%:"
+    // (set in config.ts:DEFAULT_CONFIG.labels). Distinct from
+    // labelMemUsage so the absolute-bytes and percentage-form
+    // siblings can be told apart on the same line.
+    case "windowMemUsage": return labels.labelWindowMemUsage;
     case "hitRate": return labels.labelTokenHitRate;
     // v0.8.23+ — context-window prefix knobs (were hardcoded
     // "size:" / "size:" / "used:" / "remain:" in v0.8.22).
@@ -2748,6 +2753,26 @@ m_quota: Object.assign(
       undefined,
     );
   },
+  // v0.8.36+ — system RAM used percentage, 5-band-colored via
+  // percentBands. Sibling of m_memUsage (which renders the
+  // absolute-bytes "Mem:X.XG/Y.YG" shape with a fixed cyan tint);
+  // m_windowMemUsage uses the SAME getMemUsage() helper but
+  // normalizes to a 0..100 ratio and routes the color through
+  // colorFor(pct, "used") so a user who tunes percentBands
+  // (default [20, 40, 60, 80]) gets the matching RAM-band color
+  // automatically. m_total <= 0 guard is defensive — os.totalmem
+  // is always > 0 on a real machine, but a sandboxed test env
+  // could zero it; without the guard we'd emit "RAM%:NaN%".
+  // wrapPlainDefault is INTENTIONALLY not used here because we
+  // want colorFor to drive the value color (DEFAULT_COLORS would
+  // shadow it). Manual wrap: `${color}${label}${value}${RESET}`.
+  m_windowMemUsage: (c) => {
+    const m = getMemUsage();
+    if (!m || m.total <= 0) return placeholderBare("m_windowMemUsage", c);
+    const pct = (m.used / m.total) * 100;
+    const color = colorFor(pct, "used");
+    return `${color}${labelFor("windowMemUsage")}${pct.toFixed(1)}%${RESET}`;
+  },
 };
 
 // Cap unknown-module warnings to once per process so a template typo
@@ -3272,6 +3297,12 @@ const DEFAULT_COLORS: Record<string, string> = {
   // "Mem:..." widget hue so users migrating from ccstatusline get
   // a familiar color until they override.
   m_memUsage: NAMED_PALETTE.cyan,
+  // v0.8.36+ — m_windowMemUsage. Moot for the value tint (the
+  // renderer uses colorFor(pct, "used") not wrapPlainDefault),
+  // but kept so the dispatcher doesn't warn on bare-form paths
+  // that defensively index DEFAULT_COLORS. Mirrors m_memUsage
+  // cyan so an upgrade preserves a familiar hue.
+  m_windowMemUsage: NAMED_PALETTE.cyan,
 };
 
 // Snapshot of `cfg().colors` + the `brightBlack` input shortcut. Read
@@ -3992,6 +4023,10 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   // placeholder body stays in lockstep with the user's labels.labelMemUsage
   // override (renaming the label renames the placeholder too).
   m_memUsage: placeholderLabelOr("memUsage"),
+  // v0.8.36+ — m_windowMemUsage placeholder mirrors m_memUsage's
+  // pattern: <label>n/a so the body stays in lockstep with the
+  // user's labels.labelWindowMemUsage override.
+  m_windowMemUsage: placeholderLabelOr("windowMemUsage"),
   // v6.x: previously drop-by-design modules (no age info / no
   // version / no reset data / no balance). Now also follow the
   // placeholder rule — they occupy their slot so adjacent
@@ -4607,6 +4642,11 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   // color for the value itself: the body is a string ("X.XG/Y.YG")
   // and the per-module DEFAULT_COLORS tint applies by default.
   m_memUsage: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
+  // v0.8.36+ — m_windowMemUsage inline-args. Same shape as
+  // m_memUsage (color + nulldrop). |color|<c> overrides the
+  // 5-band percentBands color; |nulldrop|<bool> drops the chunk
+  // on null.
+  m_windowMemUsage: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   // v0.4.0+ — sub-template reference. First argument is the key
   // into cfg().lineTemplates (the user's reusable-fragment
   // registry). Optional `:type|<plan|balance>` filter (default
@@ -5772,6 +5812,22 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const body = `${labelFor("memUsage")}${formatMemBytes(m.used)}/${formatMemBytes(m.total)}`;
     return wrapPlainDefault("m_memUsage", body, params.color as string | undefined);
   },
+  // v0.8.36+ — inline form of m_windowMemUsage. Mirror of the
+  // bare entry but with the user's |color|<c> override applied
+  // BEFORE the band-derived color (override always wins; matches
+  // the wrapPlainDefault contract for every other module). When
+  // the user has NOT supplied |color|, the value is tinted via
+  // colorFor(pct, "used") so percentBands drives the hue. The
+  // |nulldrop| flag flows through placeholderWithColor and drops
+  // the chunk on null.
+  m_windowMemUsage: (params, ctx) => {
+    const m = getMemUsage();
+    if (!m || m.total <= 0) return placeholderWithColor("m_windowMemUsage", params, ctx);
+    const pct = (m.used / m.total) * 100;
+    const userColor = params.color as string | undefined;
+    const color = userColor ?? colorFor(pct, "used");
+    return `${color}${labelFor("windowMemUsage")}${pct.toFixed(1)}%${RESET}`;
+  },
   // v0.4.0+ — expand a registered lineTemplates fragment. The
   // loader strips any `m_template:` tokens from lineTemplates
   // arrays (config.ts applyOverrides), so the recursive call below
@@ -6261,6 +6317,9 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
       } else if (tok.startsWith("m_memUsage|")) {
         // m_memUsage → 10 chars + "|" = 11 skipLen.
         inline = expandInlineToken(tok, "m_memUsage", 11, ctx);
+      } else if (tok.startsWith("m_windowMemUsage|")) {
+        // m_windowMemUsage → 16 chars + "|" = 17 skipLen.
+        inline = expandInlineToken(tok, "m_windowMemUsage", 17, ctx);
       }
       // Parse failure (bad |color|, unknown param, odd segment count)
       // → warn + drop. Renderer returning null for valid args (e.g.

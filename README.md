@@ -707,6 +707,7 @@ Recognized modules:
 | `m_totalTokenOut`  | Same for output tokens — e.g. `out:265`. |
 | `m_totalTokenWithCacheIn` | Per-session running total of `cache_read_input_tokens` across valid-API-call ticks — e.g. `cache:490k`. Renders `cache:--` when stdin lacks `current_usage.cache_read_input_tokens` (honest "data unavailable" signal); `cache:0` when no valid tick has accumulated yet. |
 | `m_quote`          | An inspirational short quote from a 100+ entry bilingual pool (English + 中文). See the [m_quote section](#m_quote-v036) below for the `:freq:` and `:color:` parameters. |
+| `m_windowMemUsage` | System RAM used percentage, e.g. `RAM%:45.3%`. 5-band colored via `percentBands` (same helper as `m_window\|term\|short`). Distinct from `m_memUsage` (which is the absolute-bytes `Mem:X.XG/Y.YG` shape). | `os.totalmem()` / `os.freemem()` (Darwin: `vm_stat`) | agnostic | `color`, `nulldrop` | v0.8.36+. Label configurable via `labels.labelWindowMemUsage` (default `"RAM%:"`). `\|color\|<c>` overrides the band color. Opt-in — not in default `lineTemplate`. |
 
 **v0.4.0+ session-info / metadata modules** (read the live stdin payload
 captured by `/statusline`):
