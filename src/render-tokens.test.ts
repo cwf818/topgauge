@@ -1846,10 +1846,11 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
   });
 });
 
-describe("renderTemplate — newline separator (v0.4.0+ multi-line layout)", () => {
+describe("renderTemplate — newline separator (vX.X.X+ multi-line layout)", () => {
   beforeEach(() => {
+    // vX.X.X+: `separators` config is gone. s_newline resolves
+    // directly to "\n" from NAMED_SEPARATORS.
     __resetForTest({
-      separators: [" ", " · ", "\n"],
       statuslineTemplate: ["m_tokenIn", "s_newline", "m_contextSize"],
     });
   });
@@ -4052,26 +4053,24 @@ describe("render — per-project cache isolation", () => {
   });
 });
 
-// ----- v0.4.x — named separator aliases (s_space / s_dot / s_newline / s_tab / s_colon) -----
+// ----- vX.X.X+ — six named separator aliases (s_space / s_dot / s_newline / s_tab / s_colon / s_pipe) -----
 //
-// Per AskUserQuestion direction, the default `separators` array is
-// empty in v0.4.x — the built-in characters (" ", "·", "\n", "\t",
-// ":") are now reachable via NAMED ALIASES that work independently
-// of the array. Users can still set `separators: ["x", "y"]` and
-// reference them with `s_0` / `s_1`; the two forms don't interfere
-// with each other.
-describe("renderTemplate — named separator aliases (v0.4.x)", () => {
+// These are the only separator tokens. The legacy numeric `s_<n>`
+// form and the `separators` config array are REMOVED — the
+// aliases render their built-in literals regardless of any user
+// config.
+describe("renderTemplate — named separator aliases (vX.X.X+)", () => {
   beforeEach(() => {
-    // Reset to the v0.4.x defaults: empty `separators` array, the
-    // default template, no version injection.
+    // vX.X.X+ defaults: no `separators` config array, default
+    // template, no version injection.
     __resetForTest();
   });
 
-  // ----- Bare form, default empty array -----
+  // ----- Bare form -----
 
-  it('s_space renders the literal " " even when `separators` is empty', () => {
-    // DEFAULT_SEPARATORS is now []; the alias MUST resolve from
-    // NAMED_SEPARATORS, not from seps[0]. The template
+  it('s_space renders the literal " " — alias resolves from NAMED_SEPARATORS', () => {
+    // vX.X.X+: the `separators` config array is gone. The alias
+    // MUST resolve from NAMED_SEPARATORS. The template
     // ["m_modeLabel", "s_space", "m_modeLabel"] concatenates to
     // a single line "Usage: Usage:" (the alias fills the slot).
     const out = renderTemplate(["m_modeLabel", "s_space", "m_modeLabel"], ctxFor(null));
@@ -4126,43 +4125,32 @@ describe("renderTemplate — named separator aliases (v0.4.x)", () => {
 
   // ----- Independence from `separators` array -----
 
-  it("s_space ignores `separators: ['x','y']` — alias always renders ' '", () => {
-    __resetForTest({ separators: ["x", "y"] });
+  it("s_space always renders ' ' regardless of any legacy separators config (no-op)", () => {
+    // vX.X.X+: the `separators` config field is gone. A user with
+    // a stale `separators` key in their config.json is silently
+    // ignored; s_space still renders the built-in literal.
+    __resetForTest({ separators: ["x", "y"] } as any);
     const out = renderTemplate(["s_space"], ctxFor(null));
     assert.deepEqual(out.map(strip), [" "]);
   });
 
-  it("s_0 still resolves to separators[0] when the array is set", () => {
-    // Backward-compat: a user with `separators: ["x", "y"]` and
-    // a template using `s_0` / `s_1` sees no change. The named
-    // aliases do NOT hijack numeric suffixes. Adjacent tokens
-    // concatenate into one line.
-    __resetForTest({ separators: ["x", "y"] });
-    const out = renderTemplate(["s_0", "s_1", "s_0"], ctxFor(null));
-    assert.deepEqual(out.map(strip), ["xyx"]);
-  });
+  // ----- Unknown alias → literal pass-through (vX.X.X+) -----
 
-  it("s_0 with the default empty array warns + drops (out-of-range)", () => {
-    // The legacy out-of-range behavior must still fire when the
-    // user references an index that doesn't exist. With the new
-    // empty default array, even s_0 is out-of-range — a user who
-    // upgrades from v0.3.x without setting `separators` will see
-    // their templates drop s_<n> tokens. They should migrate to
-    // the named aliases (s_space, s_dot) which keep working.
+  it("s_xyz (unknown alias name) emits the original token verbatim — no warn, no drop", () => {
+    // vX.X.X+: the numeric s_<n> form and the `separators` config
+    // are REMOVED. Unknown s_<name> suffixes are now treated as
+    // unrecognized modules and the dispatcher emits the WHOLE
+    // token as a literal — no parsing, no warning.
     __resetForTest();
     __resetUnknownModuleWarnForTest();
-    const out = renderTemplate(["s_0"], ctxFor(null));
-    assert.deepEqual(out, []);
+    const out = renderTemplate(["s_xyz"], ctxFor(null));
+    assert.deepEqual(out.map(strip), ["s_xyz"]);
   });
 
-  // ----- Unknown alias warns + drops -----
-
-  it("s_xyz (unknown alias name) warns + drops", () => {
-    // Matches the existing s_<out-of-range> behavior: warn once
-    // (fired by warnUnknownModuleOnce), then drop the chunk.
-    __resetUnknownModuleWarnForTest();
-    const out = renderTemplate(["s_xyz"], ctxFor(null));
-    assert.deepEqual(out, []);
+  it("s_0 (numeric suffix) emits 's_0' verbatim — the legacy numeric form is gone", () => {
+    __resetForTest();
+    const out = renderTemplate(["s_0"], ctxFor(null));
+    assert.deepEqual(out.map(strip), ["s_0"]);
   });
 
   it("s_dot|color|bogus_color (bad inline arg) warns + drops", () => {

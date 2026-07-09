@@ -22,25 +22,25 @@ import * as diagnostics from "./diagnostics.ts";
 // Default separator strings referenced from lineTemplate as s_0, s_1, ….
 // Empty by default in v0.4.x — the v0.4.0-release style built-in
 // characters (" ", "·") are now also available as NAMED ALIASES
-// (`s_space`, `s_dot`) in the template grammar, which is the
-// user-facing way to reference them without touching this array.
-// The array is now reserved for CUSTOM separators (e.g. " | ",
-// " / ", "::"…) that have no built-in alias. The default plan
-// template below is kept self-consistent by composing s_space +
-// s_dot + s_space around the inter-window boundary to produce
-// the visual " · " (a space, the middot, a space).
-const DEFAULT_SEPARATORS: string[] = [];
+// vX.X.X+ — `separators` config array and the numeric `s_<n>`
+// dispatch are REMOVED. The six built-in characters
+// (`s_space` / `s_dot` / `s_newline` / `s_tab` / `s_colon` /
+// `s_pipe`) are the only separator tokens. To render any other
+// literal in your template, use `m_label|<your-text>` (or just
+// drop a free-form token — the renderer emits unknown tokens
+// verbatim now).
 
 // Default line layout. A template is an ordered list of tokens; each
-// token is either a display module ("m_<name>") or a separator
-// reference ("s_<n>"). The renderer walks the list left-to-right and
-// concatenates the output of each module, with s_N looked up in
-// `separators[N]`. See render.ts:renderTemplate for the full grammar.
+// token is either a display module ("m_<name>"), a named separator
+// ("s_space" / "s_dot" / …), or a free-form literal. The renderer
+// walks the list left-to-right and concatenates the output of each
+// module, with s_<name> rendered as the built-in literal character.
+// See render.ts:renderTemplate for the full grammar.
 //
 // Defaults reproduce the v0.2.16 output byte-for-byte:
 //   plan:    "Usage: <5h> <countdown5h> · <7d> <countdown7d>"
 //   balance: "Balance: <balance>"
-// with separators=[" ", "·"] expanding s_0→" " and s_1→"·".
+// with s_space / s_dot / s_space composing " · " between windows.
 //
 // v0.4.0+ — kept around as the SOURCE OF TRUTH for the `plan` / `balance`
 // entries inside `DEFAULT_LINE_TEMPLATES`. The legacy top-level
@@ -611,7 +611,6 @@ const DEFAULT_CONFIG: {
   bar: typeof DEFAULT_BAR;
   countdown: Countdown;
   timeFormat: TimeFormat;
-  separators: string[];
   // v0.4.0+ — registry of reusable template fragments consumed by
   // the m_template module's first argument.
   lineTemplates: typeof DEFAULT_LINE_TEMPLATES;
@@ -713,7 +712,6 @@ const DEFAULT_CONFIG: {
   bar: DEFAULT_BAR,
   countdown: DEFAULT_COUNTDOWN,
   timeFormat: DEFAULT_TIME_FORMAT,
-  separators: DEFAULT_SEPARATORS,
   lineTemplates: DEFAULT_LINE_TEMPLATES,
   statuslineTemplate: DEFAULT_STATUSLINE_TEMPLATE,
   tokenFormat: DEFAULT_TOKEN_FORMAT,
@@ -1393,49 +1391,10 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
     }
   }
 
-  // separators — array of strings referenced from lineTemplate as
-  // s_0, s_1, …. Validation only checks shape; the renderer looks
-  // them up at expansion time, so an s_N that points past the end
-  // of the array expands to "" (with a one-line warn) — we
-  // deliberately don't fail config load on missing separators.
-  //
-  // v0.4.0+ — separators may now contain "\n" (real line break, the
-  // renderer splits on it and closes SGR per line) or "\t" (TAB, the
-  // terminal renders it against its tab stops). Both are intentional
-  // user-facing values, not JSON mistakes. We still reject separators
-  // with \r, NUL, \b, \f, \v, or other ASCII control bytes — those
-  // would almost certainly be a JSON mistake (a stray backtick escape,
-  // a copy-paste from a document with non-standard line endings, etc.)
-  // and shouldn't silently pollute the statusline.
-  if ("separators" in raw) {
-    const s = raw.separators;
-    if (Array.isArray(s)) {
-      const cleaned: string[] = [];
-      let rejected = 0;
-      for (let i = 0; i < s.length; i++) {
-        const v = s[i];
-        // Allow string separators, including those that contain "\n"
-        // (multi-line layouts) or "\t" (terminal-rendered tab stops).
-        // Reject anything with other control characters — those are
-        // almost certainly a JSON mistake that shouldn't reach the
-        // renderer.
-        if (typeof v === "string" && !/[\x00-\x08\x0b-\x1f\x7f]/.test(v)) {
-          cleaned.push(v);
-        } else {
-          rejected++;
-        }
-      }
-      if (cleaned.length === 0) {
-        warn("separators must contain at least one valid string; using default");
-      } else {
-        if (rejected > 0)
-          warn(`separators: dropped ${rejected} non-string or invalid entries`);
-        out.separators = cleaned;
-      }
-    } else {
-      warn("separators must be an array of strings; using default");
-    }
-  }
+  // vX.X.X+ — the `separators` config field is REMOVED. Legacy
+  // configs that still carry one are silently ignored (no warn, no
+  // migration path). Use one of the six built-in s_<name> tokens or
+  // `m_label|<text>` for custom separators.
 
   // v0.4.0+ — legacy `lineTemplate` is REMOVED. The loader still
   // detects the key (so a v0.3.x user gets a clear, actionable

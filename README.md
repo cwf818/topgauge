@@ -408,17 +408,6 @@ A reference with every field is at [config.example.json](./config.example.json).
       "🕐",
     ],
   },
-  "separators": [
-    // Separator strings referenced from `lineTemplate` as s_0, s_1, ….
-    // s_0 — between adjacent modules within a group (default: " ")
-    // s_1 — the inter-group glyph (default: "·", just the symbol — no
-    //       surrounding spaces; the default plan template composes
-    //       s_0 + s_1 + s_0 to produce the visual " · ")
-    // Add more entries to reference them as s_2, s_3, … in your
-    // lineTemplate.
-    " ",
-    "·",
-  ],
   "tokenFormat": {
     // v0.4.0+ — compact number formatting for the m_token* modules.
     //   < thresholds[0] → raw integer ("342")
@@ -448,7 +437,7 @@ A reference with every field is at [config.example.json](./config.example.json).
     //
     // Example: a shared `header` chunk used in both plan and
     // balance templates.
-    "header": ["m_modeLabel", "s_0"]
+    "header": ["m_modeLabel", "s_space"]
   },
   "statuslineTemplate": ["m_template|_1line"],  // or a raw token array, e.g.:
   // ["m_template|_standard", "m_window|term:short", "s_0", "m_window|term:mid"],
@@ -504,7 +493,7 @@ A reference with every field is at [config.example.json](./config.example.json).
 
 Each `colors.*` value is either a **symbolic shortcut** (`brightGreen`, `darkGreen`, `yellow`, `orange`, `red`, `brightBlack`) or a **literal ANSI SGR string** matching `^\x1b\[[0-9;]*m$`. Strings containing newlines are rejected (statusline-injection guard).
 
-`thresholds.*` must be exactly 4 finite ascending numbers. `bar.width` must be in `[3, 64]`. Numeric fields must be finite and (where relevant) positive. `separators` entries must be single-line strings; an entry containing `\n` is dropped (the rest of the array is preserved). `lineTemplate.<key>` must be a non-empty array of strings.
+`thresholds.*` must be exactly 4 finite ascending numbers. `bar.width` must be in `[3, 64]`. Numeric fields must be finite and (where relevant) positive. `lineTemplate.<key>` must be a non-empty array of strings.
 
 ### Providers
 
@@ -950,7 +939,7 @@ Pulls a registered fragment from `lineTemplates` into the rendered template. Use
 ```jsonc
 {
   "lineTemplates": {
-    "header": ["m_modeLabel", "s_0"]
+    "header": ["m_modeLabel", "s_space"]
   },
   "statuslineTemplate": [
     "m_template|header|type:plan",  // visible only on plan providers (TOKEN_PLAN)
@@ -1256,11 +1245,10 @@ Note: `m_tokenHitRate` now renders as `hit:N%` (v0.8.x R8 — prefix unified wit
 
 ```jsonc
 {
-  "separators": [" ", " / "],
   "statuslineTemplate": [
     "m_modeLabel", "s_space",
     "m_window|term:short", "s_space", "m_countdown|term:short",
-    "s_space", "s_1", "s_space",
+    "s_space", "s_dot", "s_space",
     "m_window|term:mid", "s_space", "m_countdown|term:mid"
   ]
 }

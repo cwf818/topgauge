@@ -410,100 +410,10 @@ describe("loadConfig — timeFormat (top-level)", () => {
   });
 });
 
-describe("loadConfig — separators (top-level)", () => {
-  it("defaults: separators is empty (named aliases carry the built-in chars)", () => {
-    // v0.4.x — the array is now empty by default. The v0.4.0
-    // built-in characters (" ", "·") are available as the
-    // named aliases s_space / s_dot in the template grammar,
-    // so a default-config user does not need to set
-    // separators: [...] to use them.
-    const cfg = __testing.DEFAULT_CONFIG;
-    assert.deepEqual(cfg.separators, []);
-  });
-
-  it("accepts a custom array of single-line strings", async () => {
-    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
-      separators: [" | ", " / "],
-    }));
-    const cfg = await loadConfig();
-    assert.deepEqual(cfg.separators, [" | ", " / "]);
-  });
-
-  it("rejects non-string entries (warns and drops them)", async () => {
-    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
-      separators: ["OK", 42, "fine"],
-    }));
-    const cfg = await loadConfig();
-    assert.deepEqual(cfg.separators, ["OK", "fine"]);
-    assert.match(capturedStderr, /separators/);
-  });
-
-  it("accepts '\\n' as a separator (v0.4.0+ multi-line layouts)", async () => {
-    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
-      separators: [" ", "·", "\n"],
-    }));
-    const cfg = await loadConfig();
-    assert.deepEqual(cfg.separators, [" ", "·", "\n"]);
-  });
-
-  it("accepts a separator that IS just '\\n' (single-element multi-line)", async () => {
-    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
-      separators: ["\n"],
-    }));
-    const cfg = await loadConfig();
-    assert.deepEqual(cfg.separators, ["\n"]);
-  });
-
-  it("accepts '\\t' as a separator (terminal renders tab stops)", async () => {
-    // '\t' is intentionally allowed so the terminal can align to its
-    // configured tab stops. The byte passes through to stdout verbatim;
-    // we don't try to interpret or translate it.
-    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
-      separators: ["\t"],
-    }));
-    const cfg = await loadConfig();
-    assert.deepEqual(cfg.separators, ["\t"]);
-  });
-
-  it("rejects separators with non-\\n/\\t control chars (JSON mistake guard)", async () => {
-    // v0.4.0+: '\n' (line break) and '\t' (tab) are allowed as real
-    // values. Any other control char ('\\r', NUL, '\\b', '\\f',
-    // '\\v', etc.) is almost certainly a JSON mistake and gets
-    // dropped. Build the strings via String.fromCharCode so the
-    // TypeScript source itself doesn't contain literal control
-    // bytes that would be silently consumed by tooling.
-    const CR = String.fromCharCode(13);
-    const NUL = String.fromCharCode(0);
-    const BS = String.fromCharCode(8);
-    const FF = String.fromCharCode(12);
-    const VT = String.fromCharCode(11);
-    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({
-      separators: [" ", `Z${CR}CR`, `W${NUL}NUL`, `B${BS}BS`, `F${FF}FF`, `V${VT}VT`],
-    }));
-    const cfg = await loadConfig();
-    assert.deepEqual(cfg.separators, [" "]);
-    assert.match(capturedStderr, /separators.*dropped.*invalid entries/);
-  });
-
-  it("keeps an explicit empty array", async () => {
-    // v0.4.x — empty separators is a valid user choice (the named
-    // aliases carry the built-in characters). The loader accepts
-    // it; no implicit fill with the legacy 2-entry default.
-    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({ separators: [] }));
-    const cfg = await loadConfig();
-    assert.deepEqual(cfg.separators, []);
-  });
-
-  it("rejects non-array separators and falls back to the empty default", async () => {
-    // v0.4.x — non-array separators is still invalid (a string
-    // is not a string[]), so the loader falls back to the
-    // empty default array and warns.
-    writeFileSync(join(tmpDir, "config.json"), JSON.stringify({ separators: " · " }));
-    const cfg = await loadConfig();
-    assert.deepEqual(cfg.separators, []);
-    assert.match(capturedStderr, /separators/);
-  });
-});
+// vX.X.X+ — the `separators` config field is REMOVED. The six
+// built-in s_<name> aliases are the only separator tokens. This
+// describe block is gone; legacy configs that still carry a
+// `separators` key are silently ignored by the loader.
 
 describe("loadConfig — lineTemplates + statuslineTemplate (v0.4.0+, presets flattened v0.8.14+)", () => {
   it("defaults: lineTemplates has {plan, balance} + 9 _-prefixed presets; statuslineTemplate defaults to [m_template|_1line]", () => {

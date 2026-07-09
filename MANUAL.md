@@ -112,21 +112,13 @@ universal, not a silent drop).
 
 ---
 
-## 2. Separators (`s_*`)
+## 2. Separators (`s_*`) and literals
 
-Reference a literal from `cfg().separators[]` (numeric form) or one of
-six built-in aliases (named form).
+The template grammar has exactly six built-in separator tokens.
+Anything else (including the old numeric `s_<n>` form) is treated
+as an unrecognized module and emitted verbatim.
 
-### 2.1 Numeric form: `s_<n>`
-
-- `s_0` … `s_<N-1>` — index into `separators` array in `config.json`.
-- v0.4.x+ default `separators: [" ", "·"]` — so bare `s_0` is space and
-  `s_1` is the middle-dot glyph; the default plan template composes
-  `s_0 + s_1 + s_0` to produce the visual " · " separator.
-- Out-of-range index → token dropped (stderr warn).
-- Multiple bare `s_0` are NOT collapsed; both render.
-
-### 2.2 Named alias form (always literal, ignores `separators` array)
+### 2.1 Named separator aliases (the only separator tokens)
 
 | Token         | Literal     | Notes                                              |
 | ------------- | ----------- | -------------------------------------------------- |
@@ -137,20 +129,36 @@ six built-in aliases (named form).
 | `s_colon`     | `":"`       | Colon.                                             |
 | `s_pipe`      | `"\|"`      | Pipe (added v0.7.1+; mirrors the inline-args delimiter). |
 
-**Rule**: the named form always renders the built-in character, even
-if the user has overridden `separators[0]` to `"x"`. This makes
-self-documenting templates (e.g.
-`["m_window|term:short", "s_space", "m_countdown|term:short"]`) immune to user-config
-reshuffles.
+These are hardcoded literals — no config array backs them. To
+customize, use `m_label|<your-text>` (renders any literal string,
+supports `|color|<c>`), or just drop a free-form token directly
+into the template (see §2.3 below).
 
-### 2.3 Separator placement rules
+### 2.2 Placement rules
 
 - Adjacent separators around a dropped module are **skipped** — a
-  null `m_ctx` won't leave `… · · …` artifacts.
+  null `m_tokenOut` won't leave `… · · …` artifacts.
 - Leading/trailing separators are trimmed at the renderer level.
 - Newlines (`s_newline`) act as hard breaks: output above the break
   is the upstream section, the break itself goes into composition,
   output below is appended.
+
+### 2.3 Free-form literal tokens (vX.X.X+)
+
+Any token the renderer cannot match against `m_*` or the six `s_*`
+aliases is emitted **verbatim** — no parsing, no warning, no
+inline-args support. Useful for dropping a static label like
+`STATUS:` or `·` (custom glyph) into your template without
+escaping.
+
+```
+["m_modeLabel", "PROMPT:", "s_space", "m_window|term:short"]
+// → "Usage: PROMPT: ▓░░░░ 38% (5h)"
+```
+
+The token is split on `|` only for display — the renderer does not
+parse any `name:value` pairs inside a literal token. To get a
+colored literal, use `m_label|<text>|color:<c>`.
 
 ### 2.4 `repeat` and `wrap` (v0.7.2+)
 
@@ -163,9 +171,8 @@ s_newline|repeat:2      → "\n\n"  (control body skips wrap padding)
 
 - `repeat` is an integer 1..8; out-of-range → drop.
 - `wrap=true` pads printable bodies with one space on each side;
-  whitespace / control bodies (newlines, tabs, the `s_space` /
-  `s_tab` / `s_newline` aliases, plus any `separators[]` entry that
-  matches `isControlBody`) skip the padding.
+  whitespace / control bodies (the `s_space` / `s_tab` /
+  `s_newline` aliases) skip the padding.
 
 ---
 

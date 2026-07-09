@@ -39,7 +39,6 @@
   "countdown": {
     "resetArrows": ["🕛", "🕚", "🕙", "🕘", "🕗", "🕖", "🕕", "🕔", "🕓", "🕒", "🕑", "🕐"]
   },
-  "separators": [" ", "·"],
   "lineTemplate": {
     "plan": [
       "m_modeLabel", "s_0",

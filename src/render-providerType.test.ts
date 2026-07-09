@@ -139,16 +139,21 @@ describe("MODULES path: per-provider type filter", () => {
     assert.deepEqual(balanceOnUnknown, [], "m_balance must drop on unknown");
   });
 
-  it("dropped plan module also drops adjacent s_<n> separators", () => {
-    // ["m_window|term:short", "s_0", "m_window|term:mid"] on a balance ctx: both
-    // modules drop, the s_0 separator between them has nothing to
-    // separate → empty lines array. This is the same null-fall-
-    // through the renderer already implements.
+  it("dropped plan module leaves the named s_space separator between them", () => {
+    // vX.X.X+: named s_<name> separators are ALWAYS literal
+    // (s_space → " "), even when the adjacent modules are
+    // provider-filtered out. The pre-vX.X.X behavior of dropping
+    // the separator alongside its adjacent module only applied
+    // to the numeric `s_<n>` form (which resolved to undefined
+    // on the default empty `separators` array). Named aliases
+    // are no longer dependent on any config and never go
+    // "out-of-range", so this test now asserts the literal
+    // emission.
     const balanceLines = renderTemplate(
-      ["m_window|term:short", "s_0", "m_window|term:mid"],
+      ["m_window|term:short", "s_space", "m_window|term:mid"],
       ctxFor("balance"),
     );
-    assert.deepEqual(balanceLines, []);
+    assert.deepEqual(balanceLines, [" "]);
   });
 });
 
@@ -210,8 +215,8 @@ describe("composition: a balance ctx with mixed-type template", () => {
     // the balance one must render, and the s_0 separators between
     // them must collapse cleanly (no orphan "·").
     const balance = renderTemplate(
-      ["m_modeLabel", "s_0", "m_window|term:short", "s_0", "m_window|term:mid",
-        "s_0", "m_balance"],
+      ["m_modeLabel", "s_space", "m_window|term:short", "s_space", "m_window|term:mid",
+        "s_space", "m_balance"],
       ctxFor("balance"),
     );
     assert.equal(balance.length, 1);
@@ -225,8 +230,8 @@ describe("composition: a balance ctx with mixed-type template", () => {
 
   it("renders plan modules; skips m_balance", () => {
     const plan = renderTemplate(
-      ["m_modeLabel", "s_0", "m_window|term:short", "s_0", "m_window|term:mid",
-        "s_0", "m_balance"],
+      ["m_modeLabel", "s_space", "m_window|term:short", "s_space", "m_window|term:mid",
+        "s_space", "m_balance"],
       ctxFor("plan"),
     );
     assert.equal(plan.length, 1);
@@ -243,8 +248,8 @@ describe("composition: a balance ctx with mixed-type template", () => {
     // the display-mode label). This is the new third providerType
     // value that didn't exist in Phase 1.
     const unknown = renderTemplate(
-      ["m_modeLabel", "s_0", "m_window|term:short", "s_0", "m_window|term:mid",
-        "s_0", "m_balance"],
+      ["m_modeLabel", "s_space", "m_window|term:short", "s_space", "m_window|term:mid",
+        "s_space", "m_balance"],
       ctxFor("unknown"),
     );
     assert.equal(unknown.length, 1);

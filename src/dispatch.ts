@@ -40,23 +40,21 @@ import type { Provider, TokenSnapshot } from "./types.ts";
 const cfg = (): ReturnType<typeof configStore.get> => configStore.get();
 
 // Detect a "label-only" degenerate output: the renderer ran but every
-// module returned null, leaving just `m_modeLabel + s_<n> + s_<n>`
+// module returned null, leaving just `m_modeLabel + s_space + s_dot`
 // in the rendered line. The strip removes ANSI escapes, the configured
-// labels, the configured separator LITERALS (cfg().separators[i]),
-// AND the NAMED-ALIAS literals (" " for s_space, "·" for s_dot, …),
-// because the preset templates compose s_space / s_dot directly
-// rather than going through cfg().separators — empty seps is the
-// default for v0.4.x. What's left should be a real module chunk or
-// it's empty output. We also treat literal whitespace-only output
-// as empty. Used by buildProviderLine's two empty-output guards
-// below — neither the bare "not available!" path nor the upstream
-// wrapper should write a label-only line.
+// labels, AND the NAMED-ALIAS literals (" " for s_space, "·" for
+// s_dot, …), because the preset templates compose s_space / s_dot
+// directly. What's left should be a real module chunk or it's empty
+// output. We also treat literal whitespace-only output as empty.
+// Used by buildProviderLine's two empty-output guards below —
+// neither the bare "not available!" path nor the upstream wrapper
+// should write a label-only line.
 //
 // Named alias literals — must stay in sync with NAMED_SEPARATORS in
 // render.ts. Hardcoded here rather than imported to keep this module
 // free of cross-file circular-import risk; config and renderer are
 // independently verified to expose the same set.
-const NAMED_SEPARATOR_LITERALS = [" ", "·", "\n", "\t", ":"];
+const NAMED_SEPARATOR_LITERALS = [" ", "·", "\n", "\t", ":", "|"];
 
 function isEffectivelyEmpty(line: string): boolean {
   // Strip ANSI SGR sequences (e.g. \x1b[38;5;29m, \x1b[0m).
@@ -76,13 +74,12 @@ function isEffectivelyEmpty(line: string): boolean {
     // output (paranoid — should never happen).
     working = working.split(label).join(" ");
   }
-  // Strip configured separator literals (s_<i> values) AND the
-  // named-alias literals (s_space / s_dot / …). Both can show up
-  // in a rendered line; stripping neither would mean a label +
-  // separator template (e.g. "Usage: · · ") is treated as non-empty.
-  const seps = cfg().separators;
-  const allSeps = [...seps, ...NAMED_SEPARATOR_LITERALS];
-  for (const sep of allSeps) {
+  // Strip the named-alias separator literals (s_space / s_dot /
+  // …). vX.X.X+: the legacy `separators` config array is gone, so
+  // only NAMED_SEPARATOR_LITERALS needs stripping. A label +
+  // separator template (e.g. "Usage: · · ") should be treated as
+  // non-empty.
+  for (const sep of NAMED_SEPARATOR_LITERALS) {
     if (sep === "") continue;
     working = working.split(sep).join("");
   }

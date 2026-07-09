@@ -990,7 +990,7 @@ export function formatBalanceLine(b: BalanceLike, ageMs?: number, stale: boolean
 //
 // A lineTemplate is an ordered list of tokens. Two token kinds:
 //   m_<name>  — a display module (registered in MODULES below)
-//   s_<n>     — a separator reference, looked up in cfg().separators[n]
+//   s_<name>  — a built-in separator literal (s_space / s_dot / s_newline / s_tab / s_colon / s_pipe)
 //
 // The renderer walks the template left-to-right, concatenating each
 // module's output. Modules return null to signal "hidden in this
@@ -4498,24 +4498,18 @@ function stringHash(s: string): number {
   return h >>> 0;
 }
 
-// v0.4.x — named separator aliases. Each `s_<name>` token is a
-// built-in alias for a specific character; it renders the literal
-// value regardless of `cfg().separators` contents. This lets users
-// write self-documenting templates (e.g. `["m_window5h", "s_space",
-// "m_countdown5h"]`) without having to remember the array's
-// default order. Users who want CUSTOM separators still set
-// `separators: [...]` and reference them via `s_<n>`. The two
-// forms are independent: `s_space` always renders " " even if the
-// user explicitly puts "x" at array index 0; `s_0` always
-// resolves to whatever is at array index 0, even if that happens
-// to be " ".
+// vX.X.X+ — six named separator aliases. Each `s_<name>` token
+// resolves to its built-in literal character. The legacy numeric
+// `s_<n>` form and the `separators` config array are REMOVED —
+// if you need a custom separator character, use one of these six
+// (or wrap a literal `m_label|<your-token>` if you really need
+// something different).
 //
 // Encoding note: ResolvedValue is a `string | number` union, so
-// we can't pass a { kind, ... } object through the inline-schema
-// machinery. Named forms are encoded as a tagged string
-// ("alias:space", "alias:dot", …) and numeric forms stay as a
-// plain number. The s_ renderer and the bare-form fast path
-// both decode this.
+// we tag the alias form as `"alias:<name>"` (still a string) and
+// carry that through the inline-schema machinery. The numeric
+// branch is gone — resolveSepBody returns INLINE_BADARG for any
+// non-alias input.
 // v0.7.1+ — `pipe` joins the alias table. Mirrors the new inline-args
 // separator (see parseInlineArgs). Pure render output, NOT the
 // inline-args delimiter itself.
@@ -4531,55 +4525,37 @@ const NAMED_SEPARATORS: ReadonlyMap<string, string> = new Map([
 const SEP_ALIAS_PREFIX = "alias:";
 
 function resolveSepRef(raw: string): string | number | null {
-  // Named alias wins (checked first) so users who happen to have
-  // `separators: ["space", ...]` and write `s_space` get the
-  // built-in literal, not array[0]. This is the only consistent
-  // rule: the named form ALWAYS renders the built-in character.
   const alias = NAMED_SEPARATORS.get(raw);
   if (alias !== undefined) return SEP_ALIAS_PREFIX + raw;
-  // Numeric form: only match all-digit suffixes (rejects "0a",
-  // "1.0", "12 ", etc.). Out-of-range check happens at the
-  // renderer / bare-form site, not here, because the resolver
-  // doesn't know the array length.
-  if (/^[0-9]+$/.test(raw)) {
-    const n = Number(raw);
-    if (Number.isInteger(n) && n >= 0) return n;
-  }
   return null;
 }
 
 // Decode the value of `params.index` (set by resolveSepRef) into
-// the literal separator body. Returns INLINE_BADARG for an
-// out-of-range numeric index (the dispatcher warns + drops).
+// the literal separator body. Only the alias path is supported
+// now; any other input returns INLINE_BADARG (unreachable in
+// practice since resolveSepRef already filters).
 function resolveSepBody(index: string | number): string | typeof INLINE_BADARG {
   if (typeof index === "string" && index.startsWith(SEP_ALIAS_PREFIX)) {
     const name = index.slice(SEP_ALIAS_PREFIX.length);
     return NAMED_SEPARATORS.get(name) ?? INLINE_BADARG;
   }
-  const seps = cfg().separators;
-  const sep = seps[index as number];
-  if (sep === undefined) return INLINE_BADARG;
-  return sep;
+  return INLINE_BADARG;
 }
 
 const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   s_: {
-    // v0.4.x — the implicit param of an `s_…` token accepts BOTH
-    // a numeric index (`s_0`, `s_1`, …, looked up in
-    // cfg().separators[i]) and a named alias (`s_space`, `s_dot`,
-    // `s_newline`, `s_tab`, `s_colon`, `s_pipe`, resolved to a
-    // built-in literal character independent of the array).
-    // Unknown numeric or non-numeric suffixes return null → the
-    // caller warns + drops the token.
+    // vX.X.X+ — the implicit param accepts ONLY a named alias
+    // (`s_space`, `s_dot`, `s_newline`, `s_tab`, `s_colon`,
+    // `s_pipe`). The numeric `s_<n>` form is REMOVED — those tokens
+    // are unrecognized and emitted as literals by the dispatcher.
     //
     // v0.7.2+ — added `|repeat|<1..8>` and `|wrap|<true|false>`
     // named params for inline separators. repeat multiplies the
     // body (1 default, max 8 — see REPEAT_PARAM). wrap=true pads
     // printable bodies with 1 space on each side so e.g.
     // `s_dot|wrap|true` renders " · " instead of "·"; whitespace
-    // bodies (`s_space`, `s_tab`, `s_newline`, and any array entry
-    // matching isControlBody) skip the padding. See
-    // [[repeat-and-wrap-on-separator]].
+    // bodies (`s_space`, `s_tab`, `s_newline`) skip the padding.
+    // See [[repeat-and-wrap-on-separator]].
     implicit: {
       name: "index",
       resolver: resolveSepRef,
@@ -6176,7 +6152,6 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
   // sets PREV_TICK_KEY once per tick BEFORE render begins, so
   // every render context (outer, m_template inner) sees the same
   // baseline via peekPrevTick. No depth counter needed.
-  const seps = cfg().separators;
   const lines: string[] = [];
   let current = "";
   for (let i = 0; i < template.length; i++) {
@@ -6228,9 +6203,21 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
       // match the literal pipe-bearing string) and falls through
       // to the unknown-module warn.
       let inline: InlineResult | undefined;
+      let sLiteralPiece: string | null = null;
       if (tok.startsWith("s_")) {
-        // s_<n>:… → skip "s_" (length 2), remainder starts at the index.
-        inline = expandInlineToken(tok, "s_", 2, ctx);
+        // s_<name>|… → skip "s_" (length 2), remainder starts at
+        // the alias name. vX.X.X+: unknown aliases (numeric
+        // `s_0|color:red`, or unknown `s_xyz|repeat:3`) emit the
+        // WHOLE token as a literal, no parsing, no warning. KNOWN
+        // aliases with bad args (e.g. `s_dot|repeat:9`) still fall
+        // through to the badarg warn-and-drop path below.
+        const aliasPart = tok.slice(2, tok.indexOf("|"));
+        if (NAMED_SEPARATORS.has(aliasPart)) {
+          inline = expandInlineToken(tok, "s_", 2, ctx);
+        } else {
+          sLiteralPiece = tok;
+          inline = undefined;
+        }
       } else if (tok.startsWith("m_label|")) {
         // m_label|<args> → skip "m_|" (length 8), remainder starts
         // at the string value.
@@ -6496,63 +6483,73 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         inline = expandInlineToken(tok, "m_windowMemUsage", 17, ctx);
       }
       // Parse failure (bad |color|, unknown param, odd segment count)
-      // → warn + drop. Renderer returning null for valid args (e.g.
-      // m_tokenOut when stdin lacks total_output_tokens) is NOT a
-      // parse failure — silently skip the chunk, same as the bare
-      // MODULES path. (v0.3.4+: previously we conflated the two
-      // and wrongly warned "unknown module" on missing data.)
+// → warn + drop. Renderer returning null for valid args (e.g.
+// m_tokenOut when stdin lacks total_output_tokens) is NOT a
+// parse failure — silently skip the chunk, same as the bare
+// MODULES path. (v0.3.4+: previously we conflated the two
+// and wrongly warned "unknown module" on missing data.)
+//
+// vX.X.X+ — `s_*|…` tokens with an unknown alias fall through
+// here too, but instead of warn + drop they emit the WHOLE token
+// as a literal (set by `sLiteralPiece` above). This preserves the
+// new "unrecognized token → verbatim" contract for inline-args
+// forms too.
       if (inline?.kind === "badarg") {
-        warnUnknownModuleOnce(tok);
-        continue;
+        if (sLiteralPiece !== null) {
+          piece = sLiteralPiece;
+        } else {
+          warnUnknownModuleOnce(tok);
+          continue;
+        }
+      } else {
+        piece = inline?.kind === "ok" ? inline.value : tok;
       }
-      piece = inline?.kind === "ok" ? inline.value : null;
     } else if (tok.startsWith("s_")) {
-      // Bare s_<…>|: legacy fast path. Two forms accepted:
-      //   s_<digit>+ → array index (out-of-range = warn + drop)
-      //   s_<name>   → built-in alias (s_space, s_dot, s_newline,
-      //                 s_tab, s_colon, s_pipe), renders the literal
-      //                 value independent of cfg().separators.
-      // Inline-args (with optional color|) handles the
-      // `s_<…>|color|<c>` form via the new path above; this branch
-      // only fires for the no-pipe shorthand.
+      // Bare s_<…> fast path. Only named aliases (s_space, s_dot,
+      // s_newline, s_tab, s_colon, s_pipe) resolve to a literal —
+      // any other s_* suffix is unrecognized and the WHOLE token is
+      // emitted as a literal string. Inline-args (with optional
+      // color|) handles the `s_<…>|color|<c>` form via the new path
+      // above; this branch only fires for the no-pipe shorthand.
       const suffix = tok.slice(2);
       const alias = NAMED_SEPARATORS.get(suffix);
       if (alias !== undefined) {
         piece = alias;
       } else {
-        const n = Number(suffix);
-        if (!Number.isInteger(n) || n < 0 || n >= seps.length) {
-          warnUnknownModuleOnce(tok);
-          continue;
-        }
-        piece = seps[n];
+        // Unknown s_* suffix → emit the original token verbatim,
+        // no parsing, no warning. (No compat fallback; the user
+        // gets exactly what they wrote.)
+        piece = tok;
       }
     } else if (tok.startsWith("m_")) {
       const mod = MODULES[tok];
       if (!mod) {
-        warnUnknownModuleOnce(tok);
-        continue;
+        // Unknown m_* module → emit the original token verbatim,
+        // no parsing, no warning.
+        piece = tok;
+      } else {
+        // v0.4.x — provider-type filter. Modules tagged with a type
+        // (`m_window: "plan"`, `m_balance: "balance"`, …) silently
+        // drop on a non-matching provider type. Untagged modules
+        // (m_token*, m_age, m_version, …) skip the check and emit
+        // on every ctx — those are provider-agnostic by design.
+        //
+        // The drop is a no-op — the chunk is skipped AND adjacent
+        // s_<name> separators are skipped too via the same null-
+        // fall-through the MODULES renderer already implements.
+        if (mod.type != null && mod.type !== ctx.providerType) {
+          continue;
+        }
+        piece = mod(ctx);
       }
-      // v0.4.x — provider-type filter. Modules tagged with a type
-      // (`m_window5h: "plan"`, `m_balance: "balance"`, …) silently
-      // drop on a non-matching provider type. Untagged modules
-      // (m_token*, m_age, m_version, …) skip the check and emit
-      // on every ctx — those are provider-agnostic by design.
-      //
-      // Renamed from `mod.mode` / `ctx.providerModeKey` to
-      // `mod.type` / `ctx.providerType` to avoid collision with
-      // the display-mode field (`used` / `remaining` / `balance`).
-      //
-      // The drop is a no-op — the chunk is skipped AND adjacent
-      // s_<n> separators are skipped too via the same null-fall-
-      // through the MODULES renderer already implements.
-      if (mod.type != null && mod.type !== ctx.providerType) {
-        continue;
-      }
-      piece = mod(ctx);
     } else {
-      warnUnknownModuleOnce(tok);
-      continue;
+      // Anything that didn't start with `m_` or `s_` (or didn't
+      // match an inline prefix in the long chain above) is treated
+      // as a free-form literal token. vX.X.X+: unrecognized tokens
+      // are emitted verbatim — no parsing, no warning. Useful for
+      // dropping a free-text label like `prompt: ` or `STATUS` into
+      // the template without escaping.
+      piece = tok;
     }
     if (piece == null || piece === "") continue;
     // Split the piece on '\n' so a "\n" separator or a future module

@@ -112,9 +112,9 @@ describe("buildProviderLine — fresh (no age suffix; data just arrived)", () =>
     pinDefaults();
     __resetForTest({
       statuslineTemplate: [
-        "m_modeLabel", "s_0",
-        "m_window|term|short", "s_0", "m_countdown|term|short",
-        "s_0", "m_age",
+        "m_modeLabel", "s_space",
+        "m_window|term|short", "s_space", "m_countdown|term|short",
+        "s_space", "m_age",
       ],
     });
     try {
@@ -294,8 +294,8 @@ describe("buildProviderLine — null provider (no ANTHROPIC_BASE_URL match)", ()
     // version propagation is exercised by other tests.
     __resetForTest({
       statuslineTemplate: [
-        "m_session", "s_0", "m_model",
-        "s_0", "m_tokenInTotal", "s_0", "m_tokenTotalOut",
+        "m_session", "s_space", "m_model",
+        "s_space", "m_tokenInTotal", "s_space", "m_tokenTotalOut",
       ],
     });
     try {
@@ -323,8 +323,8 @@ describe("buildProviderLine — null provider (no ANTHROPIC_BASE_URL match)", ()
     // provider the plan-only ones must drop, the agnostic ones fire.
     __resetForTest({
       statuslineTemplate: [
-        "m_session", "s_0", "m_window|term|short", "s_0", "m_window|term|mid",
-        "s_0", "m_balance", "s_0", "m_tokenInTotal",
+        "m_session", "s_space", "m_window|term|short", "s_space", "m_window|term|mid",
+        "s_space", "m_balance", "s_space", "m_tokenInTotal",
       ],
     });
     try {
@@ -359,7 +359,7 @@ describe("buildProviderLine — null provider (no ANTHROPIC_BASE_URL match)", ()
     // unconditional, delta is cache-dependent.
     __resetForTest({
       statuslineTemplate: [
-        "m_modeLabel", "s_0", "m_tokenInTotal",
+        "m_modeLabel", "s_space", "m_tokenInTotal",
       ],
     });
     try {

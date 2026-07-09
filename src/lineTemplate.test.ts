@@ -18,6 +18,7 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
   renderProviderLine,
+  renderTemplate,
   setPrevTick,
   __resetPrevTickForTest,
   __resetUnknownModuleWarnForTest,
@@ -70,7 +71,7 @@ beforeEach(() => {
 describe("lineTemplate — custom template (drop the 7d window)", () => {
   beforeEach(() => {
     __resetForTest({
-      statuslineTemplate:["m_modeLabel", "s_0", "m_window|term:short", "s_0", "m_countdown|term:short"],
+      statuslineTemplate:["m_modeLabel", "s_space", "m_window|term:short", "s_space", "m_countdown|term:short"],
     });
   });
   afterEach(() => __resetForTest());
@@ -91,42 +92,17 @@ describe("lineTemplate — custom template (drop the 7d window)", () => {
   });
 });
 
-describe("lineTemplate — custom separators", () => {
-  it("swaps the inter-window separator to ' / '", () => {
-    __resetForTest({
-      separators: [" ", " / "],
-      statuslineTemplate:[
-        "m_modeLabel", "s_0",
-        "m_window|term:short", "s_0", "m_countdown|term:short",
-        "s_0", "s_1", "s_0",
-        "m_window|term:mid", "s_0", "m_countdown|term:mid",
-      ],
-    });
-    try {
-      const line = renderProviderLine("minimax", {
-        mode: "used",
-        nowMs: Date.now(),
-        shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 38, remainingPercent: 100 - 38, remainingQuota: null, usedQuota: null, limitQuota: null },
-        midInterval: { windowId: "7d", label: "7d", startAt: null, endAt: null, intervalMs: null, usedPercent: 60, remainingPercent: 100 - 60, remainingQuota: null, usedQuota: null, limitQuota: null },
-        ageMs: null,
-        stale: false,
-        version: "",
-      });
-      assert.ok(strip(line).includes(" / "), `got: ${line}`);
-      assert.ok(!strip(line).includes(" · "), `got: ${line}`);
-    } finally {
-      __resetForTest();
-    }
-  });
-});
+// vX.X.X+ — `custom separators` via the legacy `separators` config
+// array is REMOVED. The six built-in s_<name> tokens are the only
+// separator source. This describe block is gone.
 
-describe("lineTemplate — unknown module token", () => {
-  it("expands unknown m_ tokens to '' and warns once on stderr", () => {
+describe("lineTemplate — unknown module token (vX.X.X+: literal pass-through)", () => {
+  it("emits the unknown token verbatim — no warn, no drop", () => {
+    // vX.X.X+: unrecognized tokens (m_foo, s_xyz, anything that
+    // doesn't match a known m_* module or the six s_<name>
+    // aliases) are emitted as literal strings. No parsing, no
+    // warning. m_foo becomes "m_foo" in the rendered output.
     __resetUnknownModuleWarnForTest();
-    // v0.4.x — uses named aliases (s_space) so the only unknown
-    // token is m_foo, producing exactly one warn. Numeric s_0
-    // would also warn now (empty default array), polluting the
-    // captured stderr.
     __resetForTest({
       statuslineTemplate:["m_modeLabel", "s_space", "m_window|term:short", "s_space", "m_foo"],
     });
@@ -148,16 +124,29 @@ describe("lineTemplate — unknown module token", () => {
         stale: false,
         version: "",
       });
-      // m_foo expanded to "" — no junk in the line.
-      assert.ok(!line.includes("m_foo"));
-      // Warn fired exactly once for this run.
+      // m_foo is emitted as the literal "m_foo" (right after the
+      // s_space token, before end-of-template).
+      assert.ok(line.endsWith(" m_foo"), `got: ${line}`);
+      // No unknown-module warning — pass-through is silent.
       const warns = captured.filter((c) => c.includes("unknown lineTemplate module"));
-      assert.equal(warns.length, 1, `expected 1 warn, got ${warns.length}: ${JSON.stringify(captured)}`);
-      assert.ok(warns[0].includes("m_foo"));
+      assert.equal(warns.length, 0, `expected no warn, got ${warns.length}: ${JSON.stringify(captured)}`);
     } finally {
       err.write = original;
       __resetForTest();
     }
+  });
+
+  it("emits unknown tokens with no inline-args parsing (xyz|color:red is verbatim)", () => {
+    __resetUnknownModuleWarnForTest();
+    __resetForTest({
+      statuslineTemplate:["xyz|color:red"],
+    });
+    const line = renderProviderLine("minimax", {
+      mode: "used", nowMs: Date.now(),
+      shortInterval: null, midInterval: null, balance: null,
+      ageMs: null, stale: false, version: "",
+    });
+    assert.equal(strip(line), "xyz|color:red", `got: ${JSON.stringify(line)}`);
   });
 });
 
@@ -176,19 +165,19 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
     assert.ok(strip(line).endsWith("⛓️‍💥 5m ago"), `got: ${line}`);
   });
 
-  it("appends the broken-chain suffix when a separator happens to contain ' ago'", () => {
+  it("appends the broken-chain suffix when a literal token happens to contain ' ago'", () => {
     // v0.4.0 dedup is template-level (template.includes('m_age')),
-    // NOT output-scanning. A separator string containing ' ago'
+    // NOT output-scanning. A free-form literal token containing ' ago'
     // must NOT cause the forced fallback to skip — the dedup check
     // would have misfired under the old 'joined.includes(" ago")'
-    // heuristic. Confirms the refactor.
+    // heuristic. Confirms the refactor still holds with vX.X.X+
+    // literal pass-through tokens.
     __resetForTest({
-      separators: [" ago"],
       statuslineTemplate:[
-        "m_modeLabel", "s_0",
-        "m_window|term:short", "s_0", "m_countdown|term:short",
-        "s_0", "s_1", "s_0",
-        "m_window|term:mid", "s_0", "m_countdown|term:mid",
+        "m_modeLabel", " ago",
+        "m_window|term:short", " ago", "m_countdown|term:short",
+        " ago", " ago", " ago",
+        "m_window|term:mid", " ago", "m_countdown|term:mid",
       ],
     });
     try {
@@ -214,11 +203,11 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
   it("does NOT double-append when m_age IS in the template", () => {
     __resetForTest({
       statuslineTemplate:[
-        "m_modeLabel", "s_0",
-        "m_window|term:short", "s_0", "m_countdown|term:short",
-        "s_0", "s_1", "s_0",
-        "m_window|term:mid", "s_0", "m_countdown|term:mid",
-        "s_0", "m_age",
+        "m_modeLabel", "s_space",
+        "m_window|term:short", "s_space", "m_countdown|term:short",
+        "s_space", "s_dot", "s_space",
+        "m_window|term:mid", "s_space", "m_countdown|term:mid",
+        "s_space", "m_age",
       ],
     });
     try {
@@ -259,9 +248,9 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
     // ageMs > 0 → 🔗 X ago.
     __resetForTest({
       statuslineTemplate:[
-        "m_modeLabel", "s_0",
-        "m_window|term:short", "s_0", "m_countdown|term:short",
-        "s_0", "m_age",
+        "m_modeLabel", "s_space",
+        "m_window|term:short", "s_space", "m_countdown|term:short",
+        "s_space", "m_age",
       ],
     });
     try {
@@ -329,7 +318,7 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
     __resetForTest({
       statuslineTemplate:["m_template|outer|mode:plan", "m_age"],
       lineTemplates:{
-        outer: ["s_0", "m_window|term:short", "s_0", "m_age"],
+        outer: ["s_space", "m_window|term:short", "s_space", "m_age"],
         balance: [],
       } as any,
       timeFormat: { minUnit: "s", maxUnitCount: 4 },
@@ -359,7 +348,7 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
 describe("lineTemplate — m_version module", () => {
   it("renders 'v' + ctx.version when m_version is in the template", () => {
     __resetForTest({
-      statuslineTemplate:["m_modeLabel", "s_0", "m_window|term:short", "s_0", "m_version"],
+      statuslineTemplate:["m_modeLabel", "s_space", "m_window|term:short", "s_space", "m_version"],
     });
     try {
       const line = renderProviderLine("minimax", {
@@ -379,7 +368,7 @@ describe("lineTemplate — m_version module", () => {
 
   it("renders nothing when version is empty (m_version module returns null)", () => {
     __resetForTest({
-      statuslineTemplate:["m_modeLabel", "s_0", "m_window|term:short", "s_0", "m_version"],
+      statuslineTemplate:["m_modeLabel", "s_space", "m_window|term:short", "s_space", "m_version"],
     });
     try {
       const line = renderProviderLine("minimax", {
@@ -590,99 +579,61 @@ describe("lineTemplate — m_label inline-args tokens", () => {
   });
 });
 
-describe("lineTemplate — s_<n>:color inline-args tokens", () => {
+describe("lineTemplate — s_<name> inline-args tokens (vX.X.X+)", () => {
   beforeEach(() => __resetUnknownModuleWarnForTest());
   afterEach(() => __resetForTest());
 
-  it("s_0|color:red wraps the separator in red SGR + RESET", () => {
-    __resetForTest({
-      separators: [" "],
-      statuslineTemplate:["s_0|color:red"],
-    });
-    const line = renderProviderLine("minimax", {
+  // ----- unknown s_* prefix → emit verbatim -----
+
+  it("s_xyz (unknown alias name) emits the original token verbatim — no warn, no drop", () => {
+    // vX.X.X+: numeric `s_<n>` form is REMOVED. Unknown s_<name>
+    // suffixes are now treated as unrecognized modules and the
+    // dispatcher emits the WHOLE token as a literal. No parsing,
+    // no inline args, no warning.
+    __resetForTest({});
+    const { value: line, warns } = withCapturedStderr(() =>
+      renderTemplate(["s_xyz"], {
+        mode: "used", nowMs: Date.now(),
+        shortInterval: null, midInterval: null, balance: null,
+        ageMs: null, stale: false, version: "",
+      } as any),
+    );
+    assert.deepEqual(line.map(strip), ["s_xyz"]);
+    assert.equal(
+      warns.filter((w) => w.includes("unknown lineTemplate module")).length,
+      0,
+      `expected no unknown-module warning: ${warns.join("\n")}`,
+    );
+  });
+
+  it("s_0 (numeric suffix is now meaningless) emits 's_0' verbatim", () => {
+    __resetForTest({});
+    const line = renderTemplate(["s_0"], {
       mode: "used", nowMs: Date.now(),
       shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
-    });
-    assert.equal(line, "\x1b[38;5;196m \x1b[0m", `got: ${JSON.stringify(line)}`);
+    } as any);
+    assert.deepEqual(line.map(strip), ["s_0"]);
   });
 
-  it("s_0|color:garbage is a hard noop (drops and warns)", () => {
-    __resetForTest({
-      separators: [" "],
-      statuslineTemplate:["s_0|color:garbage"],
-    });
-    const { value: line, warns } = withCapturedStderr(() =>
-      renderProviderLine("minimax", {
-        mode: "used", nowMs: Date.now(),
-        shortInterval: null, midInterval: null, balance: null,
-        ageMs: null, stale: false, version: "",
-      }),
-    );
-    // Per spec: invalid color → drop + warn.
-    assert.equal(line, "", `got: ${JSON.stringify(line)}`);
-    assert.equal(warns.filter((w) => w.includes("unknown lineTemplate module")).length, 1);
-  });
-
-  it("s_999|color:red (out-of-range index) drops and warns", () => {
-    __resetForTest({
-      separators: [" "],
-      statuslineTemplate:["s_999|color:red"],
-    });
-    const { value: line, warns } = withCapturedStderr(() =>
-      renderProviderLine("minimax", {
-        mode: "used", nowMs: Date.now(),
-        shortInterval: null, midInterval: null, balance: null,
-        ageMs: null, stale: false, version: "",
-      }),
-    );
-    assert.equal(line, "", `got: ${JSON.stringify(line)}`);
-    assert.equal(warns.filter((w) => w.includes("unknown lineTemplate module")).length, 1);
-  });
-
-  it("s_abc|color:red (non-numeric index) drops and warns", () => {
-    __resetForTest({
-      separators: [" "],
-      statuslineTemplate:["s_abc|color:red"],
-    });
-    const { value: line, warns } = withCapturedStderr(() =>
-      renderProviderLine("minimax", {
-        mode: "used", nowMs: Date.now(),
-        shortInterval: null, midInterval: null, balance: null,
-        ageMs: null, stale: false, version: "",
-      }),
-    );
-    assert.equal(line, "", `got: ${JSON.stringify(line)}`);
-    assert.equal(warns.filter((w) => w.includes("unknown lineTemplate module")).length, 1);
-  });
-
-  it("s_0|color:red|extra:stuff (extra param) drops and warns", () => {
-    __resetForTest({
-      separators: [" "],
-      statuslineTemplate:["s_0|color:red|extra:stuff"],
-    });
-    const { value: line, warns } = withCapturedStderr(() =>
-      renderProviderLine("minimax", {
-        mode: "used", nowMs: Date.now(),
-        shortInterval: null, midInterval: null, balance: null,
-        ageMs: null, stale: false, version: "",
-      }),
-    );
-    assert.equal(line, "", `got: ${JSON.stringify(line)}`);
-    assert.equal(warns.filter((w) => w.includes("unknown lineTemplate module")).length, 1);
-  });
-
-  it("s_ (just the prefix, no params) resolves to seps[0]", () => {
-    __resetForTest({
-      separators: ["X", "YY"],
-      statuslineTemplate:["s_"],
-    });
-    const line = renderProviderLine("minimax", {
+  it("s_0|color:red (numeric + inline-args) emits 's_0|color:red' verbatim — no parsing", () => {
+    __resetForTest({});
+    const line = renderTemplate(["s_0|color:red"], {
       mode: "used", nowMs: Date.now(),
       shortInterval: null, midInterval: null, balance: null,
       ageMs: null, stale: false, version: "",
-    });
-    assert.equal(line, "X", `got: ${JSON.stringify(line)}`);
+    } as any);
+    assert.deepEqual(line.map(strip), ["s_0|color:red"]);
+  });
+
+  it("s_ (just the prefix, no suffix) emits 's_' verbatim — no separators[0] fallback", () => {
+    __resetForTest({});
+    const line = renderTemplate(["s_"], {
+      mode: "used", nowMs: Date.now(),
+      shortInterval: null, midInterval: null, balance: null,
+      ageMs: null, stale: false, version: "",
+    } as any);
+    assert.deepEqual(line.map(strip), ["s_"]);
   });
 
   // ----- v0.7.2+ |repeat:<N> (multiplies body, default 1, cap 8) -----
@@ -690,7 +641,6 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
   it("s_space|repeat:3 emits 3 spaces (whitespace body not padded even with default wrap=true)", () => {
     __resetUnknownModuleWarnForTest();
     __resetForTest({
-      separators: [" "],
       statuslineTemplate:["s_space|repeat:3"],
     });
     const line = renderProviderLine("minimax", {
@@ -703,7 +653,8 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
 
   it("s_dot|repeat:1 emits single dot — default repeat is 1 when omitted", () => {
     __resetForTest({
-      // separators intentionally absent — s_dot uses NAMED_SEPARATORS,
+      // s_dot / s_space / s_colon / s_pipe are built-in named
+        // separators; no config array needed.
       statuslineTemplate:["s_dot|repeat:1"],
     });
     const line = renderProviderLine("minimax", {
@@ -716,7 +667,8 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
 
   it("s_dot|repeat:3 emits 3 padded dots (wrap=true + printable body)", () => {
     __resetForTest({
-      // separators intentionally absent — s_dot uses NAMED_SEPARATORS,
+      // s_dot / s_space / s_colon / s_pipe are built-in named
+        // separators; no config array needed.
       statuslineTemplate:["s_dot|repeat:3"],
     });
     const line = renderProviderLine("minimax", {
@@ -729,7 +681,8 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
 
   it("s_dot|repeat:8 hits the cap exactly (8 emits 8 padded dots)", () => {
     __resetForTest({
-      // separators intentionally absent — s_dot uses NAMED_SEPARATORS,
+      // s_dot / s_space / s_colon / s_pipe are built-in named
+        // separators; no config array needed.
       statuslineTemplate:["s_dot|repeat:8"],
     });
     const line = renderProviderLine("minimax", {
@@ -744,7 +697,8 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
     __resetUnknownModuleWarnForTest();
     const { value: line, warns } = withCapturedStderr(() => {
       __resetForTest({
-        // separators intentionally absent — s_dot uses NAMED_SEPARATORS,
+        // s_dot / s_space / s_colon / s_pipe are built-in named
+        // separators; no config array needed.
         statuslineTemplate:["s_dot|repeat:9"],
       });
       return renderProviderLine("minimax", {
@@ -765,7 +719,8 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
     __resetUnknownModuleWarnForTest();
     const { value: line, warns } = withCapturedStderr(() => {
       __resetForTest({
-        // separators intentionally absent — s_dot uses NAMED_SEPARATORS,
+        // s_dot / s_space / s_colon / s_pipe are built-in named
+        // separators; no config array needed.
         statuslineTemplate:["s_dot|repeat:0"],
       });
       return renderProviderLine("minimax", {
@@ -786,7 +741,8 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
     __resetUnknownModuleWarnForTest();
     const { value: line, warns } = withCapturedStderr(() => {
       __resetForTest({
-        // separators intentionally absent — s_dot uses NAMED_SEPARATORS,
+        // s_dot / s_space / s_colon / s_pipe are built-in named
+        // separators; no config array needed.
         statuslineTemplate:["s_dot|repeat:abc"],
       });
       return renderProviderLine("minimax", {
@@ -807,7 +763,8 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
 
   it("s_dot|wrap:false renders bare dot (no padding)", () => {
     __resetForTest({
-      // separators intentionally absent — s_dot uses NAMED_SEPARATORS,
+      // s_dot / s_space / s_colon / s_pipe are built-in named
+        // separators; no config array needed.
       statuslineTemplate:["s_dot|wrap:false"],
     });
     const line = renderProviderLine("minimax", {
@@ -820,7 +777,8 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
 
   it("s_dot|wrap:true (explicit) renders padded dot — default behavior", () => {
     __resetForTest({
-      // separators intentionally absent — s_dot uses NAMED_SEPARATORS,
+      // s_dot / s_space / s_colon / s_pipe are built-in named
+        // separators; no config array needed.
       statuslineTemplate:["s_dot|wrap:true"],
     });
     const line = renderProviderLine("minimax", {
@@ -833,7 +791,6 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
 
   it("s_space|wrap:true skips padding — whitespace bodies are exempt (no triple space)", () => {
     __resetForTest({
-      separators: [" "],
       statuslineTemplate:["s_space|wrap:true"],
     });
     const line = renderProviderLine("minimax", {
@@ -864,7 +821,6 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
 
   it("s_colon|wrap:true pads the colon with 1 space on each side", () => {
     __resetForTest({
-      separators: ["colon"],
       statuslineTemplate:["s_colon|wrap:true"],
     });
     const line = renderProviderLine("minimax", {
@@ -877,7 +833,6 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
 
   it("s_pipe|wrap:true pads the pipe with 1 space on each side", () => {
     __resetForTest({
-      separators: ["pipe"],
       statuslineTemplate:["s_pipe|wrap:true"],
     });
     const line = renderProviderLine("minimax", {
@@ -892,7 +847,8 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
     __resetUnknownModuleWarnForTest();
     const { value: line, warns } = withCapturedStderr(() => {
       __resetForTest({
-        // separators intentionally absent — s_dot uses NAMED_SEPARATORS,
+        // s_dot / s_space / s_colon / s_pipe are built-in named
+        // separators; no config array needed.
         statuslineTemplate:["s_dot|wrap:garbage"],
       });
       return renderProviderLine("minimax", {
@@ -913,7 +869,8 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
 
   it("s_dot|repeat:3|wrap:false emits three bare dots, no padding", () => {
     __resetForTest({
-      // separators intentionally absent — s_dot uses NAMED_SEPARATORS,
+      // s_dot / s_space / s_colon / s_pipe are built-in named
+        // separators; no config array needed.
       statuslineTemplate:["s_dot|repeat:3|wrap:false"],
     });
     const line = renderProviderLine("minimax", {
@@ -926,7 +883,8 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
 
   it("s_dot|wrap:false|repeat:3 (param order doesn't matter) emits three bare dots", () => {
     __resetForTest({
-      // separators intentionally absent — s_dot uses NAMED_SEPARATORS,
+      // s_dot / s_space / s_colon / s_pipe are built-in named
+        // separators; no config array needed.
       statuslineTemplate:["s_dot|wrap:false|repeat:3"],
     });
     const line = renderProviderLine("minimax", {
@@ -939,7 +897,8 @@ describe("lineTemplate — s_<n>:color inline-args tokens", () => {
 
   it("s_dot|repeat:2|color:red renders ' ·  · ' wrapped in red SGR", () => {
     __resetForTest({
-      // separators intentionally absent — s_dot uses NAMED_SEPARATORS,
+      // s_dot / s_space / s_colon / s_pipe are built-in named
+        // separators; no config array needed.
       statuslineTemplate:["s_dot|repeat:2|color:red"],
     });
     const line = renderProviderLine("minimax", {
@@ -1984,8 +1943,8 @@ describe("m_template — legacy lineTemplate warns once and is ignored (v0.4.0 h
         path.join(tmpDir, "config.json"),
         JSON.stringify({
           lineTemplate: {
-            plan: ["m_modeLabel", "s_0", "m_window|term:short"],
-            balance: ["m_modeLabel", "s_0", "m_balance"],
+            plan: ["m_modeLabel", "s_space", "m_window|term:short"],
+            balance: ["m_modeLabel", "s_space", "m_balance"],
           },
         }),
       );
@@ -2021,7 +1980,7 @@ describe("m_template — end-to-end expansion on minimax (plan mode)", () => {
   beforeEach(() => {
     __resetForTest({
       lineTemplates: {
-        shared: ["m_modeLabel", "s_0", "m_window|term:short", "s_0", "m_countdown|term:short"],
+        shared: ["m_modeLabel", "s_space", "m_window|term:short", "s_space", "m_countdown|term:short"],
       },
       statuslineTemplate: ["m_template|shared|mode:plan"],
     });
@@ -2049,13 +2008,13 @@ describe("m_template — mode filter drops on mismatch (deepseek vs plan)", () =
   beforeEach(() => {
     __resetForTest({
       lineTemplates: {
-        shared: ["m_modeLabel", "s_0", "m_window|term:short"],
+        shared: ["m_modeLabel", "s_space", "m_window|term:short"],
       },
       // Combine m_template:shared:mode:plan (will drop on deepseek)
       // with an unconditional m_balance chunk. The m_balance chunk
       // is the deepseek-only default and proves the rest of the
       // template still renders when one chunk is filtered out.
-      statuslineTemplate: ["m_template|shared|mode:plan", "s_0", "m_balance"],
+      statuslineTemplate: ["m_template|shared|mode:plan", "s_space", "m_balance"],
     });
   });
   afterEach(() => __resetForTest());
