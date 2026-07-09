@@ -30,15 +30,15 @@ src/
   types.ts            # Provider union: 'minimax' | 'deepseek' | null
   api.plan.ts         # TOKEN_PLAN fetch + tolerant parser for /v1/token_plan/remains
   api.balance.ts      # BALANCE fetch + parser for /user/balance + URL gate
-  # v0.8.36+ — m_windowMemUsage is the percentage-form sibling of
+  # v0.8.36+ — m_windowMemUsage is the RAM-usage sibling of
   # m_memUsage (which renders absolute bytes "Mem:X.XG/Y.YG" with
-  # a fixed cyan tint). m_windowMemUsage normalizes to a 0..100
-  # ratio and routes the color through colorFor(pct, "used") so
-  # thresholds.percentBands drives the hue. Opt-in; not in any
-  # default lineTemplate. Manual ${color}${label}${value}${RESET}
-  # wrap (NOT wrapPlainDefault) because the band color must drive
-  # the value tint — wrapPlainDefault's DEFAULT_COLORS path would
-  # shadow it.
+  # a fixed cyan tint). m_windowMemUsage renders a bar+percent
+  # chunk (parallel of m_windowContext) — `▓▓▓▓▓░░░ 62%` — by
+  # wrapping getMemUsage()'s 0..100 ratio in a synthetic Window
+  # and routing through formatOneChunk / formatOneChunkColored.
+  # The value color is driven by colorFor(pct, "used") so
+  # thresholds.percentBands drives the hue. NO label prefix.
+  # Opt-in; not in any default lineTemplate.
   render.ts           # v1.0 READ-ONLY against tickState.pending: pctBar + ANSI color thresholds + formatLine + formatBalanceLine; NO setAvg/setPrevTick/setLastSpeed calls (those moved to data-processor.ts)
   data-processor.ts   # v1.0 processTick + setPrevTick + setAvg + setLastSpeed/ApiMs/TokenHitRate + computeAndCacheTickDeltaPure + getDeltaForRender — owns ALL writes to tickState.pending
   cache.ts            # TTL + stale-on-error (Map<key, {at, value}>) — TTL passed in by index.ts from configStore

@@ -5737,34 +5737,23 @@ describe("renderTemplate — v0.8.0+ labels.* config customization", () => {
     assert.match(out, /\x1b\[(?:31|38;5;\d+)m/);
   });
 
-  // v0.8.36+ — m_windowMemUsage label customization. Default is
-  // "RAM%:" (distinct from m_memUsage's "Mem:" so the two
-  // coexisting modules can be told apart at a glance). Body
-  // shape is "<label><pct>%" where pct is computed as
-  // used/total*100. The pct value is non-deterministic on the
-  // host, so the assertion is prefix + shape only.
-  it("labelWindowMemUsage override reaches m_windowMemUsage prefix", () => {
-    withLabels({ labelWindowMemUsage: "SysRAM%:" }, () => {
-      const a = renderTemplate(
-        ["m_windowMemUsage"],
-        ctxFor(fakeSnapshot()),
-      ).join("\n");
-      // "SysRAM:n/a" when getMemUsage() returns null (Darwin
-      // vm_stat parse failure or sandboxed os.*); otherwise
-      // "SysRAM:NN.N%". Either form verifies that
-      // labelWindowMemUsage reaches the renderer.
-      assert.match(strip(a), /^SysRAM%:(n\/a|\d+(\.\d+)?%)$/);
-    });
-  });
-
-  it("labelWindowMemUsage defaults to 'RAM%:' byte-identically", () => {
-    // No override — defaults must reproduce the v0.8.36 literal
-    // "RAM%:" so the module has a stable, distinctive prefix.
-    const out = renderTemplate(
-      ["m_windowMemUsage"],
-      ctxFor(fakeSnapshot()),
-    ).join("\n");
-    assert.match(strip(out), /^RAM%:(n\/a|\d+(\.\d+)?%)$/);
+  // v0.8.36+ — m_windowMemUsage bar + 5-band-colored percentage,
+  // parallel of m_windowContext. The renderer reads getMemUsage()
+  // and emits a bar+percent chunk via formatOneChunk — NO label
+  // prefix (matches m_windowContext's pure bar+percent shape).
+  // The pct value is non-deterministic on the host, so assertions
+  // are shape-only: bar chars (▓/░) + " <pct>%".
+  it("m_windowMemUsage bar + 5-band-colored percentage (host-dependent pct)", () => {
+    const out = renderTemplate(["m_windowMemUsage"], ctxFor(fakeSnapshot())).join("\n");
+    const stripped = strip(out);
+    // bar is cfg().bar.width (default 8) chars of ▓/░, then
+    // " <pct>%". pct is in 0..100; formatOneChunk rounds to int
+    // (Math.round at render.ts:558).
+    assert.match(stripped, /^[▓░]{8} \d{1,3}%$/);
+    // The chunk should carry an SGR (band color from percentBands
+    // OR STALE_COLOR on a placeholder path). The SGR is either a
+    // bare 38;5;<n> (palette) or 31/32/33/91/... (named).
+    assert.match(out, /\x1b\[\d+(;\d+)*m/);
   });
 
   it("m_windowMemUsage|color|red override applies the user's SGR", () => {
@@ -5772,19 +5761,48 @@ describe("renderTemplate — v0.8.0+ labels.* config customization", () => {
       ["m_windowMemUsage|color:red"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
-    // Default band color is driven by colorFor(pct, "used");
-    // when the user supplies |color|red, the override wins.
-    // Prefix stays "RAM%:" regardless of color. The SGR for
-    // "red" contains "31" (bare-31) or "38;5;<n>" (palette).
-    assert.match(strip(out), /^RAM%:(n\/a|\d+(\.\d+)?%)$/);
+    // formatOneChunkColored path: bar + percent tail wrapped in
+    // the user's red SGR. Assert bar shape first, then SGR.
+    const stripped = strip(out);
+    assert.match(stripped, /^[▓░]{8} \d{1,3}%$/);
+    // SGR red = "\x1b[31m" (bare-31) or 38;5;<n> (palette).
     assert.match(out, /\x1b\[(?:31|38;5;\d+)m/);
+  });
+
+  it("m_windowMemUsage|display|remaining inverts usedPct to remainingPct (band color follows)", () => {
+    // Mirror m_windowContext|display|remaining test: the displayed
+    // percent becomes (100 - usedPct). Bar chunks also flip
+    // (leftChunk shows the OPPOSITE side of filled vs empty).
+    const used = renderTemplate(
+      ["m_windowMemUsage"],
+      ctxFor(fakeSnapshot()),
+    ).join("\n");
+    const remaining = renderTemplate(
+      ["m_windowMemUsage|display:remaining"],
+      ctxFor(fakeSnapshot()),
+    ).join("\n");
+    const usedPctMatch = strip(used).match(/ (\d{1,3})%$/);
+    const remainingPctMatch = strip(remaining).match(/ (\d{1,3})%$/);
+    assert.ok(usedPctMatch, `no pct in used: ${strip(used)}`);
+    assert.ok(remainingPctMatch, `no pct in remaining: ${strip(remaining)}`);
+    const usedPct = Number(usedPctMatch[1]);
+    const remainingPct = Number(remainingPctMatch[1]);
+    // usedPct + remainingPct should be 100 (modulo Math.round on
+    // both sides; the test allows ±1 for double-rounding).
+    assert.ok(
+      Math.abs(usedPct + remainingPct - 100) <= 1,
+      `used=${usedPct} + remaining=${remainingPct} should sum to 100`,
+    );
   });
 
   it("m_windowMemUsage|nulldrop|true drops the placeholder when getMemUsage() returns null", () => {
     // Mirror m_memUsage's test: assert nulldrop on a null result
     // path drops the placeholder. When getMemUsage() succeeds,
     // the value path emits and nulldrop is a no-op on the success
-    // path (matches m_memUsage's contract).
+    // path (matches m_memUsage's contract). Placeholder is the
+    // gauge shape ("░...░ 0%" used mode, "▓...▓ 100%" remaining
+    // mode) — no "n/a" token, so the assertion is
+    // "n/a is absent".
     const out = renderTemplate(
       ["m_windowMemUsage|nulldrop:true"],
       ctxFor(fakeSnapshot()),
