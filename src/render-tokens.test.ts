@@ -402,7 +402,7 @@ describe("renderTemplate — m_quote address+field (v0.8.21+)", () => {
   // directly via ctxWithQuoteBodies — no HTTP server, no curl
   // binary, no skip() gates.
   //
-  // Arg shape: `m_quote|address|<url>|field|<single-path>`.
+  // Arg shape: `m_quote|address:<url>|field:<single-path>`.
   // `fields` (plural, comma list) was removed in v0.8.21 — the
   // upgrade is strict; existing v0.8.19 configs need a manual
   // `fields` → `field` rename and a hand-pick of one path.
@@ -418,7 +418,7 @@ describe("renderTemplate — m_quote address+field (v0.8.21+)", () => {
       [url, JSON.stringify({ hitokoto: "生如夏花之绚烂" })],
     ]);
     const out = renderTemplate(
-      [`m_quote|address|${url}|quote|hitokoto`],
+      [`m_quote|address:${url}|quote:hitokoto`],
       ctxWithQuoteBodies(bodies),
     ).join("\n");
     assert.equal(strip(out), "~生如夏花之绚烂~");
@@ -433,7 +433,7 @@ describe("renderTemplate — m_quote address+field (v0.8.21+)", () => {
       [url, JSON.stringify({ hitokoto: "stay hungry stay foolish", from_who: "Steve Jobs" })],
     ]);
     const out = renderTemplate(
-      [`m_quote|address|${url}|quote|hitokoto|author|from_who`],
+      [`m_quote|address:${url}|quote:hitokoto|author:from_who`],
       ctxWithQuoteBodies(bodies),
     ).join("\n");
     assert.equal(strip(out), "~stay hungry stay foolish--Steve Jobs~");
@@ -447,7 +447,7 @@ describe("renderTemplate — m_quote address+field (v0.8.21+)", () => {
       [url, JSON.stringify({ hitokoto: "stay hungry stay foolish" })],
     ]);
     const out = renderTemplate(
-      [`m_quote|address|${url}|quote|hitokoto|author|from_who`],
+      [`m_quote|address:${url}|quote:hitokoto|author:from_who`],
       ctxWithQuoteBodies(bodies),
     ).join("\n");
     assert.equal(strip(out), "~stay hungry stay foolish~");
@@ -462,7 +462,7 @@ describe("renderTemplate — m_quote address+field (v0.8.21+)", () => {
       [url, JSON.stringify({ hitokoto: "stay hungry stay foolish" })],
     ]);
     const out = renderTemplate(
-      [`m_quote|address|${url}|quote|hitokoto|wrap|false`],
+      [`m_quote|address:${url}|quote:hitokoto|wrap:false`],
       ctxWithQuoteBodies(bodies),
     ).join("\n");
     assert.equal(strip(out), "stay hungry stay foolish");
@@ -482,7 +482,7 @@ describe("renderTemplate — m_quote address+field (v0.8.21+)", () => {
       })],
     ]);
     const out = renderTemplate(
-      [`m_quote|address|${url}|quote|quotes.0.quotestring`],
+      [`m_quote|address:${url}|quote:quotes.0.quotestring`],
       ctxWithQuoteBodies(bodies),
     ).join("\n");
     assert.equal(strip(out), "~remote quote one~");
@@ -498,7 +498,7 @@ describe("renderTemplate — m_quote address+field (v0.8.21+)", () => {
       [url, JSON.stringify({ other: "nope" })],
     ]);
     const out = renderTemplate(
-      [`m_quote|address|${url}|quote|missing.key`],
+      [`m_quote|address:${url}|quote:missing.key`],
       ctxWithQuoteBodies(bodies),
     ).join("\n");
     assert.ok(out.length > 0, "expected fallback to local QUOTES");
@@ -518,7 +518,7 @@ describe("renderTemplate — m_quote address+field (v0.8.21+)", () => {
       [url, "just a plain string body"],
     ]);
     const out = renderTemplate(
-      [`m_quote|address|${url}|quote|`],
+      [`m_quote|address:${url}|quote:`],
       ctxWithQuoteBodies(bodies),
     ).join("\n");
     assert.equal(strip(out), "just a plain string body");
@@ -533,7 +533,7 @@ describe("renderTemplate — m_quote address+field (v0.8.21+)", () => {
       [url, "plain text body"],
     ]);
     const out = renderTemplate(
-      [`m_quote|address|${url}|quote|hitokoto`],
+      [`m_quote|address:${url}|quote:hitokoto`],
       ctxWithQuoteBodies(bodies),
     ).join("\n");
     assert.ok(out.length > 0);
@@ -546,7 +546,7 @@ describe("renderTemplate — m_quote address+field (v0.8.21+)", () => {
     // for this address (e.g. fetch error with no recoverable
     // cache), the renderer sees `undefined` and falls back.
     const out = renderTemplate(
-      ["m_quote|address|http://127.0.0.1:9999/|quote|x"],
+      ["m_quote|address:http://127.0.0.1:9999/|quote:x"],
       ctxWithQuoteBodies(new Map()),
     ).join("\n");
     assert.ok(out.length > 0, "expected fallback to local QUOTES");
@@ -565,7 +565,7 @@ describe("renderTemplate — m_quote address+field (v0.8.21+)", () => {
       [url, JSON.stringify({ hitokoto: "x" })],
     ]);
     const out = renderTemplate(
-      [`m_quote|address|${url}|quote|.x`],
+      [`m_quote|address:${url}|quote:.x`],
       ctxWithQuoteBodies(bodies),
     );
     assert.equal(out.length, 0, "schema-rejected token should drop");
@@ -580,7 +580,7 @@ describe("renderTemplate — m_quote address+field (v0.8.21+)", () => {
     const enTexts: string[] = [];
     for (let off = 0; off < 30; off++) {
       const out = renderTemplate(
-        ["m_quote|lang|en"],
+        ["m_quote|lang:en"],
         { ...ctx, nowMs: ctx.nowMs + off * 60_000 },
       ).join("\n");
       enTexts.push(strip(out));
@@ -677,14 +677,14 @@ describe("renderTemplate — m_quote fetch-failure diagnostics (v0.8.20+)", () =
     // (covered separately); this test pins the renderer's
     // fallback + warning contract.
     const out = renderTemplate(
-      ["m_quote|address|http://127.0.0.1:1/|quote|x"],
+      ["m_quote|address:http://127.0.0.1:1/|quote:x"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
     assert.ok(out.length > 0, "expected fallback to local QUOTES");
     const rows = readDiagLines();
     const mq = rows.find((r) => r.source === "m_quote");
     assert.ok(mq, "expected an m_quote diagnostic row");
-    assert.equal(mq!.level, "warning");
+    assert.equal(mq!.level, "error");
     assert.match(String(mq!.msg), /no body/);
     assert.match(String(mq!.msg), /http:\/\/127\.0\.0\.1:1\//);
     assert.equal(mq!.cwd, "D:\\test");
@@ -696,7 +696,7 @@ describe("renderTemplate — m_quote fetch-failure diagnostics (v0.8.20+)", () =
     process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE = "";
     diagnostics.__resetDedupeForTest();
     const out = renderTemplate(
-      ["m_quote|address|http://127.0.0.1:1/|quote|x"],
+      ["m_quote|address:http://127.0.0.1:1/|quote:x"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
     assert.ok(out.length > 0, "expected fallback to local QUOTES");
@@ -1159,7 +1159,7 @@ describe("renderTemplate — m_token* modules", () => {
     processTick(snap.cwd, snap);
     statusStore.commit();
     const out = renderTemplate(
-      ["m_accTokenIn|color|brightGreen"],
+      ["m_accTokenIn|color:brightGreen"],
       ctxFor(snap),
     );
     const joined = out.join("\n");
@@ -1324,7 +1324,7 @@ describe("renderTemplate — m_token* modules", () => {
       ctxFor(firstSnap),
     );
     const out = renderTemplate(
-      ["m_tokenHitRate|color|red"],
+      ["m_tokenHitRate|color:red"],
       ctxFor(
         fakeSnapshot({
           sessionId: "sess-hr-inline-color",
@@ -1680,7 +1680,7 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
     processTick(snap2.cwd, snap2);
     statusStore.commit();
     const out = renderTemplate(
-      ["m_apiMs|color|red"],
+      ["m_apiMs|color:red"],
       ctxFor(snap2),
     ).join("\n");
     assert.equal(strip(out), "api:1m");
@@ -1722,7 +1722,7 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
     processTick(snap.cwd, snap);
     statusStore.commit();
     const out = renderTemplate(
-      ["m_apiMs|color|brightGreen"],
+      ["m_apiMs|color:brightGreen"],
       ctxFor(snap),
     ).join("\n");
     assert.equal(strip(out), "api:1m");
@@ -1748,7 +1748,7 @@ describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
     processTick(snap.cwd, snap);
     statusStore.commit();
     const out = renderTemplate(
-      ["m_apiMs|nulldrop|true"],
+      ["m_apiMs|nulldrop:true"],
       ctxFor(snap),
     ).join("\n");
     assert.equal(strip(out), "api:1m");
@@ -1910,7 +1910,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
 
   it("m_branch|color|brightGreen wraps the branch in brightGreen", () => {
     const out = renderTemplate(
-      ["m_branch|color|brightGreen"],
+      ["m_branch|color:brightGreen"],
       ctxFor(fakeSnapshot({ cwd: process.cwd() })),
     ).join("\n");
     assert.ok(out.includes("\x1b[38;5;41m"), `got: ${JSON.stringify(out)}`);
@@ -1920,7 +1920,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     // inline :nulldrop:false forces the placeholder instead of
     // dropping the slot (consistent with m_repo :nulldrop:false).
     const out = renderTemplate(
-      ["m_branch|nulldrop|false"],
+      ["m_branch|nulldrop:false"],
       ctxFor(fakeSnapshot()), // cwd="D:\\test", not a git repo
     ).join("\n");
     assert.equal(strip(out), "branch:n/a");
@@ -1979,7 +1979,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
 
   it("m_gitStatus|color|red wraps the indicator in red", () => {
     const out = renderTemplate(
-      ["m_gitStatus|color|red"],
+      ["m_gitStatus|color:red"],
       ctxFor(fakeSnapshot({ cwd: process.cwd() })),
     ).join("\n");
     assert.ok(out.includes("\x1b[38;5;196m"), `got: ${JSON.stringify(out)}`);
@@ -1987,7 +1987,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
 
   it("m_gitStatus|nulldrop|false renders 'git|n/a' when not in a git repo", () => {
     const out = renderTemplate(
-      ["m_gitStatus|nulldrop|false"],
+      ["m_gitStatus|nulldrop:false"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
     assert.equal(strip(out), "git:n/a");
@@ -2070,7 +2070,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
 
   it("m_tokenTotalIn|nulldrop|false renders 'total|n/a' placeholder on null totals.input", () => {
     const out = renderTemplate(
-      ["m_tokenTotalIn|nulldrop|false"],
+      ["m_tokenTotalIn|nulldrop:false"],
       ctxFor(fakeSnapshot({ totals: { tokenTotalIn: null, tokenTotalOut: null } })),
     ).join("\n");
     assert.equal(strip(out), "total:n/a");
@@ -2172,7 +2172,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     // "in:0"). The placeholderNA("calls:") registration is left in
     // place but is unreachable for m_apiCalls.
     const out = renderTemplate(
-      ["m_apiCalls|nulldrop|false"],
+      ["m_apiCalls|nulldrop:false"],
       ctxFor(fakeSnapshot({ cwd: "D:\\no-project-state-yet" })),
     ).join("\n");
     assert.equal(strip(out), "calls:0");
@@ -2200,7 +2200,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
       },
     );
     const out = renderTemplate(
-      ["m_apiCalls|nulldrop|false"],
+      ["m_apiCalls|nulldrop:false"],
       ctxFor(fakeSnapshot({ sessionId: "sess-zero" })),
     ).join("\n");
     assert.equal(strip(out), "calls:0");
@@ -2215,7 +2215,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     // behavior so a future refactor that re-introduces a null
     // branch will surface the question explicitly.
     const out = renderTemplate(
-      ["m_apiCalls|nulldrop|true"],
+      ["m_apiCalls|nulldrop:true"],
       ctxFor(fakeSnapshot({ cwd: "D:\\no-project-state-yet" })),
     ).join("\n");
     assert.equal(strip(out), "calls:0");
@@ -2237,7 +2237,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
       },
     );
     const out = renderTemplate(
-      ["m_apiCalls|color|brightGreen"],
+      ["m_apiCalls|color:brightGreen"],
       ctxFor(fakeSnapshot({ sessionId: "sess-colored" })),
     );
     const joined = out.join("\n");
@@ -2254,7 +2254,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
     // counter's zero state).
     const RED_SGR = "\x1b[38;5;196m";
     const out = renderTemplate(
-      ["m_apiCalls|nulldrop|false|color|red"],
+      ["m_apiCalls|nulldrop:false|color:red"],
       ctxFor(fakeSnapshot({ cwd: "D:\\no-project-state-yet" })),
     ).join("\n");
     assert.equal(strip(out), "calls:0");
@@ -2374,7 +2374,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
 
   it("m_windowContext|display|remaining with usedPct=0 renders full-bar 100% (NOT hidden)", () => {
     const out = renderTemplate(
-      ["m_windowContext|display|remaining"],
+      ["m_windowContext|display:remaining"],
       ctxFor(fakeSnapshot({ contextWindow: { contextWindowSize: 200000, contextUsedPercent: 0, contextRemainingPercent: 100 } })),
     ).join("\n");
     assert.equal(strip(out), "▓▓▓▓▓▓▓▓ 100%");
@@ -2383,7 +2383,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
   it("m_windowContext|color|red at usedPct=0 still emits the 0% chunk with override SGR", () => {
     const RED_SGR = "\x1b[38;5;196m";
     const out = renderTemplate(
-      ["m_windowContext|color|red"],
+      ["m_windowContext|color:red"],
       ctxFor(fakeSnapshot({ contextWindow: { contextWindowSize: 200000, contextUsedPercent: 0, contextRemainingPercent: 100 } })),
     ).join("\n");
     assert.equal(strip(out), "░░░░░░░░ 0%");
@@ -2401,7 +2401,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
   it("inline :color: override applies SGR to plain modules (m_session:color:red)", () => {
     const RED_SGR = "\x1b[38;5;196m";
     const out = renderTemplate(
-      ["m_session|color|red"],
+      ["m_session|color:red"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
     assert.equal(strip(out), "strip-diagnostics-display");
@@ -2411,7 +2411,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
   it("inline :color: override applies SGR to m_windowContext (formatOneChunkColored)", () => {
     const RED_SGR = "\x1b[38;5;196m";
     const out = renderTemplate(
-      ["m_windowContext|color|red"],
+      ["m_windowContext|color:red"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
     const stripped = strip(out);
@@ -2481,7 +2481,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     // cumulative occupancy, sourced from totals.input). The
     // placeholder still reads "size:n/a".
     const out = renderTemplate(
-      ["m_contextSize|nulldrop|false"],
+      ["m_contextSize|nulldrop:false"],
       ctxFor(null),
     ).join("\n");
     assert.equal(strip(out), "size:n/a");
@@ -2493,7 +2493,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     // a placeholder). The placeholder path is reserved for the
     // snapshot-missing case (test elsewhere).
     const out = renderTemplate(
-      ["m_contextSize|nulldrop|false"],
+      ["m_contextSize|nulldrop:false"],
       ctxFor(
         fakeSnapshot({
           totals: { tokenTotalIn: 0, tokenTotalOut: 0 },
@@ -2515,7 +2515,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
 
   it("m_contextSize|nulldrop|true behaves like bare (drops on null)", () => {
     // Explicit nulldrop:true → preserve original drop behavior.
-    const out = renderTemplate(["m_contextSize|nulldrop|true"], ctxFor(null));
+    const out = renderTemplate(["m_contextSize|nulldrop:true"], ctxFor(null));
     assert.deepEqual(out, []);
   });
 
@@ -2526,7 +2526,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     // not placeholder). The placeholder path is reserved for
     // cacheRead=null (field not shipped by stdin).
     const out = renderTemplate(
-      ["m_tokenCachedIn|nulldrop|false"],
+      ["m_tokenCachedIn|nulldrop:false"],
       ctxFor(
         fakeSnapshot({
           current: { tokenIn: 38, tokenOut: 155, tokenCacheCreation: 0, tokenCachedIn: 0 },
@@ -2542,7 +2542,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     // "field not shipped" as zero so the module always reads
     // "cache:N" (no placeholder text mixing with the value path).
     const out = renderTemplate(
-      ["m_tokenCachedIn|nulldrop|false"],
+      ["m_tokenCachedIn|nulldrop:false"],
       ctxFor(
         fakeSnapshot({
           current: { tokenIn: 38, tokenOut: 155, tokenCacheCreation: 0, tokenCachedIn: null },
@@ -2603,7 +2603,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     // cacheRead=0 and totals.input=38, the rate is 0/38 = 0.0% —
     // a truthful zero, NOT a placeholder drop.
     const out = renderTemplate(
-      ["m_tokenHitRate|nulldrop|false"],
+      ["m_tokenHitRate|nulldrop:false"],
       ctxFor(
         fakeSnapshot({
           totals: { tokenTotalIn: 38, tokenTotalOut: 155 },
@@ -2620,7 +2620,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     // m_contextSize (cumulative occupancy) is tested separately
     // above.
     const out = renderTemplate(
-      ["m_contextWindowsSize|nulldrop|false"],
+      ["m_contextWindowsSize|nulldrop:false"],
       ctxFor(
         fakeSnapshot({ contextWindow: { contextWindowSize: null, contextUsedPercent: null, contextRemainingPercent: null } }),
       ),
@@ -2630,7 +2630,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
 
   it("m_contextUsedPercent|nulldrop|false renders 'used|n/a%' when usedPct is null", () => {
     const out = renderTemplate(
-      ["m_contextUsedPercent|nulldrop|false"],
+      ["m_contextUsedPercent|nulldrop:false"],
       ctxFor(
         fakeSnapshot({ contextWindow: { contextWindowSize: 200000, contextUsedPercent: null, contextRemainingPercent: null } }),
       ),
@@ -2640,7 +2640,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
 
   it("m_tokenInTotal|nulldrop|false renders 'in|n/a' when totals.input is null", () => {
     const out = renderTemplate(
-      ["m_tokenInTotal|nulldrop|false"],
+      ["m_tokenInTotal|nulldrop:false"],
       ctxFor(
         fakeSnapshot({ totals: { tokenTotalIn: null, tokenTotalOut: null } }),
       ),
@@ -2650,7 +2650,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
 
   it("m_tokenTotalOut|nulldrop|false renders 'out|n/a' when totals.output is null", () => {
     const out = renderTemplate(
-      ["m_tokenTotalOut|nulldrop|false"],
+      ["m_tokenTotalOut|nulldrop:false"],
       ctxFor(
         fakeSnapshot({ totals: { tokenTotalIn: null, tokenTotalOut: null } }),
       ),
@@ -2662,7 +2662,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
 
   it("m_sessionDuration|nulldrop|false renders '--' (number+unit placeholder, no unit)", () => {
     const out = renderTemplate(
-      ["m_sessionDuration|nulldrop|false"],
+      ["m_sessionDuration|nulldrop:false"],
       ctxFor(
         fakeSnapshot({ cost: { totalDurationMs: null, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null } }),
       ),
@@ -2672,7 +2672,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
 
   it("m_linesAdded|nulldrop|false renders '+ --' (signed placeholder)", () => {
     const out = renderTemplate(
-      ["m_linesAdded|nulldrop|false"],
+      ["m_linesAdded|nulldrop:false"],
       ctxFor(
         fakeSnapshot({ cost: { totalDurationMs: 600_000, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null } }),
       ),
@@ -2682,7 +2682,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
 
   it("m_linesRemoved|nulldrop|false renders '- --' (signed placeholder)", () => {
     const out = renderTemplate(
-      ["m_linesRemoved|nulldrop|false"],
+      ["m_linesRemoved|nulldrop:false"],
       ctxFor(
         fakeSnapshot({ cost: { totalDurationMs: 600_000, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null } }),
       ),
@@ -2695,7 +2695,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
 
   it("m_windowContext|nulldrop|false renders '░░░░░░░░ 0%' (gauge placeholder, used mode)", () => {
     const out = renderTemplate(
-      ["m_windowContext|nulldrop|false"],
+      ["m_windowContext|nulldrop:false"],
       ctxFor(
         fakeSnapshot({ contextWindow: { contextWindowSize: 200000, contextUsedPercent: null, contextRemainingPercent: null } }),
       ),
@@ -2706,7 +2706,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
 
   it("m_windowContext|nulldrop|false in remaining mode renders '▓▓▓▓▓▓▓▓ 100%'", () => {
     const out = renderTemplate(
-      ["m_windowContext|nulldrop|false|display|remaining"],
+      ["m_windowContext|nulldrop:false|display:remaining"],
       ctxFor(
         fakeSnapshot({ contextWindow: { contextWindowSize: 200000, contextUsedPercent: null, contextRemainingPercent: null } }),
       ),
@@ -2717,7 +2717,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
   it("m_windowContext|nulldrop|false|color|red overrides STALE wrap with user color", () => {
     const RED_SGR = "\x1b[38;5;196m";
     const out = renderTemplate(
-      ["m_windowContext|nulldrop|false|color|red"],
+      ["m_windowContext|nulldrop:false|color:red"],
       ctxFor(
         fakeSnapshot({ contextWindow: { contextWindowSize: 200000, contextUsedPercent: null, contextRemainingPercent: null } }),
       ),
@@ -2738,10 +2738,10 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     assert.equal(strip(out), "░░░░░░░░ 0%");
   });
 
-  it("m_window|term|short|nulldrop|false renders gray '░░░░░░░░ 0%' when shortInterval is null", () => {
+  it("m_window|term:short|nulldrop:false renders gray '░░░░░░░░ 0%' when shortInterval is null", () => {
     // shortInterval is null → placeholder fires.
     const out = renderTemplate(
-      ["m_window|term|short|nulldrop|false"],
+      ["m_window|term:short|nulldrop:false"],
       ctxFor(null, null, null),
     ).join("\n");
     assert.equal(strip(out), "░░░░░░░░ 0%");
@@ -2749,7 +2749,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
 
   it("m_window|term|mid|nulldrop|false renders gray '░░░░░░░░ 0%' when midInterval is null", () => {
     const out = renderTemplate(
-      ["m_window|term|mid|nulldrop|false"],
+      ["m_window|term:mid|nulldrop:false"],
       ctxFor(null, null, null),
     ).join("\n");
     assert.equal(strip(out), "░░░░░░░░ 0%");
@@ -2759,7 +2759,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
 
   it("m_session|nulldrop|false renders 'n/a' when sessionName is null", () => {
     const out = renderTemplate(
-      ["m_session|nulldrop|false"],
+      ["m_session|nulldrop:false"],
       ctxFor(fakeSnapshot({ sessionName: null })),
     ).join("\n");
     assert.equal(strip(out), "n/a");
@@ -2767,7 +2767,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
 
   it("m_model|nulldrop|false renders 'n/a' when modelDisplayName is null", () => {
     const out = renderTemplate(
-      ["m_model|nulldrop|false"],
+      ["m_model|nulldrop:false"],
       ctxFor(fakeSnapshot({ modelDisplayName: null })),
     ).join("\n");
     assert.equal(strip(out), "n/a");
@@ -2775,7 +2775,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
 
   it("m_effort|nulldrop|false renders 'n/a' when effort is null", () => {
     const out = renderTemplate(
-      ["m_effort|nulldrop|false"],
+      ["m_effort|nulldrop:false"],
       ctxFor(fakeSnapshot({ effort: null })),
     ).join("\n");
     assert.equal(strip(out), "n/a");
@@ -2783,7 +2783,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
 
   it("m_repo|nulldrop|false renders 'n/a' when all components are null", () => {
     const out = renderTemplate(
-      ["m_repo|nulldrop|false"],
+      ["m_repo|nulldrop:false"],
       ctxFor(fakeSnapshot({ repo: { host: null, owner: null, name: null } })),
     ).join("\n");
     assert.equal(strip(out), "n/a");
@@ -2791,7 +2791,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
 
   it("m_ccVersion|nulldrop|false renders 'n/a' when ccversion is null", () => {
     const out = renderTemplate(
-      ["m_ccVersion|nulldrop|false"],
+      ["m_ccVersion|nulldrop:false"],
       ctxFor(fakeSnapshot({ ccversion: null })),
     ).join("\n");
     assert.equal(strip(out), "n/a");
@@ -2805,7 +2805,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     // placeholder keeps the slot occupied, so surrounding s_0
     // separators stay (matching the inline nulldrop:false contract).
     const out = renderTemplate(
-      ["m_tokenIn", "s_space", "m_contextSize|nulldrop|false", "s_space", "m_tokenOut"],
+      ["m_tokenIn", "s_space", "m_contextSize|nulldrop:false", "s_space", "m_tokenOut"],
       ctxFor(null),
     ).join("\n");
     assert.equal(strip(out), "in:n/a size:n/a out:n/a");
@@ -2814,7 +2814,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
   it("m_contextSize|nulldrop|false composed with |color| applies color to the placeholder", () => {
     const RED_SGR = "\x1b[38;5;196m";
     const out = renderTemplate(
-      ["m_contextSize|nulldrop|false|color|red"],
+      ["m_contextSize|nulldrop:false|color:red"],
       ctxFor(null),
     ).join("\n");
     assert.equal(strip(out), "size:n/a");
@@ -2830,7 +2830,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     // once per process), but we do assert the chunk is gone.
     __resetUnknownModuleWarnForTest();
     const out = renderTemplate(
-      ["m_contextSize|nulldrop|maybe"],
+      ["m_contextSize|nulldrop:maybe"],
       ctxFor(null),
     );
     assert.deepEqual(out, []);
@@ -2869,14 +2869,14 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
 
   it("inline m_contextSize:nulldrop:false (explicit) renders placeholder 'size:n/a'", () => {
     // Equivalent to the no-arg form `m_contextSize:` after the flip.
-    const out = renderTemplate(["m_contextSize|nulldrop|false"], ctxFor(null)).join("\n");
+    const out = renderTemplate(["m_contextSize|nulldrop:false"], ctxFor(null)).join("\n");
     assert.equal(strip(out), "size:n/a");
   });
 
   it("m_contextSize|nulldrop|true opts OUT of placeholder — drops on null", () => {
     // `:nulldrop:true` is the escape hatch for users who want the
     // v0.3.x drop-on-null semantics on an inline token.
-    const out = renderTemplate(["m_contextSize|nulldrop|true"], ctxFor(null));
+    const out = renderTemplate(["m_contextSize|nulldrop:true"], ctxFor(null));
     assert.deepEqual(out, []);
   });
 
@@ -2904,7 +2904,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
 
   it("m_windowContext|nulldrop|true drops on null (preserves v0.3.x drop behavior)", () => {
     const out = renderTemplate(
-      ["m_windowContext|nulldrop|true"],
+      ["m_windowContext|nulldrop:true"],
       ctxFor(
         fakeSnapshot({ contextWindow: { contextWindowSize: 200000, contextUsedPercent: null, contextRemainingPercent: null } }),
       ),
@@ -2918,7 +2918,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
   });
 
   it("m_session|nulldrop|true drops on null sessionName", () => {
-    const out = renderTemplate(["m_session|nulldrop|true"], ctxFor(fakeSnapshot({ sessionName: null })));
+    const out = renderTemplate(["m_session|nulldrop:true"], ctxFor(fakeSnapshot({ sessionName: null })));
     assert.deepEqual(out, []);
   });
 
@@ -2934,7 +2934,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
 
   it("m_linesAdded|nulldrop|true drops on null totalLinesAdded", () => {
     const out = renderTemplate(
-      ["m_linesAdded|nulldrop|true"],
+      ["m_linesAdded|nulldrop:true"],
       ctxFor(
         fakeSnapshot({ cost: { totalDurationMs: 600_000, totalApiDurationMs: null, totalLinesAdded: null, totalLinesRemoved: null } }),
       ),
@@ -2960,7 +2960,7 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     // null. The nulldrop:true opt-out still drops m_contextSize, leaving
     // orphan s_space separators between the placeholders.
     const out = renderTemplate(
-      ["m_tokenIn", "s_space", "m_contextSize|nulldrop|true", "s_space", "m_tokenOut"],
+      ["m_tokenIn", "s_space", "m_contextSize|nulldrop:true", "s_space", "m_tokenOut"],
       ctxFor(null),
     ).join("\n");
     assert.match(strip(out), /^in:n\/a\s+out:n\/a$/);
@@ -3081,7 +3081,7 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     beginTickForTest(null, null);
     processTick(scaledSnap.cwd, scaledSnap);
     const scaled = renderTemplate(
-      ["m_tokenInSpeed|color|scale"],
+      ["m_tokenInSpeed|color:scale"],
       ctxFor(scaledSnap),
     ).join("\n");
     // Both should land in the same band (red, 0.6 t/s).
@@ -3095,7 +3095,7 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     processTick(snap.cwd, snap);
     statusStore.commit();
     const out = renderTemplate(
-      ["m_tokenInSpeed|color|red"],
+      ["m_tokenInSpeed|color:red"],
       ctxFor(snap),
     ).join("\n");
     // 0.6 t/s would normally be red via scale; with explicit
@@ -3114,7 +3114,7 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     processTick(snap.cwd, snap);
     statusStore.commit();
     const out = renderTemplate(
-      ["m_tokenInSpeed|color|brightGreen"],
+      ["m_tokenInSpeed|color:brightGreen"],
       ctxFor(snap),
     ).join("\n");
     assert.equal(strip(out), "in:0.6 t/s");
@@ -3163,14 +3163,14 @@ describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.
     const first = fakeSnapshot();
     processTick(first.cwd, first);
     statusStore.commit();
-    renderTemplate(["m_tokenInSpeed|color|red"], ctxFor(first));
+    renderTemplate(["m_tokenInSpeed|color:red"], ctxFor(first));
     // Idle tick: same totalApiDurationMs.
     setPrevTick("sess-test", { totalApiMs: 60_000 }, "D:\\test");
     const idle = fakeSnapshot();
     processTick(idle.cwd, idle);
     statusStore.commit();
     const out = renderTemplate(
-      ["m_tokenInSpeed|color|red"],
+      ["m_tokenInSpeed|color:red"],
       ctxFor(idle),
     ).join("\n");
     assert.equal(strip(out), "in:0.6 t/s");
@@ -3395,20 +3395,20 @@ describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
 
   it("m_template|foo with ctx.providerType='plan' expands the registered fragment", () => {
     __resetForTest({
-      lineTemplates: { foo: ["m_window|term|short"] },
+      lineTemplates: { foo: ["m_window|term:short"] },
     });
     const out = renderTemplate(["m_template|foo"], ctxFor(null, legacyToIv({ pct: 42 })));
-    // m_window|term|short at 42% should land in band 1 (orange) per the
+    // m_window|term:short at 42% should land in band 1 (orange) per the
     // default band thresholds. Strip ANSI for stability.
     assert.match(out.map(strip).join("\n"), /42%/);
   });
 
   it("m_template|foo with ctx.providerType='balance' wants type|plan → drops", () => {
     __resetForTest({
-      lineTemplates: { foo: ["m_window|term|short"] },
+      lineTemplates: { foo: ["m_window|term:short"] },
     });
     const out = renderTemplate(
-      ["m_template|foo|type|plan"],
+      ["m_template|foo|type:plan"],
       ctxFor(null, null, null, null, "balance"),
     );
     // Dropped because providerType=balance but type wants plan.
@@ -3419,10 +3419,10 @@ describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
 
   it("m_template|foo with ctx.providerType='plan' wants type|plan → renders", () => {
     __resetForTest({
-      lineTemplates: { foo: ["m_window|term|short"] },
+      lineTemplates: { foo: ["m_window|term:short"] },
     });
     const out = renderTemplate(
-      ["m_template|foo|type|plan"],
+      ["m_template|foo|type:plan"],
       ctxFor(null, legacyToIv({ pct: 42 }), null, null, "plan"),
     );
     assert.match(out.map(strip).join("\n"), /42%/);
@@ -3433,14 +3433,14 @@ describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
     // same semantics). Pre-v0.8.15 configs that wrote
     // `m_template|<key>|mode|plan` keep rendering byte-for-byte.
     __resetForTest({
-      lineTemplates: { foo: ["m_window|term|short"] },
+      lineTemplates: { foo: ["m_window|term:short"] },
     });
     const outLegacy = renderTemplate(
-      ["m_template|foo|mode|plan"],
+      ["m_template|foo|mode:plan"],
       ctxFor(null, legacyToIv({ pct: 42 }), null, null, "plan"),
     );
     const outType = renderTemplate(
-      ["m_template|foo|type|plan"],
+      ["m_template|foo|type:plan"],
       ctxFor(null, legacyToIv({ pct: 42 }), null, null, "plan"),
     );
     assert.equal(
@@ -3457,19 +3457,19 @@ describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
     // who accidentally writes both has a typo in one of them;
     // preferring the newer name keeps the renderer consistent.
     __resetForTest({
-      lineTemplates: { foo: ["m_window|term|short"] },
+      lineTemplates: { foo: ["m_window|term:short"] },
     });
-    // type=plan, mode=balance → plan wins (m_window|term|short renders
+    // type=plan, mode=balance → plan wins (m_window|term:short renders
     // because the inner ctx.providerType is "plan" which matches).
     const outPlanWins = renderTemplate(
-      ["m_template|foo|type|plan|mode|balance"],
+      ["m_template|foo|type:plan|mode:balance"],
       ctxFor(null, legacyToIv({ pct: 42 }), null, null, "plan"),
     );
     assert.match(outPlanWins.map(strip).join("\n"), /42%/);
     // type=balance, mode=plan → balance wins (the plan context
     // is filtered out, chunk drops).
     const outBalanceWins = renderTemplate(
-      ["m_template|foo|type|balance|mode|plan"],
+      ["m_template|foo|type:balance|mode:plan"],
       ctxFor(null, null, null, null, "plan"),
     );
     assert.deepEqual(outBalanceWins, []);
@@ -3481,7 +3481,7 @@ describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
     // BALANCE ctx drops silently, same behavior as the legacy
     // bare-key path.
     __resetForTest({
-      lineTemplates: { foo: ["m_window|term|short"] },
+      lineTemplates: { foo: ["m_window|term:short"] },
     });
     const outPlan = renderTemplate(
       ["m_template|foo"],
@@ -3514,7 +3514,7 @@ describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
       },
     });
     const outWithType = renderTemplate(
-      ["m_template|probe|type|plan"],
+      ["m_template|probe|type:plan"],
       ctxFor(fakeSnapshot(), null, null, null, "plan"),
     );
     const outBare = renderTemplate(
@@ -3528,7 +3528,7 @@ describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
     );
     // Same identity check for the legacy `mode` alias.
     const outWithMode = renderTemplate(
-      ["m_template|probe|mode|plan"],
+      ["m_template|probe|mode:plan"],
       ctxFor(fakeSnapshot(), null, null, null, "plan"),
     );
     assert.equal(
@@ -3593,7 +3593,7 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
       current: { tokenIn: 0, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
       cost: { totalDurationMs: 0, totalApiDurationMs: 0, totalLinesAdded: null, totalLinesRemoved: null },
     });
-    const out = renderTemplate(["m_template|foo|scope|session"], ctxFor(tokens)).join("\n");
+    const out = renderTemplate(["m_template|foo|scope:session"], ctxFor(tokens)).join("\n");
     assert.equal(strip(out), "in:42");
   });
 
@@ -3636,7 +3636,7 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
     // observe by subtracting. After primer fires (delta=0),
     // both slots are unchanged. The render then routes to
     // project (via passthrough) and surfaces 99.
-    const out = renderTemplate(["m_template|foo|scope|project"], ctxFor(tokens)).join("\n");
+    const out = renderTemplate(["m_template|foo|scope:project"], ctxFor(tokens)).join("\n");
     assert.equal(strip(out), "in:99");
   });
 
@@ -3654,7 +3654,7 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
       accTokenIn: 77,
     });
     __resetForTest({
-      lineTemplates: { foo: ["m_accTokenIn|scope|ccsession"] },
+      lineTemplates: { foo: ["m_accTokenIn|scope:ccsession"] },
     });
     const tokens = fakeSnapshot({
       sessionId: "sess-pt3",
@@ -3662,7 +3662,7 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
       current: { tokenIn: 0, tokenOut: 0, tokenCacheCreation: 0, tokenCachedIn: 0 },
       cost: { totalDurationMs: 0, totalApiDurationMs: 0, totalLinesAdded: null, totalLinesRemoved: null },
     });
-    const out = renderTemplate(["m_template|foo|scope|project"], ctxFor(tokens)).join("\n");
+    const out = renderTemplate(["m_template|foo|scope:project"], ctxFor(tokens)).join("\n");
     // Inner wins → ccsession slot. accPrimer fires on the
     // m_accTokenIn call, but with current.input=0 and
     // currentApiMs=0 → deltaApi=0 → hasDelta=false → primer
@@ -3686,7 +3686,7 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
       __resetForTest({
         lineTemplates: { foo: ["m_accTokenIn"] },
       });
-      const out = renderTemplate(["m_template|foo|wtf|bar"], ctxFor(fakeSnapshot())).join("\n");
+      const out = renderTemplate(["m_template|foo|wtf:bar"], ctxFor(fakeSnapshot())).join("\n");
       assert.equal(strip(out), "");
       assert.match(captured, /unknown lineTemplate module/);
     } finally {
@@ -3699,7 +3699,7 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
     // effect on a m_accTokenIn that has data, so just confirm the
     // token doesn't badarg-warn and the inner module renders.
     __resetForTest({
-      lineTemplates: { foo: ["m_window|term|short"] },
+      lineTemplates: { foo: ["m_window|term:short"] },
     });
     let captured = "";
     const err = process.stderr as unknown as { write: (chunk: string) => boolean };
@@ -3709,7 +3709,7 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
       return true;
     };
     try {
-      const out = renderTemplate(["m_template|foo|nulldrop|true"], ctxFor(null, legacyToIv({ pct: 50 }))).join("\n");
+      const out = renderTemplate(["m_template|foo|nulldrop:true"], ctxFor(null, legacyToIv({ pct: 50 }))).join("\n");
       assert.match(strip(out), /50%/);
       assert.doesNotMatch(captured, /unknown lineTemplate module/);
     } finally {
@@ -3722,7 +3722,7 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
       lineTemplates: { foo: ["m_session"] },
     });
     const tokens = fakeSnapshot({ sessionName: "alpha" });
-    const out = renderTemplate(["m_template|foo|color|red"], ctxFor(tokens)).join("\n");
+    const out = renderTemplate(["m_template|foo|color:red"], ctxFor(tokens)).join("\n");
     // wrapPlainDefault applies the user color over the default. The
     // test only requires the body text "alpha" to be present and
     // the token to NOT be dropped (no "unknown lineTemplate module"
@@ -3740,7 +3740,7 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
     // empty slot via the OUTER m_accTokenIn (no passthrough)
     // to confirm the slot routing returns the same as a fresh ctx.
     __resetForTest({
-      lineTemplates: { foo: ["m_session|color|red"] },
+      lineTemplates: { foo: ["m_session|color:red"] },
     });
     const tokens = fakeSnapshot({ sessionName: "alpha" });
     // First call: outer template references m_template + an
@@ -3773,7 +3773,7 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
     // The pre-v0.8.7 shape `m_template|<key>` (no other args) must
     // keep expanding the fragment with no passThrough.
     __resetForTest({
-      lineTemplates: { foo: ["m_window|term|short"] },
+      lineTemplates: { foo: ["m_window|term:short"] },
     });
     const out = renderTemplate(["m_template|foo"], ctxFor(null, legacyToIv({ pct: 10 }))).join("\n");
     assert.match(strip(out), /10%/);
@@ -3827,7 +3827,7 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
     });
     const tokens = fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" });
     const outAll = renderTemplate(
-      ["m_template|stat|window|all"],
+      ["m_template|stat|window:all"],
       { ...ctxFor(tokens), nowMs: now },
     ).join("\n");
     // v0.8.7+ passthrough: window=all is forwarded into the bare
@@ -3854,7 +3854,7 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
     // Sanity: m_template|stat|window|5h (explicit passthrough
     // matching the default) must match the default control.
     const out5h = renderTemplate(
-      ["m_template|stat|window|5h"],
+      ["m_template|stat|window:5h"],
       { ...ctxFor(tokens), nowMs: now },
     ).join("\n");
     assert.equal(strip(out5h), "in:100",
@@ -3888,7 +3888,7 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
     });
     const tokens = fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" });
     const out = renderTemplate(
-      ["m_template|stat|model|all"],
+      ["m_template|stat|model:all"],
       { ...ctxFor(tokens), nowMs: now },
     ).join("\n");
     assert.equal(strip(out), "in:300",
@@ -3921,10 +3921,10 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
     });
     const tokens = fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" });
     const outBare = renderTemplate(["m_template|stat"], { ...ctxFor(tokens), nowMs: now }).join("\n");
-    const outExplicit5h = renderTemplate(["m_template|stat|window|5h"], { ...ctxFor(tokens), nowMs: now }).join("\n");
-    const outExplicitActive = renderTemplate(["m_template|stat|model|active"], { ...ctxFor(tokens), nowMs: now }).join("\n");
+    const outExplicit5h = renderTemplate(["m_template|stat|window:5h"], { ...ctxFor(tokens), nowMs: now }).join("\n");
+    const outExplicitActive = renderTemplate(["m_template|stat|model:active"], { ...ctxFor(tokens), nowMs: now }).join("\n");
     const outAll3 = renderTemplate(
-      ["m_template|stat|window|5h|model|active|align|true"],
+      ["m_template|stat|window:5h|model:active|align:true"],
       { ...ctxFor(tokens), nowMs: now },
     ).join("\n");
     assert.equal(strip(outBare), "in:42");
@@ -4080,14 +4080,14 @@ describe("renderTemplate — named separator aliases (v0.4.x)", () => {
   // ----- Inline-args form (`:color:<c>` / `:nulldrop:<b>`) -----
 
   it("s_space|color|brightGreen wraps the space in the brightGreen SGR", () => {
-    const out = renderTemplate(["s_space|color|brightGreen"], ctxFor(null));
+    const out = renderTemplate(["s_space|color:brightGreen"], ctxFor(null));
     assert.equal(out.length, 1);
     assert.equal(strip(out[0]), " ");
     assert.ok(out[0].includes(GREEN), `expected GREEN in: ${JSON.stringify(out[0])}`);
   });
 
   it("s_dot|color|red wraps the dot in the red SGR (v0.7.2+ default `wrap=true` pads with 1 space on each side)", () => {
-    const out = renderTemplate(["s_dot|color|red"], ctxFor(null));
+    const out = renderTemplate(["s_dot|color:red"], ctxFor(null));
     assert.equal(out.length, 1);
     assert.equal(strip(out[0]), " · ");
     assert.ok(out[0].includes(RED), `expected RED in: ${JSON.stringify(out[0])}`);
@@ -4143,7 +4143,7 @@ describe("renderTemplate — named separator aliases (v0.4.x)", () => {
     // spaces, the dot chunk dropped).
     __resetUnknownModuleWarnForTest();
     const out = renderTemplate(
-      ["s_space", "s_dot|color|bogus_color", "s_space"],
+      ["s_space", "s_dot|color:bogus_color", "s_space"],
       ctxFor(null),
     );
     assert.deepEqual(out.map(strip), ["  "]);
@@ -4387,7 +4387,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     processTick(snap.cwd, snap);
     statusStore.commit();
     const out = renderTemplate(
-      ["m_accApiCalls|scope|session"],
+      ["m_accApiCalls|scope:session"],
       ctxFor(snap),
     ).join("\n");
     assert.equal(strip(out), "calls:8");
@@ -4445,7 +4445,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     processTick(snap.cwd, snap);
     statusStore.commit();
     const out = renderTemplate(
-      ["m_accApiCalls|scope|session"],
+      ["m_accApiCalls|scope:session"],
       ctxFor(snap),
     ).join("\n");
     // self-priming fires accPrimer → bumps accApiCalls by 1
@@ -4491,7 +4491,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     processTick(snap.cwd, snap);
     statusStore.commit();
     const out = renderTemplate(
-      ["m_accTokenHitRate|scope|session"],
+      ["m_accTokenHitRate|scope:session"],
       ctxFor(snap),
     ).join("\n");
     // v0.8.x R8 — prefix unified with m_tokenHitRate / m_sumTokenHitRate.
@@ -4591,7 +4591,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     processTick(snap.cwd, snap);
     statusStore.commit();
     const out = renderTemplate(
-      ["m_accTokenIn|scope|project"],
+      ["m_accTokenIn|scope:project"],
       ctxFor(snap),
     ).join("\n");
     assert.equal(strip(out), "in:288");
@@ -4640,7 +4640,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     processTick(snap.cwd, snap);
     statusStore.commit();
     const out = renderTemplate(
-      ["m_accTokenIn|scope|model"],
+      ["m_accTokenIn|scope:model"],
       ctxFor(snap),
     ).join("\n");
     // v0.8.0+ labels.* — m_accTokenIn renders under labelTokenIn.
@@ -4652,7 +4652,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     // peekAcc's model branch returns null when ctx.tokens has no
     // modelDisplayName (cannot resolve the model slot key).
     const out = renderTemplate(
-      ["m_accTokenIn|scope|model"],
+      ["m_accTokenIn|scope:model"],
       ctxFor(fakeSnapshot({ sessionId: "sess-no-model", modelDisplayName: null })),
     ).join("\n");
     // v0.8.0+ labels.* — placeholder reads labelTokenIn.
@@ -4668,7 +4668,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     processTick(snap.cwd, snap);
     statusStore.commit();
     const out = renderTemplate(
-      ["m_accTokenIn|scope|session"],
+      ["m_accTokenIn|scope:session"],
       ctxFor(snap),
     ).join("\n");
     assert.equal(strip(out), "in:38");
@@ -4680,7 +4680,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     // null → badarg → dispatcher warn + drop.
     __resetUnknownModuleWarnForTest();
     const out = renderTemplate(
-      ["m_accTokenIn|scope|invalid"],
+      ["m_accTokenIn|scope:invalid"],
       ctxFor(fakeSnapshot({ sessionId: "sess-bad-scope" })),
     );
     assert.deepEqual(out, []);
@@ -4694,7 +4694,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     // all" case (tokens=null) — the only state where primer
     // cannot fire.
     const out = renderTemplate(
-      ["m_accTokenIn|nulldrop|false"],
+      ["m_accTokenIn|nulldrop:false"],
       ctxFor(null),
     ).join("\n");
     // v0.8.0+ labels.* — placeholder reads labelTokenIn.
@@ -4712,7 +4712,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     processTick(snap.cwd, snap);
     statusStore.commit();
     const out = renderTemplate(
-      ["m_accTokenIn|nulldrop|true"],
+      ["m_accTokenIn|nulldrop:true"],
       ctxFor(snap),
     ).join("\n");
     // v0.8.x cwf-tickStatus-v2 — self-priming fires on a fresh
@@ -4739,7 +4739,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     processTick(snap.cwd, snap);
     statusStore.commit();
     const out = renderTemplate(
-      ["m_accTokenIn|color|brightGreen"],
+      ["m_accTokenIn|color:brightGreen"],
       ctxFor(snap),
     ).join("\n");
     // v0.8.x cwf-tickStatus-v2 — self-priming adds the per-tick
@@ -4776,7 +4776,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
         "s_space",
         "s_dot",
         "s_space",
-        "m_accTokenHitRate|scope|session",
+        "m_accTokenHitRate|scope:session",
       ],
       ctxFor(snap),
     ).join("\n");
@@ -4829,7 +4829,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     // placeholderAcc behavior; use |nulldrop|true to opt out).
     setStateRoot(() => join(_tmpDir, "sum-empty"));
     const out = renderTemplate(
-      ["m_sumTokenIn|nulldrop|false"],
+      ["m_sumTokenIn|nulldrop:false"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
     assert.equal(strip(out), "in:n/a");
@@ -4843,7 +4843,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     setStateRoot(() => join(_tmpDir, "sum-bad-window"));
     __resetUnknownModuleWarnForTest();
     const out = renderTemplate(
-      ["m_sumTokenIn|window|xyz"],
+      ["m_sumTokenIn|window:xyz"],
       ctxFor(fakeSnapshot()),
     );
     assert.deepEqual(out, []);
@@ -4855,7 +4855,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     // placeholder (bare form would drop).
     setStateRoot(() => join(_tmpDir, "sum-no-model-match"));
     const out = renderTemplate(
-      ["m_sumTokenIn|model|nonexistent-model"],
+      ["m_sumTokenIn|model:nonexistent-model"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
     assert.equal(strip(out), "in:n/a");
@@ -4865,7 +4865,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     setStateRoot(() => join(_tmpDir, "sum-bad-align"));
     __resetUnknownModuleWarnForTest();
     const out = renderTemplate(
-      ["m_sumTokenIn|align|maybe"],
+      ["m_sumTokenIn|align:maybe"],
       ctxFor(fakeSnapshot()),
     );
     assert.deepEqual(out, []);
@@ -4930,7 +4930,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
       "utf8",
     );
     const out = renderTemplate(
-      ["m_sumTokenIn|window|1d1h"],
+      ["m_sumTokenIn|window:1d1h"],
       ctxFor(
         fakeSnapshot({
           sessionId: sess,
@@ -4953,7 +4953,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     // = 2s + 3*1 = 3s` accumulation matching; that's not what the
     // user wrote, so we use a non-shape string here.
     const out = renderTemplate(
-      ["m_sumTokenIn|window|not-a-duration"],
+      ["m_sumTokenIn|window:not-a-duration"],
       ctxFor(fakeSnapshot()),
     );
     // No rows → empty either way; the diagnostic value here is
@@ -4993,7 +4993,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
       "utf8",
     );
     const out = renderTemplate(
-      ["m_sumTokenIn|window|7d"],
+      ["m_sumTokenIn|window:7d"],
       {
         ...ctxFor(
           fakeSnapshot({
@@ -5042,7 +5042,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
       "utf8",
     );
     const out = renderTemplate(
-      ["m_sumTokenIn|window|5h|align|true"],
+      ["m_sumTokenIn|window:5h|align:true"],
       ctxFor(
         fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" }),
         legacyToIv({
@@ -5092,7 +5092,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
       "utf8",
     );
     const out = renderTemplate(
-      ["m_sumTokenIn|window|5h"], // align=false default → dhms wall-clock
+      ["m_sumTokenIn|window:5h"], // align=false default → dhms wall-clock
       ctxFor(
         fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" }),
         legacyToIv({
@@ -5135,7 +5135,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
       "utf8",
     );
     const out = renderTemplate(
-      ["m_sumTokenIn|window|5h|align|true"], // align=true → windowId lookup
+      ["m_sumTokenIn|window:5h|align:true"], // align=true → windowId lookup
       ctxFor(
         fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" }),
         legacyToIv({
@@ -5182,7 +5182,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
       "utf8",
     );
     const out = renderTemplate(
-      ["m_sumTokenIn|window|2h"],
+      ["m_sumTokenIn|window:2h"],
       ctxFor(
         fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" }),
         // windowId='5h-fake' avoids the resolved-against-declared-ID
@@ -5235,7 +5235,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
       "utf8",
     );
     const out = renderTemplate(
-      ["m_sumTokenIn|window|5h|align|false"],
+      ["m_sumTokenIn|window:5h|align:false"],
       ctxFor(
         fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" }),
         legacyToIv({
@@ -5286,7 +5286,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
       // the mtime pre-filter path. The test still verifies the
       // 5h-windowed scan → file's stale mtime drops the whole
       // file → rows=0 → `in:n/a`.
-      ["m_sumTokenIn|window|5h"],
+      ["m_sumTokenIn|window:5h"],
       {
         ...ctxFor(
           fakeSnapshot({
@@ -5443,7 +5443,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
       "utf8",
     );
     const out = renderTemplate(
-      ["m_sumApiCalls|model|all|window|7d"],
+      ["m_sumApiCalls|model:all|window:7d"],
       ctxFor(
         fakeSnapshot({
           sessionId: sess,
@@ -5506,7 +5506,7 @@ describe("renderTemplate — v0.8.0+ labels.* config customization", () => {
       // Force nulldrop:false so the placeholder renders (bare
       // form defaults to drop-on-null).
       const c = renderTemplate(
-        ["m_sumTokenTotalIn|nulldrop|false"],
+        ["m_sumTokenTotalIn|nulldrop:false"],
         ctxFor(fakeSnapshot({ sessionId: "label-test", cwd: "D:\\label-test" })),
       ).join("\n");
       assert.match(strip(a), /^Total:/);
@@ -5567,7 +5567,7 @@ describe("renderTemplate — v0.8.0+ labels.* config customization", () => {
       const a = renderTemplate(["m_apiMs"], ctxFor(aSnap)).join("\n");
       const b = renderTemplate(["m_accApiMs"], ctxFor(aSnap)).join("\n");
       const c = renderTemplate(
-        ["m_sumApiMs|nulldrop|false"],
+        ["m_sumApiMs|nulldrop:false"],
         ctxFor(fakeSnapshot({ sessionId: "label-api-sum", cwd: "D:\\label-api-sum" })),
       ).join("\n");
       assert.match(strip(a), /^ms:/);
@@ -5586,7 +5586,7 @@ describe("renderTemplate — v0.8.0+ labels.* config customization", () => {
       const b = renderTemplate(["m_accApiCalls"], ctxFor(aSnap)).join("\n");
       // m_sumApiCalls placeholder path (no rows in window).
       const c = renderTemplate(
-        ["m_sumApiCalls|nulldrop|false"],
+        ["m_sumApiCalls|nulldrop:false"],
         ctxFor(fakeSnapshot({ sessionId: "label-calls-sum", cwd: "D:\\label-calls-sum" })),
       ).join("\n");
       assert.match(strip(a), /^calls²:/);
@@ -5620,7 +5620,7 @@ describe("renderTemplate — v0.8.0+ labels.* config customization", () => {
       // a fresh cwd so no state rows from prior tests contaminate
       // the aggregate.
       const sumSpeed = renderTemplate(
-        ["m_sumTokenInSpeed|nulldrop|false"],
+        ["m_sumTokenInSpeed|nulldrop:false"],
         sumCtx,
       ).join("\n");
       assert.match(strip(sumSpeed), /^speed-in:n\/a$/);
@@ -5753,7 +5753,7 @@ describe("renderTemplate — v0.8.0+ labels.* config customization", () => {
     // template has no "Mem:" token (placeholder is "Mem:n/a";
     // nulldrop|true drops the whole chunk).
     const out = renderTemplate(
-      ["m_memUsage|nulldrop|true"],
+      ["m_memUsage|nulldrop:true"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
     // When getMemUsage() succeeds, output is "Mem:X.XG/Y.YG" and
@@ -5765,7 +5765,7 @@ describe("renderTemplate — v0.8.0+ labels.* config customization", () => {
 
   it("m_memUsage|color|red override applies the user's SGR", () => {
     const out = renderTemplate(
-      ["m_memUsage|color|red"],
+      ["m_memUsage|color:red"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
     // Default tint is cyan (NAMED_PALETTE.cyan). When the user
@@ -5948,7 +5948,7 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
       const snap = fakeSnapshot({ sessionId: "sess-scope-api", cwd: "D:\\test" });
       processTick(snap.cwd, snap);
       statusStore.commit();
-      renderTemplate(["m_accApiMs|scope|session"],
+      renderTemplate(["m_accApiMs|scope:session"],
         ctxFor(snap));
       const avg = peekAvg("sess-scope-api", "D:\\test");
       assert.ok(avg);
@@ -5970,7 +5970,7 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
       beginTickForTest("D:\\test", snap1);
       processTick(snap1.cwd, snap1);
       statusStore.commit();
-      renderTemplate(["m_accApiMs|scope|project"],
+      renderTemplate(["m_accApiMs|scope:project"],
         ctxFor(snap1));
       statusStore.commit();
       // Second tick: totalApiMs=50_000 → deltaApi=30_000; project slot +=30_000
@@ -5986,7 +5986,7 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
       beginTickForTest("D:\\test", snap2);
       processTick(snap2.cwd, snap2);
       statusStore.commit();
-      renderTemplate(["m_accApiMs|scope|project"],
+      renderTemplate(["m_accApiMs|scope:project"],
         ctxFor(snap2));
       statusStore.commit();
       const projectKey = `tickStatus:${projectHash("D:\\test")}`;
@@ -6030,7 +6030,7 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
       beginTickForTest("D:\\test", snap);
       processTick(snap.cwd, snap);
       statusStore.commit();
-      renderTemplate(["m_accApiMs|scope|ccsession"],
+      renderTemplate(["m_accApiMs|scope:ccsession"],
         ctxFor(snap));
       const ccsEntry = statusStore.getState().pending[statusStore.CCSESSION_KEY];
       assert.ok(ccsEntry && ccsEntry.kind === "tickStatus");
@@ -6058,7 +6058,7 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
       beginTickForTest("D:\\test", snap1);
       processTick(snap1.cwd, snap1);
       statusStore.commit();
-      renderTemplate(["m_accApiMs|scope|ccsession"],
+      renderTemplate(["m_accApiMs|scope:ccsession"],
         ctxFor(snap1));
       let ccsEntry = statusStore.getState().pending[statusStore.CCSESSION_KEY];
       assert.ok(ccsEntry && ccsEntry.kind === "tickStatus");
@@ -6085,7 +6085,7 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
       beginTickForTest("D:\\test", snap2);
       processTick(snap2.cwd, snap2);
       statusStore.commit();
-      renderTemplate(["m_accApiMs|scope|ccsession"],
+      renderTemplate(["m_accApiMs|scope:ccsession"],
         ctxFor(snap2));
       ccsEntry = statusStore.getState().pending[statusStore.CCSESSION_KEY];
       assert.ok(ccsEntry && ccsEntry.kind === "tickStatus");
@@ -6115,7 +6115,7 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
       beginTickForTest("D:\\test", snap1);
       processTick(snap1.cwd, snap1);
       statusStore.commit();
-      renderTemplate(["m_accApiMs|scope|ccsession"],
+      renderTemplate(["m_accApiMs|scope:ccsession"],
         ctxFor(snap1));
       let ccsEntry = statusStore.getState().pending[statusStore.CCSESSION_KEY];
       assert.ok(ccsEntry && ccsEntry.kind === "tickStatus");
@@ -6140,7 +6140,7 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
       beginTickForTest("D:\\test", snap2);
       processTick(snap2.cwd, snap2);
       statusStore.commit();
-      renderTemplate(["m_accApiMs|scope|ccsession"],
+      renderTemplate(["m_accApiMs|scope:ccsession"],
         ctxFor(snap2));
       ccsEntry = statusStore.getState().pending[statusStore.CCSESSION_KEY];
       assert.ok(ccsEntry && ccsEntry.kind === "tickStatus");
@@ -6164,7 +6164,7 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
       beginTickForTest("D:\\test", snap1);
       processTick(snap1.cwd, snap1);
       statusStore.commit();
-      renderTemplate(["m_accApiMs|scope|model"],
+      renderTemplate(["m_accApiMs|scope:model"],
         ctxFor(snap1));
       statusStore.commit();
       // Second tick: totalApiMs=35_000 → deltaApi=20_000; model slot +=20_000
@@ -6181,7 +6181,7 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
       beginTickForTest("D:\\test", snap2);
       processTick(snap2.cwd, snap2);
       statusStore.commit();
-      renderTemplate(["m_accApiMs|scope|model"],
+      renderTemplate(["m_accApiMs|scope:model"],
         ctxFor(snap2));
       statusStore.commit();
       const provKey = `tickStatus:${model}`;
@@ -6253,7 +6253,7 @@ describe("render — m_cacheTtlStatus", () => {
     resetCacheForTest();
     cacheMod.set("minimax", { x: 1 }, 60_000);
     const out = renderTemplate(
-      ["m_cacheTtlStatus|color|orange"],
+      ["m_cacheTtlStatus|color:orange"],
       ctxFor(fakeSnapshot()),
     ).join("");
     assert.equal(strip(out), "█");
@@ -6263,7 +6263,7 @@ describe("render — m_cacheTtlStatus", () => {
   it("inline m_cacheTtlStatus|nulldrop|true → drops when no entry", () => {
     resetCacheForTest();
     const out = renderTemplate(
-      ["m_cacheTtlStatus|nulldrop|true"],
+      ["m_cacheTtlStatus|nulldrop:true"],
       ctxFor(fakeSnapshot()),
     );
     // nulldrop:true + null data → renderer returns null → the
@@ -6322,7 +6322,7 @@ describe("render — m_statTtlStatus", () => {
     __resetStatCacheForTest();
     setStatCacheForTest("stat:all:5h:true", { sumIn: 1, rows: 1, sumOut: 0, sumCached: 0, sumTotalIn: 1, sumApiMs: 0, calls: 1, lastAt: Date.now(), generatedAt: Date.now() }, 300_000);
     const out = renderTemplate(
-      ["m_statTtlStatus|color|orange"],
+      ["m_statTtlStatus|color:orange"],
       ctxFor(fakeSnapshot()),
     ).join("");
     assert.equal(strip(out), "█");
@@ -6332,7 +6332,7 @@ describe("render — m_statTtlStatus", () => {
   it("inline m_statTtlStatus|nulldrop|true → drops when no entry", () => {
     __resetStatCacheForTest();
     const out = renderTemplate(
-      ["m_statTtlStatus|nulldrop|true"],
+      ["m_statTtlStatus|nulldrop:true"],
       ctxFor(fakeSnapshot()),
     );
     // nulldrop:true + null data → renderer returns null → the
@@ -6414,7 +6414,7 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
     processTick(snap.cwd, snap);
     statusStore.commit();
     const out = renderTemplate(
-      ["m_accStartTime|scope|session|abs|true"],
+      ["m_accStartTime|scope:session|abs:true"],
       ctxFor(snap),
     ).join("\n");
     // YYYY-MM-DD HH:MM:SS prefix matches the wider format.
@@ -6433,7 +6433,7 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
     processTick(snap.cwd, snap);
     statusStore.commit();
     const out = renderTemplate(
-      ["m_accStartTime|scope|session|abs|true|color|cyan"],
+      ["m_accStartTime|scope:session|abs:true|color:cyan"],
       ctxFor(snap),
     ).join("\n");
     assert.ok(out.includes("\x1b["), `expected SGR escape in: ${JSON.stringify(out)}`);
@@ -6461,7 +6461,7 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
       processTick(snap.cwd, snap);
       statusStore.commit();
       const out = renderTemplate(
-        ["m_accStartTime|scope|session|abs|yes"],
+        ["m_accStartTime|scope:session|abs:yes"],
         ctxFor(snap),
       ).join("\n");
       // Badarg drops the chunk — body is "".
@@ -6486,7 +6486,7 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
     processTick(snap.cwd, snap);
     statusStore.commit();
     const out = renderTemplate(
-      ["m_accStartTime|scope|session"],
+      ["m_accStartTime|scope:session"],
       ctxFor(snap),
     ).join("\n");
     assert.match(strip(out), /^start:\d{2}:\d{2}:\d{2}$/);
@@ -6521,7 +6521,7 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
     processTick(snap.cwd, snap);
     statusStore.commit();
     const out = renderTemplate(
-      ["m_accStartTime|scope|session"],
+      ["m_accStartTime|scope:session"],
       ctxFor(snap),
     ).join("\n");
     // Structural check: "start:HH:MM:SS" (24h, padded).
@@ -6541,7 +6541,7 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
     processTick(snap.cwd, snap);
     statusStore.commit();
     const out = renderTemplate(
-      ["m_accStartTime|scope|session|color|cyan"],
+      ["m_accStartTime|scope:session|color:cyan"],
       ctxFor(snap),
     ).join("\n");
     assert.ok(out.includes("\x1b["), `expected SGR escape in: ${JSON.stringify(out)}`);
@@ -6557,7 +6557,7 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
     // short-circuit on a null return). Mirrors the m_accTokenIn
     // family contract — see the test at line 4658 above.
     const out = renderTemplate(
-      ["m_accStartTime|scope|session|nulldrop|true"],
+      ["m_accStartTime|scope:session|nulldrop:true"],
       ctxFor(fakeSnapshot({ sessionId: "sess-start-null", cwd: "D:\\test" })),
     );
     // Placeholder ("start:n/a") emits → output length is 1.
@@ -6598,7 +6598,7 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
     // to the wall-clock branch (no plan window in this test
     // ctx).
     const out = renderTemplate(
-      ["m_sumStartTime|window|5h|model|active|align|false"],
+      ["m_sumStartTime|window:5h|model:active|align:false"],
       ctxFor(fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" })),
     ).join("\n");
     const expected = `start:${formatAbsTime(999_000)}`;
@@ -6609,7 +6609,7 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
     // Empty state root → no rows → agg.rows=0 → placeholder.
     setStateRoot(() => join(_tmpDir, "sum-start-empty"));
     const out = renderTemplate(
-      ["m_sumStartTime|window|5h"],
+      ["m_sumStartTime|window:5h"],
       ctxFor(fakeSnapshot()),
     ).join("\n");
     assert.equal(strip(out), "start:n/a");
@@ -6636,7 +6636,7 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
       "utf8",
     );
     const out = renderTemplate(
-      ["m_sumEndTime|window|7d|model|active|align|false"],
+      ["m_sumEndTime|window:7d|model:active|align:false"],
       ctxFor(fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" })),
     ).join("\n");
     const expected = `end:${formatAbsTime(999_900)}`;
@@ -6659,7 +6659,7 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
     // Empty file → no rows → no at to read → placeholder.
     writeFileSync(sessionFile, "", "utf8");
     const out = renderTemplate(
-      ["m_sumStartTime|window|5h|model|active|align|false"],
+      ["m_sumStartTime|window:5h|model:active|align:false"],
       ctxFor(fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" })),
     ).join("\n");
     assert.equal(strip(out), "start:n/a");
@@ -6717,7 +6717,7 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
       "utf8",
     );
     const out = renderTemplate(
-      ["m_sumStartTime|window|5h|model|active|align|true"],
+      ["m_sumStartTime|window:5h|model:active|align:true"],
       ctxFor(
         fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" }),
         legacyToIv({
@@ -6763,7 +6763,7 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
       "utf8",
     );
     const out = renderTemplate(
-      ["m_sumEndTime|window|7d|model|active|align|true"],
+      ["m_sumEndTime|window:7d|model:active|align:true"],
       ctxFor(
         fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" }),
         null,
@@ -6807,7 +6807,7 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
       "utf8",
     );
     const out = renderTemplate(
-      ["m_sumStartTime|window|5h|model|active|align|false"],
+      ["m_sumStartTime|window:5h|model:active|align:false"],
       ctxFor(
         fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" }),
         legacyToIv({
@@ -6846,7 +6846,7 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
       "utf8",
     );
     const out = renderTemplate(
-      ["m_sumStartTime|window|5h|model|active|align|true"],
+      ["m_sumStartTime|window:5h|model:active|align:true"],
       ctxFor(
         fakeSnapshot({ sessionId: sess, cwd, modelDisplayName: "MiniMax-M3" }),
         // Window present but resetStartAt absent — package

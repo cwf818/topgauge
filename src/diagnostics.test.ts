@@ -144,20 +144,20 @@ describe("diagnostics — append + readLatest", () => {
     assert.equal(readLatest("warning", null), null);
   });
 
-  it("caps the file at 200 lines, keeping the most recent", () => {
+  it("caps the file at 1000 lines, keeping the most recent (v0.8.34: was 200)", () => {
     enable();
-    for (let i = 0; i < 250; i++) {
+    for (let i = 0; i < 1100; i++) {
       append("error", "flood", `e${i}`, i, null);
     }
     const raw = readFileSync(diagnosticsPath(null), "utf8");
     const lines = raw.split("\n").filter((l) => l.length > 0);
-    assert.equal(lines.length, 200, "must keep only the last 200");
+    assert.equal(lines.length, 1000, "must keep only the last 1000");
 
     const firstKept = JSON.parse(lines[0]);
     const lastKept = JSON.parse(lines[lines.length - 1]);
-    // First 50 were dropped, so the first kept is e50.
-    assert.equal(firstKept.msg, "e50");
-    assert.equal(lastKept.msg, "e249");
+    // First 100 were dropped, so the first kept is e100.
+    assert.equal(firstKept.msg, "e100");
+    assert.equal(lastKept.msg, "e1099");
   });
 
   // v0.4.x+ Per-Project Layout: when a cwd is provided, the entry

@@ -116,7 +116,11 @@ export type Entry = {
 // Cap on file length. Append drops the oldest line(s) when the file
 // would exceed this — keeps the file bounded regardless of error
 // rate. Tests can lower this via the optional 3rd arg to append.
-const DEFAULT_MAX_ENTRIES = 200;
+// v0.8.34 — raised from 200 to 1000 so a sustained failure mode
+// (e.g. m_quote|address:<URL> with the endpoint down for several
+// minutes) keeps enough tail to postmortem, without paying for an
+// unbounded file in the steady state.
+export const DEFAULT_MAX_ENTRIES = 1000;
 
 // ----- Process-level session cwd store -----
 //

@@ -4394,7 +4394,7 @@ function fetchQuoteFromAddress(
   const body = ctx.quoteBodies?.get(address);
   if (body === undefined) {
     diagnostics.append(
-      "warning",
+      "error",
       "m_quote",
       `address fetch failed (no body): ${truncateForLog(address)}`,
       ctx.nowMs,
@@ -4412,7 +4412,7 @@ function fetchQuoteFromAddress(
       return { quote: body, author: null };
     }
     diagnostics.append(
-      "warning",
+      "error",
       "m_quote",
       `address fetch returned non-JSON body: ${truncateForLog(address)}`,
       ctx.nowMs,
@@ -4422,7 +4422,7 @@ function fetchQuoteFromAddress(
   const q = getFieldByPath(parsed, quote);
   if (q === null) {
     diagnostics.append(
-      "warning",
+      "error",
       "m_quote",
       `address fetch OK but quote miss: ${truncateForLog(address)} (quote=${quote})`,
       ctx.nowMs,
@@ -5883,29 +5883,40 @@ function inlineTokenSessionLabel(ctx: RenderContext): string | null {
   return `session:${formatCompactToken(inT + outT + cache)}`;
 }
 
-// v0.7.1+ — Parse the PIPE-delimited remainder after a token prefix
-// into a `{ param: value }` object. Pure; no side effects.
+// v0.x.x+ — Two-class separator scheme for inline args.
+// First-class separator is `|` (single-purpose: structural, splits
+// the token into [moduleName, (implicitValue,), pair1, pair2, …]).
+// Second-class separator is `:` or `=` (splits a pair into
+// [name, value] at the FIRST occurrence; the remainder of the
+// string is part of the value).
 //
-// Why `|` instead of `:`: `:` is heavily used in label text (e.g.
-// `Usage:`, `In:`, `api:5s`, `5h:--`) and in time-format units
-// (`api:1m30s`). Adopting it as the inline-args delimiter forced
-// every module's value-position to forbid `:` characters in
-// strings like color names / model names / window values. `|`
-// has zero collision with rendered output, so the grammar
-// becomes unambiguous: the FIRST `|` separates the prefix from
-// the args list, and subsequent `|` separate the args themselves.
+// Why two classes: the previous v0.7.1+ design used `|` for BOTH
+// module-boundary and pair-boundary, with position (odd/even
+// segment) deciding whether a segment was a name or a value.
+// That made param values unable to contain `|` at all, and the
+// grammar was unreadable (`m_tokenIn|color|red` reads as three
+// opaque tokens). With the new scheme:
+//   - `m_tokenIn|color:red` — natural: the `:` marks name/value
+//     boundary.
+//   - `m_label|GPU: A100|color:brightGreen` — implicit value
+//     contains `:` because it sits BEFORE any pair-separator.
+//   - `m_tokenIn|color:red:blue` — the FIRST `:` is the boundary,
+//     the rest is the literal value passed to the resolver. Users
+//     who need a `:` in a value should not write it; the parser
+//     does not error on multi-`:` values (per spec 2026-07-09).
 //
 // Layout:
-//   - If the schema has an `implicit` param, the FIRST segment is its
-//     value. Remaining segments (if any) must form name:value pairs.
-//   - If the schema has no `implicit`, the FIRST segment (if any) must
-//     be a name in `named` — i.e. segment 0 is the name of a pair,
-//     segment 1 is its value, etc.
+//   - If the schema has an `implicit` param, the FIRST segment is
+//     its value (verbatim, may contain `:` / `=`).
+//   - Otherwise the FIRST segment, if present, must be a pair
+//     (i.e. start with `<name>[:=]<value>`).
+//   - Each remaining segment is one pair.
 //
 // Returns null on:
 //   - any resolver returning null (bad value)
+//   - pair missing `:` / `=` separator
+//   - pair with empty name (e.g. `:red` or `=red`)
 //   - unknown param name in the named section
-//   - odd number of named segments (last segment has no value)
 function parseInlineArgs(
   remainder: string,
   schema: InlineSchema,
@@ -5918,22 +5929,24 @@ function parseInlineArgs(
   const parts = remainder.split("|");
 
   let out: Record<string, ResolvedValue> = {};
-  let startIdx = 0;
+  let i = 0;
 
   if (schema.implicit) {
     const v = parts[0]!;
     const r = schema.implicit.resolver(v);
     if (r === null) return null;
     out[schema.implicit.name] = r;
-    startIdx = 1;
+    i = 1;
   }
 
-  // Trailing segments must form name:value pairs (even count).
-  const tail = parts.length - startIdx;
-  if (tail % 2 !== 0) return null;
-  for (let i = startIdx; i < parts.length; i += 2) {
-    const name = parts[i]!;
-    const raw = parts[i + 1]!;
+  // Each remaining segment must be a `<name>[:=]<value>` pair.
+  for (; i < parts.length; i++) {
+    const pair = parts[i]!;
+    const sepIdx = pair.search(/[:=]/);
+    // sepIdx === -1 → no separator; sepIdx === 0 → empty name.
+    if (sepIdx <= 0) return null;
+    const name = pair.slice(0, sepIdx);
+    const raw = pair.slice(sepIdx + 1);
     if (!(name in schema.named)) return null;
     const r = schema.named[name]!(raw);
     if (r === null) return null;

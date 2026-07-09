@@ -1,5 +1,107 @@
 # Changelog
 
+## v0.8.34
+
+### Fix
+
+- **`m_quote|address:<URL>` no longer silently falls back to local QUOTES.**
+  The v0.8.33 inline-args rewrite updated the renderer's
+  `parseInlineArgs` to the two-class `|name:value|` grammar, but
+  missed the parallel scanner in `src/api.quote.ts:scanTokens`. The
+  scanner was still using the v0.8.21-era positional
+  `parts[i] === "name"` checks, so a v0.8.33-shaped token like
+  `m_quote|address:https://api.quotable.io/random|…` arrived with
+  the pair string in slot 1, the equality check failed for every
+  pair, and the function returned `null` — leaving
+  `preFetchQuotes` to early-return an empty Map. The renderer then
+  read from the empty Map, emitted a `address fetch failed (no
+  body)` warning forever, and fell back to the local QUOTES list
+  on every tick.
+  The fix rewrites `scanTokens` to use the same first-`:`-or-`=`
+  boundary rule as `parseInlineArgs`. The URL value's embedded
+  `:` (e.g. the scheme in `https://…`) stays inside the value,
+  matching the renderer's contract. Pairs the scanner doesn't
+  care about (`color:`, `quote:`, `author:`, `lang:`, `max:`,
+  `wrap:`, `nulldrop:`) are silently skipped. The pre-v0.8.33
+  positional form is **not** preserved (it was a v0.8.33 breaking
+  change).
+  Regression test: `src/api.quote.test.ts:33` (user's exact
+  template), `:43` (URL with `:`), `:54` (`=` separator), `:65`
+  (extra pairs), `:74` (no address), `:80` (bad freq), `:91`
+  (insecureTls truthy), `:106` (non-m_quote tokens), `:115` (old
+  positional form).
+
+### Change
+
+- **m_quote fetch-failure diagnostics raised to `error` level.**
+  `src/api.quote.ts:349` (preFetch curl/network failure) and
+  `src/render.ts:4397/4415/4425` (render-time no-body /
+  non-JSON / JSON-but-quote-miss) now emit at `error` instead of
+  `warning`. The on-disk `level` field is a free string, so this
+  is purely a noise/severity contract change for operators
+  grepping `diagnostics.jsonl` by level. Affected test:
+  `src/render-tokens.test.ts:687` updated accordingly.
+- **`diagnostics.jsonl` file cap raised from 200 to 1000 lines.**
+  `src/diagnostics.ts:DEFAULT_MAX_ENTRIES` is now 1000. A
+  sustained failure mode (e.g. `m_quote|address:<URL>` with the
+  endpoint down for several minutes) keeps enough tail to
+  postmortem, without paying for an unbounded file in the steady
+  state. Affected test: `src/diagnostics.test.ts:147` rewritten
+  to flood 1100 lines and assert the most-recent 1000 are kept.
+
+## v0.8.33
+
+### Breaking
+
+- **Inline-args grammar: two-class separator scheme.** The
+  parser now uses TWO separator classes:
+  1. **First-class `|` (pipe)** — structural. Splits the
+     token into `[moduleName, (implicitValue,), pair1, pair2, …]`.
+     Single-purpose: separate the parts of an inline-args
+     expression.
+  2. **Second-class `:` or `=` (first occurrence wins)** — pair
+     boundary. Splits each `pair` into `[name, value]`.
+
+  The previous v0.7.1–v0.8.32 positional `|name|value|value|…`
+  form is **REMOVED**. The dispatcher treats unparseable
+  segments (no `:`, no `=` boundary) as "unknown lineTemplate
+  module" and drops them.
+
+  New grammar:
+  ```
+  <token>[|<implicit>][|<name>:<value>][|<name>=<value>]…
+  ```
+  - The implicit slot (for `m_label`, `m_template`, `s_<n>` —
+    first segment AFTER the module name) is `|`-bounded and
+    may contain `:` or `=` freely (so `m_label|GPU: A100`
+    parses correctly even though the label has a colon).
+  - Each pair is split on the **first** `:` or `=`. The left
+    side is the name; the right side is the rest of the
+    string (so `color:red:blue` parses as
+    `color = "red:blue"`).
+
+  Examples (v0.8.33+):
+  - `m_label|hello|color:red`
+  - `m_label|GPU: A100|color:brightGreen`
+  - `m_window|term:short|color:red`
+  - `m_tokenIn|color=red` (equivalent to `:`, choose freely)
+  - `m_sumTokenIn|window:7d|model:active|align:true`
+  - `m_quote|address:https://v1.hitokoto.cn/|quote:hitokoto`
+  - `s_dot|repeat:3|wrap:true`
+
+  User action required: rewrite every
+  `lineTemplates.<key>` entry in your
+  `~/.claude/plugins/topgauge-cc/config.json` —
+  replace `|name|value|` with `|name:value|` (or
+  `|name=value|`). The plugin emits a one-time stderr
+  warning per bad token; it does NOT auto-migrate.
+
+### Added
+
+- All v0.7.1+ tests, all v0.8.0–v0.8.32 tests, and all default
+  presets in `src/config.ts` are updated to the new grammar
+  so the bundled default renders remain functional.
+
 ## v0.8.32
 
 ### Added

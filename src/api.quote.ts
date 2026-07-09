@@ -157,15 +157,28 @@ function scanTokens(toks: readonly string[]): QuoteTarget | null {
     let address = "";
     let insecureTls: boolean | undefined;
     let freqRaw: string | undefined;
-    for (let i = 1; i < parts.length - 1; i++) {
-      if (parts[i] === "address") {
-        address = parts[i + 1] ?? "";
-      } else if (parts[i] === "insecureTls") {
-        const v = (parts[i + 1] ?? "").toLowerCase();
+    // v0.8.34 — two-class pair grammar (`<name>:<value>` or
+    // `<name>=<value>`, first separator wins). The v0.8.21-era
+    // positional form `m_quote|address|<URL>|insecureTls|<bool>|…`
+    // is no longer reachable: that token shape is rejected upstream
+    // by the renderer's `parseInlineArgs`, so we never see it here.
+    // Pairs the scanner doesn't care about (`color:`, `quote:`,
+    // `author:`, `lang:`, `max:`, `wrap:`, `nulldrop:`) are silently
+    // skipped — the renderer owns their semantics.
+    for (let i = 1; i < parts.length; i++) {
+      const pair = parts[i] ?? "";
+      const sepIdx = pair.search(/[:=]/);
+      if (sepIdx <= 0) continue;
+      const name = pair.slice(0, sepIdx);
+      const raw = pair.slice(sepIdx + 1);
+      if (name === "address") {
+        address = raw;
+      } else if (name === "insecureTls") {
+        const v = raw.toLowerCase();
         if (v === "true" || v === "1") insecureTls = true;
         else if (v === "false" || v === "0") insecureTls = false;
-      } else if (parts[i] === "freq") {
-        freqRaw = parts[i + 1] ?? "";
+      } else if (name === "freq") {
+        freqRaw = raw;
       }
     }
     if (address.length > 0) {
@@ -177,6 +190,15 @@ function scanTokens(toks: readonly string[]): QuoteTarget | null {
     }
   }
   return null;
+}
+
+// Test-only — exposes `scanTokens` so the v0.8.34 regression
+// test can verify the pair grammar without poking at the full
+// async preFetch pipeline. Production code never imports this.
+export function __scanTokensForTest(
+  toks: readonly string[],
+): QuoteTarget | null {
+  return scanTokens(toks);
 }
 
 async function fetchOne(
@@ -346,7 +368,7 @@ export async function preFetchQuotes(
       stale.freqMs !== target.freq.ms
     ) {
       diagnostics.append(
-        "warning",
+        "error",
         "m_quote",
         `address fetch failed (curl exit): ${truncateForLog(target.address)} freq=${target.freq.raw} (reason=${result.reason})`,
         nowMs,
