@@ -100,7 +100,12 @@ export function queryPluginPath(providerId: string): string {
 // Resolve the actual on-disk path for a plugin — first `index.js`,
 // then `index.mjs`. Returns the canonical `queryPluginPath` if
 // neither exists. Caller is expected to `existsSync(...)` this.
-function resolvePluginOnDisk(providerId: string): string {
+//
+// Exported so the config-load validator in src/config.ts can reuse
+// the .js → .mjs resolution without duplicating it; the validator
+// needs the same "which file would pluginTransport actually load"
+// signal that detectTransport uses at fetch time.
+export function resolvePluginOnDisk(providerId: string): string {
   const js = queryPluginPath(providerId);
   if (existsSync(js)) return js;
   const mjs = join(queryPluginsDir(), providerId, "index.mjs");

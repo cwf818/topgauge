@@ -16,6 +16,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CompareMethod, IntervalConfig, IntervalKey, IntervalSlotConfig, ProviderEntry, ProviderType } from "./types.ts";
 import * as diagnostics from "./diagnostics.ts";
+import { detectTransport } from "./api.ts";
 
 // ----- Defaults — must match today's hardcoded values exactly -----
 
@@ -1624,14 +1625,14 @@ function mergeConfig(raw: Record<string, unknown>): Config {
           seed = { ...defaultEntry };
         }
         if (seed) {
-          const validated = validateProviderEntry(seed);
+          const validated = validateProviderEntry(name, seed);
           if (validated) merged[name] = validated;
         }
       }
       // Append any user-defined provider keys NOT in DEFAULT_PROVIDERS.
       for (const [name, value] of Object.entries(pm)) {
         if (name in merged) continue;
-        const entry = validateProviderEntry(value);
+        const entry = validateProviderEntry(name, value);
         if (entry) merged[name] = entry;
       }
       out.providers = merged;
@@ -1725,7 +1726,7 @@ const MINIMAX_DEFAULT_INTERVALS: IntervalConfig = {
 // user input. A partial user entry (e.g. only `ENDPOINT`) thus
 // preserves the other three fields from the default; an invalid
 // `TYPE` on an otherwise-OK entry drops the whole thing.
-function validateProviderEntry(v: unknown): ProviderEntry | null {
+function validateProviderEntry(name: string, v: unknown): ProviderEntry | null {
   if (!v || typeof v !== "object" || Array.isArray(v)) {
     warn("provider entry must be an object; dropping");
     return null;
@@ -1749,26 +1750,50 @@ function validateProviderEntry(v: unknown): ProviderEntry | null {
     warn(`provider COMPARE_METHOD must be one of "EXACT", "INCLUDE", "STARTWITH" (got ${JSON.stringify(cm)}); dropping`);
     return null;
   }
-  // ENDPOINT — must be a non-empty string. The transport dispatcher
-  // in src/api.ts:detectTransport interprets it:
-  //   - starts with "http://" or "https://" → httpTransport
-  //   - non-empty, non-http → execTransport (execSync(ep))
-  //   - empty string (only valid when query_plugins/<id>/index.js
-  //     exists) → pluginTransport; detectTransport THROWS at fetch
-  //     time if the plugin file is absent, but config-load still
-  //     accepts "" so the user's "wire a plugin script later"
-  //     workflow doesn't trip the validator.
+  // ENDPOINT — see src/api.ts:detectTransport for the runtime
+  // interpretation. Three accepted shapes:
+  //   - "http://..." / "https://..." → httpTransport
+  //   - any other non-empty string    → execTransport (execSync(ep))
+  //   - "" (only valid when
+  //     query_plugins/<id>/index.{js,mjs} exists) → pluginTransport.
+  //     config-load accepts the empty string here so the user's
+  //     "wire a plugin script later" workflow doesn't trip the
+  //     validator; detectTransport THROWS at fetch time if the
+  //     plugin file is absent, but we mirror that decision here so
+  //     a misconfigured entry never silently becomes a no-provider
+  //     render (which would drop every type:"plan"/"balance" module).
   const ep = e.ENDPOINT;
-  if (typeof ep !== "string" || ep.length === 0) {
-    warn("provider ENDPOINT must be a non-empty string; dropping");
+  if (typeof ep !== "string") {
+    warn(`providers.${name} ENDPOINT must be a string; dropping`);
     return null;
   }
+  if (ep.length === 0) {
+    // Reuse detectTransport's resolution: it walks .js then .mjs.
+    // If neither exists it would throw — we want a boolean here,
+    // so wrap in try/catch. The empty-string branch is the only
+    // path in detectTransport that throws, so the catch is narrow.
+    let pluginOk = false;
+    try {
+      detectTransport(ep, name);
+      pluginOk = true;
+    } catch {
+      pluginOk = false;
+    }
+    if (!pluginOk) {
+      warn(
+        `providers.${name} ENDPOINT="" but no query_plugins/${name}/index.{js,mjs} on disk; dropping`,
+      );
+      return null;
+    }
+  }
   // Surface-to-stderr hint when the ENDPOINT looks like a shell
-  // command (non-HTTP). The transport dispatcher is going to
-  // execSync() this verbatim — the user almost certainly intended
+  // command (non-HTTP, non-empty). The transport dispatcher is going
+  // to execSync() this verbatim — the user almost certainly intended
   // an http URL if they didn't start with http(s), so the warn helps
-  // catch typos at config-load rather than at runtime.
-  if (typeof ep === "string" && !/^https?:\/\//.test(ep)) {
+  // catch typos at config-load rather than at runtime. The empty
+  // string is exempt: it's the explicit "use the bundled plugin"
+  // signal, never executed as a shell command.
+  if (ep.length > 0 && !/^https?:\/\//.test(ep)) {
     warn(
       `provider ENDPOINT "${ep}" does not start with http(s) — will be executed as a shell command`,
     );

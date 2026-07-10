@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -12,6 +12,7 @@ import {
   DEFAULT_STATUSLINE_TEMPLATE,
   LEGACY_PRESET_NAMES,
 } from "./config.ts";
+import { queryPluginsDir } from "./api.ts";
 
 const { DEFAULT_CONFIG, setPathResolver, resetPathResolver } = __testing;
 
@@ -1383,5 +1384,111 @@ describe("validateProviderEntry — v0.6.0 HTTP overrides", () => {
       "BEARER_KEY field must be dropped",
     );
     assert.match(capturedStderr, /BEARER_KEY must be a non-empty string/);
+  });
+});
+
+// ----- v0.X.X+ ENDPOINT="" routed to query_plugins/<id>/index.{js,mjs} -----
+//
+// The validator used to drop any provider entry with an empty ENDPOINT,
+// which silently broke the "wire a bundled plugin script" workflow
+// (kimi being the first real user): the entry dropped → matchProvider
+// returned null → providerType === "unknown" → every type:"plan"/
+// "balance" module silently disappeared from the render. Fix: when
+// ENDPOINT is the empty string, look up query_plugins/<id>/index.js
+// (then .mjs) and accept if either exists; otherwise keep the old
+// drop+warn.
+//
+// These tests mock HOME/USERPROFILE so queryPluginsDir() resolves
+// under tmpDir, mirroring the pattern in src/api.test.ts:723-738.
+describe("validateProviderEntry — ENDPOINT=\"\" + query_plugins presence", () => {
+  const base = {
+    TYPE: "TOKEN_PLAN",
+    BASE_URL_COMPARED_TO: "https://api.example.com",
+    COMPARE_METHOD: "EXACT",
+  };
+  let sandbox: string;
+  let originalHome: string | undefined;
+  let originalProfile: string | undefined;
+
+  beforeEach(() => {
+    sandbox = mkdtempSync(join(tmpdir(), "topgauge-cc-validate-plugin-"));
+    originalHome = process.env.HOME;
+    originalProfile = process.env.USERPROFILE;
+    // queryPluginsDir() uses homedir() which honors USERPROFILE on
+    // Windows and HOME elsewhere — override both so the resolved
+    // query_plugins root lands inside our sandbox.
+    process.env.HOME = sandbox;
+    process.env.USERPROFILE = sandbox;
+  });
+
+  afterEach(() => {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    if (originalProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = originalProfile;
+    rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  it("accepts ENDPOINT=\"\" when query_plugins/<id>/index.js exists", async () => {
+    const pluginDir = join(queryPluginsDir(), "kimi");
+    mkdirSync(pluginDir, { recursive: true });
+    writeFileSync(join(pluginDir, "index.js"), "process.stdout.write('{}');");
+
+    writeFileSync(
+      join(tmpDir, "config.json"),
+      JSON.stringify({
+        providers: { kimi: { ...base, ENDPOINT: "" } },
+      }),
+    );
+    const cfg = await loadConfig();
+    assert.ok(cfg.providers.kimi, "entry must survive when plugin file is present");
+    assert.equal(cfg.providers.kimi.ENDPOINT, "");
+    assert.equal(capturedStderr, "");
+  });
+
+  it("accepts ENDPOINT=\"\" when only index.mjs is present (no .js)", async () => {
+    const pluginDir = join(queryPluginsDir(), "kimi");
+    mkdirSync(pluginDir, { recursive: true });
+    writeFileSync(join(pluginDir, "index.mjs"), "export default {};");
+
+    writeFileSync(
+      join(tmpDir, "config.json"),
+      JSON.stringify({
+        providers: { kimi: { ...base, ENDPOINT: "" } },
+      }),
+    );
+    const cfg = await loadConfig();
+    assert.ok(cfg.providers.kimi, ".mjs fallback must also satisfy the validator");
+    assert.equal(capturedStderr, "");
+  });
+
+  it("drops ENDPOINT=\"\" when neither index.js nor index.mjs exists", async () => {
+    // Don't create any plugin file under queryPluginsDir("kimi").
+    writeFileSync(
+      join(tmpDir, "config.json"),
+      JSON.stringify({
+        providers: { kimi: { ...base, ENDPOINT: "" } },
+      }),
+    );
+    const cfg = await loadConfig();
+    assert.equal(cfg.providers.kimi, undefined, "entry must be dropped without a plugin file");
+    assert.match(capturedStderr, /ENDPOINT="" but no query_plugins\/kimi\/index/);
+  });
+
+  it("does not affect non-empty ENDPOINT (regression guard)", async () => {
+    // Make sure the new branch did not loosen the existing http/exec path.
+    writeFileSync(
+      join(tmpDir, "config.json"),
+      JSON.stringify({
+        providers: {
+          kimi: { ...base, ENDPOINT: "https://api.example.com/kimi" },
+        },
+      }),
+    );
+    const cfg = await loadConfig();
+    assert.ok(cfg.providers.kimi);
+    // The non-http warn only fires for empty or non-http — https should
+    // be silent.
+    assert.equal(capturedStderr, "");
   });
 });
