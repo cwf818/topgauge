@@ -21,8 +21,7 @@
 // routes accordingly. Adding a new TOKEN_PLAN or BALANCE provider
 // is a config-only change.
 
-import type { Remains } from "./api.plan.ts";
-import type { Balance } from "./api.balance.ts";
+import type { Remains, Balance } from "./api.ts";
 import {
   RED,
   renderProviderLine,

@@ -119,11 +119,21 @@ ALL_CACHE_DIRS=()
 ALL_MARKETPLACE_DIRS=()
 ALL_TMP_MARKETPLACE_DIRS=()
 ALL_STATE_DIRS=()
+ALL_QUERY_PLUGINS_DIRS=()
 for n in "${PLUGIN_NAMES[@]}"; do
   ALL_CACHE_DIRS+=("${PLUGINS_DIR}/cache/${n}")
   ALL_MARKETPLACE_DIRS+=("${PLUGINS_DIR}/marketplaces/${n}")
   ALL_TMP_MARKETPLACE_DIRS+=("${PLUGINS_DIR}/marketplaces/cwf818-${n}")
   ALL_STATE_DIRS+=("${PLUGINS_DIR}/${n}/state")
+  # vX.X.X+ — query_plugins drop-in dir, sibling of state/ and
+  # config.json. Wiped on uninstall so a re-install slate is clean
+  # (a stale plugin script from an older version is the kind of
+  # thing the user should consciously re-author). Legacy name not
+  # included — the pre-rename install never created a
+  # query_plugins/ tree.
+  if [ "$n" = "topgauge-cc" ]; then
+    ALL_QUERY_PLUGINS_DIRS+=("${PLUGINS_DIR}/${n}/query_plugins")
+  fi
 done
 
 INSTALLED_JSON="${PLUGINS_DIR}/installed_plugins.json"
@@ -324,7 +334,7 @@ if [ -n "$EKM_PLAN" ]; then
 fi
 
 # Action 3: wipe dirs (every name in PLUGIN_NAMES — old AND new)
-for d in "${ALL_CACHE_DIRS[@]}" "${ALL_MARKETPLACE_DIRS[@]}" "${ALL_TMP_MARKETPLACE_DIRS[@]}" "${ALL_STATE_DIRS[@]}"; do
+for d in "${ALL_CACHE_DIRS[@]}" "${ALL_MARKETPLACE_DIRS[@]}" "${ALL_TMP_MARKETPLACE_DIRS[@]}" "${ALL_STATE_DIRS[@]}" "${ALL_QUERY_PLUGINS_DIRS[@]}"; do
   if [ -d "$d" ]; then
     ACTIONS+=("rm -rf ${d}")
     DRY_NOTHING=0
@@ -602,7 +612,7 @@ rm_with_retry() {
   echo "uninstall.sh: removed ${d}"
   return 0
 }
-for d in "${ALL_CACHE_DIRS[@]}" "${ALL_MARKETPLACE_DIRS[@]}" "${ALL_TMP_MARKETPLACE_DIRS[@]}" "${ALL_STATE_DIRS[@]}"; do
+for d in "${ALL_CACHE_DIRS[@]}" "${ALL_MARKETPLACE_DIRS[@]}" "${ALL_TMP_MARKETPLACE_DIRS[@]}" "${ALL_STATE_DIRS[@]}" "${ALL_QUERY_PLUGINS_DIRS[@]}"; do
   if [ -d "$d" ]; then
     rm_with_retry "$d"
   fi

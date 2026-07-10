@@ -398,4 +398,11 @@ export type ProviderEntry = {
   // placeholders; this is intentionally a static shape so the
   // provider config remains declarative (no template engine).
   BODY?: Record<string, unknown>;
+  // vX.X.X+ — env-inheritance flag for the exec + plugin transports.
+  // Defaults to true (env preserved). When false, the spawned
+  // child process runs with empty env — useful for paranoid
+  // credential isolation (prevents ANTHROPIC_AUTH_TOKEN etc. from
+  // leaking into a shell command's child env). Has no effect on the
+  // http transport (fetch() inherits its own env regardless).
+  EXEC_INHERIT_ENV?: boolean;
 };

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { isDeepSeekBaseUrl, parseBalance, fetchBalance } from "./api.balance.ts";
+import { isDeepSeekBaseUrl, parseBalance, fetchBalance } from "./api.ts";
 import type { ProviderEntry } from "./types.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));

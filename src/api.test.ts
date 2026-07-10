@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { parseRemains, fetchRemains } from "./api.plan.ts";
+import { parseRemains, fetchRemains } from "./api.ts";
 import type { IntervalConfig, ProviderEntry } from "./types.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -54,7 +54,7 @@ const minimaxDefaultIntervals: IntervalConfig = {
 // helper does the same projection for live callers; tests inline the
 // logic here so we don't import the renderer (which would pull in
 // configStore + index side effects).
-function intervalToWindow(iv: import("./api.plan.ts").Remains["shortInterval"]): {
+function intervalToWindow(iv: import("./api.ts").Remains["shortInterval"]): {
   pct: number;
   resetAt: string | undefined;
   resetStartAt: string | undefined;
@@ -672,5 +672,230 @@ describe("fetchRemains — per-provider HTTP overrides (v0.6.0+)", () => {
     assert.equal(rec.length, 1);
     const sent = rec[0].init.headers as Record<string, string>;
     assert.equal(sent.Authorization, "Bearer config-only");
+  });
+});
+
+// ----- vX.X.X+ transport layer (http / exec / plugin) -----------------
+//
+// detectTransport decides which transport layer to route through,
+// based on the ENDPOINT's prefix + the presence of a bundled plugin
+// file at ~/.claude/plugins/topgauge-cc/query_plugins/<id>/index.js.
+// The three transports each have a separate test below; this header
+// covers the central dispatch.
+//
+// HOME is monkey-patched in the pluginTransport suite so we can drop
+// a synthetic query_plugins tree under a tmpdir.
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  detectTransport,
+  execTransport,
+  pluginTransport,
+  queryPluginsDir,
+  queryPluginPath,
+  fetchForProviderById,
+} from "./api.ts";
+
+describe("queryPluginsDir + queryPluginPath", () => {
+  it("resolves under homedir()", () => {
+    // The function does not cache the path; subsequent calls in the
+    // same process pick up any HOME override made after first call.
+    const d = queryPluginsDir();
+    const h = process.env.HOME || process.env.USERPROFILE;
+    assert.ok(d.includes("topgauge-cc/query_plugins") || d.endsWith("topgauge-cc\\query_plugins"));
+    if (h) {
+      assert.ok(d.startsWith(h), `expected ${d} to start with HOME=${h}`);
+    }
+  });
+
+  it("queryPluginPath(id) joins <dir>/<id>/index.js", () => {
+    const d = queryPluginsDir();
+    assert.equal(queryPluginPath("myscript"), join(d, "myscript", "index.js"));
+  });
+});
+
+describe("detectTransport", () => {
+  let sandbox: string | null = null;
+  let originalHome: string | undefined;
+  let originalProfile: string | undefined;
+
+  beforeEach(() => {
+    sandbox = mkdtempSync(join(tmpdir(), "topgauge-cc-detect-"));
+    originalHome = process.env.HOME;
+    originalProfile = process.env.USERPROFILE;
+    // On Windows, queryPluginsDir uses homedir() which honors
+    // USERPROFILE; on Linux/macOS it uses HOME. Override BOTH so
+    // the function-resolved path targets our tmpdir.
+    process.env.HOME = sandbox;
+    process.env.USERPROFILE = sandbox;
+  });
+  afterEach(() => {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    if (originalProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = originalProfile;
+    if (sandbox) rmSync(sandbox, { recursive: true, force: true });
+    sandbox = null;
+  });
+
+  it("http:// → http", () => {
+    assert.equal(detectTransport("http://example.com/foo", "any"), "http");
+  });
+  it("https:// → http", () => {
+    assert.equal(detectTransport("https://example.com/foo", "any"), "http");
+  });
+  it("arbitrary command string → exec", () => {
+    assert.equal(detectTransport("python3 /opt/fetch.py", "any"), "exec");
+  });
+  it("non-empty non-http → exec (no leading / required)", () => {
+    assert.equal(detectTransport("echo hello", "any"), "exec");
+  });
+  it("empty string + plugin file present → plugin", () => {
+    const dir = join(sandbox!, ".claude", "plugins", "topgauge-cc", "query_plugins", "myscript");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "index.js"), "process.stdout.write('{}');");
+    assert.equal(detectTransport("", "myscript"), "plugin");
+  });
+  it("empty string + plugin file absent → throws", () => {
+    assert.throws(
+      () => detectTransport("", "no-such-provider"),
+      /ENDPOINT=""/,
+    );
+  });
+});
+
+describe("execTransport", () => {
+  it("captures stdout from a `node -e` invocation", async () => {
+    const body = await execTransport("node -e \"process.stdout.write('hello-world');\"");
+    assert.equal(body, "hello-world");
+  });
+
+  it("returns empty string when the command outputs nothing", async () => {
+    const body = await execTransport("node -e \"process.exit(0);\"");
+    assert.equal(body, "");
+  });
+
+  it("throws (and the caller propagates) on non-zero exit", async () => {
+    await assert.rejects(
+      () => execTransport("node -e \"process.exit(1);\""),
+      /Command failed/,
+    );
+  });
+});
+
+describe("pluginTransport", () => {
+  let sandbox: string | null = null;
+  let originalHome: string | undefined;
+  let originalProfile: string | undefined;
+
+  beforeEach(() => {
+    sandbox = mkdtempSync(join(tmpdir(), "topgauge-cc-plugin-"));
+    originalHome = process.env.HOME;
+    originalProfile = process.env.USERPROFILE;
+    process.env.HOME = sandbox;
+    process.env.USERPROFILE = sandbox;
+  });
+  afterEach(() => {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    if (originalProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = originalProfile;
+    if (sandbox) rmSync(sandbox, { recursive: true, force: true });
+    sandbox = null;
+  });
+
+  it("runs query_plugins/<id>/index.js and returns stdout", async () => {
+    const dir = join(sandbox!, ".claude", "plugins", "topgauge-cc", "query_plugins", "myscript");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "index.js"),
+      "process.stdout.write(JSON.stringify({balance_infos:[{currency:'CNY',total_balance:42}]}));",
+    );
+    const body = await pluginTransport("myscript");
+    const obj = JSON.parse(body);
+    assert.equal(obj.balance_infos[0].currency, "CNY");
+    assert.equal(obj.balance_infos[0].total_balance, 42);
+  });
+
+  it("throws when query_plugins/<id>/index.js is missing", async () => {
+    await assert.rejects(
+      () => pluginTransport("nonexistent"),
+      /Command failed|index\.js/,
+    );
+  });
+});
+
+describe("fetchForProviderById — end-to-end dispatcher", () => {
+  let sandbox: string | null = null;
+  let originalHome: string | undefined;
+  let originalProfile: string | undefined;
+
+  beforeEach(() => {
+    sandbox = mkdtempSync(join(tmpdir(), "topgauge-cc-fp-"));
+    originalHome = process.env.HOME;
+    originalProfile = process.env.USERPROFILE;
+    process.env.HOME = sandbox;
+    process.env.USERPROFILE = sandbox;
+  });
+  afterEach(() => {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    if (originalProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = originalProfile;
+    if (sandbox) rmSync(sandbox, { recursive: true, force: true });
+    sandbox = null;
+  });
+
+  it("TOKEN_PLAN via exec transport: parses a synthetic payload", async () => {
+    const entry = {
+      TYPE: "TOKEN_PLAN" as const,
+      BASE_URL_COMPARED_TO: "https://example.com",
+      COMPARE_METHOD: "EXACT" as const,
+      ENDPOINT: "node -e \"process.stdout.write(JSON.stringify({base_resp:{status_code:0},model_remains:[{current_interval_remaining_percent:50,current_weekly_remaining_percent:50,end_time:99999999999,weekly_end_time:99999999999}]}))\"",
+      intervals: minimaxDefaultIntervals,
+    };
+    const out = await fetchForProviderById("testplan", entry, "t", undefined);
+    assert.ok(out);
+    assert.equal((out as { shortInterval: { remainingPercent: number } }).shortInterval.remainingPercent, 50);
+  });
+
+  it("BALANCE via plugin transport: runs query_plugins/<id>/index.js", async () => {
+    const dir = join(sandbox!, ".claude", "plugins", "topgauge-cc", "query_plugins", "testbal");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "index.js"),
+      "process.stdout.write(JSON.stringify({is_available:true,balance_infos:[{currency:'USD',total_balance:7.5}]}));",
+    );
+    const entry = {
+      TYPE: "BALANCE" as const,
+      BASE_URL_COMPARED_TO: "https://example.com",
+      COMPARE_METHOD: "EXACT" as const,
+      ENDPOINT: "",
+    };
+    const out = await fetchForProviderById("testbal", entry, "t", undefined);
+    assert.ok(out);
+    const bal = out as { isAvailable: boolean; entries: Array<{ currency: string; totalBalance: number }> };
+    assert.equal(bal.isAvailable, true);
+    assert.equal(bal.entries[0].currency, "USD");
+    assert.equal(bal.entries[0].totalBalance, 7.5);
+  });
+
+  it("returns null when entry is null", async () => {
+    const out = await fetchForProviderById("anything", null, "t", undefined);
+    assert.equal(out, null);
+  });
+
+  it("throws when empty ENDPOINT + missing plugin file", async () => {
+    const entry = {
+      TYPE: "BALANCE" as const,
+      BASE_URL_COMPARED_TO: "https://example.com",
+      COMPARE_METHOD: "EXACT" as const,
+      ENDPOINT: "",
+    };
+    await assert.rejects(
+      () => fetchForProviderById("missing-plugin", entry, "t", undefined),
+      /ENDPOINT=""/,
+    );
   });
 });

@@ -15,8 +15,7 @@ import type {
   ProviderEntry,
   ProviderType,
 } from "./types.ts";
-import { fetchRemains } from "./api.plan.ts";
-import { fetchBalance } from "./api.balance.ts";
+import { fetchForProviderById } from "./api.ts";
 
 // ----- URL matching -----
 
@@ -96,16 +95,12 @@ export async function fetchForProvider(
 ): Promise<unknown> {
   const entry = getProviderEntry(provider);
   if (!entry) throw new Error(`unknown provider: ${String(provider)}`);
-  if (entry.TYPE === "TOKEN_PLAN") {
-    return fetchRemains(token, entry.ENDPOINT, signal, entry);
-  }
-  if (entry.TYPE === "BALANCE") {
-    return fetchBalance(token, entry.ENDPOINT, signal, entry);
-  }
-  // Exhaustiveness check: a new ProviderType value without a fetcher
-  // branch will fail to compile here.
-  const _exhaustive: never = entry.TYPE;
-  throw new Error(`unsupported provider TYPE: ${_exhaustive}`);
+  // id-threaded dispatcher in src/api.ts: routes by transport
+  // (http/exec/plugin based on ENDPOINT prefix + query_plugins
+  // presence) and narrows by entry.TYPE to the parser. Throws on
+  // transport failure (caller's stale-on-error cache logic in
+  // src/index.ts:fetchProviderData catches and surfaces cached data).
+  return fetchForProviderById(provider, entry, token, signal);
 }
 
 // The "fail" line's prefix label, picked from modeLabels based on

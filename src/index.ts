@@ -27,8 +27,7 @@
 // the right fetcher based on the matched provider's `TYPE`.
 
 import * as cache from "./cache.ts";
-import { type Remains } from "./api.plan.ts";
-import { type Balance } from "./api.balance.ts";
+import { type Remains, type Balance } from "./api.ts";
 import type { Provider } from "./types.ts";
 import { compose } from "./composition.ts";
 import { type FetchResult, buildProviderLine } from "./dispatch.ts";

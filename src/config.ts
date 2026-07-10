@@ -1749,11 +1749,29 @@ function validateProviderEntry(v: unknown): ProviderEntry | null {
     warn(`provider COMPARE_METHOD must be one of "EXACT", "INCLUDE", "STARTWITH" (got ${JSON.stringify(cm)}); dropping`);
     return null;
   }
-  // ENDPOINT — must be a string starting with http:// or https://.
+  // ENDPOINT — must be a non-empty string. The transport dispatcher
+  // in src/api.ts:detectTransport interprets it:
+  //   - starts with "http://" or "https://" → httpTransport
+  //   - non-empty, non-http → execTransport (execSync(ep))
+  //   - empty string (only valid when query_plugins/<id>/index.js
+  //     exists) → pluginTransport; detectTransport THROWS at fetch
+  //     time if the plugin file is absent, but config-load still
+  //     accepts "" so the user's "wire a plugin script later"
+  //     workflow doesn't trip the validator.
   const ep = e.ENDPOINT;
-  if (typeof ep !== "string" || !/^https?:\/\//.test(ep)) {
-    warn("provider ENDPOINT must be an http(s) URL; dropping");
+  if (typeof ep !== "string" || ep.length === 0) {
+    warn("provider ENDPOINT must be a non-empty string; dropping");
     return null;
+  }
+  // Surface-to-stderr hint when the ENDPOINT looks like a shell
+  // command (non-HTTP). The transport dispatcher is going to
+  // execSync() this verbatim — the user almost certainly intended
+  // an http URL if they didn't start with http(s), so the warn helps
+  // catch typos at config-load rather than at runtime.
+  if (typeof ep === "string" && !/^https?:\/\//.test(ep)) {
+    warn(
+      `provider ENDPOINT "${ep}" does not start with http(s) — will be executed as a shell command`,
+    );
   }
   // v0.6.0+ — optional per-provider HTTP method. STRICT: any value
   // outside the closed enum drops the whole entry, matching the

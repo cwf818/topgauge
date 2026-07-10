@@ -1024,7 +1024,12 @@ describe("loadConfig — providers (validation)", () => {
     assert.match(capturedStderr, /COMPARE_METHOD/);
   });
 
-  it("drops an entry with a non-http(s) ENDPOINT and warns", async () => {
+  it("warns on a non-http(s) ENDPOINT but keeps the entry (exec transport)", async () => {
+    // vX.X.X+ — non-http ENDPOINTs are now accepted as shell
+    // commands (execTransport in src/api.ts). The validator logs a
+    // warning so the user notices if they typo'd a URL but still
+    // loads the entry, because that's the whole point of the
+    // query_plugins/exec feature.
     writeFileSync(
       join(tmpDir, "config.json"),
       JSON.stringify({
@@ -1035,8 +1040,8 @@ describe("loadConfig — providers (validation)", () => {
       }),
     );
     const cfg = await loadConfig();
-    assert.equal(cfg.providers.minimax, undefined);
-    assert.match(capturedStderr, /ENDPOINT/);
+    assert.ok(cfg.providers.minimax);
+    assert.match(capturedStderr, /ENDPOINT.*shell command|ENDPOINT.*does not start with/);
   });
 
   it("drops a non-object provider entry and warns", async () => {

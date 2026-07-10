@@ -1,8 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { buildProviderLine, type FetchResult } from "./dispatch.ts";
-import type { Remains } from "./api.plan.ts";
-import type { Balance } from "./api.balance.ts";
+import type { Remains, Balance } from "./api.ts";
 import type { TokenSnapshot } from "./types.ts";
 import { __resetForTest } from "./config.ts";
 

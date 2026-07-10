@@ -84,6 +84,13 @@ PLUGIN_DIR=$(ls -d ${PLUGIN_BASE}/*/ 2>/dev/null \
 STATE_DIR="${CLAUDE_ROOT}/plugins/topgauge-cc/state"
 UPSTREAM_CMD_FILE="${STATE_DIR}/upstream-cmd.sh"
 UPSTREAM_CMD_ONLY="${STATE_DIR}/upstream-cmd.txt"
+# vX.X.X+ — bundled query_plugins drop-in dir. Users can drop
+# scripts at ~/.claude/plugins/topgauge-cc/query_plugins/<provider>/
+# index.js and wire a custom data source via providers.<provider>.
+# ENDPOINT="" in their config. Created on every (re-)install; users
+# who don't use it leave it empty. Symmetric with config.json
+# (~/.claude/plugins/topgauge-cc/config.json) — sibling of state/.
+QUERY_PLUGINS_DIR="${CLAUDE_ROOT}/plugins/topgauge-cc/query_plugins"
 WRAPPER="${PLUGIN_DIR%/}/scripts/wrapper.sh"
 
 if [ -z "$PLUGIN_DIR" ] || [ ! -f "$WRAPPER" ]; then
@@ -168,6 +175,13 @@ fi
 # forwards for backwards compatibility. Strip the --uninstall flag
 # (and any --project the user passed, which uninstall.sh understands).
 # This branch must run BEFORE the project-level settings.json auto-create.
+if [ "$DRY_RUN" != 1 ]; then
+  # Idempotent: the drop-in dir exists from the moment the user
+  # installs the plugin so a provider-author can add
+  # query_plugins/<id>/index.js without re-running install.sh.
+  # Skipped on --dry-run so the dry-run log doesn't claim success.
+  mkdir -p "$QUERY_PLUGINS_DIR"
+fi
 if [ "$UNINSTALL" = 1 ]; then
   UNINSTALL_SH="${SCRIPT_DIR}/uninstall.sh"
   if [ ! -f "$UNINSTALL_SH" ]; then
