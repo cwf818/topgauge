@@ -28,7 +28,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { configStore, resolveEffectiveIntervals } from "./config.ts";
+import { configStore, resolveEffectiveCurrencies, resolveEffectiveIntervals } from "./config.ts";
 import * as diagnostics from "./diagnostics.ts";
 import { resolveSlot } from "./path-expr.ts";
 import type {
@@ -41,6 +41,7 @@ import type {
 // v0.9.0+ — `Remains` carries three independent `Interval`s instead
 // of the v0.5.0–v0.8.x pair-of-Windows shape. The renderer-side
 // `Window` projection lives in `intervalToWindow` in src/render.ts.
+import type { CurrenciesConfig } from "./types.ts";
 import type { Interval } from "./render";
 export type { Interval };
 
@@ -51,8 +52,20 @@ export type Remains = {
 };
 
 export type BalanceEntry = {
+  // Currency code (uppercase by convention; the legacy CNY/USD lookup
+  // table used uppercase keys). The renderer pulls the display label
+  // from the resolved `currenciesConfig[key].label` — if neither the
+  // label nor a non-empty key is available, falls back to the raw
+  // currency code (preserves the v0.5.0–v0.8.x "unknown currency → bare
+  // code" behaviour).
   currency: string;
   totalBalance: number;
+  // vX.X.X+ — label resolved at parse time from the active
+  // currenciesConfig. Stored alongside the number so the renderer
+  // never has to consult `cfg().currency.prefixes` again. Empty when
+  // no label was configured AND no built-in prefix matched (the
+  // renderer falls back to the bare currency code in that case).
+  label: string;
 };
 
 export type Balance = {
@@ -521,7 +534,7 @@ export async function fetchForProviderById(
     return parseRemains(parsed, entry, resolveEffectiveIntervals(id, entry));
   }
   if (entry.TYPE === "BALANCE") {
-    return parseBalance(parsed);
+    return parseBalance(parsed, resolveEffectiveCurrencies(id, entry));
   }
   const _exhaustive: never = entry.TYPE;
   throw new Error(`unsupported provider TYPE: ${_exhaustive}`);
@@ -585,7 +598,7 @@ export async function fetchBalance(
   if (!body) return null;
   let parsed: unknown;
   try { parsed = JSON.parse(body); } catch { return null; }
-  return parseBalance(parsed);
+  return parseBalance(parsed, resolveEffectiveCurrencies(id, provider));
 }
 
 // ============================================================================
@@ -790,7 +803,14 @@ export function parseRemains(
 //  BALANCE parser (v0.x — ported verbatim from api.balance.ts)
 // ============================================================================
 
-function normalizeEntry(raw: unknown): BalanceEntry | null {
+// Legacy (pre-vX.X.X+) entry normalizer — kept for the no-
+// currenciesConfig fallback path so a plugin transport returning
+// the legacy `{ is_available, balance_infos }` shape still works
+// without forcing every plugin author to ship the new block. The
+// `label` is derived from the legacy `cfg().currency.prefixes[code]`
+// lookup (USD → $, CNY/RMB → ￥, anything else → empty so the
+// renderer falls back to the bare code).
+function normalizeEntryLegacy(raw: unknown): BalanceEntry | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
   const totalBalance = asNumber(r.total_balance);
@@ -798,10 +818,35 @@ function normalizeEntry(raw: unknown): BalanceEntry | null {
   const currency = typeof r.currency === "string" && r.currency !== ""
     ? r.currency
     : configStore.get().currency.default;
-  return { currency, totalBalance };
+  const upper = currency.toUpperCase();
+  const mapped = configStore.get().currency.prefixes[upper];
+  return { currency: upper, totalBalance, label: mapped ?? "" };
 }
 
-export function parseBalance(raw: unknown): Balance | null {
+// Resolve one entry from the currenciesConfig block (vX.X.X+).
+// Walks `currenciesConfig[key]`, runs the configured
+// `totalBalance` path expression against `root`, and returns a
+// BalanceEntry — or `null` if the slot is missing / unparseable /
+// resolves to a non-number. `key` is the literal currency code
+// declared in the config; `label` falls back to `key` when the
+// configured label is absent (preserves the v0.5.0–v0.8.x
+// "unknown currency → bare code" behaviour for the label too).
+function resolveCurrenciesEntry(
+  root: unknown,
+  key: string,
+  slot: { label?: string; totalBalance?: string } | undefined,
+): BalanceEntry | null {
+  if (!slot || !slot.totalBalance) return null;
+  const totalBalance = asNumber(resolveSlot(root, slot.totalBalance, "number"));
+  if (totalBalance == null) return null;
+  const label = slot.label ?? key;
+  return { currency: key, totalBalance, label };
+}
+
+export function parseBalance(
+  raw: unknown,
+  currenciesConfig: CurrenciesConfig = {},
+): Balance | null {
   if (!raw || typeof raw !== "object") return null;
   const root = raw as Record<string, unknown>;
 
@@ -813,10 +858,29 @@ export function parseBalance(raw: unknown): Balance | null {
     (typeof availRaw === "string" && availRaw.toLowerCase() === "false");
   const isAvailable = !explicitlyFalse;
 
-  const arr = root.balance_infos;
   let entries: BalanceEntry[] = [];
-  if (Array.isArray(arr)) {
-    entries = arr.map(normalizeEntry).filter((e): e is BalanceEntry => e !== null);
+
+  // vX.X.X+ — currenciesConfig-driven path. Each declared currency
+  // key in the resolved map is projected out of `root` via its
+  // configured `totalBalance` path. When the map is empty (no
+  // built-in defaults matched the active provider id AND the user
+  // didn't supply a top-level / per-provider block) we fall back to
+  // the v0.5.0–v0.8.x `balance_infos[]` array shape — preserves
+  // byte-identical renders for any plugin transport that returns
+  // the legacy `{ is_available, balance_infos }` body without
+  // shipping a currenciesConfig.
+  const keys = Object.keys(currenciesConfig);
+  if (keys.length > 0) {
+    entries = keys
+      .map((k) => resolveCurrenciesEntry(root, k, currenciesConfig[k]))
+      .filter((e): e is BalanceEntry => e !== null);
+  } else {
+    const arr = root.balance_infos;
+    if (Array.isArray(arr)) {
+      entries = arr
+        .map(normalizeEntryLegacy)
+        .filter((e): e is BalanceEntry => e !== null);
+    }
   }
 
   if (!isAvailable) {

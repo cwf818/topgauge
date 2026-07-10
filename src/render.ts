@@ -936,11 +936,16 @@ function formatBalanceValue(v: number): string {
   return v.toFixed(2).replace(/\.?0+$/, "");
 }
 
-// Per-currency display prefix. The DeepSeek API may return any string in
-// `currency`; we recognize the configured ones and fall back to the raw
-// currency code for anything else (e.g. EUR → "EUR10.50"). Unknown
-// currencies are still rendered (the user can see the code) rather than
-// blanked, so a new provider currency never silently disappears.
+// Per-currency display prefix. vX.X.X+ — the parser stores the
+// resolved `label` on each BalanceEntry (see api.ts:parseBalance),
+// so the renderer reads it directly from the entry rather than
+// consulting `cfg().currency.prefixes` at render time. The
+// `prefixForCurrency` helper is RETAINED for the legacy plugin
+// path (a plugin transport returning a pre-built Balance object
+// that lacks the `label` field) — the legacy
+// normalizeEntryLegacy normalizer still uses
+// `cfg().currency.prefixes[code]` for its label so plugin authors
+// upgrading don't have to ship the new field on every entry.
 function prefixForCurrency(currency: string): string {
   const upper = currency.toUpperCase();
   const mapped = cfg().currency.prefixes[upper];
@@ -950,13 +955,27 @@ function prefixForCurrency(currency: string): string {
   return upper || cfg().currency.fallback;
 }
 
-function formatBalanceChunk(currency: string, v: number): string {
-  return `${prefixForCurrency(currency)}${formatBalanceValue(v)}`;
+function formatBalanceChunk(currency: string, label: string, v: number): string {
+  // Three-tier resolution:
+  //   1. entry-supplied label (parseBalance populated it from
+  //      currenciesConfig) — single source of truth post-vX.X.X+
+  //   2. legacy `cfg().currency.prefixes[code]` lookup — kept for
+  //      plugin transports returning pre-built Balance objects
+  //      without a `label` field on each entry
+  //   3. bare uppercase code (e.g. "EUR10.50") — never blanks, so a
+  //      new provider currency never silently disappears
+  const prefix = label !== "" ? label : prefixForCurrency(currency);
+  return `${prefix}${formatBalanceValue(v)}`;
 }
 
 export type BalanceLike = {
   isAvailable: boolean;
-  entries: ReadonlyArray<{ currency: string; totalBalance: number }>;
+  // vX.X.X+ — entries MAY carry a per-entry `label` (populated by
+  // parseBalance from currenciesConfig). Pre-existing plugin shapes
+  // that omit `label` are tolerated: the renderer falls back to the
+  // legacy prefixes lookup. The field is optional in the type so
+  // legacy fixtures don't need a rewrite.
+  entries: ReadonlyArray<{ currency: string; totalBalance: number; label?: string }>;
   minValue: number | null;
 };
 
@@ -972,7 +991,7 @@ function formatBalanceEntriesColored(b: BalanceLike, override?: string): string 
   if (!b.isAvailable || b.entries.length === 0 || b.minValue == null) {
     return "";
   }
-  const chunks = b.entries.map((e) => formatBalanceChunk(e.currency, e.totalBalance));
+  const chunks = b.entries.map((e) => formatBalanceChunk(e.currency, e.label ?? "", e.totalBalance));
   // Color follows the LOWEST entry — most urgent currency drives the hue.
   const color = override ?? colorForBalance(b.minValue);
   return `${color}${chunks.join(" · ")}${RESET}`;

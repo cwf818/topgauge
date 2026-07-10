@@ -14,7 +14,16 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { CompareMethod, IntervalConfig, IntervalKey, IntervalSlotConfig, ProviderEntry, ProviderType } from "./types.ts";
+import type {
+  CompareMethod,
+  CurrenciesConfig,
+  CurrencySlotConfig,
+  IntervalConfig,
+  IntervalKey,
+  IntervalSlotConfig,
+  ProviderEntry,
+  ProviderType,
+} from "./types.ts";
 import * as diagnostics from "./diagnostics.ts";
 import { detectTransport } from "./api.ts";
 
@@ -648,6 +657,15 @@ const DEFAULT_CONFIG: {
   // (layer 1, e.g. minimax model_remains[0].* paths) are layered
   // in at fetch time, gated on the active provider id.
   intervals: IntervalConfig;
+  // vX.X.X+ — top-level currencies config. Maps currency codes
+  // (CNY / USD / …) onto `{ label, totalBalance }` slot configs.
+  // Layer 2 of the 4-layer merge in resolveEffectiveCurrencies
+  // (see src/config.ts). Per-provider `currencies` blocks (layer
+  // 3) shallow-replace on top of these. The top-level defaults
+  // start empty — built-in per-provider defaults (layer 1, e.g.
+  // deepseek's CNY → balance_infos.0.total_balance) are layered
+  // in at fetch time, gated on the active provider id.
+  currencies: CurrenciesConfig;
   // v0.8.21+ — `m_quote|address|…` fetcher passes `--insecure` /
   // `-k` to curl so self-signed / expired / untrusted-CA HTTPS
   // endpoints work without patching the system CA bundle. Always
@@ -732,6 +750,15 @@ const DEFAULT_CONFIG: {
     midInterval: {},
     longInterval: {},
   },
+  // vX.X.X+ — top-level currencies config. Maps currency codes
+  // (CNY / USD / …) onto `{ label, totalBalance }` slot configs.
+  // Layer 2 of the 4-layer merge in resolveEffectiveCurrencies
+  // (below). Per-provider `currencies` blocks (layer 3) shallow-
+  // replace on top of these. Top-level defaults start empty —
+  // built-in per-provider defaults (layer 1, e.g. deepseek's
+  // CNY → balance_infos.0.total_balance) are layered in at fetch
+  // time, gated on the active provider id.
+  currencies: {} as CurrenciesConfig,
   quoteInsecureTls: false,
 };
 
@@ -1084,6 +1111,26 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
         if (!(k in ivm)) continue;
         out.intervals[k] = validateIntervalSlot(k, ivm[k], out.intervals[k] ?? {});
       }
+    }
+  }
+
+  // vX.X.X+ — `currencies` top-level block. Maps currency codes
+  // (CNY / USD / …) onto `{ label, totalBalance }` slots. Layer 2
+  // of the 4-layer merge in resolveEffectiveCurrencies. Per-key
+  // validation reuses `validateCurrencySlot` (defined below) — same
+  // shape rules as the per-provider `currencies` validator.
+  // Built-in per-provider defaults (deepseek's CNY → balance_infos
+  // .0.total_balance) are applied at FETCH TIME in
+  // resolveEffectiveCurrencies, NOT here — top-level defaults start
+  // empty so the global layer is just a placeholder today. See the
+  // 4-layer merge block above MINIMAX_DEFAULT_INTERVALS for the
+  // parallel intervalsConfig contract.
+  if ("currencies" in raw) {
+    const curRaw = raw.currencies;
+    if (!curRaw || typeof curRaw !== "object" || Array.isArray(curRaw)) {
+      warn("currencies must be an object; using default");
+    } else {
+      out.currencies = validateCurrenciesBlock("top-level currencies", curRaw);
     }
   }
 
@@ -1807,36 +1854,222 @@ const BUILTIN_PROVIDER_INTERVALS: Record<string, IntervalConfig> = {
 // `entry` is the active provider's ProviderEntry (from
 // configStore.get().providers[id]); pass null for the no-provider
 // case to still get layers 0 + 2.
+//
+// vX.X.X+ — switch to SHALLOW ASSIGNMENT per layer. Each layer's
+// `shortInterval` / `midInterval` / `longInterval` slot, when
+// present, REPLACES the previous layer's value verbatim rather
+// than deep-merging on top of it. Rationale: per-layer configs are
+// authored as whole units (e.g. `intervals.shortInterval: { … }`),
+// not as additive patches; a partial slot would otherwise inherit
+// stale fields from an earlier layer (e.g. a user who sets only
+// `label` would silently keep the built-in `remainingPercent`
+// path). The shallow-assign contract mirrors the vX.X.X+ change to
+// `resolveEffectiveCurrencies` and the `multi-layer override wins`
+// principle from [[new-feature-convention]] — no default silently
+// leaks through.
 export function resolveEffectiveIntervals(
   activeProviderId: string,
   entry: ProviderEntry | null,
 ): IntervalConfig {
+  // Layer 0 — project-builtin GLOBAL defaults (unconditional).
   const out: IntervalConfig = {
     shortInterval: { ...GLOBAL_DEFAULT_INTERVALS.shortInterval },
     midInterval: { ...GLOBAL_DEFAULT_INTERVALS.midInterval },
     longInterval: { ...GLOBAL_DEFAULT_INTERVALS.longInterval },
   };
+  console.log("DBG out.shortInterval:", JSON.stringify(out.shortInterval));
   // Layer 1 — built-in per-provider defaults. Gate on active id.
+  // Shallow: each declared slot fully replaces the layer-0 value.
   const builtin = BUILTIN_PROVIDER_INTERVALS[activeProviderId];
   if (builtin) {
-    out.shortInterval = { ...out.shortInterval, ...builtin.shortInterval };
-    out.midInterval = { ...out.midInterval, ...builtin.midInterval };
-    out.longInterval = { ...out.longInterval, ...builtin.longInterval };
+    if (nonEmptySlot(builtin.shortInterval))
+      out.shortInterval = { ...builtin.shortInterval };
+    if (nonEmptySlot(builtin.midInterval))
+      out.midInterval = { ...builtin.midInterval };
+    if (nonEmptySlot(builtin.longInterval))
+      out.longInterval = { ...builtin.longInterval };
   }
-  // Layer 2 — user top-level intervals (unconditional).
+  // Layer 2 — user top-level intervals (unconditional). Shallow:
+  // each declared slot fully replaces the layer-1 (or layer-0)
+  // value. Absent slots keep the previous layer's value.
   const top = configStore.get().intervals;
   if (top) {
-    out.shortInterval = { ...out.shortInterval, ...(top.shortInterval ?? {}) };
-    out.midInterval = { ...out.midInterval, ...(top.midInterval ?? {}) };
-    out.longInterval = { ...out.longInterval, ...(top.longInterval ?? {}) };
+    if (nonEmptySlot(top.shortInterval))
+      out.shortInterval = { ...top.shortInterval };
+    if (nonEmptySlot(top.midInterval))
+      out.midInterval = { ...top.midInterval };
+    if (nonEmptySlot(top.longInterval))
+      out.longInterval = { ...top.longInterval };
   }
   // Layer 3 — user per-provider intervals. By construction entry IS
   // the active provider's entry, but we re-check the id so the gate
-  // logic is obvious to a reader skimming this function in isolation.
+  // logic is obvious to a reader skimming this function in
+  // isolation. Shallow: same rule as layers 1 + 2.
   if (entry && entry.intervals) {
-    out.shortInterval = { ...out.shortInterval, ...(entry.intervals.shortInterval ?? {}) };
-    out.midInterval = { ...out.midInterval, ...(entry.intervals.midInterval ?? {}) };
-    out.longInterval = { ...out.longInterval, ...(entry.intervals.longInterval ?? {}) };
+    if (nonEmptySlot(entry.intervals.shortInterval))
+      out.shortInterval = { ...entry.intervals.shortInterval };
+    if (nonEmptySlot(entry.intervals.midInterval))
+      out.midInterval = { ...entry.intervals.midInterval };
+    if (nonEmptySlot(entry.intervals.longInterval))
+      out.longInterval = { ...entry.intervals.longInterval };
+  }
+  return out;
+}
+
+// Helper: a slot "overrides" when it has at least one defined field.
+// `{}` is treated as no-op (NOT an override) so the default
+// DEFAULT_CONFIG.intervals empty-slot literal doesn't silently wipe
+// built-in defaults. `{ remainingPercent: "x" }` is an override even
+// though most fields are absent — the shallow-assign contract means
+// the missing fields now read `undefined` for that slot, which is
+// exactly the user's intent when they author a partial slot.
+function nonEmptySlot(slot: IntervalSlotConfig | undefined): boolean {
+  if (!slot) return false;
+  for (const _ in slot) return true;
+  return false;
+}
+
+// ----- 4-layer currencies merge (vX.X.X+) -----
+//
+// Mirror of the intervalsConfig 4-layer merge, keyed on currency
+// code (CNY / USD / …) instead of interval term. Each layer is a
+// flat dict `{ CODE: { label?, totalBalance? } }`; the merge is
+// done per-KEY with SHALLOW ASSIGNMENT — a layer that declares
+// `{ CNY: { label: "$" } }` fully replaces the previous layer's
+// CNY slot (the path expression `totalBalance` from layer-1 is
+// NOT preserved alongside the new label).
+//
+//   layer 0  project-builtin GLOBAL defaults (empty by design —
+//            per-provider defaults are richer than any global)
+//   layer 1  project-builtin PER-PROVIDER defaults
+//            (BUILTIN_PROVIDER_CURRENCIES[id])
+//   layer 2  user config.json top-level currencies
+//            (configStore.get().currencies)
+//   layer 3  user providers.<id>.currencies (entry.currencies)
+//
+// Layer 1 and layer 3 fire ONLY when the active provider id matches
+// the layer's key — same gate pattern as resolveEffectiveIntervals.
+// Layer 0 and layer 2 are unconditional globals.
+
+// Built-in per-provider defaults. Currently only deepseek ships a
+// non-empty CurrenciesConfig: CNY → balance_infos.0.total_balance,
+// which mirrors the v0.5.0–v0.8.x DeepSeek default response shape
+// (a single CNY entry under `balance_infos[0]`). The label is the
+// same ￥ glyph the legacy `cfg().currency.prefixes.CNY` mapping
+// produced, so existing renders stay byte-identical after upgrade.
+// minimax uses parseRemains (TOKEN_PLAN), so its slot is empty.
+const BUILTIN_PROVIDER_CURRENCIES: Record<string, CurrenciesConfig> = {
+  deepseek: {
+    CNY: {
+      label: "￥",
+      totalBalance: "balance_infos.0.total_balance",
+    },
+  },
+  minimax: {},
+};
+
+// Resolve the effective CurrenciesConfig for the active provider by
+// merging all four layers in order. See the block comment above for
+// the shallow-assign / per-key merge contract. Pure read against
+// configStore — no mutation. `entry` is the active provider's
+// ProviderEntry (from configStore.get().providers[id]); pass null
+// for the no-provider case to still get layers 0 + 2.
+//
+// The output keys are the union of all declared keys across layers,
+// in declaration order (layer 0 → 1 → 2 → 3). A key absent from
+// every layer is dropped. A key whose slot ends up empty after
+// merge is preserved with `{}` so the renderer can still surface
+// the code (e.g. for "CNY: --" rendering) without losing key
+// ordering.
+export function resolveEffectiveCurrencies(
+  activeProviderId: string,
+  entry: ProviderEntry | null,
+): CurrenciesConfig {
+  const out: CurrenciesConfig = {};
+  // Layer 1 — built-in per-provider defaults. Gate on active id.
+  const builtin = BUILTIN_PROVIDER_CURRENCIES[activeProviderId];
+  if (builtin) {
+    for (const [k, v] of Object.entries(builtin)) {
+      out[k] = { ...v };
+    }
+  }
+  // Layer 2 — user top-level currencies (unconditional). Per-key
+  // shallow assign.
+  const top = configStore.get().currencies;
+  if (top) {
+    for (const [k, v] of Object.entries(top)) {
+      out[k] = { ...v };
+    }
+  }
+  // Layer 3 — user per-provider currencies. Per-key shallow
+  // assign. By construction entry IS the active provider's entry,
+  // but we re-check the id so the gate logic is obvious to a
+  // reader skimming this function in isolation.
+  if (entry && entry.currencies) {
+    for (const [k, v] of Object.entries(entry.currencies)) {
+      out[k] = { ...v };
+    }
+  }
+  return out;
+}
+
+// Validate one CurrencySlotConfig (vX.X.X+). Mirrors
+// `validateIntervalSlot`'s shape rules: `label` must be a string,
+// `totalBalance` must be a string (path expression — runtime
+// resolution happens in parseBalance). Bad fields drop with a
+// stderr warn; the rest of the slot survives. The caller decides
+// whether to proceed with a partially-validated slot.
+//
+// Unlike validateIntervalSlot, there's no `base` argument —
+// CurrencySlotConfig has only 2 fields, so per-key shallow assign
+// at the resolver level is the same as "fresh slot per layer".
+function validateCurrencySlot(
+  key: string,
+  raw: unknown,
+): CurrencySlotConfig | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    warn(`currencies.${key} must be an object; dropping the entry`);
+    return null;
+  }
+  const sm = raw as Record<string, unknown>;
+  const next: CurrencySlotConfig = {};
+  if ("label" in sm) {
+    if (typeof sm.label === "string") {
+      next.label = sm.label;
+    } else {
+      warn(`currencies.${key}.label must be a string; dropping the field`);
+    }
+  }
+  if ("totalBalance" in sm) {
+    if (typeof sm.totalBalance === "string") {
+      next.totalBalance = sm.totalBalance;
+    } else {
+      warn(`currencies.${key}.totalBalance must be a string (path expression); dropping the field`);
+    }
+  }
+  return next;
+}
+
+// Validate one CurrenciesConfig block (top-level or per-provider).
+// Returns the validated map; malformed entries drop with a stderr
+// warn. Used by both the top-level `currencies` validator
+// (applyOverrides below) and the per-provider `currencies`
+// validator (validateProviderEntry below).
+function validateCurrenciesBlock(
+  blockKind: "top-level currencies" | "provider currencies",
+  raw: unknown,
+): CurrenciesConfig {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    warn(`${blockKind} must be an object; dropping the block`);
+    return {};
+  }
+  const out: CurrenciesConfig = {};
+  const rm = raw as Record<string, unknown>;
+  for (const [k, v] of Object.entries(rm)) {
+    const validated = validateCurrencySlot(k, v);
+    if (validated !== null) {
+      out[k] = validated;
+    }
   }
   return out;
 }
@@ -2042,6 +2275,27 @@ function validateProviderEntry(name: string, v: unknown): ProviderEntry | null {
       }
     }
   }
+  // vX.X.X+ — forward the user-supplied `currencies` block. Layer 3
+  // of the 4-layer merge in resolveEffectiveCurrencies. Built-in
+  // per-provider defaults (deepseek's CNY → balance_infos.0.total
+  // _balance) are NOT layered in here — they fire at FETCH TIME in
+  // resolveEffectiveCurrencies, gated on the active provider id.
+  // Same gate pattern as the per-provider `intervals` block above:
+  // a kimi active provider never inherits deepseek-style defaults
+  // even if the user's providers.deepseek entry still exists with
+  // the URL pointing at api.deepseek.com.
+  //
+  // Per-key validation reuses `validateCurrenciesBlock` (defined
+  // above) — same shape rules as the top-level `currencies`
+  // validator. Lenient: bad fields drop with a stderr warn; the
+  // entry itself stays loaded.
+  let validatedCurrencies: CurrenciesConfig = {};
+  if ("currencies" in e && e.currencies !== undefined) {
+    validatedCurrencies = validateCurrenciesBlock(
+      "provider currencies",
+      e.currencies,
+    );
+  }
   return {
     TYPE: t as ProviderType,
     BASE_URL_COMPARED_TO: base,
@@ -2049,6 +2303,9 @@ function validateProviderEntry(name: string, v: unknown): ProviderEntry | null {
     ENDPOINT: ep,
     ...(validatedConfig ? { config: validatedConfig } : {}),
     ...(validatedIntervals ? { intervals: validatedIntervals } : {}),
+    ...(validatedCurrencies && Object.keys(validatedCurrencies).length > 0
+      ? { currencies: validatedCurrencies }
+      : {}),
     ...(validatedBearer ? { BEARER_KEY: validatedBearer } : {}),
     ...(validatedMethod ? { METHOD: validatedMethod } : {}),
     ...(validatedBody ? { BODY: validatedBody } : {}),

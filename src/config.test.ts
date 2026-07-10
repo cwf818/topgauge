@@ -11,6 +11,7 @@ import {
   loadConfig,
   DEFAULT_STATUSLINE_TEMPLATE,
   LEGACY_PRESET_NAMES,
+  resolveEffectiveCurrencies,
   resolveEffectiveIntervals,
 } from "./config.ts";
 import { queryPluginsDir } from "./api.ts";
@@ -1507,10 +1508,17 @@ describe("validateProviderEntry — ENDPOINT=\"\" + query_plugins presence", () 
 //   layer 2  configStore.get().intervals           (always)
 //   layer 3  entry.intervals                        (id-gated)
 //
+// vX.X.X+ — SHALLOW ASSIGNMENT per layer. A declared slot at layer N
+// REPLACES the previous layer's slot wholesale (not field-by-field
+// deep merge). Rationale: per-layer configs are authored as whole
+// units — a partial slot should not inherit stale fields from an
+// earlier layer. Mirrors the parallel resolveEffectiveCurrencies
+// contract (see below).
+//
 // Seed the configStore via __resetForTest — applyProviderOverrides
 // rejects `providers` (it would recurse), so providers are seeded
 // only via the test hook.
-describe("resolveEffectiveIntervals — 4-layer merge", () => {
+describe("resolveEffectiveIntervals — 4-layer merge (shallow assign)", () => {
   beforeEach(() => {
     // Reset to a clean DEFAULT_CONFIG so each test seeds its own
     // providers + intervals cleanly.
@@ -1542,7 +1550,7 @@ describe("resolveEffectiveIntervals — 4-layer merge", () => {
     assert.equal(r.longInterval?.remainingPercent, "longInterval.remainingPercent");
   });
 
-  it("active=minimax + user top-level intervals → layer 2 overrides layer 1 on conflict", () => {
+  it("active=minimax + user top-level intervals → layer 2 REPLACES layer 1 on conflict (shallow)", () => {
     __resetForTest({
       intervals: {
         shortInterval: { remainingPercent: "user.top.path" },
@@ -1551,12 +1559,14 @@ describe("resolveEffectiveIntervals — 4-layer merge", () => {
     const entry = configStore.get().providers.minimax;
     assert.ok(entry);
     const r = resolveEffectiveIntervals("minimax", entry);
-    // layer 2 wins on conflict for the shared field.
+    // layer 2 wins for the field the user declared.
     assert.equal(r.shortInterval?.remainingPercent, "user.top.path");
-    // layer 1 still contributes the non-conflicting fields.
-    assert.equal(r.shortInterval?.startAt, "model_remains.0.start_time");
-    assert.equal(r.shortInterval?.endAt, "model_remains.0.end_time");
-    // layer 1 still populates mid (no layer-2 conflict).
+    // SHALLOW: non-declared fields (startAt, endAt) are NOT inherited
+    // from layer 1 anymore — they read undefined because the user's
+    // slot is a partial object. This is the contract change vs v0.9.0.
+    assert.equal(r.shortInterval?.startAt, undefined);
+    assert.equal(r.shortInterval?.endAt, undefined);
+    // midInterval is unaffected by layer 2 (no user override) — layer 1 still wins.
     assert.equal(
       r.midInterval?.remainingPercent,
       "model_remains.0.current_weekly_remaining_percent",
@@ -1593,7 +1603,7 @@ describe("resolveEffectiveIntervals — 4-layer merge", () => {
     );
   });
 
-  it("active=kimi + user top-level intervals → layer 2 wins; layer 1 minimax still NOT applied", () => {
+  it("active=kimi + user top-level intervals → layer 2 REPLACES layer 0 (shallow); layer 1 minimax still NOT applied", () => {
     __resetForTest({
       providers: {
         kimi: {
@@ -1610,11 +1620,12 @@ describe("resolveEffectiveIntervals — 4-layer merge", () => {
     const entry = configStore.get().providers.kimi;
     assert.ok(entry);
     const r = resolveEffectiveIntervals("kimi", entry);
-    // layer 2 wins on conflict for shortInterval.remainingPercent.
+    // layer 2 wins for the field the user declared.
     assert.equal(r.shortInterval?.remainingPercent, "kimi.short");
-    // layer 0 still contributes the non-conflicting time fields.
-    assert.equal(r.shortInterval?.startAt, "shortInterval.startAt");
-    assert.equal(r.shortInterval?.windowId, "5h");
+    // SHALLOW: non-declared layer-0 fields (startAt, windowId) read
+    // undefined now — the user's slot is a fresh object.
+    assert.equal(r.shortInterval?.startAt, undefined);
+    assert.equal(r.shortInterval?.windowId, undefined);
     // midInterval is unaffected by layer 2 (no user override).
     assert.equal(r.midInterval?.remainingPercent, "midInterval.remainingPercent");
     // layer 1 (minimax) still must NOT bleed in.
@@ -1671,7 +1682,7 @@ describe("resolveEffectiveIntervals — 4-layer merge", () => {
     assert.equal(r.longInterval?.remainingPercent, "longInterval.remainingPercent");
   });
 
-  it("active=minimax + user providers.minimax.intervals → layer 3 wins on conflict", () => {
+  it("active=minimax + user providers.minimax.intervals → layer 3 REPLACES layer 1 (shallow)", () => {
     __resetForTest({
       providers: {
         minimax: {
@@ -1690,8 +1701,8 @@ describe("resolveEffectiveIntervals — 4-layer merge", () => {
     const r = resolveEffectiveIntervals("minimax", entry);
     // layer 3 (user providers.minimax.intervals) wins over layer 1.
     assert.equal(r.shortInterval?.remainingPercent, "user.minimax.short");
-    // Non-conflicting layer 1 fields survive.
-    assert.equal(r.shortInterval?.startAt, "model_remains.0.start_time");
+    // SHALLOW: non-declared layer-1 fields (startAt) read undefined.
+    assert.equal(r.shortInterval?.startAt, undefined);
   });
 
   it("entry=null falls back to layers 0 + 2 only (no layer 1/3)", () => {
@@ -1737,5 +1748,183 @@ describe("resolveEffectiveIntervals — 4-layer merge", () => {
     assert.equal(r.shortInterval?.windowId, "5h");
     assert.equal(r.midInterval?.windowId, "7d");
     assert.equal(r.longInterval?.windowId, "30d");
+  });
+});
+
+// ----- v0.X.X+ resolveEffectiveCurrencies 4-layer merge -----
+//
+// Mirrors resolveEffectiveIntervals but keyed on currency code
+// (CNY / USD / …) and using SHALLOW ASSIGNMENT per key from day 1
+// (there's no v0.9.0-era deep-merge legacy to migrate). Each
+// layer's `{ CODE: { label?, totalBalance? } }` map contributes
+// per-key entries; a layer that declares `{ CNY: { label: "$" } }`
+// fully replaces the previous layer's CNY slot (the path expression
+// `totalBalance` from layer-1 is NOT preserved alongside the new
+// label).
+describe("resolveEffectiveCurrencies — 4-layer merge", () => {
+  beforeEach(() => {
+    __resetForTest();
+  });
+
+  it("active=deepseek + no user currencies → layer 1 deepseek CNY default", () => {
+    const entry = configStore.get().providers.deepseek;
+    assert.ok(entry);
+    const r = resolveEffectiveCurrencies("deepseek", entry);
+    // Layer 1 fires for deepseek: CNY → balance_infos.0.total_balance.
+    assert.deepEqual(r, {
+      CNY: { label: "￥", totalBalance: "balance_infos.0.total_balance" },
+    });
+  });
+
+  it("active=minimax + no user currencies → layer 1 empty (minimax uses TOKEN_PLAN)", () => {
+    const entry = configStore.get().providers.minimax;
+    assert.ok(entry);
+    const r = resolveEffectiveCurrencies("minimax", entry);
+    // Layer 1 fires for minimax but is empty.
+    assert.deepEqual(r, {});
+  });
+
+  it("active=kimi + no user currencies → layer 0 empty + layer 1 empty = {}", () => {
+    __resetForTest({
+      providers: {
+        kimi: {
+          TYPE: "BALANCE",
+          BASE_URL_COMPARED_TO: "https://kimi.example",
+          COMPARE_METHOD: "EXACT",
+          ENDPOINT: "https://kimi.example/balance",
+        },
+      },
+    });
+    const entry = configStore.get().providers.kimi;
+    assert.ok(entry);
+    const r = resolveEffectiveCurrencies("kimi", entry);
+    // No layer 1 entry for kimi (BUILTIN_PROVIDER_CURRENCIES has no
+    // "kimi" key), so the output is empty. parseBalance falls back
+    // to the legacy balance_infos[] path on the live request.
+    assert.deepEqual(r, {});
+  });
+
+  it("active=deepseek + user top-level currencies → layer 2 REPLACES layer 1 on same key (shallow)", () => {
+    __resetForTest({
+      currencies: {
+        CNY: { label: "$" }, // partial: only overrides label, NOT totalBalance
+        USD: { label: "$", totalBalance: "usd.balance" },
+      },
+    });
+    const entry = configStore.get().providers.deepseek;
+    assert.ok(entry);
+    const r = resolveEffectiveCurrencies("deepseek", entry);
+    // CNY: layer 2 fully replaces layer 1 — totalBalance from layer
+    // 1 is NOT preserved alongside the user's new label (shallow).
+    assert.deepEqual(r.CNY, { label: "$" });
+    // USD: user-supplied fresh entry, totalBalance wins.
+    assert.deepEqual(r.USD, { label: "$", totalBalance: "usd.balance" });
+  });
+
+  it("active=kimi + user top-level currencies → layer 2 wins (layer 1 absent)", () => {
+    __resetForTest({
+      providers: {
+        kimi: {
+          TYPE: "BALANCE",
+          BASE_URL_COMPARED_TO: "https://kimi.example",
+          COMPARE_METHOD: "EXACT",
+          ENDPOINT: "https://kimi.example/balance",
+        },
+      },
+      currencies: {
+        KIMI: { label: "K", totalBalance: "kimi.balance" },
+      },
+    });
+    const entry = configStore.get().providers.kimi;
+    assert.ok(entry);
+    const r = resolveEffectiveCurrencies("kimi", entry);
+    assert.deepEqual(r.KIMI, { label: "K", totalBalance: "kimi.balance" });
+  });
+
+  it("active=kimi + providers.deepseek.currencies set → layer 3 NOT applied (id-gated)", () => {
+    __resetForTest({
+      providers: {
+        deepseek: {
+          TYPE: "BALANCE",
+          BASE_URL_COMPARED_TO: "https://api.deepseek.com",
+          COMPARE_METHOD: "EXACT",
+          ENDPOINT: "https://api.deepseek.com/user/balance",
+          currencies: {
+            CNY: { label: "DSCNY", totalBalance: "deepseek.override" },
+          },
+        },
+        kimi: {
+          TYPE: "BALANCE",
+          BASE_URL_COMPARED_TO: "https://kimi.example",
+          COMPARE_METHOD: "EXACT",
+          ENDPOINT: "https://kimi.example/balance",
+        },
+      },
+    });
+    const kimiEntry = configStore.get().providers.kimi;
+    assert.ok(kimiEntry);
+    const r = resolveEffectiveCurrencies("kimi", kimiEntry);
+    // Layer 3 (providers.deepseek.currencies) must NOT apply to kimi.
+    assert.deepEqual(r, {});
+  });
+
+  it("active=deepseek + providers.deepseek.currencies → layer 3 REPLACES layer 1 (shallow)", () => {
+    __resetForTest({
+      providers: {
+        deepseek: {
+          TYPE: "BALANCE",
+          BASE_URL_COMPARED_TO: "https://api.deepseek.com",
+          COMPARE_METHOD: "EXACT",
+          ENDPOINT: "https://api.deepseek.com/user/balance",
+          currencies: {
+            CNY: { label: "USD!", totalBalance: "deepseek.user.path" },
+          },
+        },
+      },
+    });
+    const entry = configStore.get().providers.deepseek;
+    assert.ok(entry);
+    const r = resolveEffectiveCurrencies("deepseek", entry);
+    assert.deepEqual(r.CNY, { label: "USD!", totalBalance: "deepseek.user.path" });
+  });
+
+  it("entry=null falls back to layers 0 + 2 only (no layer 1/3)", () => {
+    __resetForTest({
+      currencies: {
+        USD: { label: "$", totalBalance: "user.usd" },
+      },
+    });
+    const r = resolveEffectiveCurrencies("anything", null);
+    assert.deepEqual(r.USD, { label: "$", totalBalance: "user.usd" });
+  });
+
+  it("layer 1 + layer 2 + layer 3 each add distinct keys without overwriting each other", () => {
+    __resetForTest({
+      currencies: {
+        // Layer 2 — adds EUR without touching CNY.
+        EUR: { label: "€", totalBalance: "eur.balance" },
+        // Layer 2 — overrides layer 1's CNY label.
+        CNY: { label: "$" },
+      },
+      providers: {
+        deepseek: {
+          TYPE: "BALANCE",
+          BASE_URL_COMPARED_TO: "https://api.deepseek.com",
+          COMPARE_METHOD: "EXACT",
+          ENDPOINT: "https://api.deepseek.com/user/balance",
+          currencies: {
+            // Layer 3 — adds JPY without touching CNY or EUR.
+            JPY: { label: "¥", totalBalance: "jpy.balance" },
+          },
+        },
+      },
+    });
+    const entry = configStore.get().providers.deepseek;
+    assert.ok(entry);
+    const r = resolveEffectiveCurrencies("deepseek", entry);
+    // All three keys present, no overwriting across distinct keys.
+    assert.deepEqual(r.CNY, { label: "$" }); // layer 2 wins (replaces layer 1's totalBalance)
+    assert.deepEqual(r.EUR, { label: "€", totalBalance: "eur.balance" });
+    assert.deepEqual(r.JPY, { label: "¥", totalBalance: "jpy.balance" });
   });
 });
