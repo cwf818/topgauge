@@ -742,69 +742,6 @@ function buildInterval(
   };
 }
 
-function pickMostActiveIndex(
-  arr: unknown[],
-  intervalsConfig: IntervalConfig,
-): number {
-  if (arr.length === 0) return -1;
-  const short = intervalsConfig?.shortInterval;
-  if (!short) return -1;
-  const remainingPath = short.remainingPercent;
-  const usedPath = short.usedPercent;
-  if (!remainingPath && !usedPath) return -1;
-  function reindexTail(path: string, idx: number): string {
-    const tail = path.replace(
-      /^(model_remains|modelRemains)\.?\[?0\]?\.?/,
-      "",
-    );
-    return tail ? `model_remains.${idx}.${tail}` : `model_remains.${idx}`;
-  }
-  const root = { model_remains: arr };
-  let bestIdx = 0;
-  let bestScore = -Infinity;
-  for (let i = 0; i < arr.length; i++) {
-    let usedEquiv: number | null = null;
-    if (remainingPath) {
-      const v = asNumber(resolveSlot(root, reindexTail(remainingPath, i), "number"));
-      if (v != null) usedEquiv = 100 - v;
-    }
-    if (usedEquiv == null && usedPath) {
-      const v = asNumber(resolveSlot(root, reindexTail(usedPath, i), "number"));
-      if (v != null) usedEquiv = v;
-    }
-    const score = usedEquiv ?? 0;
-    if (score > bestScore) {
-      bestScore = score;
-      bestIdx = i;
-    }
-  }
-  return bestIdx;
-}
-
-function reindexPaths(
-  config: IntervalConfig,
-  idx: number,
-): IntervalConfig {
-  const out: IntervalConfig = {};
-  for (const k of ["shortInterval", "midInterval", "longInterval"] as IntervalKey[]) {
-    const slot = config?.[k];
-    if (!slot) continue;
-    const next: IntervalSlotConfig = {};
-    for (const [field, value] of Object.entries(slot)) {
-      if (typeof value === "string") {
-        next[field as keyof IntervalSlotConfig] = value.replace(
-          /^(model_remains|modelRemains)\.?\[?0\]?\.?/,
-          `$1.${idx}.`,
-        ) as never;
-      } else {
-        (next as Record<string, unknown>)[field] = value;
-      }
-    }
-    out[k] = next;
-  }
-  return out;
-}
-
 export function parseRemains(
   raw: unknown,
   _provider: ProviderEntry | null = null,
@@ -833,30 +770,14 @@ export function parseRemains(
   // parser entirely and trusts looksLikeRemains instead; for exec
   // plugins, configure intervalsConfig.
 
-  const arr = root.model_remains ?? root.modelRemains;
-
-  let scopeRoot: unknown = root;
-  if (Array.isArray(arr) && arr.length > 0) {
-    const chosenIdx = pickMostActiveIndex(arr, intervalsConfig);
-    if (chosenIdx >= 0) {
-      const reindexed = reindexPaths(intervalsConfig, chosenIdx);
-      const short = buildInterval(scopeRoot, reindexed.shortInterval ?? {}, "shortInterval");
-      const mid = buildInterval(scopeRoot, reindexed.midInterval ?? {}, "midInterval");
-      const long = buildInterval(scopeRoot, reindexed.longInterval ?? {}, "longInterval");
-      if (short || mid || long) {
-        return { shortInterval: short, midInterval: mid, longInterval: long };
-      }
-    }
-  }
-
   const hasAnySlot =
     intervalsConfig?.shortInterval ||
     intervalsConfig?.midInterval ||
     intervalsConfig?.longInterval;
   if (hasAnySlot) {
-    const short = buildInterval(scopeRoot, intervalsConfig?.shortInterval ?? {}, "shortInterval");
-    const mid = buildInterval(scopeRoot, intervalsConfig?.midInterval ?? {}, "midInterval");
-    const long = buildInterval(scopeRoot, intervalsConfig?.longInterval ?? {}, "longInterval");
+    const short = buildInterval(root, intervalsConfig?.shortInterval ?? {}, "shortInterval");
+    const mid = buildInterval(root, intervalsConfig?.midInterval ?? {}, "midInterval");
+    const long = buildInterval(root, intervalsConfig?.longInterval ?? {}, "longInterval");
     if (short || mid || long) {
       return { shortInterval: short, midInterval: mid, longInterval: long };
     }

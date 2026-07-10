@@ -132,7 +132,13 @@ describe("parseRemains — model_remains array shape (real)", () => {
     assert.equal(r.shortInterval.usedPercent, 50);
   });
 
-  it("picks the most-active entry (lowest interval_remaining_percent)", () => {
+  it("follows the user-configured index path verbatim (no most-active inference)", () => {
+    // minimaxDefaultIntervals paths are hard-coded to `model_remains.0.*`,
+    // so the parser must read entry [0] (the "video" entry) regardless of
+    // which entry has the lowest remaining percent. The previous
+    // most-active-index inference was removed because it forced a
+    // pickMostActiveIndex scan on every parse — opaque to the user and
+    // impossible to override from config.
     const r = parseRemains({
       model_remains: [
         {
@@ -152,8 +158,9 @@ describe("parseRemains — model_remains array shape (real)", () => {
     const midWin = intervalToWindow(r.midInterval);
     assert.ok(shortWin);
     assert.ok(midWin);
-    assert.equal(shortWin.pct, 80);
-    assert.equal(midWin.pct, 50);
+    // entry [0] = video: remaining=100 → used=0; weekly remaining=100 → used=0.
+    assert.equal(shortWin.pct, 0);
+    assert.equal(midWin.pct, 0);
   });
 
   it("returns null when only weekly percent is present (short interval has no data)", () => {
