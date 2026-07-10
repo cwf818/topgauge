@@ -11,6 +11,7 @@ import {
   loadConfig,
   DEFAULT_STATUSLINE_TEMPLATE,
   LEGACY_PRESET_NAMES,
+  resolveEffectiveIntervals,
 } from "./config.ts";
 import { queryPluginsDir } from "./api.ts";
 
@@ -1490,5 +1491,251 @@ describe("validateProviderEntry — ENDPOINT=\"\" + query_plugins presence", () 
     // The non-http warn only fires for empty or non-http — https should
     // be silent.
     assert.equal(capturedStderr, "");
+  });
+});
+
+// ----- v0.X.X+ resolveEffectiveIntervals 4-layer merge -----
+//
+// The 4 layers are merged in order (each overlays fields on the
+// previous). Layer 1 and layer 3 fire ONLY when the active provider
+// id matches the layer's key — so a kimi active provider never
+// inherits minimax defaults, and a user's providers.minimax.intervals
+// block is never applied to a non-minimax provider.
+//
+//   layer 0  GLOBAL_DEFAULT_INTERVALS              (always)
+//   layer 1  BUILTIN_PROVIDER_INTERVALS[id]        (id-gated)
+//   layer 2  configStore.get().intervals           (always)
+//   layer 3  entry.intervals                        (id-gated)
+//
+// Seed the configStore via __resetForTest — applyProviderOverrides
+// rejects `providers` (it would recurse), so providers are seeded
+// only via the test hook.
+describe("resolveEffectiveIntervals — 4-layer merge", () => {
+  beforeEach(() => {
+    // Reset to a clean DEFAULT_CONFIG so each test seeds its own
+    // providers + intervals cleanly.
+    __resetForTest();
+  });
+
+  it("active=minimax + no user intervals → layer 1 minimax defaults + layer 0 longInterval", () => {
+    const entry = configStore.get().providers.minimax;
+    assert.ok(entry);
+    const r = resolveEffectiveIntervals("minimax", entry);
+    // layer 1 fires for minimax: short + mid populated with model_remains[0].* paths.
+    assert.equal(
+      r.shortInterval?.remainingPercent,
+      "model_remains.0.current_interval_remaining_percent",
+    );
+    assert.equal(
+      r.shortInterval?.startAt,
+      "model_remains.0.start_time",
+    );
+    assert.equal(
+      r.midInterval?.remainingPercent,
+      "model_remains.0.current_weekly_remaining_percent",
+    );
+    // longInterval has no built-in minimax mapping (layer 1 empty),
+    // so layer 0's standard plugin-schema mapping wins. This is
+    // fine because minimax's actual API doesn't return a 30d window,
+    // so parseRemains would just leave longInterval null at runtime.
+    assert.equal(r.longInterval?.windowId, "30d");
+    assert.equal(r.longInterval?.remainingPercent, "longInterval.remainingPercent");
+  });
+
+  it("active=minimax + user top-level intervals → layer 2 overrides layer 1 on conflict", () => {
+    __resetForTest({
+      intervals: {
+        shortInterval: { remainingPercent: "user.top.path" },
+      },
+    });
+    const entry = configStore.get().providers.minimax;
+    assert.ok(entry);
+    const r = resolveEffectiveIntervals("minimax", entry);
+    // layer 2 wins on conflict for the shared field.
+    assert.equal(r.shortInterval?.remainingPercent, "user.top.path");
+    // layer 1 still contributes the non-conflicting fields.
+    assert.equal(r.shortInterval?.startAt, "model_remains.0.start_time");
+    assert.equal(r.shortInterval?.endAt, "model_remains.0.end_time");
+    // layer 1 still populates mid (no layer-2 conflict).
+    assert.equal(
+      r.midInterval?.remainingPercent,
+      "model_remains.0.current_weekly_remaining_percent",
+    );
+  });
+
+  it("active=kimi + no user intervals → layer 0 standard mapping; layer 1 minimax NOT applied", () => {
+    // Seed a kimi provider so resolveEffectiveIntervals can look it up.
+    __resetForTest({
+      providers: {
+        kimi: {
+          TYPE: "TOKEN_PLAN",
+          BASE_URL_COMPARED_TO: "https://kimi.example",
+          COMPARE_METHOD: "EXACT",
+          ENDPOINT: "https://kimi.example/quota",
+        },
+      },
+    });
+    const entry = configStore.get().providers.kimi;
+    assert.ok(entry);
+    const r = resolveEffectiveIntervals("kimi", entry);
+    // Layer 0 (standard plugin-schema mapping) fires for kimi.
+    assert.equal(r.shortInterval?.remainingPercent, "shortInterval.remainingPercent");
+    assert.equal(r.shortInterval?.startAt, "shortInterval.startAt");
+    assert.equal(r.shortInterval?.endAt, "shortInterval.endAt");
+    assert.equal(r.shortInterval?.windowId, "5h");
+    assert.equal(r.midInterval?.remainingPercent, "midInterval.remainingPercent");
+    assert.equal(r.midInterval?.windowId, "7d");
+    assert.equal(r.longInterval?.windowId, "30d");
+    // Layer 1 (minimax model_remains[0].* paths) must NOT apply for kimi.
+    assert.notEqual(
+      r.shortInterval?.remainingPercent,
+      "model_remains.0.current_interval_remaining_percent",
+    );
+  });
+
+  it("active=kimi + user top-level intervals → layer 2 wins; layer 1 minimax still NOT applied", () => {
+    __resetForTest({
+      providers: {
+        kimi: {
+          TYPE: "TOKEN_PLAN",
+          BASE_URL_COMPARED_TO: "https://kimi.example",
+          COMPARE_METHOD: "EXACT",
+          ENDPOINT: "https://kimi.example/quota",
+        },
+      },
+      intervals: {
+        shortInterval: { remainingPercent: "kimi.short" },
+      },
+    });
+    const entry = configStore.get().providers.kimi;
+    assert.ok(entry);
+    const r = resolveEffectiveIntervals("kimi", entry);
+    // layer 2 wins on conflict for shortInterval.remainingPercent.
+    assert.equal(r.shortInterval?.remainingPercent, "kimi.short");
+    // layer 0 still contributes the non-conflicting time fields.
+    assert.equal(r.shortInterval?.startAt, "shortInterval.startAt");
+    assert.equal(r.shortInterval?.windowId, "5h");
+    // midInterval is unaffected by layer 2 (no user override).
+    assert.equal(r.midInterval?.remainingPercent, "midInterval.remainingPercent");
+    // layer 1 (minimax) still must NOT bleed in.
+    assert.notEqual(
+      r.shortInterval?.remainingPercent,
+      "model_remains.0.current_interval_remaining_percent",
+    );
+  });
+
+  it("active=kimi + providers.minimax.intervals set → layer 3 NOT applied; layer 0 still works", () => {
+    // Critical gate test: even if the user has a minimax entry with
+    // intervals, an active kimi provider must not pick them up.
+    // Layer 0 still applies (it's unconditional), giving kimi a
+    // working standard mapping out of the box.
+    __resetForTest({
+      providers: {
+        minimax: {
+          TYPE: "TOKEN_PLAN",
+          BASE_URL_COMPARED_TO: "https://api.minimaxi.com/anthropic",
+          COMPARE_METHOD: "EXACT",
+          ENDPOINT: "https://www.minimaxi.com/v1/token_plan/remains",
+          intervals: {
+            shortInterval: { remainingPercent: "user.minimax.override" },
+          },
+        },
+        kimi: {
+          TYPE: "TOKEN_PLAN",
+          BASE_URL_COMPARED_TO: "https://kimi.example",
+          COMPARE_METHOD: "EXACT",
+          ENDPOINT: "https://kimi.example/quota",
+        },
+      },
+    });
+    const kimiEntry = configStore.get().providers.kimi;
+    assert.ok(kimiEntry);
+    const r = resolveEffectiveIntervals("kimi", kimiEntry);
+    // Layer 3 (providers.minimax.intervals) must NOT apply to kimi.
+    assert.notEqual(r.shortInterval?.remainingPercent, "user.minimax.override");
+    // Layer 0 still provides the standard plugin-schema mapping.
+    assert.equal(r.shortInterval?.remainingPercent, "shortInterval.remainingPercent");
+  });
+
+  it("active=deepseek + no user intervals → layer 0 still fires (deepseek layer 1 is empty by design)", () => {
+    // parseBalance doesn't read intervalsConfig today, but the
+    // resolver still runs and produces the layer-0 mapping for
+    // symmetry / future-proofing. Test that the resolver doesn't
+    // blow up on BALANCE entries.
+    const entry = configStore.get().providers.deepseek;
+    assert.ok(entry);
+    const r = resolveEffectiveIntervals("deepseek", entry);
+    // Layer 1 fires for deepseek but is empty, so layer 0 wins.
+    assert.equal(r.shortInterval?.remainingPercent, "shortInterval.remainingPercent");
+    assert.equal(r.midInterval?.remainingPercent, "midInterval.remainingPercent");
+    assert.equal(r.longInterval?.remainingPercent, "longInterval.remainingPercent");
+  });
+
+  it("active=minimax + user providers.minimax.intervals → layer 3 wins on conflict", () => {
+    __resetForTest({
+      providers: {
+        minimax: {
+          TYPE: "TOKEN_PLAN",
+          BASE_URL_COMPARED_TO: "https://api.minimaxi.com/anthropic",
+          COMPARE_METHOD: "EXACT",
+          ENDPOINT: "https://www.minimaxi.com/v1/token_plan/remains",
+          intervals: {
+            shortInterval: { remainingPercent: "user.minimax.short" },
+          },
+        },
+      },
+    });
+    const entry = configStore.get().providers.minimax;
+    assert.ok(entry);
+    const r = resolveEffectiveIntervals("minimax", entry);
+    // layer 3 (user providers.minimax.intervals) wins over layer 1.
+    assert.equal(r.shortInterval?.remainingPercent, "user.minimax.short");
+    // Non-conflicting layer 1 fields survive.
+    assert.equal(r.shortInterval?.startAt, "model_remains.0.start_time");
+  });
+
+  it("entry=null falls back to layers 0 + 2 only (no layer 1/3)", () => {
+    // Defensive: null entry shouldn't crash; layers 1 and 3 just
+    // don't fire.
+    __resetForTest({
+      intervals: {
+        shortInterval: { remainingPercent: "user.top" },
+      },
+    });
+    const r = resolveEffectiveIntervals("anything", null);
+    // layer 2 wins on conflict.
+    assert.equal(r.shortInterval?.remainingPercent, "user.top");
+    // layer 0 still populates mid/long (unconditional).
+    assert.equal(r.midInterval?.remainingPercent, "midInterval.remainingPercent");
+    assert.equal(r.longInterval?.remainingPercent, "longInterval.remainingPercent");
+  });
+
+  it("layer 0 covers the kimi plugin body out of the box (parser smoke)", () => {
+    // End-to-end smoke: the user's actual kimi plugin shape +
+    // resolveEffectiveIntervals("kimi", entry) should produce a
+    // mapping that parseRemains can use WITHOUT any user-level
+    // intervalsConfig. The user only configures the provider
+    // entry; the rest is the global default.
+    __resetForTest({
+      providers: {
+        kimi: {
+          TYPE: "TOKEN_PLAN",
+          BASE_URL_COMPARED_TO: "https://kimi.example",
+          COMPARE_METHOD: "EXACT",
+          ENDPOINT: "node C:/path/to/kimi/index.js",
+        },
+      },
+    });
+    const entry = configStore.get().providers.kimi;
+    assert.ok(entry);
+    const r = resolveEffectiveIntervals("kimi", entry);
+    // Each slot has the canonical path expressions.
+    assert.equal(r.shortInterval?.remainingPercent, "shortInterval.remainingPercent");
+    assert.equal(r.midInterval?.remainingPercent, "midInterval.remainingPercent");
+    assert.equal(r.longInterval?.remainingPercent, "longInterval.remainingPercent");
+    // Static windowId/label set per slot.
+    assert.equal(r.shortInterval?.windowId, "5h");
+    assert.equal(r.midInterval?.windowId, "7d");
+    assert.equal(r.longInterval?.windowId, "30d");
   });
 });

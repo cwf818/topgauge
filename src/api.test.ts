@@ -543,6 +543,145 @@ describe("parseRemains — error paths", () => {
   });
 });
 
+// ----- v0.X.X+ plugin schema via intervalsConfig -----
+//
+// query_plugins/<id>/index.js authors emit the canonical
+// {shortInterval, midInterval, longInterval} schema, and an exec'd
+// plugin (`ENDPOINT="node …"`) produces the same. parseRemains does
+// NOT short-circuit on this shape — the plugin author (or user)
+// declares the field mapping via intervalsConfig, the same way they
+// would for an http endpoint. This keeps a single parser path for
+// all transports: model_remains[] array OR path-based extraction,
+// no parallel "looks like Remains" branch.
+//
+// The plugin transport short-circuits parseRemains entirely and
+// trusts looksLikeRemains instead — that's the right path for
+// bundled plugins the user trusts to emit the canonical schema.
+// For exec plugins (where the user controls the ENDPOINT but the
+// plugin author is downstream), intervalsConfig is the contract.
+describe("parseRemains — plugin schema via intervalsConfig", () => {
+  // Canonical mapping for a body like
+  //   { shortInterval: {...}, midInterval: {...}, longInterval: {...} }
+  // Each slot declares the path expressions to pull fields out of
+  // the relevant sub-object. windowId/label are explicit so the
+  // renderer doesn't have to guess.
+  const pluginIntervalsConfig: IntervalConfig = {
+    shortInterval: {
+      windowId: "5h",
+      label: "5h",
+      remainingPercent: "shortInterval.remainingPercent",
+      startAt: "shortInterval.startAt",
+      endAt: "shortInterval.endAt",
+      intervalMs: "shortInterval.intervalMs",
+    },
+    midInterval: {
+      windowId: "7d",
+      label: "7d",
+      remainingPercent: "midInterval.remainingPercent",
+      startAt: "midInterval.startAt",
+      endAt: "midInterval.endAt",
+      intervalMs: "midInterval.intervalMs",
+    },
+    longInterval: {
+      windowId: "30d",
+      label: "30d",
+      remainingPercent: "longInterval.remainingPercent",
+      startAt: "longInterval.startAt",
+      endAt: "longInterval.endAt",
+      intervalMs: "longInterval.intervalMs",
+    },
+  };
+
+  const pluginBody = {
+    $comment_meta: { providerId: "topgauge-cc-demo", fetchedAt: 1, note: "demo" },
+    shortInterval: {
+      remainingPercent: 80, usedPercent: 20,
+      startAt: 1_000_000, endAt: 2_000_000, intervalMs: 1_000_000,
+    },
+    midInterval: {
+      remainingPercent: 60, usedPercent: 40,
+      startAt: 1_000_000, endAt: 2_000_000, intervalMs: 1_000_000,
+    },
+    longInterval: {
+      remainingPercent: 40, usedPercent: 60,
+      startAt: 1_000_000, endAt: 2_000_000, intervalMs: 1_000_000,
+    },
+  };
+
+  it("extracts all three intervals via path-based mapping", () => {
+    const r = parseRemains(pluginBody, minimaxProvider, pluginIntervalsConfig);
+    assert.ok(r);
+    assert.equal(r.shortInterval?.remainingPercent, 80);
+    assert.equal(r.midInterval?.remainingPercent, 60);
+    assert.equal(r.longInterval?.remainingPercent, 40);
+    assert.equal(r.shortInterval?.windowId, "5h");
+    assert.equal(r.midInterval?.windowId, "7d");
+    assert.equal(r.longInterval?.windowId, "30d");
+  });
+
+  it("returns null when intervalsConfig has no slot mappings", () => {
+    // No fast-path: a body in the plugin shape without any
+    // intervalsConfig mapping is rejected, same as any other
+    // un-mapped body. The user MUST declare the mapping.
+    const r = parseRemains(pluginBody, minimaxProvider, {});
+    assert.equal(r, null);
+  });
+
+  it("returns null for unmapped slots, populated object for the mapped one", () => {
+    // Partial mapping: only shortInterval has a path; mid/long
+    // have no slot config → buildInterval returns null for those,
+    // parseRemains returns {shortInterval: {...}, midInterval: null,
+    // longInterval: null}. The non-null shortInterval keeps the
+    // Remains object alive (hasPercent alone is enough — see
+    // buildInterval's hasPercent/hasQuota gate).
+    const partial: IntervalConfig = {
+      shortInterval: {
+        windowId: "5h",
+        label: "5h",
+        remainingPercent: "shortInterval.remainingPercent",
+      },
+    };
+    const r = parseRemains(pluginBody, minimaxProvider, partial);
+    assert.ok(r);
+    assert.equal(r.shortInterval?.remainingPercent, 80);
+    assert.equal(r.shortInterval?.windowId, "5h");
+    assert.equal(r.midInterval, null);
+    assert.equal(r.longInterval, null);
+  });
+
+  it("ignores $comment_meta noise (path resolver skips unknown root keys)", () => {
+    // The $comment_meta field is unrelated to path resolution;
+    // resolver only walks the paths in intervalsConfig.
+    const r = parseRemains(pluginBody, minimaxProvider, pluginIntervalsConfig);
+    assert.ok(r);
+    assert.ok(r.shortInterval);
+  });
+
+  it("works end-to-end via resolveEffectiveIntervals(layer 0 default)", async () => {
+    // The end-user flow: register a kimi provider, no intervals
+    // config, dispatch a fetch. parseRemains should succeed via
+    // the GLOBAL_DEFAULT_INTERVALS layer-0 mapping (the standard
+    // plugin-schema paths). This is the regression guard for the
+    // "user installs a plugin-style provider and it works out of
+    // the box" promise.
+    const { resolveEffectiveIntervals } = await import("./config.ts");
+    const kimiEntry = {
+      TYPE: "TOKEN_PLAN" as const,
+      BASE_URL_COMPARED_TO: "https://kimi.example",
+      COMPARE_METHOD: "EXACT" as const,
+      ENDPOINT: "node /path/to/kimi/index.js",
+    };
+    const r = parseRemains(pluginBody, kimiEntry, resolveEffectiveIntervals("kimi", kimiEntry));
+    assert.ok(r);
+    assert.equal(r.shortInterval?.remainingPercent, 80);
+    assert.equal(r.midInterval?.remainingPercent, 60);
+    assert.equal(r.longInterval?.remainingPercent, 40);
+    assert.equal(r.shortInterval?.windowId, "5h");
+    assert.equal(r.midInterval?.windowId, "7d");
+    assert.equal(r.longInterval?.windowId, "30d");
+  });
+});
+
 // ----- v0.6.0+ HTTP override plumbing -----
 //
 // Mock the global fetch so we can inspect the RequestInit the fetcher

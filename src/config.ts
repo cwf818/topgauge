@@ -640,11 +640,13 @@ const DEFAULT_CONFIG: {
   // above and src/providers.ts for the matcher / dispatcher.
   providers: Record<string, ProviderEntry>;
   // v0.9.0+ — top-level default intervals config. Each key is one
-  // of `shortInterval` / `midInterval` / `longInterval`. Per-provider
-  // `intervals` blocks deep-merge on top of these defaults (see
-  // validateProviderEntry). The top-level defaults start empty —
-  // built-in minimax defaults are applied per-provider inside
-  // validateProviderEntry (gated on `ENDPOINT.includes("minimaxi.com")`).
+  // of `shortInterval` / `midInterval` / `longInterval`. This is
+  // layer 2 of the 4-layer merge in resolveEffectiveIntervals
+  // (above). Per-provider `intervals` blocks (layer 3) deep-merge
+  // on top of these. The top-level defaults start empty — global
+  // defaults (layer 0) and built-in per-provider defaults
+  // (layer 1, e.g. minimax model_remains[0].* paths) are layered
+  // in at fetch time, gated on the active provider id.
   intervals: IntervalConfig;
   // v0.8.21+ — `m_quote|address|…` fetcher passes `--insecure` /
   // `-k` to curl so self-signed / expired / untrusted-CA HTTPS
@@ -1066,11 +1068,11 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
   // `shortInterval` / `midInterval` / `longInterval`. Per-interval
   // slot validation mirrors the per-provider `intervals` validator
   // (shared `validateIntervalSlot` helper below). Built-in
-  // minimax defaults are applied per-provider inside
-  // `validateProviderEntry`, NOT here — top-level defaults start
-  // empty so a user who doesn't ship a provider-specific
-  // override sees "no data" rather than a surprise minimax
-  // default firing for a non-minimax URL.
+  // provider defaults (minimax / deepseek) are applied at FETCH
+  // TIME in resolveEffectiveIntervals, NOT here — top-level
+  // defaults start empty so the global layer is just a placeholder
+  // today. See the 4-layer merge block above MINIMAX_DEFAULT_INTERVALS
+  // for the full contract.
   if ("intervals" in raw) {
     const ivRaw = raw.intervals;
     if (!ivRaw || typeof ivRaw !== "object" || Array.isArray(ivRaw)) {
@@ -1698,13 +1700,15 @@ function validateIntervalSlot(
 }
 
 // v0.9.0+ — built-in default intervals for the minimax provider.
-// Applied inside `validateProviderEntry` when the provider
-// matches the minimax URL gate (`TYPE === "TOKEN_PLAN" &&
-// ENDPOINT.includes("minimaxi.com")`). The user's per-provider
-// `intervals` block deep-merges on top of these defaults via
-// `validateIntervalSlot`. The longInterval term has no built-in
-// minimax mapping (the /v1/token_plan/remains endpoint doesn't
-// ship a 30-day window) — its slot defaults to `{}`.
+// Applied at FETCH TIME by resolveEffectiveIntervals (below) when
+// the active provider id matches "minimax". The legacy code-path
+// inside `validateProviderEntry` used a URL gate
+// (`ENDPOINT.includes("minimaxi.com")`); the move to id-gating
+// fixes the case where a user renames the provider id but keeps
+// the minimaxi.com URL — they would silently lose defaults. The
+// longInterval term has no built-in minimax mapping (the
+// /v1/token_plan/remains endpoint doesn't ship a 30-day window) —
+// its slot defaults to `{}`.
 const MINIMAX_DEFAULT_INTERVALS: IntervalConfig = {
   shortInterval: {
     remainingPercent: "model_remains.0.current_interval_remaining_percent",
@@ -1718,6 +1722,124 @@ const MINIMAX_DEFAULT_INTERVALS: IntervalConfig = {
   },
   longInterval: {},
 };
+
+// ----- 4-layer intervals merge -----
+//
+// v0.X.X+ — replace the v0.9.0 single-layer "URL-gate MINIMAX_DEFAULT
+// _INTERVALS + validateIntervalSlot user block" model with a 4-layer
+// merge keyed on the ACTIVE provider id:
+//
+//   layer 0  project-builtin GLOBAL defaults (GLOBAL_DEFAULT_INTERVALS)
+//   layer 1  project-builtin PER-PROVIDER defaults
+//            (BUILTIN_PROVIDER_INTERVALS[id])
+//   layer 2  user config.json top-level intervals (configStore.get().intervals)
+//   layer 3  user providers.<id>.intervals (entry.intervals)
+//
+// Layer 1 and layer 3 fire ONLY when the active provider id matches
+// the layer's key — so a kimi active provider never inherits minimax
+// defaults, and a user's `providers.minimax.intervals` block is never
+// applied to a non-minimax provider. Layer 0 and layer 2 are
+// unconditional globals.
+//
+// Each layer deep-merges on top of the previous. The merge is O(9)
+// string fields at most — safe to call from the fetch hot path.
+
+// Layer 0 — project-builtin GLOBAL defaults. Maps the canonical
+// v0.9.0+ plugin schema (query_plugins/<id>/index.js output) so a
+// plugin-style body works out of the box without the user
+// configuring intervalsConfig. The mapping assumes the body has
+// {shortInterval, midInterval, longInterval} at root, each an
+// Interval-shape sub-object with the field names below.
+//
+// windowId / label are static ("5h" / "7d" / "30d") rather than
+// path expressions — the plugin author is free to set whatever
+// they want on the sub-object's windowId, but the canonical
+// schema's labels are the de-facto industry names. Users who
+// want different labels override via layer 2 or layer 3.
+//
+// usedPercent is NOT mapped: resolvePercentGroup auto-derives
+// `100 - remainingPercent` when usedPercent is absent, so
+// emitting remainingPercent alone is enough.
+const GLOBAL_DEFAULT_INTERVALS: IntervalConfig = {
+  shortInterval: {
+    windowId: "5h",
+    label: "5h",
+    remainingPercent: "shortInterval.remainingPercent",
+    startAt: "shortInterval.startAt",
+    endAt: "shortInterval.endAt",
+    intervalMs: "shortInterval.intervalMs",
+  },
+  midInterval: {
+    windowId: "7d",
+    label: "7d",
+    remainingPercent: "midInterval.remainingPercent",
+    startAt: "midInterval.startAt",
+    endAt: "midInterval.endAt",
+    intervalMs: "midInterval.intervalMs",
+  },
+  longInterval: {
+    windowId: "30d",
+    label: "30d",
+    remainingPercent: "longInterval.remainingPercent",
+    startAt: "longInterval.startAt",
+    endAt: "longInterval.endAt",
+    intervalMs: "longInterval.intervalMs",
+  },
+};
+
+// Built-in provider defaults. Currently only minimax ships a non-empty
+// IntervalConfig; deepseek uses parseBalance which doesn't read
+// intervalsConfig today, but the empty constant is shipped so the
+// contract is symmetric and a future deepseek parseBalance that does
+// read intervals has somewhere to land without a config schema change.
+const BUILTIN_PROVIDER_INTERVALS: Record<string, IntervalConfig> = {
+  minimax: MINIMAX_DEFAULT_INTERVALS,
+  deepseek: {
+    shortInterval: {},
+    midInterval: {},
+    longInterval: {},
+  },
+};
+
+// Resolve the effective IntervalConfig for the active provider by
+// merging all four layers in order. See the block comment above for
+// the merge contract. Pure read against configStore — no mutation.
+// `entry` is the active provider's ProviderEntry (from
+// configStore.get().providers[id]); pass null for the no-provider
+// case to still get layers 0 + 2.
+export function resolveEffectiveIntervals(
+  activeProviderId: string,
+  entry: ProviderEntry | null,
+): IntervalConfig {
+  const out: IntervalConfig = {
+    shortInterval: { ...GLOBAL_DEFAULT_INTERVALS.shortInterval },
+    midInterval: { ...GLOBAL_DEFAULT_INTERVALS.midInterval },
+    longInterval: { ...GLOBAL_DEFAULT_INTERVALS.longInterval },
+  };
+  // Layer 1 — built-in per-provider defaults. Gate on active id.
+  const builtin = BUILTIN_PROVIDER_INTERVALS[activeProviderId];
+  if (builtin) {
+    out.shortInterval = { ...out.shortInterval, ...builtin.shortInterval };
+    out.midInterval = { ...out.midInterval, ...builtin.midInterval };
+    out.longInterval = { ...out.longInterval, ...builtin.longInterval };
+  }
+  // Layer 2 — user top-level intervals (unconditional).
+  const top = configStore.get().intervals;
+  if (top) {
+    out.shortInterval = { ...out.shortInterval, ...(top.shortInterval ?? {}) };
+    out.midInterval = { ...out.midInterval, ...(top.midInterval ?? {}) };
+    out.longInterval = { ...out.longInterval, ...(top.longInterval ?? {}) };
+  }
+  // Layer 3 — user per-provider intervals. By construction entry IS
+  // the active provider's entry, but we re-check the id so the gate
+  // logic is obvious to a reader skimming this function in isolation.
+  if (entry && entry.intervals) {
+    out.shortInterval = { ...out.shortInterval, ...(entry.intervals.shortInterval ?? {}) };
+    out.midInterval = { ...out.midInterval, ...(entry.intervals.midInterval ?? {}) };
+    out.longInterval = { ...out.longInterval, ...(entry.intervals.longInterval ?? {}) };
+  }
+  return out;
+}
 
 // Validate one ProviderEntry. Returns the validated entry or null if
 // the entry is fatally malformed. The caller (`mergeConfig`) is
@@ -1886,38 +2008,19 @@ function validateProviderEntry(name: string, v: unknown): ProviderEntry | null {
       : undefined;
   // v0.9.0+ — forward the user-supplied `intervals` block (the
   // data-driven per-interval slot mapping). Replaces the v0.5.0–
-//  v0.8.x flat `parameters` block. When absent for a TOKEN_PLAN
-  // provider matching the minimax URL gate, we fill in the built-
-  // in MINIMAX_DEFAULT_INTERVALS so the default out-of-the-box
-  // minimax provider keeps working byte-identically. For other
-  // providers with no `intervals` block, the entry has no
-  // intervals data at all (parseRemains falls through to its
-  // null-return contract).
+//  v0.8.x flat `parameters` block. Built-in provider defaults
+  // (the minimax model_remains[0].* paths) are NOT layered in here
+  // — they fire at FETCH TIME in resolveEffectiveIntervals (above),
+  // gated on the active provider id. So a kimi active provider
+  // never inherits minimax-style defaults even if the user's
+  // providers.minimax entry still exists with the URL pointing at
+  // minimaxi.com.
   //
   // Per-key validation reuses `validateIntervalSlot` (defined
   // above) — same shape rules as the top-level `intervals`
   // validator. Lenient: bad fields drop with a stderr warn; the
   // entry itself stays loaded.
   let validatedIntervals: IntervalConfig = {};
-  // First, layer in the minimax built-in defaults when applicable.
-  // These only fire for TOKEN_PLAN providers matching the URL
-  // gate — other providers start with no intervals data so a
-  // misconfigured entry doesn't accidentally inherit minimax
-  // mappings.
-  if (
-    t === "TOKEN_PLAN" &&
-    typeof ep === "string" &&
-    ep.includes("minimaxi.com")
-  ) {
-    validatedIntervals = {
-      shortInterval: { ...MINIMAX_DEFAULT_INTERVALS.shortInterval },
-      midInterval: { ...MINIMAX_DEFAULT_INTERVALS.midInterval },
-      longInterval: { ...MINIMAX_DEFAULT_INTERVALS.longInterval },
-    };
-  }
-  // Then, validate the user-supplied `intervals` block (if any) on
-  // top of the defaults. validateIntervalSlot deep-merges each
-  // present key over the corresponding default slot.
   if ("intervals" in e && e.intervals !== undefined) {
     const rawIntervals = e.intervals;
     if (

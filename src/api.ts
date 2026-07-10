@@ -28,7 +28,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { configStore } from "./config.ts";
+import { configStore, resolveEffectiveIntervals } from "./config.ts";
 import * as diagnostics from "./diagnostics.ts";
 import { resolveSlot } from "./path-expr.ts";
 import type {
@@ -429,21 +429,29 @@ function isPlainObject(x: unknown): x is Record<string, unknown> {
   return typeof x === "object" && x !== null && !Array.isArray(x);
 }
 
-// TOKEN_PLAN plugin contract check: must be an object whose
-// shortInterval/midInterval/longInterval are either an Interval-
-// shaped sub-object or nullish. We don't deep-validate every field;
-// the renderer is the consumer-of-truth and paints "n/a" on
-// anything it doesn't understand.
+// TOKEN_PLAN plugin contract check: must be an object with at
+// least one of shortInterval/midInterval/longInterval present and
+// object-shaped. Each present key is trusted as an Interval-shape
+// sub-object without deep field validation — the renderer is the
+// consumer-of-truth and paints "n/a" on anything it doesn't
+// understand.
+//
+// The "at least one interval key must be present" gate is what
+// keeps this from accepting every plain object. Without it, an
+// empty {} or a legacy {model_remains: [...]} body would match
+// (the loop just continues when keys are absent), and the plugin
+// transport would silently treat legacy shapes as canonical
+// plugin output.
 function looksLikeRemains(x: unknown): x is Remains {
   if (!isPlainObject(x)) return false;
-  // Allow the plugin author to omit intervals they don't have data
-  // for (each is independent).
+  let anyInterval = false;
   for (const k of ["shortInterval", "midInterval", "longInterval"] as const) {
     const v = x[k];
     if (v == null) continue;
     if (!isPlainObject(v)) return false;
+    anyInterval = true;
   }
-  return true;
+  return anyInterval;
 }
 
 // BALANCE plugin contract check.
@@ -510,7 +518,7 @@ export async function fetchForProviderById(
     return null;
   }
   if (entry.TYPE === "TOKEN_PLAN") {
-    return parseRemains(parsed, entry, entry.intervals);
+    return parseRemains(parsed, entry, resolveEffectiveIntervals(id, entry));
   }
   if (entry.TYPE === "BALANCE") {
     return parseBalance(parsed);
@@ -553,7 +561,7 @@ export async function fetchRemains(
   if (!body) return null;
   let parsed: unknown;
   try { parsed = JSON.parse(body); } catch { return null; }
-  return parseRemains(parsed, provider, provider?.intervals);
+  return parseRemains(parsed, provider, resolveEffectiveIntervals(id, provider));
 }
 
 export async function fetchBalance(
@@ -810,6 +818,20 @@ export function parseRemains(
     const code = asNumber((baseResp as Record<string, unknown>).status_code);
     if (code !== null && code !== 0) return null;
   }
+
+  // NOTE on the v0.9.0+ plugin schema
+  // ({shortInterval, midInterval, longInterval} at root, any subset):
+  // query_plugins/<id>/index.js authors emit this shape, and an exec'd
+  // plugin (`ENDPOINT="node …"`) produces the same. parseRemains does
+  // NOT recognize it as a fast-path — instead the plugin author (or
+  // user) declares the field mapping via intervalsConfig the same way
+  // they would for an http endpoint. This keeps a single parser path
+  // for all transports: model_remains[] array OR path-based
+  // extraction, no parallel "looks like Remains" branch that could
+  // diverge on schema details (field names, units, required vs
+  // optional fields). The plugin transport short-circuits this
+  // parser entirely and trusts looksLikeRemains instead; for exec
+  // plugins, configure intervalsConfig.
 
   const arr = root.model_remains ?? root.modelRemains;
 
