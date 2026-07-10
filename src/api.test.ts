@@ -788,6 +788,7 @@ describe("pluginTransport", () => {
   let sandbox: string | null = null;
   let originalHome: string | undefined;
   let originalProfile: string | undefined;
+  let pluginDir: string | null = null;
 
   beforeEach(() => {
     sandbox = mkdtempSync(join(tmpdir(), "topgauge-cc-plugin-"));
@@ -795,6 +796,15 @@ describe("pluginTransport", () => {
     originalProfile = process.env.USERPROFILE;
     process.env.HOME = sandbox;
     process.env.USERPROFILE = sandbox;
+    pluginDir = join(
+      sandbox!,
+      ".claude",
+      "plugins",
+      "topgauge-cc",
+      "query_plugins",
+      "myscript",
+    );
+    mkdirSync(pluginDir, { recursive: true });
   });
   afterEach(() => {
     if (originalHome === undefined) delete process.env.HOME;
@@ -803,25 +813,104 @@ describe("pluginTransport", () => {
     else process.env.USERPROFILE = originalProfile;
     if (sandbox) rmSync(sandbox, { recursive: true, force: true });
     sandbox = null;
+    pluginDir = null;
   });
 
-  it("runs query_plugins/<id>/index.js and returns stdout", async () => {
-    const dir = join(sandbox!, ".claude", "plugins", "topgauge-cc", "query_plugins", "myscript");
-    mkdirSync(dir, { recursive: true });
+  it("calls fetchAccountQuota(token) on the imported module and returns its value as-is", async () => {
+    // The plugin is a .mjs ESM module so dynamic import() works
+    // without an adjacent package.json. `fetchAccountQuota` returns the
+    // canonical Balance shape directly; pluginTransport must
+    // surface that object verbatim (no JSON.parse / no parseBalance).
     writeFileSync(
-      join(dir, "index.js"),
-      "process.stdout.write(JSON.stringify({balance_infos:[{currency:'CNY',total_balance:42}]}));",
+      join(pluginDir!, "index.mjs"),
+      `export default {
+         async fetchAccountQuota(token) {
+           return {
+             isAvailable: token === "good-token",
+             entries: [{ currency: "CNY", totalBalance: 42 }],
+             minValue: null,
+           };
+         },
+       };`,
     );
-    const body = await pluginTransport("myscript");
-    const obj = JSON.parse(body);
-    assert.equal(obj.balance_infos[0].currency, "CNY");
-    assert.equal(obj.balance_infos[0].total_balance, 42);
+    const out = await pluginTransport("myscript", "good-token");
+    assert.equal(typeof out, "object");
+    const bal = out as { isAvailable: boolean; entries: Array<{ currency: string; totalBalance: number }> };
+    assert.equal(bal.isAvailable, true);
+    assert.equal(bal.entries[0].currency, "CNY");
+    assert.equal(bal.entries[0].totalBalance, 42);
+  });
+
+  it("passes the token argument through to fetchAccountQuota (plugin decides how to use it)", async () => {
+    // The plugin author sees `token` as the only argument. We use
+    // the returned object to surface the captured value back to the
+    // test (ESM module instances don't share outer mutable state
+    // across imports).
+    writeFileSync(
+      join(pluginDir!, "index.mjs"),
+      `export default {
+         async fetchAccountQuota(token) {
+           return { isAvailable: true, entries: [{ currency: token, totalBalance: 0 }], minValue: null };
+         },
+       };`,
+    );
+    const out = await pluginTransport("myscript", "secret-token");
+    const bal = out as { entries: Array<{ currency: string }> };
+    assert.equal(bal.entries[0].currency, "secret-token");
   });
 
   it("throws when query_plugins/<id>/index.js is missing", async () => {
+    // We never created pluginDir/<id> for nonexistent — use a
+    // different tmpdir path to be sure.
+    const otherSandbox = mkdtempSync(join(tmpdir(), "topgauge-cc-plugin-missing-"));
+    const oldHome = process.env.HOME;
+    const oldProfile = process.env.USERPROFILE;
+    process.env.HOME = otherSandbox;
+    process.env.USERPROFILE = otherSandbox;
+    try {
+      await assert.rejects(
+        () => pluginTransport("nonexistent", "t"),
+        /plugin .*index\.js|Cannot find|cannot find/i,
+      );
+    } finally {
+      process.env.HOME = oldHome;
+      process.env.USERPROFILE = oldProfile;
+      rmSync(otherSandbox, { recursive: true, force: true });
+    }
+  });
+
+  it("throws when the loaded module has no `default` export", async () => {
+    writeFileSync(
+      join(pluginDir!, "index.mjs"),
+      `export const fetchAccountQuota = async () => ({ isAvailable: true });`,
+    );
     await assert.rejects(
-      () => pluginTransport("nonexistent"),
-      /Command failed|index\.js/,
+      () => pluginTransport("myscript", "t"),
+      /default export/,
+    );
+  });
+
+  it("throws when the default export has no `fetchAccountQuota` method", async () => {
+    writeFileSync(
+      join(pluginDir!, "index.mjs"),
+      `export default { wrongName() { return {}; } };`,
+    );
+    await assert.rejects(
+      () => pluginTransport("myscript", "t"),
+      /default export must be/,
+    );
+  });
+
+  it("propagates errors thrown inside fetchAccountQuota", async () => {
+    writeFileSync(
+      join(pluginDir!, "index.mjs"),
+      `export default {
+         async fetchAccountQuota() { throw new Error("upstream busted"); },
+       };`,
+    );
+    await assert.rejects(
+      () => pluginTransport("myscript", "t"),
+      /upstream busted/,
     );
   });
 });
@@ -863,9 +952,18 @@ describe("fetchForProviderById — end-to-end dispatcher", () => {
   it("BALANCE via plugin transport: runs query_plugins/<id>/index.js", async () => {
     const dir = join(sandbox!, ".claude", "plugins", "topgauge-cc", "query_plugins", "testbal");
     mkdirSync(dir, { recursive: true });
+    // Plugin contract: ESM module with `default export { fetchAccountQuota }`.
     writeFileSync(
-      join(dir, "index.js"),
-      "process.stdout.write(JSON.stringify({is_available:true,balance_infos:[{currency:'USD',total_balance:7.5}]}));",
+      join(dir, "index.mjs"),
+      `export default {
+         async fetchAccountQuota() {
+           return {
+             isAvailable: true,
+             entries: [{ currency: "USD", totalBalance: 7.5 }],
+             minValue: null,
+           };
+         },
+       };`,
     );
     const entry = {
       TYPE: "BALANCE" as const,
@@ -879,6 +977,75 @@ describe("fetchForProviderById — end-to-end dispatcher", () => {
     assert.equal(bal.isAvailable, true);
     assert.equal(bal.entries[0].currency, "USD");
     assert.equal(bal.entries[0].totalBalance, 7.5);
+  });
+
+  it("TOKEN_PLAN via plugin transport: plugin's canonical `Remains` shape passes through unparsed", async () => {
+    const dir = join(sandbox!, ".claude", "plugins", "topgauge-cc", "query_plugins", "testplan");
+    mkdirSync(dir, { recursive: true });
+    // The plugin emits the *post-parseRemains* shape — three named
+    // intervals, no model_remains array. Dispatcher must accept this
+    // shape verbatim, not call parseRemains and lose the structure.
+    writeFileSync(
+      join(dir, "index.mjs"),
+      `export default {
+         async fetchAccountQuota() {
+           const now = Date.now();
+           return {
+             shortInterval: {
+               label: "5h",
+               startAt: now,
+               endAt: now + 4*3600*1000,
+               intervalMs: 4*3600*1000,
+               remainingPercent: 75,
+               usedPercent: 25,
+             },
+             midInterval: {
+               label: "7d",
+               startAt: now,
+               endAt: now + 7*24*3600*1000,
+               intervalMs: 7*24*3600*1000,
+               remainingPercent: 50,
+               usedPercent: 50,
+             },
+             longInterval: null,
+           };
+         },
+       };`,
+    );
+    const entry = {
+      TYPE: "TOKEN_PLAN" as const,
+      BASE_URL_COMPARED_TO: "https://example.com",
+      COMPARE_METHOD: "EXACT" as const,
+      ENDPOINT: "",
+      // No `intervals` block — this is the v0.8.46 contract: plugin
+      // authors don't supply a path mapping because they ARE the
+      // mapping. The entry's `intervals` field is irrelevant for
+      // plugin transport.
+    };
+    const out = await fetchForProviderById("testplan", entry, "t", undefined);
+    assert.ok(out);
+    const r = out as { shortInterval: { remainingPercent: number; usedPercent: number } };
+    assert.equal(r.shortInterval.remainingPercent, 75);
+    assert.equal(r.shortInterval.usedPercent, 25);
+  });
+
+  it("plugin transport: invalid shape (non-Remains object on TOKEN_PLAN) returns null", async () => {
+    const dir = join(sandbox!, ".claude", "plugins", "topgauge-cc", "query_plugins", "badshape");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "index.mjs"),
+      `export default {
+         async fetchAccountQuota() { return "string is not a Remains"; },
+       };`,
+    );
+    const entry = {
+      TYPE: "TOKEN_PLAN" as const,
+      BASE_URL_COMPARED_TO: "https://example.com",
+      COMPARE_METHOD: "EXACT" as const,
+      ENDPOINT: "",
+    };
+    const out = await fetchForProviderById("badshape", entry, "t", undefined);
+    assert.equal(out, null);
   });
 
   it("returns null when entry is null", async () => {

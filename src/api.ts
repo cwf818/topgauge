@@ -23,10 +23,11 @@
 //      ported verbatim from the prior two files, with no behavior
 //      change.
 
-import { execFileSync, execSync } from "node:child_process";
+import { execSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { configStore } from "./config.ts";
 import * as diagnostics from "./diagnostics.ts";
 import { resolveSlot } from "./path-expr.ts";
@@ -79,8 +80,32 @@ export function queryPluginsDir(): string {
 // Re-exported for test convenience + the install-time notes in
 // MANUAL.md. Existence is the caller's check (existsSync on this
 // path is exactly what detectTransport does below).
+//
+// Two extensions are accepted:
+//   - `index.js`  : the canonical layout. Plain Node ESM when the
+//                   parent dir has a sibling `package.json` with
+//                   `"type":"module"`, or CommonJS-with-exports
+//                   otherwise. Most users will use this.
+//   - `index.mjs` : an explicit ESM marker — `import()` and top-
+//                   level `await` work without an accompanying
+//                   package.json. Useful for one-off plugins.
+//
+// `index.js` is preferred (so users who copy the bundled fixture
+// get the canonical path); `index.mjs` is the fallback for users
+// who want to drop a single ESM file with no package.json.
 export function queryPluginPath(providerId: string): string {
   return join(queryPluginsDir(), providerId, "index.js");
+}
+
+// Resolve the actual on-disk path for a plugin — first `index.js`,
+// then `index.mjs`. Returns the canonical `queryPluginPath` if
+// neither exists. Caller is expected to `existsSync(...)` this.
+function resolvePluginOnDisk(providerId: string): string {
+  const js = queryPluginPath(providerId);
+  if (existsSync(js)) return js;
+  const mjs = join(queryPluginsDir(), providerId, "index.mjs");
+  if (existsSync(mjs)) return mjs;
+  return js;
 }
 
 // Decide how to obtain a response body for this provider.
@@ -99,10 +124,11 @@ export function detectTransport(
 ): TransportKind {
   const e = endpoint ?? "";
   if (e === "") {
-    const pluginPath = queryPluginPath(providerId);
-    if (existsSync(pluginPath)) return "plugin";
+    const pluginPath = resolvePluginOnDisk(providerId);
+    const mjsPath = join(queryPluginsDir(), providerId, "index.mjs");
+    if (existsSync(pluginPath) || existsSync(mjsPath)) return "plugin";
     throw new Error(
-      `provider "${providerId}" has ENDPOINT="" and no query_plugins file at ${pluginPath}`,
+      `provider "${providerId}" has ENDPOINT="" and no query_plugins file at ${pluginPath} (or ${mjsPath})`,
     );
   }
   if (e.startsWith("http://") || e.startsWith("https://")) return "http";
@@ -216,31 +242,137 @@ export async function execTransport(endpoint: string): Promise<string> {
 // Argv form (no shell) on purpose — the plugin's full path is
 // determined by the plugin loader so there's no opportunity for
 // argument injection from a misconfigured ENDPOINT.
-export async function pluginTransport(providerId: string): Promise<string> {
-  const pluginPath = queryPluginPath(providerId);
-  let out: string;
+// ============================================================================
+//  Plugin transport contract
+// ============================================================================
+//
+// A query_plugins/<providerId>/index.js file is a regular ESM module
+// whose **default export** is an object with a `fetchAccountQuota(token)`
+// method. The plugin is loaded via dynamic `import()` (NOT via
+// `execFileSync("node", […])`) so the plugin runs in-process with
+// our Node.js runtime — same V8, same TypeScript-ESM loader, no
+// extra spawn cost.
+//
+// `token` here is `process.env.ANTHROPIC_AUTH_TOKEN` — the same
+// token that `httpTransport` would put in the `Authorization`
+// header. **We pass it in unfiltered; the plugin author decides
+// whether to use it.** This is deliberate: for some providers
+// (token-plan APIs) the bearer token is the only auth needed; for
+// others (HTTP basic, OAuth, cookie-jar) the plugin ignores it
+// entirely. We do NOT enforce that the plugin forwards the token
+// anywhere — we only ensure the user's "user identity" is
+// surfaced to plugin code so the plugin doesn't have to dig through
+// `process.env` on its own.
+//
+// `fetchAccountQuota` MUST return an object that already satisfies either
+// the tokenplan.schema or balance.schema (per the provider entry's
+// `TYPE`). The dispatcher does NOT call parseRemains / parseBalance
+// on plugin output — the plugin author is the parser. Returning a
+// raw API response (e.g. `{model_remains: [...]}`) here will be
+// piped straight to the renderer and produce garbage.
+export type QueryPluginModule = {
+  fetchAccountQuota: (token: string) => unknown | Promise<unknown>;
+};
+
+// Default timeout for the imported plugin module's `fetchAccountQuota`
+// promise. The plugin author is expected to fail fast; if they
+// hang we surface a stale-on-error via diagnostics.
+const PLUGIN_TIMEOUT_MS = 5_000;
+
+// Race `p` against a timed rejection. Standard library has no
+// builtin timeout-promise helper, so we roll our own here. (We
+// intentionally don't use `AbortSignal.timeout` because the plugin
+// author doesn't know about our signal — the timeout fires whether
+// or not they've wired it.)
+async function withTimeout<T>(
+  p: Promise<T>,
+  ms: number,
+  what: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    out = execFileSync("node", [pluginPath], {
-      encoding: "utf8",
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 5_000,
-    });
-  } catch (e) {
-    diagnostics.append(
-      "warning", "fetch",
-      `plugin ${pluginPath}: ${(e as Error).message ?? String(e)}`,
-      Date.now(),
-    );
-    throw e;
+    return await Promise.race([
+      p,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${what} timed out after ${ms}ms`)),
+          ms,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
-  return out ?? "";
+}
+
+// Plugin transport — dynamically imports
+// query_plugins/<providerId>/index.js (ESM, in-process) and
+// invokes its default export's `fetchAccountQuota(token)` with the env-
+// sourced token. The returned object is **already the canonical
+// `Remains`/`Balance` schema** (the plugin author did the parsing);
+// the dispatcher in `fetchForProviderById` will NOT call
+// `parseRemains` / `parseBalance` on this output.
+//
+// Failure modes → diagnostics.append + re-throw (consistent with
+// the httpTransport / execTransport contract — the stale-on-error
+// cache layer in src/index.ts only catches, it doesn't replace):
+//   - module doesn't exist (catch-all `import()` rejection)
+//   - default export is missing or not an object
+//   - default export has no `fetchAccountQuota` method
+//   - `fetchAccountQuota` throws or rejects
+//   - `fetchAccountQuota` times out after PLUGIN_TIMEOUT_MS
+export async function pluginTransport(
+  providerId: string,
+  token: string,
+): Promise<unknown> {
+  // Pick up `.mjs` if `.js` is absent (see resolvePluginOnDisk for
+  // the rationale). The detectTransport() call in fetchForProviderById
+  // has already verified one or the other exists, so this is
+  // essentially guaranteed not to fall back to a non-existent path.
+  const pluginPath = existsSync(queryPluginPath(providerId))
+    ? queryPluginPath(providerId)
+    : resolvePluginOnDisk(providerId);
+  let mod: { default?: QueryPluginModule } & Record<string, unknown>;
+  try {
+    // pathToFileURL is mandatory for Windows — bare paths blow up
+    // inside the dynamic import loader (`file:///` URLs only).
+    mod = (await import(
+      pathToFileURL(pluginPath).href
+    )) as typeof mod;
+  } catch (e) {
+    const msg = `plugin ${pluginPath}: ${(e as Error).message ?? String(e)}`;
+    diagnostics.append("warning", "fetch", msg, Date.now());
+    throw new Error(msg);
+  }
+  const exp = mod.default;
+  if (!exp || typeof exp !== "object" || typeof exp.fetchAccountQuota !== "function") {
+    const msg = `plugin ${pluginPath}: default export must be { fetchAccountQuota(token) }`;
+    diagnostics.append("warning", "fetch", msg, Date.now());
+    throw new Error(msg);
+  }
+  try {
+    return await withTimeout(
+      Promise.resolve(exp.fetchAccountQuota(token)),
+      PLUGIN_TIMEOUT_MS,
+      `plugin ${pluginPath} fetchAccountQuota`,
+    );
+  } catch (e) {
+    const msg = `plugin ${pluginPath} fetchAccountQuota: ${(e as Error).message ?? String(e)}`;
+    diagnostics.append("warning", "fetch", msg, Date.now());
+    throw new Error(msg);
+  }
 }
 
 // idThreaded transport runner: takes a provider name (the key in
 // configStore.get().providers) so plugin transport can resolve the
 // correct query_plugins/<name>/index.js. `labelPrefix` is the
 // diagnostics-tag for HTTP failures; ignored by the other transports.
+//
+// `http` and `exec` return raw body *strings* (caller JSON-parses);
+// `plugin` returns the **already-parsed JSON object** directly out
+// of the plugin author's `fetchAccountQuota(token)`. The dispatcher treats
+// these as different shapes — it only `JSON.parse`s the http/exec
+// path; on the plugin path the plugin IS the parser.
 async function runTransport(
   transport: TransportKind,
   endpoint: string,
@@ -249,14 +381,14 @@ async function runTransport(
   signal: AbortSignal | undefined,
   entry: ProviderEntry | null,
   labelPrefix: string = "token_plan/remains",
-): Promise<string> {
+): Promise<unknown> {
   switch (transport) {
     case "http":
       return httpTransport(token, endpoint, signal, entry, labelPrefix);
     case "exec":
       return execTransport(endpoint);
     case "plugin":
-      return pluginTransport(providerId);
+      return pluginTransport(providerId, token);
   }
 }
 
@@ -280,6 +412,44 @@ async function runTransport(
 // — only meaningful when the provider uses the "plugin" transport
 // (empty ENDPOINT + query_plugins file). For HTTP and exec, only
 // the entry.ENDPOINT value matters.
+// Minimal shape check on a plugin's return value: the dispatcher
+// won't run parseRemains/parseBalance on plugin output (the plugin
+// author is the parser) but the renderer still calls `obj.shortInterval`,
+// `obj.isAvailable` etc. — so a `null` / non-object return that
+// slipped past upstream would crash the renderer. Validate the
+// top-level shape and let bad values turn into `null` (the same
+// "no data → no line" contract the parsers uphold) rather than a
+// thrown error.
+function isPlainObject(x: unknown): x is Record<string, unknown> {
+  return typeof x === "object" && x !== null && !Array.isArray(x);
+}
+
+// TOKEN_PLAN plugin contract check: must be an object whose
+// shortInterval/midInterval/longInterval are either an Interval-
+// shaped sub-object or nullish. We don't deep-validate every field;
+// the renderer is the consumer-of-truth and paints "n/a" on
+// anything it doesn't understand.
+function looksLikeRemains(x: unknown): x is Remains {
+  if (!isPlainObject(x)) return false;
+  // Allow the plugin author to omit intervals they don't have data
+  // for (each is independent).
+  for (const k of ["shortInterval", "midInterval", "longInterval"] as const) {
+    const v = x[k];
+    if (v == null) continue;
+    if (!isPlainObject(v)) return false;
+  }
+  return true;
+}
+
+// BALANCE plugin contract check.
+function looksLikeBalance(x: unknown): x is Balance {
+  if (!isPlainObject(x)) return false;
+  if (typeof x.isAvailable !== "boolean") return false;
+  if (!Array.isArray(x.entries)) return false;
+  // minValue is optional (null/undefined OK).
+  return true;
+}
+
 export async function fetchForProviderById(
   providerName: string | null,
   entry: ProviderEntry | null,
@@ -308,6 +478,26 @@ export async function fetchForProviderById(
     entry,
     entry.TYPE === "BALANCE" ? "deepseek /user/balance" : "token_plan/remains",
   );
+
+  // Plugin transport short-circuit: the plugin author is the parser.
+  // Don't `JSON.parse` (the body is already an object) and don't
+  // pipe through parseRemains/parseBalance (the plugin owns the
+  // canonical schema). We do a one-line shape check so a plugin
+  // that returns the wrong type cleanly degrades to "no data"
+  // instead of crashing the renderer downstream.
+  if (transport === "plugin") {
+    if (entry.TYPE === "TOKEN_PLAN") {
+      return looksLikeRemains(body) ? body : null;
+    }
+    if (entry.TYPE === "BALANCE") {
+      return looksLikeBalance(body) ? body : null;
+    }
+    const _exhaustive: never = entry.TYPE;
+    throw new Error(`unsupported provider TYPE: ${_exhaustive}`);
+  }
+
+  // http / exec: body is a UTF-8 string; parse it.
+  if (typeof body !== "string") return null;
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);
@@ -349,6 +539,12 @@ export async function fetchRemains(
     throw e;
   }
   const body = await runTransport(transport, endpoint, id, token, signal, provider, "token_plan/remains");
+  // Plugin path → body is the plugin's parsed object; skip the JSON
+  // round-trip and trust the contract shape check.
+  if (transport === "plugin") {
+    return looksLikeRemains(body) ? body : null;
+  }
+  if (typeof body !== "string") return null;
   if (!body) return null;
   let parsed: unknown;
   try { parsed = JSON.parse(body); } catch { return null; }
@@ -369,6 +565,10 @@ export async function fetchBalance(
     throw e;
   }
   const body = await runTransport(transport, endpoint, id, token, signal, provider, "deepseek /user/balance");
+  if (transport === "plugin") {
+    return looksLikeBalance(body) ? body : null;
+  }
+  if (typeof body !== "string") return null;
   if (!body) return null;
   let parsed: unknown;
   try { parsed = JSON.parse(body); } catch { return null; }

@@ -1,6 +1,6 @@
 // Sample bundled plugin for topgauge-cc.
 //
-// Drop this script into a sibling location to wire it up:
+// Drop this script into place to wire it up:
 //
 //   mkdir -p ~/.claude/plugins/topgauge-cc/query_plugins/sample
 //   cp src/__fixtures__/query_plugins/sample/index.js \
@@ -17,31 +17,51 @@
 //     }
 //   }
 //
-// The plugin loader (src/api.ts:pluginTransport) runs this script via
-// `node <path>` and treats stdout as the response body. Anything
-// written to stderr is discarded. Exit code 0 is success; non-zero
-// triggers a diagnostics warning + the standard stale-cache fallback.
+// Contract (v0.8.46+):
+//   - The plugin is a regular ESM module.
+//   - Its **default export** must be `{ fetchAccountQuota(token) }`.
+//   - `token` is `process.env.ANTHROPIC_AUTH_TOKEN`; whether to
+//     honor it is the plugin author's call.
+//   - `fetchAccountQuota` returns an object already shaped like the
+//     tokenplan.schema (TOKEN_PLAN providers) or balance.schema
+//     (BALANCE providers) — the dispatcher does NOT re-parse.
 //
-// This fixture prints a synthetic parseRemains-shaped JSON so users
-// can verify the wiring end-to-end without needing a real API.
+// The plugin is loaded in-process via dynamic `import()` (same
+// Node runtime, same ESM loader). Throwing inside `fetchAccountQuota` is
+// surfaced as a stale-cache fallback by the dispatcher; timing
+// out after 5s is a hard error.
 
-'use strict';
-
-// Use the safe JSON.stringify form below to avoid printing literal
-// NaN / undefined that strict JSON parsers reject.
-const payload = JSON.stringify({
-  base_resp: { status_code: 0, status_msg: "sample fixture" },
-  model_remains: [
-    {
-      model_name: "sample",
-      current_interval_remaining_percent: 75,
-      current_weekly_remaining_percent: 50,
-      start_time: Date.now(),
-      end_time: Date.now() + 4 * 3600 * 1000,
-      weekly_start_time: Date.now(),
-      weekly_end_time: Date.now() + 7 * 24 * 3600 * 1000,
+const payload = () => {
+  const now = Date.now();
+  return {
+    shortInterval: {
+      label: "5h",
+      startAt: now,
+      endAt: now + 4 * 3600 * 1000,
+      intervalMs: 4 * 3600 * 1000,
+      remainingPercent: 75,
+      usedPercent: 25,
     },
-  ],
-});
+    midInterval: {
+      label: "7d",
+      startAt: now,
+      endAt: now + 7 * 24 * 3600 * 1000,
+      intervalMs: 7 * 24 * 3600 * 1000,
+      remainingPercent: 50,
+      usedPercent: 50,
+    },
+    longInterval: null,
+  };
+};
 
-process.stdout.write(payload);
+export default {
+  /**
+   * @param {string} token — process.env.ANTHROPIC_AUTH_TOKEN. Ignored
+   *   by this sample (it returns synthetic data); real plugins
+   *   should use it as a bearer token against the upstream API.
+   * @returns canonical `Remains` shape.
+   */
+  async fetchAccountQuota(token) {
+    return payload();
+  },
+};
