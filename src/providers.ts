@@ -13,7 +13,7 @@ import type {
   ProviderEntry,
   ProviderType,
 } from "./types.ts";
-import { fetchForProviderById } from "./api.ts";
+import { fetchForProviderByIdWithKind } from "./api.ts";
 
 // ----- URL matching -----
 
@@ -91,13 +91,29 @@ export async function fetchForProvider(
   token: string,
   signal: AbortSignal,
 ): Promise<unknown> {
+  const r = await fetchForProviderWithKind(provider, token, signal);
+  return r.data;
+}
+
+// v0.9.0+ — kind-returning sibling. Same dispatch path as
+// `fetchForProvider` but also returns the resolution side
+// (`"user" | "builtin" | "missing"`), so the host can persist the
+// side into cache.json for the m_pluginSource renderer. Adding
+// the kind to the legacy return type would have been an API
+// break for direct callers (tests use the data-only variant);
+// the side sibling keeps the existing `fetchForProvider` shape
+// stable.
+export async function fetchForProviderWithKind(
+  provider: Provider,
+  token: string,
+  signal: AbortSignal,
+): Promise<{ data: unknown; pluginSource: import("./api.ts").PluginResolution }> {
   const entry = getProviderEntry(provider);
   if (!entry) throw new Error(`unknown provider: ${String(provider)}`);
-  // The id-threaded dispatcher resolves the built-in or user plugin,
-  // passes the effective config context, and narrows the result by
-  // entry.TYPE. The caller's stale-on-error cache logic in index.ts
-  // catches plugin failures and surfaces cached data.
-  return fetchForProviderById(provider, entry, token, signal);
+  const r = await fetchForProviderByIdWithKind(provider, entry, token, signal);
+  // TYPE narrowing happens upstream (inside fetchForProviderByIdWithKind's
+  // ensureQuota / ensureBalance). providers.ts stays TYPE-agnostic.
+  return { data: r.data, pluginSource: r.pluginSource };
 }
 
 // The "fail" line's prefix label, picked from modeLabels based on

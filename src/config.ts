@@ -312,6 +312,20 @@ const DEFAULT_CONFIG: {
     // m_accTokenCost / m_sumTokenCost. Default "cost:" preserves
     // a clean axis to override via config.json.
     labelTokenCost: string;
+    // vX.X.X+ — glyph shown by `m_pluginSource` when the active
+    // provider's plugin resolved to the bundled built-in tree
+    // (`dist|src/plugins/<id>/index.js`). Default "📌" preserves
+    // the v0.9.x ship literal so existing renders stay byte-
+    // identical; user-overridable to any string (e.g. "B:", "🔧",
+    // "[built-in]"). The user-side counterpart is
+    // `labelPluginUserDefined`.
+    labelPluginSystem: string;
+    // vX.X.X+ — glyph shown by `m_pluginSource` when the active
+    // provider's plugin resolved to a user override at
+    // `~/.claude/plugins/topgauge-cc/query_plugins/<id>/`. Default
+    // "🎨" preserves the v0.9.x ship literal; user-overridable
+    // independently of `labelPluginSystem`.
+    labelPluginUserDefined: string;
   };
   colors: typeof DEFAULT_COLORS;
   cacheHitColors: typeof DEFAULT_CACHE_HIT_COLORS;
@@ -428,6 +442,15 @@ const DEFAULT_CONFIG: {
     // existing "labelFoo:" convention (trailing colon included
     // so the renderer can concat without a separator).
     labelTokenCost: "cost:",
+    // vX.X.X+ — m_pluginSource glyph defaults. These ARE the
+    // v0.9.x ship literals (📌 / 🎨) — unlike the other label*
+    // defaults which preserve v0.8.x hardcoded prefixes, these
+    // are net-new axes and have no historical default to match.
+    // The renderer drops the module entirely when ctx.pluginSource
+    // is null (per the "Drop 整个 module" decision 2026-07-11), so
+    // these defaults only surface on actual built-in / user hits.
+    labelPluginSystem: "📌",
+    labelPluginUserDefined: "🎨",
   },
   colors: DEFAULT_COLORS,
   cacheHitColors: DEFAULT_CACHE_HIT_COLORS,
@@ -746,6 +769,13 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
         "labelQuota",
         // vX.X.X+ — token cost module prefix.
         "labelTokenCost",
+        // vX.X.X+ — m_pluginSource glyph axis (system / user). The
+        // renderer reads these via `labelFor("pluginSystem")` /
+        // `labelFor("pluginUserDefined")` so users can replace
+        // the ship defaults (⚙ / 🎨) with any string via
+        // labels.labelPluginSystem / labels.labelPluginUserDefined.
+        "labelPluginSystem",
+        "labelPluginUserDefined",
       ];
       for (const f of fields) {
         if (typeof lm[f] === "string") {

@@ -11,6 +11,7 @@ import {
   parseQuota,
   pluginTransport,
   resolvePluginOnDisk,
+  resolvePluginOnDiskWithKind,
 } from "./api.ts";
 import type { IntervalConfig } from "./types.ts";
 
@@ -339,5 +340,181 @@ describe("dynamic plugin loader", () => {
     };`);
     const result = await pluginTransport("bad", "token");
     assert.equal(result, "bad");
+  });
+});
+
+// v0.9.0+ — user plugins at ~/.claude/plugins/topgauge-cc/query_plugins/<id>/
+// override built-ins. Built-in IDs (minimax / deepseek / copilot) are no
+// longer a closed set; anyone can ship a same-id user plugin to replace
+// the bundled one. Override is silent (no stderr, no diagnostics). These
+// tests pin that contract — both the path-resolution function and the
+// end-to-end pluginTransport loading path.
+describe("resolvePluginOnDiskWithKind (v0.9.0+ override)", () => {
+  function userDir(id: string): string {
+    return resolve(tempHome, ".claude", "plugins", "topgauge-cc", "query_plugins", id);
+  }
+
+  it("returns kind=user when query_plugins/<id>/index.js exists", () => {
+    mkdirSync(userDir("custom"), { recursive: true });
+    writeFileSync(resolve(userDir("custom"), "index.js"), "export default {};");
+    const r = resolvePluginOnDiskWithKind("custom");
+    assert.equal(r.kind, "user");
+    assert.ok(r.path.endsWith("index.js"));
+  });
+
+  it("returns kind=user when only .mjs exists", () => {
+    mkdirSync(userDir("custom"), { recursive: true });
+    writeFileSync(resolve(userDir("custom"), "index.mjs"), "export default {};");
+    const r = resolvePluginOnDiskWithKind("custom");
+    assert.equal(r.kind, "user");
+    assert.ok(r.path.endsWith("index.mjs"));
+  });
+
+  it("prefers .js over .mjs (deterministic tie-break for both present)", () => {
+    mkdirSync(userDir("custom"), { recursive: true });
+    writeFileSync(resolve(userDir("custom"), "index.js"),  "export default {};");
+    writeFileSync(resolve(userDir("custom"), "index.mjs"), "export default {};");
+    const r = resolvePluginOnDiskWithKind("custom");
+    assert.equal(r.kind, "user");
+    assert.ok(r.path.endsWith("index.js"));
+  });
+
+  it("returns kind=builtin for minimax when no user file exists", () => {
+    // No query_plugins/minimax/ in tempHome; resolution falls through
+    // to the bundled dist (or src, depending on test runner). Path
+    // always ends with /plugins/minimax/index.js.
+    const r = resolvePluginOnDiskWithKind("minimax");
+    assert.equal(r.kind, "builtin");
+    assert.ok(/[\\/]plugins[\\/]minimax[\\/]index\.js$/.test(r.path),
+      `path should resolve into the bundled plugin tree, got: ${r.path}`);
+  });
+
+  it("returns kind=builtin for deepseek and copilot when no user override", () => {
+    for (const id of ["deepseek", "copilot"]) {
+      const r = resolvePluginOnDiskWithKind(id);
+      assert.equal(r.kind, "builtin");
+      // Cross-platform path match: posix uses '/' between segments,
+      // windows uses '\\'. The segment after the last separator
+      // before <id> is always 'plugins', and the file is always
+      // <id>/index.js.
+      const re = new RegExp(`[\\\\/]plugins[\\\\/]${id}[\\\\/]index\\.js$`);
+      assert.ok(re.test(r.path),
+        `${id} should resolve to its bundled plugin file, got: ${r.path}`);
+    }
+  });
+
+  it("user-plugin wins over bundled built-in for the same id (minimax override)", () => {
+    // Place a user minimax plugin in query_plugins/. The bundled one
+    // still exists on disk (this checkout has src/plugins/minimax/
+    // and the test build emits dist/plugins/minimax/), but the user
+    // file MUST take precedence.
+    mkdirSync(userDir("minimax"), { recursive: true });
+    const userPath = resolve(userDir("minimax"), "index.js");
+    writeFileSync(userPath, `export default {
+      fetchAccountCredit() {
+        return {
+          shortInterval: { remainingPercent: 11, usedPercent: 89, windowId: "user", label: "5h", startAt: null, endAt: null, intervalMs: null, remainingQuota: null, usedQuota: null, limitQuota: null },
+          midInterval:   { remainingPercent: 22, usedPercent: 78, windowId: "user", label: "7d", startAt: null, endAt: null, intervalMs: null, remainingQuota: null, usedQuota: null, limitQuota: null },
+          longInterval:  null,
+        };
+      },
+    };`);
+    const r = resolvePluginOnDiskWithKind("minimax");
+    assert.equal(r.kind, "user");
+    assert.equal(r.path, userPath);
+  });
+
+  it("returns kind=missing for unknown ids (no user file, no built-in)", () => {
+    const r = resolvePluginOnDiskWithKind("totally-unknown-provider");
+    assert.equal(r.kind, "missing");
+    // Path still points at the would-be user location — the import-time
+    // 404 will then surface the right hint ("check query_plugins/").
+    // Cross-platform segment check.
+    const re = /[\\/]query_plugins[\\/]totally-unknown-provider[\\/]index\.js$/;
+    assert.ok(re.test(r.path),
+      `expected path under query_plugins/, got: ${r.path}`);
+  });
+
+  it("rejects invalid ids before touching the filesystem", () => {
+    assert.throws(() => resolvePluginOnDiskWithKind("../escape"), /invalid provider id/);
+    assert.throws(() => resolvePluginOnDiskWithKind("with/slash"),     /invalid provider id/);
+    assert.throws(() => resolvePluginOnDiskWithKind("with space"),     /invalid provider id/);
+  });
+
+  it("resolvePluginOnDisk (no-kind) still returns the same chosen path", () => {
+    mkdirSync(userDir("custom"), { recursive: true });
+    writeFileSync(resolve(userDir("custom"), "index.js"), "export default {};");
+    const withKind = resolvePluginOnDiskWithKind("custom");
+    const bare = resolvePluginOnDisk("custom");
+    assert.equal(bare, withKind.path);
+    assert.equal(withKind.kind, "user");
+  });
+});
+
+// v0.9.0+ — end-to-end load through pluginTransport: a user plugin
+// placed at query_plugins/minimax/ actually runs in place of the
+// bundled built-in. Catches the whole "resolution → dynamic import →
+// default.export.fetchAccountCredit" chain. Uses an .mjs plugin (no
+// transpile needed for the host loader) and a stub fetch to prove
+// the user file was the one that ran.
+describe("pluginTransport override end-to-end (v0.9.0+)", () => {
+  it("user plugin at query_plugins/minimax/index.mjs wins over the bundled built-in", async () => {
+    const userDirPath = resolve(tempHome, ".claude", "plugins", "topgauge-cc", "query_plugins", "minimax");
+    mkdirSync(userDirPath, { recursive: true });
+    writeFileSync(resolve(userDirPath, "index.mjs"), `export default {
+      fetchAccountCredit(token, ctx) {
+        return {
+          shortInterval: { remainingPercent: 42, usedPercent: 58, windowId: "user", label: "5h", startAt: null, endAt: null, intervalMs: null, remainingQuota: null, usedQuota: null, limitQuota: null },
+          midInterval:   null,
+          longInterval:  null,
+        };
+      },
+    };`);
+    // fetch must NOT be called — the user plugin returns synchronously
+    // without hitting the network. The bundled minimax plugin DOES hit
+    // fetch, so any call here would prove the override didn't take.
+    const originalFetch = globalThis.fetch;
+    let fetchCalled = false;
+    globalThis.fetch = async () => {
+      fetchCalled = true;
+      throw new Error("built-in should be overridden — fetch must NOT run");
+    };
+    try {
+      const partial = await pluginTransport("minimax", "ignored");
+      assert.equal(fetchCalled, false, "globalThis.fetch must not be invoked by the user plugin");
+      const shape = partial as { shortInterval: { remainingPercent: number; windowId: string } };
+      assert.equal(shape.shortInterval.remainingPercent, 42);
+      assert.equal(shape.shortInterval.windowId, "user");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("bundled built-in loads normally when no user override exists", async () => {
+    // No query_plugins/minimax in tempHome → falls through to bundled.
+    // Stub fetch so the real HTTP call doesn't escape the test runner.
+    // The bundled minimax plugin looks up `model_name === "general"`
+    // inside `model_remains[]`, so the stub must include that entry.
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      return new Response(JSON.stringify({
+        model_remains: [{
+          model_name: "general",
+          current_interval_remaining_percent: 50,
+          current_weekly_remaining_percent: 50,
+          start_time: 0, end_time: 0,
+          weekly_start_time: 0, weekly_end_time: 0,
+        }],
+        base_resp: { status_code: 0 },
+      }), { status: 200 });
+    };
+    try {
+      const partial = await pluginTransport("minimax", "ignored");
+      assert.ok(partial, "bundled built-in should return a non-null partial");
+      const shape = partial as { shortInterval: { remainingPercent: number } | null };
+      assert.equal(shape.shortInterval?.remainingPercent, 50);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

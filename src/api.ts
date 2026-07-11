@@ -60,6 +60,11 @@ export function queryPluginPath(providerId: string): string {
   return join(queryPluginsDir(), providerId, "index.js");
 }
 
+function queryPluginPathMjs(providerId: string): string {
+  assertSafeProviderId(providerId);
+  return join(queryPluginsDir(), providerId, "index.mjs");
+}
+
 function builtInPluginPath(providerId: string, root: "dist" | "src"): string {
   assertSafeProviderId(providerId);
   // root=dist → dist/plugins/<id>/index.js (emitted by
@@ -72,6 +77,12 @@ function builtInPluginPath(providerId: string, root: "dist" | "src"): string {
   return join(base, "plugins", providerId, "index.js");
 }
 
+// v0.9.0+ — which side of the override fence resolved.
+// `user`     — query_plugins/<id>/index.{js,mjs} hit, OVERRIDES built-in.
+// `builtin`  — fell through to dist|src/plugins/<id>/index.js.
+// `missing`  — neither side produced a file (will 404 at import time).
+export type PluginResolution = "user" | "builtin" | "missing";
+
 export function resolveBuiltInPluginOnDisk(providerId: string): string {
   if (!BUILTIN_PLUGIN_IDS.has(providerId)) return builtInPluginPath(providerId, "dist");
   const emitted = builtInPluginPath(providerId, "dist");
@@ -81,14 +92,40 @@ export function resolveBuiltInPluginOnDisk(providerId: string): string {
   return emitted;
 }
 
+// v0.9.0+ — full override-aware resolution. User plugins take
+// precedence: `~/.claude/plugins/topgauge-cc/query_plugins/<id>/index.js`
+// (or `.mjs`) always wins over the bundled built-in of the same id.
+// Built-in remains the fallback when no user file exists. Built-in
+// IDs are no longer a closed set — anyone can ship a `minimax` /
+// `deepseek` / `copilot` plugin of their own at the user path and
+// it will load instead of the bundled one. Override is silent
+// (no stderr warn, no diagnostics append) — per the user's
+// "静默覆盖" decision (2026-07-11).
 export function resolvePluginOnDisk(providerId: string): string {
+  const r = resolvePluginOnDiskWithKind(providerId);
+  return r.path;
+}
+
+// v0.9.0+ — same as resolvePluginOnDisk, but also reports which
+// side resolved. The caller (pluginTransport) folds `kind` into
+// the diagnostics message so a load failure points at the file
+// that actually got loaded, not the would-be built-in.
+export function resolvePluginOnDiskWithKind(
+  providerId: string,
+): { path: string; kind: PluginResolution } {
   assertSafeProviderId(providerId);
-  if (BUILTIN_PLUGIN_IDS.has(providerId)) return resolveBuiltInPluginOnDisk(providerId);
   const js = queryPluginPath(providerId);
-  if (existsSync(js)) return js;
-  const mjs = join(queryPluginsDir(), providerId, "index.mjs");
-  if (existsSync(mjs)) return mjs;
-  return js;
+  if (existsSync(js)) return { path: js, kind: "user" };
+  const mjs = queryPluginPathMjs(providerId);
+  if (existsSync(mjs)) return { path: mjs, kind: "user" };
+  // Built-in only resolves for the canonical 3 IDs (minimax,
+  // deepseek, copilot). For unknown ids there's no fallback —
+  // return the user-side path so the import-time 404 surfaces
+  // the right hint ("check query_plugins/").
+  if (BUILTIN_PLUGIN_IDS.has(providerId)) {
+    return { path: resolveBuiltInPluginOnDisk(providerId), kind: "builtin" };
+  }
+  return { path: js, kind: "missing" };
 }
 
 async function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
@@ -114,12 +151,36 @@ export async function pluginTransport(
   token: string,
   context?: PluginContext,
 ): Promise<unknown> {
-  const pluginPath = resolvePluginOnDisk(providerId);
+  const r = await pluginTransportWithKind(providerId, token, context);
+  return r.result;
+}
+
+// v0.9.x — kind-returning sibling of pluginTransport. Same load +
+// dispatch pipeline, but also reports which side of the user-vs-
+// builtin fence resolved the provider (so the host can surface
+// the side to the renderer without re-doing the file lookup).
+// `kind` is `"user"` when query_plugins/<id>/ hit, `"builtin"`
+// when the bundled dist|src/plugins/<id>/index.js fell through,
+// and `"missing"` when neither produced a file (the import call
+// will throw a 404 before this point in practice; the value
+// surfaces here only if the loader is changed to lazy-import).
+export async function pluginTransportWithKind(
+  providerId: string,
+  token: string,
+  context?: PluginContext,
+): Promise<{ result: unknown; kind: PluginResolution }> {
+  const { path: pluginPath, kind } = resolvePluginOnDiskWithKind(providerId);
+  // v0.9.0+ — annotate the load error with the override side so
+  // a user-plugin crash says "user plugin X" instead of just
+  // "plugin X". The kind lives only in the error message; the
+  // resolution itself is silent (no stderr, no diagnostics on
+  // success — per "静默覆盖").
+  const sideLabel = kind === "user" ? "user plugin" : kind === "builtin" ? "built-in plugin" : "plugin";
   let module: { default?: AccountCreditPlugin };
   try {
     module = (await import(pathToFileURL(pluginPath).href)) as typeof module;
   } catch (error) {
-    const message = `plugin ${pluginPath}: ${(error as Error).message ?? String(error)}`;
+    const message = `${sideLabel} ${pluginPath}: ${(error as Error).message ?? String(error)}`;
     diagnostics.append("warning", "fetch", message, Date.now());
     throw new Error(message);
   }
@@ -127,19 +188,20 @@ export async function pluginTransport(
   const plugin = module.default;
   if (!plugin || typeof plugin !== "object" ||
       typeof plugin.fetchAccountCredit !== "function") {
-    const message = `plugin ${pluginPath}: default export must be { fetchAccountCredit(authenticationKey, context?) }`;
+    const message = `${sideLabel} ${pluginPath}: default export must be { fetchAccountCredit(authenticationKey, context?) }`;
     diagnostics.append("warning", "fetch", message, Date.now());
     throw new Error(message);
   }
 
   try {
-    return await withTimeout(
+    const result = await withTimeout(
       Promise.resolve(plugin.fetchAccountCredit(token, context)),
       PLUGIN_TIMEOUT_MS,
-      `plugin ${pluginPath} fetchAccountCredit`,
+      `${sideLabel} ${pluginPath} fetchAccountCredit`,
     );
+    return { result, kind };
   } catch (error) {
-    const message = `plugin ${pluginPath} fetchAccountCredit: ${(error as Error).message ?? String(error)}`;
+    const message = `${sideLabel} ${pluginPath} fetchAccountCredit: ${(error as Error).message ?? String(error)}`;
     diagnostics.append("warning", "fetch", message, Date.now());
     throw new Error(message);
   }
@@ -151,7 +213,23 @@ export async function fetchForProviderById(
   token: string,
   signal: AbortSignal | undefined,
 ): Promise<Quota | Balance | null> {
-  if (!entry || !providerName) return null;
+  const r = await fetchForProviderByIdWithKind(providerName, entry, token, signal);
+  return r.data;
+}
+
+// v0.9.x — kind-returning sibling of fetchForProviderById. Same
+// dispatch + ensure pipeline but reports the override side
+// (`"user" | "builtin" | "missing"`) so the host can persist it
+// alongside the data in cache.json (m_pluginSource renderer reads
+// it back). The legacy `fetchForProviderById` shape is preserved
+// for direct callers and tests.
+export async function fetchForProviderByIdWithKind(
+  providerName: string | null,
+  entry: ProviderEntry | null,
+  token: string,
+  signal: AbortSignal | undefined,
+): Promise<{ data: Quota | Balance | null; pluginSource: PluginResolution }> {
+  if (!entry || !providerName) return { data: null, pluginSource: "missing" };
   const context: PluginContext = {
     providerId: providerName,
     type: entry.TYPE,
@@ -159,7 +237,7 @@ export async function fetchForProviderById(
     currencies: resolveEffectiveCurrencies(providerName, entry),
     ...(signal ? { signal } : {}),
   };
-  const partial = await pluginTransport(
+  const { result: partial, kind } = await pluginTransportWithKind(
     providerName,
     resolveAuthenticationKey(entry, token),
     context,
@@ -168,10 +246,14 @@ export async function fetchForProviderById(
   // decided to project; we run the canonical normaliser here so the
   // plugin author never has to know about ensureQuota /
   // ensureBalance / Quota / Balance types.
-  if (entry.TYPE === "Quota") return ensureQuota(partial);
-  if (entry.TYPE === "BALANCE") return ensureBalance(partial);
-  const exhaustive: never = entry.TYPE;
-  throw new Error(`unsupported provider TYPE: ${exhaustive}`);
+  let data: Quota | Balance | null;
+  if (entry.TYPE === "Quota")      data = ensureQuota(partial);
+  else if (entry.TYPE === "BALANCE") data = ensureBalance(partial);
+  else {
+    const exhaustive: never = entry.TYPE;
+    throw new Error(`unsupported provider TYPE: ${exhaustive}`);
+  }
+  return { data, pluginSource: kind };
 }
 
 export async function fetchQuota(

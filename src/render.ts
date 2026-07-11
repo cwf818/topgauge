@@ -175,7 +175,9 @@ type LabelAxis =
   | "contextSize" | "contextWindowsSize" | "contextUsedPercent" | "contextRemainingPercent" // v0.8.23+
   | "startTime" | "endTime" // v0.8.24+ — start/end of the tick statistics window
   | "quota"   // v0.9.0+ — quota module prefix ("quota(5h):123/500")
-  | "cost";   // vX.X.X+ — token cost module prefix ("cost:$0.0123")
+  | "cost"    // vX.X.X+ — token cost module prefix ("cost:$0.0123")
+  | "pluginSystem"        // vX.X.X+ — m_pluginSource glyph when built-in (default "⚙")
+  | "pluginUserDefined";  // vX.X.X+ — m_pluginSource glyph when user override (default "🎨")
 function labelFor(axis: LabelAxis): string {
   const labels = cfg().labels;
   switch (axis) {
@@ -209,6 +211,12 @@ function labelFor(axis: LabelAxis): string {
     // config.ts:DEFAULT_CONFIG.labels.labelTokenCost). Read by
     // m_tokenCost / m_accTokenCost / m_sumTokenCost.
     case "cost": return labels.labelTokenCost;
+    // vX.X.X+ — m_pluginSource glyph axes. Defaults "⚙" / "🎨"
+    // (set in config.ts:DEFAULT_CONFIG.labels). Users override
+    // via labels.labelPluginSystem / labels.labelPluginUserDefined
+    // — anything string-shaped works (e.g. "B:", "🔧", "[built-in]").
+    case "pluginSystem":       return labels.labelPluginSystem;
+    case "pluginUserDefined":  return labels.labelPluginUserDefined;
   }
 }
 
@@ -1199,6 +1207,18 @@ type RenderContext = {
   // falls back to local QUOTES in that case. Lifetime is one tick;
   // built fresh by `preFetchQuotes` and threaded into ctx here.
   quoteBodies?: Map<string, string>;
+  // v0.9.0+ — which side of the user-vs-builtin fence the active
+  // provider's plugin was loaded from on the most recent fetch.
+  // Populated by index.ts:main() from cache.json row
+  // `<provider>:pluginSource` (set by fetchProviderData right after
+  // a successful pluginTransportWithKind call). `null` when no
+  // provider matched, no cache row was ever written (fresh install),
+  // or the row has been evicted — m_pluginSource drops to no-op in
+  // all three cases per the "Drop 整个 module" decision 2026-07-11.
+  // Optional on the type so test fixtures and older callers (which
+  // never knew about plugin sources) can build a ctx without it;
+  // renderProviderLine normalizes missing → null at construction.
+  pluginSource?: "user" | "builtin" | null;
 };
 
 // v0.4.x — modules may declare a `type` filter so they only render
@@ -1971,6 +1991,24 @@ m_quota: Object.assign(
   // "v:n/a" placeholder (was: drop). Aligns with the bare-vs-inline
   // parity rule.
   m_version: (c) => (c.version ? wrapPlainDefault("m_version", `v${c.version}`, undefined) : placeholderBare("m_version", c)),
+  // v0.9.0+ — visual indicator of whether the active provider's
+  // plugin was loaded from the bundled built-in tree or from the
+  // user's query_plugins/ override dir. Glyph comes from the
+  // labels namespace (labels.labelPluginSystem /
+  // .labelPluginUserDefined) so users can override via config.json
+  // — defaults 📌 / 🎨 preserve the v0.9.x ship literals. No
+  // default tint — the symbol carries the meaning on its own, and
+  // the statusline has limited color budget. When the source is
+  // unknown (no provider matched, or cache row hasn't been written
+  // yet), the module returns null and the template drops it. Per
+  // the user's "Drop 整个 module" decision 2026-07-11 — we don't
+  // emit a "source:n/a" placeholder, so an unconfigured user with
+  // this token in their template sees no noise on the statusline.
+  m_pluginSource: (c) => {
+    if (c.pluginSource === "builtin") return labelFor("pluginSystem");
+    if (c.pluginSource === "user")    return labelFor("pluginUserDefined");
+    return null;
+  },
   // ----- v0.4.0+ token-usage modules -----
   // Each module is independent and returns null when its source data
   // isn't available, so users compose freely via lineTemplate. The
@@ -7021,6 +7059,13 @@ export function renderProviderLine(
     // pre-fetched bodies for this tick" and the renderer falls
     // back to local QUOTES.
     quoteBodies?: Map<string, string>;
+    // v0.9.0+ — optional. Which side of the user-vs-builtin fence
+    // the active provider's plugin was loaded from. Populated by
+    // `dispatch.ts:buildProviderLine` from the per-provider cache
+    // row. Absent → null → m_pluginSource drops to no-op (per the
+    // "Drop 整个 module" decision 2026-07-11 — we don't surface
+    // "source:n/a" for unconfigured users).
+    pluginSource?: "user" | "builtin" | null;
   },
 ): string {
   // v0.4.0+ — synthesize the contextWindow Window from
@@ -7074,6 +7119,10 @@ export function renderProviderLine(
     // v0.8.21+ — per-tick quote body map from preFetchQuotes.
     // Undefined when no address-mode m_quote token is active.
     quoteBodies: ctx.quoteBodies,
+    // v0.9.0+ — default to null so older callers (tests that
+    // construct ctx inline) don't have to thread the field.
+    // m_pluginSource drops to no-op in that case.
+    pluginSource: ctx.pluginSource ?? null,
   };
   // v0.8.14+ — `statuslineTemplate` is always a `string[]` after
   // loader-side auto-migration. `.slice()` keeps the snapshot-

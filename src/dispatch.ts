@@ -21,7 +21,7 @@
 // routes accordingly. Adding a new provider requires a matching
 // plugin module plus its config entry.
 
-import type { Quota, Balance } from "./api.ts";
+import type { Quota, Balance, PluginResolution } from "./api.ts";
 import {
   RED,
   renderProviderLine,
@@ -33,10 +33,29 @@ import {
   failLabelForProvider,
   getProviderEntry,
 } from "./providers.ts";
+import * as cache from "./cache.ts";
 import type { Provider, TokenSnapshot } from "./types.ts";
 
 // Tiny local alias — used twice in the empty-output guard below.
 const cfg = (): ReturnType<typeof configStore.get> => configStore.get();
+
+// v0.9.0+ — read the per-provider pluginSource row from cache.json.
+// cache.peek ignores TTL (returns the last-written value), so a user
+// adding/removing an override file reflects on the NEXT tick even
+// when the data cache row is still within TTL — important because
+// the side might change without the data changing. Returns null
+// when no provider matched / no cache row exists yet.
+//
+// The `PluginResolution` type also carries `"missing"` (the
+// "neither user nor built-in produced a file" case), but the
+// renderer treats that the same as null — both render to no-op —
+// so we collapse it here at the ctx boundary.
+function peekPluginSource(provider: Provider | null): "user" | "builtin" | null {
+  if (!provider) return null;
+  const cached = cache.peek<PluginResolution>(`${provider}:pluginSource`);
+  if (cached === "user" || cached === "builtin") return cached;
+  return null;
+}
 
 // Detect a "label-only" degenerate output: the renderer ran but every
 // module returned null, leaving just `m_modeLabel + s_space + s_dot`
@@ -124,6 +143,10 @@ function renderDataLine(
   stale: boolean,
   tokens: TokenSnapshot | null,
   quoteBodies?: Map<string, string>,
+  // "user" | "builtin" | null — same shape the ctx field accepts.
+  // "missing" is collapsed to null by the caller (peekPluginSource)
+  // since the renderer treats both as no-op.
+  pluginSource?: "user" | "builtin" | null,
 ): string | null {
   const entry = getProviderEntry(provider);
   const mode = resolveDisplayMode();
@@ -154,6 +177,7 @@ function renderDataLine(
       version: configStore.get().version,
       tokens,
       quoteBodies,
+      pluginSource: pluginSource ?? null,
     });
   }
   if (entry.TYPE === "Quota") {
@@ -177,6 +201,7 @@ function renderDataLine(
       version: configStore.get().version,
       tokens,
       quoteBodies,
+      pluginSource: pluginSource ?? null,
     });
   }
   if (entry.TYPE === "BALANCE") {
@@ -189,6 +214,7 @@ function renderDataLine(
       version: configStore.get().version,
       tokens,
       quoteBodies,
+      pluginSource: pluginSource ?? null,
     });
   }
   return null;
@@ -269,6 +295,7 @@ export function buildProviderLine(
         version: configStore.get().version,
         tokens,
         quoteBodies,
+        pluginSource: peekPluginSource(provider),
       });
       // Empty-output guard: the template ran but every module dropped
       // (no provider + no module-bearing tokens), leaving just
@@ -291,6 +318,7 @@ export function buildProviderLine(
     result.kind === "stale",
     tokens ?? null,
     quoteBodies,
+    peekPluginSource(provider),
   );
   // Empty-output guard. Two paths land here:
   //   (a) renderDataLine returned the literal null (provider has

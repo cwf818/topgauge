@@ -14,6 +14,10 @@ import {
 } from "./render.ts";
 import type { Interval } from "./render.ts";
 import { __resetForTest, type Config } from "./config.ts";
+import * as cache from "./cache.ts";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 
 const RESET = "\x1b[0m";
 const BRIGHT_GREEN = "\x1b[38;5;41m";
@@ -2184,5 +2188,298 @@ describe("formatBalanceLine — stale suffix integration", () => {
       minValue: 25,
     });
     assert.ok(!line.includes("ago"));
+  });
+});
+
+// v0.9.x — m_pluginSource module: visual indicator of which side
+// of the user-vs-builtin fence the active provider's plugin was
+// loaded from. 📌 for built-in (shipped-with-the-plugin), 🎨 for
+// user override (query_plugins/<id>/), drop (no-op) when no cache
+// row exists or the source is unrecognizable. No default tint —
+// the symbol carries the meaning on its own (per the user's
+// "user |color| override only" decision 2026-07-11).
+describe("m_pluginSource (v0.9.x)", () => {
+  // The bar/window subtests above use `quotaLine(iv, template)`;
+  // here we don't need interval data — the pluginSource glyph
+  // is provider-side metadata, not plan data. We just construct
+  // a minimal ctx with the pluginSource flag.
+  const nowMs = Date.parse("2026-06-24T12:00:00Z");
+
+  function lineFor(
+    pluginSource: "user" | "builtin" | null | undefined,
+    template: string,
+  ): string {
+    __resetForTest({ statuslineTemplate: [template] });
+    return renderProviderLine("minimax", {
+      mode: "used",
+      nowMs,
+      shortInterval: null,
+      midInterval: null,
+      longInterval: null,
+      balance: null,
+      ageMs: 5 * 60_000,
+      stale: false,
+      version: "",
+      pluginSource: pluginSource ?? null,
+    });
+  }
+
+  it("renders 📌 for built-in (no tint)", () => {
+    const line = lineFor("builtin", "m_pluginSource");
+    // No ANSI tint around the glyph (per "user |color| override
+    // only" — no DEFAULT_COLORS.m_pluginSource).
+    assert.ok(strip(line).includes("📌"),
+      `built-in should render 📌, got: ${strip(line)}`);
+    assert.ok(!line.includes("\x1b[38;5;"),
+      `built-in glyph should NOT be color-tinted, got: ${line}`);
+  });
+
+  it("renders 🎨 for user (no tint)", () => {
+    const line = lineFor("user", "m_pluginSource");
+    assert.ok(strip(line).includes("🎨"),
+      `user should render 🎨, got: ${strip(line)}`);
+    assert.ok(!line.includes("\x1b[38;5;"),
+      `user glyph should NOT be color-tinted, got: ${line}`);
+  });
+
+  it("drops to no-op when ctx.pluginSource is null", () => {
+    // Per the "Drop 整个 module" decision 2026-07-11 — the module
+    // returns null and the template emits nothing. We test this
+    // by asserting the line is the empty string (no m_pluginSource
+    // glyph, no placeholder, no label).
+    const line = lineFor(null, "m_pluginSource");
+    assert.equal(strip(line), "",
+      `null pluginSource should drop, got: '${line}'`);
+  });
+
+  it("drops when ctx.pluginSource is omitted entirely", () => {
+    // Older callers + test fixtures don't thread the field. The
+    // renderer normalizes undefined → null and drops.
+    const line = lineFor(undefined, "m_pluginSource");
+    assert.equal(strip(line), "",
+      `omitted pluginSource should drop, got: '${line}'`);
+  });
+
+  it("inline `m_pluginSource` in a multi-token template composes correctly", () => {
+    // When m_pluginSource sits alongside another module, both
+    // should appear in the rendered line and the glyph carries
+    // no surrounding color while the other module's tint is
+    // preserved (regression guard: m_pluginSource must not
+    // accidentally absorb a template-wide tinting pass).
+    __resetForTest({ statuslineTemplate: ["m_pluginSource", "m_version"] });
+    const line = renderProviderLine("minimax", {
+      mode: "used",
+      nowMs,
+      shortInterval: null,
+      midInterval: null,
+      longInterval: null,
+      balance: null,
+      ageMs: 5 * 60_000,
+      stale: false,
+      version: "0.8.47",
+      pluginSource: "user",
+    });
+    assert.ok(strip(line).includes("🎨"),
+      `expected 🎨 from m_pluginSource in composed line, got: ${strip(line)}`);
+    assert.ok(strip(line).includes("v0.8.47"),
+      `expected v0.8.47 from m_version in composed line, got: ${strip(line)}`);
+  });
+
+  it("bare `m_pluginSource` token in the template returns the glyph (no wrap)", () => {
+    // The bare MODULES.m_pluginSource entry returns a string
+    // directly when the ctx has a recognized kind. Verified
+    // via renderProviderLine (template loop exercises MODULES
+    // internally); the rendered output is the bare glyph.
+    const line = lineFor("builtin", "m_pluginSource");
+    // Bare path: NO leading "Usage:" label, NO reset countdown —
+    // just the glyph itself. Stripped line should equal "📌"
+    // exactly when no other modules are in the template.
+    assert.equal(strip(line), "📌",
+      `bare m_pluginSource should emit just the glyph, got: '${line}'`);
+  });
+
+  it("built-in and user glyphs are visually distinct", () => {
+    // Pin that the two glyphs are NOT the same character — a
+    // typo in either direction (e.g. 📌/📌 or 🎨/🖌) would be
+    // easy to miss without a non-substring assertion.
+    const builtin = lineFor("builtin", "m_pluginSource");
+    const user    = lineFor("user",    "m_pluginSource");
+    assert.notEqual(strip(builtin), strip(user),
+      `built-in and user glyphs should be distinct, both rendered: ${strip(builtin)} vs ${strip(user)}`);
+  });
+
+  // vX.X.X+ — labels.labelPluginSystem / labels.labelPluginUserDefined
+  // override path. The two glyphs are no longer hardcoded in
+  // MODULES.m_pluginSource; they flow through labelFor() and read
+  // from config.labels. A future schema or wiring regression here
+  // would silently revert the v0.7.x hardcoded literals — these
+  // tests pin the new contract.
+  it("labels.labelPluginSystem override renders the user's string for built-in", () => {
+    __resetForTest({
+      statuslineTemplate: ["m_pluginSource"],
+      labels: { labelPluginSystem: "[B]" },
+    } as Partial<Config>);
+    const line = renderProviderLine("minimax", {
+      mode: "used",
+      nowMs,
+      shortInterval: null,
+      midInterval: null,
+      longInterval: null,
+      balance: null,
+      ageMs: 5 * 60_000,
+      stale: false,
+      version: "0.0.0",
+      tokens: null,
+      pluginSource: "builtin",
+    });
+    assert.equal(strip(line), "[B]",
+      `labelPluginSystem override should render "[B]" verbatim, got: ${strip(line)}`);
+  });
+
+  it("labels.labelPluginUserDefined override renders the user's string for user", () => {
+    __resetForTest({
+      statuslineTemplate: ["m_pluginSource"],
+      labels: { labelPluginUserDefined: "[U]" },
+    } as Partial<Config>);
+    const line = renderProviderLine("minimax", {
+      mode: "used",
+      nowMs,
+      shortInterval: null,
+      midInterval: null,
+      longInterval: null,
+      balance: null,
+      ageMs: 5 * 60_000,
+      stale: false,
+      version: "0.0.0",
+      tokens: null,
+      pluginSource: "user",
+    });
+    assert.equal(strip(line), "[U]",
+      `labelPluginUserDefined override should render "[U]" verbatim, got: ${strip(line)}`);
+  });
+
+  it("labelPluginSystem override does not leak into labelPluginUserDefined", () => {
+    // Independent axes: setting only labelPluginSystem must NOT
+    // affect the user override (it should still render the
+    // pinned default 📌/🎨 from outside this test path). deepMerge
+    // keeps the other labels axis at its default.
+    __resetForTest({
+      statuslineTemplate: ["m_pluginSource"],
+      labels: { labelPluginSystem: "[B]" },
+    } as Partial<Config>);
+    const userLine = renderProviderLine("minimax", {
+      mode: "used",
+      nowMs,
+      shortInterval: null,
+      midInterval: null,
+      longInterval: null,
+      balance: null,
+      ageMs: 5 * 60_000,
+      stale: false,
+      version: "0.0.0",
+      tokens: null,
+      pluginSource: "user",
+    });
+    // Default labelPluginUserDefined = "🎨"
+    assert.equal(strip(userLine), "🎨",
+      `labelPluginSystem override should not affect labelPluginUserDefined default, got: ${strip(userLine)}`);
+  });
+
+  it("labelPluginUserDefined override does not leak into labelPluginSystem", () => {
+    // Symmetric — override the user axis and verify built-in
+    // still emits the pinned default 📌.
+    __resetForTest({
+      statuslineTemplate: ["m_pluginSource"],
+      labels: { labelPluginUserDefined: "[U]" },
+    } as Partial<Config>);
+    const builtinLine = renderProviderLine("minimax", {
+      mode: "used",
+      nowMs,
+      shortInterval: null,
+      midInterval: null,
+      longInterval: null,
+      balance: null,
+      ageMs: 5 * 60_000,
+      stale: false,
+      version: "0.0.0",
+      tokens: null,
+      pluginSource: "builtin",
+    });
+    assert.equal(strip(builtinLine), "📌",
+      `labelPluginUserDefined override should not affect labelPluginSystem default, got: ${strip(builtinLine)}`);
+  });
+});
+
+// v0.9.x — cache.json row `<provider>:pluginSource` round-trip:
+//   index.ts writes the kind right after a successful
+//   pluginTransportWithKind call;
+//   dispatch.ts:peekPluginSource reads it back via cache.peek.
+// The disk-shadow guarantees the kind survives across ticks even
+// when the data row is still within TTL — important because the
+// side can change without the data changing (user adds/removes an
+// override file). TTL is checked but the read path uses cache.peek
+// (ignores TTL) so a stale data row doesn't hide a fresh kind.
+describe("pluginSource cache row (v0.9.x)", () => {
+  // Stub HOME so cache.flushToDisk writes to a tmp file rather
+  // than the real ~/.claude/plugins/topgauge-cc/state/cache.json.
+  let oldHome: string | undefined;
+  let oldUserProfile: string | undefined;
+  let tempHome: string;
+  beforeEach(() => {
+    oldHome = process.env.HOME;
+    oldUserProfile = process.env.USERPROFILE;
+    tempHome = mkdtempSync(resolve(tmpdir(), "topgauge-ps-"));
+    process.env.HOME = tempHome;
+    process.env.USERPROFILE = tempHome;
+  });
+  afterEach(() => {
+    if (oldHome === undefined) delete process.env.HOME;
+    else process.env.HOME = oldHome;
+    if (oldUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = oldUserProfile;
+    rmSync(tempHome, { recursive: true, force: true });
+  });
+
+  it("set + peek round-trip preserves the kind string", () => {
+    cache.set("minimax:pluginSource", "user", 60_000);
+    const got = cache.peek<"user" | "builtin" | "missing">("minimax:pluginSource");
+    assert.equal(got, "user");
+  });
+
+  it("peek returns null when no row was written", () => {
+    // Fresh install state — neither user nor built-in row exists.
+    const got = cache.peek<"user" | "builtin" | "missing">("unseen-provider:pluginSource");
+    assert.equal(got, null);
+  });
+
+  it("peek ignores TTL (kind can outlive the data row)", () => {
+    // v0.9.x contract: peekPluginSource uses cache.peek which
+    // ignores TTL — a user adding/removing an override file
+    // should reflect on the NEXT tick even when the data cache
+    // row is still within TTL. To exercise the "past TTL but
+    // peek still returns" path, write a row with a tiny TTL
+    // (so the in-memory eviction flushes it out), then rewrite
+    // its `at` field to be old via the on-disk file, and
+    // confirm cache.peek ignores the TTL on the read path.
+    //
+    // Note: cache.flushToDisk proactively evicts any row whose
+    // ttlMs has elapsed at flush time, so the row wouldn't
+    // survive a normal set()+set() cycle with TTL=0. The on-disk
+    // rewrite path is the canonical way to test "TTL-expired
+    // row survives in the file".
+    cache.set("deepseek:pluginSource", "builtin", 60_000);
+    // Reach into the on-disk file and backdate the `at` field
+    // so the row is logically expired. cache.peek doesn't read
+    // TTL on the get path, so it should still return the value.
+    const cachePath = resolve(tempHome, ".claude", "plugins", "topgauge-cc", "state", "cache.json");
+    const raw = JSON.parse(readFileSync(cachePath, "utf8")) as Record<string, { at: number; value: string; ttlMs: number }>;
+    const row = raw["deepseek:pluginSource"];
+    assert.ok(row, "the just-set row should be on disk");
+    row.at = row.at - 24 * 60 * 60_000; // 24h in the past — definitely past any TTL
+    writeFileSync(cachePath, JSON.stringify(raw));
+    // Reset the in-memory cache so the next peek re-reads disk.
+    cache.__resetForTest();
+    const got = cache.peek<"user" | "builtin" | "missing">("deepseek:pluginSource");
+    assert.equal(got, "builtin");
   });
 });

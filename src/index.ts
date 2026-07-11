@@ -33,7 +33,7 @@ import { type FetchResult, buildProviderLine } from "./dispatch.ts";
 import { applyProviderOverrides, configStore, loadConfig } from "./config.ts";
 import * as statusStore from "./status-store.ts";
 import {
-  fetchForProvider,
+  fetchForProviderWithKind,
   getProviderEntry,
   matchProvider,
 } from "./providers.ts";
@@ -146,13 +146,29 @@ async function fetchProviderData(
   }
 
   try {
-    const data = await fetchForProvider(
+    // v0.9.0+ — fetchForProviderWithKind also reports which side of
+    // the user-vs-builtin fence resolved the provider. The kind is
+    // persisted into cache.json under a sibling key
+    // (`<provider>:pluginSource`) so the m_pluginSource renderer can
+    // read it back across ticks even on cached data hits. The data
+    // cache row and the pluginSource cache row share a TTL — a stale
+    // data row also renders a stale kind (which is correct: the user
+    // could have swapped their override file since the last fetch,
+    // so the renderer reads the kind via cache.peek WITHOUT a TTL
+    // gate — see src/render.ts m_pluginSource).
+    const { data, pluginSource } = await fetchForProviderWithKind(
       provider,
       token,
       AbortSignal.timeout(timeoutMs),
     );
     if (data) {
       cache.set(cacheKey, data, ttlMs);
+      // Persist the override side alongside the data row. Same TTL
+      // so the two rows age together. The renderer treats this as a
+      // hint — it does NOT short-circuit on TTL (cache.peek ignores
+      // expiry) so a user adding/removing an override file reflects
+      // on the next tick without waiting for the data row to expire.
+      cache.set(`${cacheKey}:pluginSource`, pluginSource, ttlMs);
       // ageMs=0 on a brand-new fetch — the renderer suppresses the
       // suffix on fresh ticks (stale=false gate).
       return { kind: "fresh", data, ageMs: 0 };
