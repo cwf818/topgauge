@@ -1207,6 +1207,350 @@ describe("m_countdown5h/7d — stale AND past-due renders '(n/a🕒 5h)' in STAL
   });
 });
 
+// vX.X.X+ — m_countdown / m_quota placeholders are term-aware
+// AND uniformly dashes-left across all terms. The pre-vX.X.X
+// shape mixed directions: short / mid rendered "<label>:--" but
+// long rendered "--:<label>". vX.X.X unifies all terms on the
+// dashes-left convention with the label bracketed on the right:
+//   - m_countdown        → "--:(<label>)"
+//   - m_quota            → "quota:--:(<label>)"
+// Baked-in fallback labels (term:short → "5h", term:mid → "7d",
+// term:long → "30d") resolve the same way as the live renderer
+// (params.term → Interval.label || fallback), so a configured
+// mid-interval with label="8d" still wins.
+describe("m_countdown / m_quota term-aware placeholders (vX.X.X+)", () => {
+  const nowMs = Date.parse("2026-06-24T12:00:00Z");
+
+  it("m_countdown|term|mid placeholder reads '--:(7d)' when midInterval is null", () => {
+    // No mid-interval at all → placeholder falls back to the
+    // built-in "7d" label rendered as "--:(7d)" (dashes left,
+    // label bracketed right), the same shape as
+    // term=short / term=long. The legacy "<label>:--" form for
+    // short/mid is GONE — every term now uses the dashes-left
+    // contract.
+    __resetForTest({
+      statuslineTemplate: ["m_countdown|term:mid"],
+      timeFormat: { minUnit: "m", maxUnitCount: 2 },
+    });
+    try {
+      const line = renderProviderLine("minimax", {
+        mode: "used", nowMs,
+        shortInterval: null,
+        midInterval: null,
+        longInterval: null, balance: null,
+        ageMs: 5 * 60_000, stale: false, version: "",
+      });
+      const clean = strip(line);
+      assert.ok(
+        clean.includes("--:(7d)"),
+        `placeholder should use --:(7d) fallback for term=mid, got: ${clean}`,
+      );
+      assert.ok(
+        !clean.includes("5h:--") && !clean.includes("7d:--") && !clean.includes("30d:--"),
+        `legacy <label>:<dashes> shapes must NOT leak into any term placeholder, got: ${clean}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("m_countdown|term|long placeholder reads '--:(30d)' when longInterval is null", () => {
+    // Same uniform shape for term=long: "--:(30d)".
+    __resetForTest({
+      statuslineTemplate: ["m_countdown|term:long"],
+      timeFormat: { minUnit: "m", maxUnitCount: 2 },
+    });
+    try {
+      const line = renderProviderLine("minimax", {
+        mode: "used", nowMs,
+        shortInterval: null,
+        midInterval: null,
+        longInterval: null, balance: null,
+        ageMs: 5 * 60_000, stale: false, version: "",
+      });
+      const clean = strip(line);
+      assert.ok(
+        clean.includes("--:(30d)"),
+        `placeholder should use --:(30d) fallback for term=long, got: ${clean}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("m_countdown|term|short placeholder reads '--:(5h)' when shortInterval is null", () => {
+    // Sanity-check that term=short ALSO uses the new dashes-left
+    // shape (regression guard: short used to be "5h:--").
+    __resetForTest({
+      statuslineTemplate: ["m_countdown|term:short"],
+      timeFormat: { minUnit: "m", maxUnitCount: 2 },
+    });
+    try {
+      const line = renderProviderLine("minimax", {
+        mode: "used", nowMs,
+        shortInterval: null,
+        midInterval: null,
+        longInterval: null, balance: null,
+        ageMs: 5 * 60_000, stale: false, version: "",
+      });
+      const clean = strip(line);
+      assert.ok(
+        clean.includes("--:(5h)"),
+        `placeholder should use --:(5h) fallback for term=short, got: ${clean}`,
+      );
+      assert.ok(
+        !clean.includes("5h:--"),
+        `legacy 5h:-- must NOT leak into term=short placeholder, got: ${clean}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("m_quota|term|mid placeholder reads 'quota:--:(7d)' when midInterval is null", () => {
+    // m_quota placeholder used to be hard-coded `quota:--`
+    // (no per-term unit at all). vX.X.X+ unifies on
+    // `${prefix}--:(<label>)` for all three terms.
+    __resetForTest({
+      statuslineTemplate: ["m_quota|term:mid"],
+      timeFormat: { minUnit: "m", maxUnitCount: 2 },
+    });
+    try {
+      const line = renderProviderLine("minimax", {
+        mode: "used", nowMs,
+        shortInterval: null,
+        midInterval: null,
+        longInterval: null, balance: null,
+        ageMs: 5 * 60_000, stale: false, version: "",
+      });
+      const clean = strip(line);
+      assert.ok(
+        clean.includes("quota:--:(7d)"),
+        `placeholder should embed --:(7d) for term=mid, got: ${clean}`,
+      );
+      assert.ok(
+        !clean.includes("quota:(5h):--") &&
+        !clean.includes("quota:(7d):--") &&
+        !clean.includes("quota:(30d):--"),
+        `legacy "quota:(<label>):--" shapes must NOT leak, got: ${clean}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("m_quota|term|long placeholder reads 'quota:--:(30d)' when longInterval is null", () => {
+    // Same uniform shape, just with the 30d fallback.
+    __resetForTest({
+      statuslineTemplate: ["m_quota|term:long"],
+      timeFormat: { minUnit: "m", maxUnitCount: 2 },
+    });
+    try {
+      const line = renderProviderLine("minimax", {
+        mode: "used", nowMs,
+        shortInterval: null,
+        midInterval: null,
+        longInterval: null, balance: null,
+        ageMs: 5 * 60_000, stale: false, version: "",
+      });
+      const clean = strip(line);
+      assert.ok(
+        clean.includes("quota:--:(30d)"),
+        `placeholder should embed --:(30d) for term=long, got: ${clean}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("m_quota|term|mid placeholder uses the live midInterval.label when present", () => {
+    // When the chosen interval IS present, the placeholder still
+    // falls back to its label via `intervalForTerm`. The shape
+    // remains "quota:--:(<label>)".
+    __resetForTest({
+      statuslineTemplate: ["m_quota|term:mid"],
+      timeFormat: { minUnit: "m", maxUnitCount: 2 },
+    });
+    try {
+      const line = renderProviderLine("minimax", {
+        mode: "used", nowMs,
+        shortInterval: null,
+        midInterval: winToIv({ pct: 50, resetAt: null }, "7d"),
+        longInterval: null, balance: null,
+        ageMs: 5 * 60_000, stale: false, version: "",
+      });
+      const clean = strip(line);
+      // midInterval.label is "7d" and the quota body returns null
+      // (no remainingQuota / usedQuota / limitQuota mapping) → the
+      // placeholder fires and uses the resolved midInterval.label.
+      assert.ok(
+        clean.includes("quota:--:(7d)"),
+        `placeholder should read midInterval.label=7d, got: ${clean}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("bare m_countdown placeholder reads '--:(5h)' (term=short default)", () => {
+    // The bare-MODULES path defaults to term=short upstream of
+    // the placeholder body, so it now also reads the unified
+    // dashes-left shape (regression guard for the bare path —
+    // used to be "5h:--" pre-vX.X.X).
+    __resetForTest({
+      statuslineTemplate: ["m_countdown"],
+      timeFormat: { minUnit: "m", maxUnitCount: 2 },
+    });
+    try {
+      const line = renderProviderLine("minimax", {
+        mode: "used", nowMs,
+        shortInterval: null,
+        midInterval: null,
+        longInterval: null, balance: null,
+        ageMs: 5 * 60_000, stale: false, version: "",
+      });
+      const clean = strip(line);
+      assert.ok(
+        clean.includes("--:(5h)"),
+        `bare m_countdown placeholder must use unified --:(5h) shape, got: ${clean}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+});
+
+// vX.X.X+ — `m_quota` body renders `used/limit` from the
+// configured Interval. The legacy behavior was: when only
+// `limitQuota` was set (no `usedQuota`), it fell through to
+// `0/limit`. That was misleading for Copilot-style payloads
+// where `remainingQuota = limit` (all 1500 of 1500 remaining) —
+// the renderer said "0 used" instead of "0 used" — well, the
+// math was right but the user couldn't see the remaining
+// portion. The new branch derives `used = limit - remaining`
+// when `remainingQuota` is the only quota axis set.
+describe("m_quota body — remainingQuota fallback (vX.X.X+)", () => {
+  const nowMs = Date.parse("2026-06-24T12:00:00Z");
+
+  function quotaOnly(iv: {
+    remainingPercent?: number | null;
+    remainingQuota?: number | null;
+    usedQuota?: number | null;
+    limitQuota?: number | null;
+  }) {
+    __resetForTest({
+      statuslineTemplate: ["m_quota|term:long"],
+      timeFormat: { minUnit: "m", maxUnitCount: 2 },
+    });
+    const base: import("./render.ts").Interval = {
+      windowId: "30d",
+      label: "30d",
+      startAt: null,
+      endAt: null,
+      intervalMs: null,
+      usedPercent: null,
+      remainingPercent: null,
+      remainingQuota: null,
+      usedQuota: null,
+      limitQuota: null,
+    };
+    return renderProviderLine("minimax", {
+      mode: "used", nowMs,
+      shortInterval: null,
+      midInterval: null,
+      longInterval: { ...base, ...iv },
+      balance: null,
+      ageMs: 5 * 60_000, stale: false, version: "",
+    });
+  }
+
+  it("remainingQuota = limit → renders '0/1500' (Copilot untouched / no spend)", () => {
+    // 1500 remaining of 1500 limit ⇒ used should be 0, and the
+    // result happens to coincide with the legacy "0/limit"
+    // branch. The fix's purpose is to keep the renderer
+    // consistent across payloads where `remaining` < `limit`.
+    try {
+      const line = quotaOnly({ remainingQuota: 1500, limitQuota: 1500 });
+      const clean = strip(line);
+      assert.ok(
+        clean.includes("quota:(30d):0/1500"),
+        `expected quota:(30d):0/1500, got: ${clean}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("remainingQuota < limit → renders '<used>/<limit>' (the user's bug)", () => {
+    // The case the user reported: 1500 remaining of 1500 used
+    // makes no sense — but with a paid plan, e.g. 735 remaining
+    // of 1500 ⇒ used = 765. The legacy renderer emitted "0/1500";
+    // vX.X.X+ correctly emits "765/1500".
+    try {
+      const line = quotaOnly({ remainingQuota: 735, limitQuota: 1500 });
+      const clean = strip(line);
+      assert.ok(
+        clean.includes("quota:(30d):765/1500"),
+        `expected quota:(30d):765/1500 (used = limit - remaining), got: ${clean}`,
+      );
+      assert.ok(
+        !clean.includes("0/1500"),
+        `legacy 0/1500 must NOT leak when remainingQuota < limitQuota, got: ${clean}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("usedQuota + limitQuota ⇒ unchanged (legacy branch wins when both set)", () => {
+    // When the upstream actually supplies `usedQuota` (MiniMax
+    // does), the new branch must not preempt the legacy path —
+    // a stale `remainingQuota` from a bug in the upstream
+    // wouldn't accidentally rewrite the displayed used figure.
+    try {
+      const line = quotaOnly({ usedQuota: 42, limitQuota: 1500, remainingQuota: 1458 });
+      const clean = strip(line);
+      assert.ok(
+        clean.includes("quota:(30d):42/1500"),
+        `legacy used+limit path should still win, got: ${clean}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("remainingQuota clamping — drift (rounding / refund) stays in [0, limit]", () => {
+    // remainingQuota > limitQuota should never produce a
+    // negative used figure. (Math.max(0, …) keeps it at 0.)
+    try {
+      const line = quotaOnly({ remainingQuota: 1600, limitQuota: 1500 });
+      const clean = strip(line);
+      assert.ok(
+        clean.includes("quota:(30d):0/1500"),
+        `over-the-limit remaining clamps used to 0, got: ${clean}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("only limitQuota set (no used / remaining) → '0/limit' fallback unchanged", () => {
+    // Truly-quota-less upstream (the legacy "0/limit" branch)
+    // still wins — preserves the contract for users whose config
+    // only maps `limitQuota` from the upstream response.
+    try {
+      const line = quotaOnly({ remainingQuota: null, limitQuota: 1500 });
+      const clean = strip(line);
+      assert.ok(
+        clean.includes("quota:(30d):0/1500"),
+        `legacy 0/limit branch must still fire, got: ${clean}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+});
+
 describe("formatStaleSuffix", () => {
   it("returns empty only for non-finite ageMs; ageMs = 0 renders the X-ago label", () => {
     // v0.4.0: formatStaleSuffix no longer short-circuits on ageMs <= 0.

@@ -73,5 +73,10 @@
       "COMPARE_METHOD": "EXACT",
       "intervals": {}
     }
+  },
+  "tokenPrices": {
+    "MiniMax-M3":      { "in": 10000, "out": 20000, "cachedIn": 5000, "currency": "USD" },
+    "claude-opus-4-8": { "in": 15000, "out": 75000, "cachedIn": 1500, "currency": "USD" },
+    "deepseek-chat":   { "in":   200, "out":  2000, "cachedIn":   50, "currency": "CNY" }
   }
 }

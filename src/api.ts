@@ -42,7 +42,7 @@ export {
 } from "./plugins/parsers.ts";
 
 const PLUGIN_TIMEOUT_MS = 5_000;
-const BUILTIN_PLUGIN_IDS = new Set(["minimax", "deepseek"]);
+const BUILTIN_PLUGIN_IDS = new Set(["minimax", "deepseek", "copilot"]);
 const PROVIDER_ID_RE = /^[A-Za-z0-9_-]+$/;
 
 export function queryPluginsDir(): string {

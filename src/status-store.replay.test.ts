@@ -150,10 +150,10 @@ describe("status-store — v0.8.29 cold-slot JSONL replay", () => {
     statusStore.appendSample("D:\\test", "sess-X", makeSample({ at: 1_000_003, in: 999, out: 999, apiMs: 9999, model: "model-B", startAt: 750_000 }));
     statusStore.appendSample("D:\\test", "sess-X", makeSample({ at: 1_000_004, in: 50, out: 25, apiMs: 500, model: "model-A", startAt: 700_000 }));
 
-    statusStore.processAndSaveTick("D:\\test", validTokens({ modelDisplayName: "model-A" }));
+    statusStore.processAndSaveTick("D:\\test", validTokens({ modelId: "model-A" }));
 
     const slot = statusStore.readAccumulator("model", {
-      modelDisplayName: "model-A",
+      modelId: "model-A",
       cwd: "D:\\test",
     });
     assert.ok(slot, "model-A slot exists after replay");

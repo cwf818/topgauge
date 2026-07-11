@@ -122,6 +122,12 @@ export function parseTokenSnapshot(raw: string): TokenSnapshot | null {
     },
     sessionName: strOrNull(r.session_name),
     modelDisplayName: strOrNull(modelObj?.display_name),
+    // v0.9.x — read stdin.model.id as the canonical active-model
+    // identifier. Powers tokenPrices lookup (per-model pricing
+    // dict), JSONL sample.model stamp, and per-model accumulator
+    // slot key. Independent of modelDisplayName so the display axis
+    // (m_model) and the id axis (cost modules) can diverge.
+    modelId: strOrNull(modelObj?.id),
     effort,
     repo,
     ccversion: strOrNull(r.version),

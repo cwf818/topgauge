@@ -268,6 +268,7 @@ describe("buildProviderLine — null provider (no ANTHROPIC_BASE_URL match)", ()
     cost: { totalDurationMs: 600_000, totalApiDurationMs: 60_000, totalLinesAdded: 3965, totalLinesRemoved: 967 },
     sessionName: "strip-diagnostics-display",
     modelDisplayName: "MiniMax-M3",
+    modelId: "MiniMax-M3",
     effort: "high",
     repo: { host: "github.com", owner: "cwf818", name: "topgauge-cc" },
     ccversion: "2.1.191",

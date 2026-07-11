@@ -332,15 +332,19 @@ const DEFAULT_CONFIG: {
   // `["m_template|_X"]` form with a one-shot warn.
   statuslineTemplate: string[];
   tokenFormat: typeof DEFAULT_TOKEN_FORMAT;
-  // vX.X.X+ — per-token pricing for the m_tokenCost / m_accTokenCost /
-  // m_sumTokenCost modules. All prices default to 0 (opt-in). When all
-  // three are 0 the cost modules render placeholder / "n/a".
-  tokenPrice: {
-    in: number;      // price per input token
-    out: number;     // price per output token
-    cachedIn: number;// price per cache-read token
-    currency: string;// currency code e.g. "USD", "CNY"
-  };
+  // v0.9.x — per-model token pricing dict for the m_tokenCost /
+  // m_accTokenCost / m_sumTokenCost modules. Keyed by stdin.model.id
+  // (NOT display_name). Each value has the same {in, out, cachedIn,
+  // currency} shape as the legacy tokenPrice field (removed in
+  // v0.9.x — no compat shim). Missing keys render cost:n/a
+  // placeholder. Default `{}` means every model is a miss → every
+  // cost module renders cost:n/a until the user opts in.
+  tokenPrices: Record<string, {
+    in: number;       // price per input token
+    out: number;      // price per output token
+    cachedIn: number; // price per cache-read token
+    currency: string; // currency code e.g. "USD", "CNY"
+  }>;
   // Plugin version, populated at startup by index.ts from
   // .claude-plugin/plugin.json. The m_version display module reads
   // this field; tests inject values via __resetForTest.
@@ -436,13 +440,10 @@ const DEFAULT_CONFIG: {
   lineTemplates: DEFAULT_LINE_TEMPLATES,
   statuslineTemplate: DEFAULT_STATUSLINE_TEMPLATE,
   tokenFormat: DEFAULT_TOKEN_FORMAT,
-  // vX.X.X+ — per-token pricing defaults (all zero — opt-in).
-  tokenPrice: {
-    in: 0,
-    out: 0,
-    cachedIn: 0,
-    currency: "USD",
-  },
+  // v0.9.x — tokenPrices defaults (empty dict — opt-in per model).
+  // Every model id is a lookup miss by default, so the cost
+  // modules render cost:n/a until the user adds entries.
+  tokenPrices: {},
   version: "",
   providers: DEFAULT_PROVIDERS,
   intervals: {},
@@ -1287,30 +1288,44 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
     }
   }
 
-  // vX.X.X+ — tokenPrice: opt-in pricing for m_tokenCost family.
-  // All sub-keys optional; missing/invalid → keep default (zero).
+  // v0.9.x — tokenPrices: opt-in per-model pricing for m_tokenCost
+  // family. Top-level keys are stdin.model.id values. The legacy
+  // tokenPrice (singular, scalar) was REMOVED in v0.9.x — if seen,
+  // emit a stderr warn and ignore it. No compat shim (per
+  // [[new-feature-convention]]).
   if ("tokenPrice" in raw) {
-    const tp = raw.tokenPrice;
+    warn("tokenPrice is removed; use tokenPrices (per-model dict keyed by model.id) instead — ignoring");
+  }
+  if ("tokenPrices" in raw) {
+    const tp = raw.tokenPrices;
     if (tp && typeof tp === "object" && !Array.isArray(tp)) {
-      const tpm = tp as Record<string, unknown>;
-      for (const key of ["in", "out", "cachedIn"] as const) {
-        if (key in tpm) {
-          if (typeof tpm[key] === "number" && Number.isFinite(tpm[key]) && (tpm[key] as number) >= 0) {
-            out.tokenPrice[key] = tpm[key] as number;
-          } else {
-            warn(`tokenPrice.${key} must be a non-negative number; using default`);
+      for (const [modelId, entry] of Object.entries(tp as Record<string, unknown>)) {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+          warn(`tokenPrices.${modelId} must be an object; ignoring entry`);
+          continue;
+        }
+        const em = entry as Record<string, unknown>;
+        const built = { in: 0, out: 0, cachedIn: 0, currency: "USD" };
+        for (const key of ["in", "out", "cachedIn"] as const) {
+          if (key in em) {
+            if (typeof em[key] === "number" && Number.isFinite(em[key] as number) && (em[key] as number) >= 0) {
+              built[key] = em[key] as number;
+            } else {
+              warn(`tokenPrices.${modelId}.${key} must be a non-negative number; using default`);
+            }
           }
         }
-      }
-      if ("currency" in tpm) {
-        if (typeof tpm.currency === "string" && tpm.currency.length > 0) {
-          out.tokenPrice.currency = tpm.currency.toUpperCase();
-        } else {
-          warn("tokenPrice.currency must be a non-empty string; using default");
+        if ("currency" in em) {
+          if (typeof em.currency === "string" && (em.currency as string).length > 0) {
+            built.currency = (em.currency as string).toUpperCase();
+          } else {
+            warn(`tokenPrices.${modelId}.currency must be a non-empty string; using default`);
+          }
         }
+        out.tokenPrices[modelId] = built;
       }
     } else {
-      warn("tokenPrice must be an object; using default");
+      warn("tokenPrices must be an object; using default {}");
     }
   }
 

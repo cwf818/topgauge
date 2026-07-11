@@ -80,6 +80,12 @@ const fakeSnapshot = (overrides: Partial<TokenSnapshot> = {}): TokenSnapshot => 
   // v0.4.0+ — session identity / metadata / context stats
   sessionName: "strip-diagnostics-display",
   modelDisplayName: "MiniMax-M3",
+  // v0.9.x — model id (stdin.model.id). Powers tokenPrices
+  // lookup, per-model slot key, JSONL sample.model stamp.
+  // Kept identical to modelDisplayName so the default fake
+  // snapshot is internally consistent (a fixture can override
+  // either or both independently).
+  modelId: "MiniMax-M3",
   effort: "high",
   repo: { host: "github.com", owner: "cwf818", name: "topgauge-cc" },
   ccversion: "2.1.191",
@@ -2121,7 +2127,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
       { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 0 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
-        modelDisplayName: "claude-opus-4-8",
+        modelId: "claude-opus-4-8",
         deltaApiCalls: 1,
         currentApiMs: 60_000,
         deltaTokenIn: 38,
@@ -2136,7 +2142,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
       { accTokenIn: 38, accTokenOut: 155, accApiMs: 60_000, accTokenCachedIn: 163441, accApiCalls: 1 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
-        modelDisplayName: "claude-opus-4-8",
+        modelId: "claude-opus-4-8",
         deltaApiCalls: 1,
         currentApiMs: 65_000,
         deltaTokenIn: 200,
@@ -2169,7 +2175,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
       { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 0 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
-        modelDisplayName: null,
+        modelId: null,
         deltaApiCalls: 0,
         currentApiMs: 0,
         deltaTokenIn: 0,
@@ -2210,7 +2216,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
       { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 0 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
-        modelDisplayName: null,
+        modelId: null,
         deltaApiCalls: 0,
         currentApiMs: 0,
         deltaTokenIn: 0,
@@ -2247,7 +2253,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
       { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 0 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
-        modelDisplayName: null,
+        modelId: null,
         deltaApiCalls: 1,
         currentApiMs: 60_000,
         deltaTokenIn: 38,
@@ -2313,7 +2319,7 @@ describe("renderTemplate — v0.4.0+ session-info modules", () => {
       { accTokenIn: 38, accTokenOut: 155, accApiMs: 60_000, accTokenCachedIn: 163441, accApiCalls: 1 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
-        modelDisplayName: "claude-opus-4-8",
+        modelId: "claude-opus-4-8",
         deltaApiCalls: 1,
         currentApiMs: 60_000,
         deltaTokenIn: 38,
@@ -3601,7 +3607,7 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
       "sess-pt",
       { accTokenIn: 42, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1, accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\WorkSpace\\pt",
-      { modelDisplayName: "MiniMax-M3", deltaApiCalls: 0, currentApiMs: 0, deltaTokenIn: 0, deltaTokenOut: 0, deltaTokenCachedIn: 0, deltaApiMs: 0 },
+      { modelId: "MiniMax-M3", deltaApiCalls: 0, currentApiMs: 0, deltaTokenIn: 0, deltaTokenOut: 0, deltaTokenCachedIn: 0, deltaApiMs: 0 },
     );
     __resetForTest({
       lineTemplates: { foo: ["m_accTokenIn"] },
@@ -3630,7 +3636,7 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
       "sess-pt2",
       { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 0, accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\WorkSpace\\pt2",
-      { modelDisplayName: "MiniMax-M3", deltaApiCalls: 1, currentApiMs: 1000, deltaTokenIn: 99, deltaTokenOut: 0, deltaTokenCachedIn: 0, deltaApiMs: 1000, deltaTokenTotalIn: 99 },
+      { modelId: "MiniMax-M3", deltaApiCalls: 1, currentApiMs: 1000, deltaTokenIn: 99, deltaTokenOut: 0, deltaTokenCachedIn: 0, deltaApiMs: 1000, deltaTokenTotalIn: 99 },
     );
     // The m_accTokenIn render call will then fire accPrimer,
     // which adds this tick's delta (current.input=0 → deltaTokenIn=0)
@@ -4220,7 +4226,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       { accTokenIn: 42000, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
-        modelDisplayName: "MiniMax-M3",
+        modelId: "MiniMax-M3",
         deltaApiCalls: 1,
         currentApiMs: 1000,
         deltaTokenIn: 42000,
@@ -4248,7 +4254,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       { accTokenIn: 0, accTokenOut: 1234, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
-        modelDisplayName: "MiniMax-M3",
+        modelId: "MiniMax-M3",
         deltaApiCalls: 1,
         currentApiMs: 1000,
         deltaTokenIn: 0,
@@ -4276,7 +4282,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 163441, accApiCalls: 1 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
-        modelDisplayName: "MiniMax-M3",
+        modelId: "MiniMax-M3",
         deltaApiCalls: 1,
         currentApiMs: 1000,
         deltaTokenIn: 0,
@@ -4307,7 +4313,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       { accTokenIn: 38, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 163441, accApiCalls: 1 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
-        modelDisplayName: "MiniMax-M3",
+        modelId: "MiniMax-M3",
         deltaApiCalls: 1,
         currentApiMs: 1000,
         deltaTokenIn: 38,
@@ -4340,7 +4346,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       { accTokenIn: 0, accTokenOut: 0, accApiMs: 60_000, accTokenCachedIn: 0, accApiCalls: 1 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
-        modelDisplayName: "MiniMax-M3",
+        modelId: "MiniMax-M3",
         deltaApiCalls: 1,
         currentApiMs: 60_000,
         deltaTokenIn: 0,
@@ -4373,7 +4379,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 7 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
-        modelDisplayName: "MiniMax-M3",
+        modelId: "MiniMax-M3",
         deltaApiCalls: 1,
         currentApiMs: 0,
         deltaTokenIn: 0,
@@ -4398,7 +4404,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 0 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
-        modelDisplayName: null,
+        modelId: null,
         deltaApiCalls: 0,
         currentApiMs: 0,
         deltaTokenIn: 0,
@@ -4444,7 +4450,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       { accTokenIn: 38, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 163441, accApiCalls: 1 , accTokenTotalIn: 163479, accTokenHitRate: 0 },
       "D:\\test",
       {
-        modelDisplayName: "MiniMax-M3",
+        modelId: "MiniMax-M3",
         deltaApiCalls: 1,
         currentApiMs: 1000,
         deltaTokenIn: 38,
@@ -4473,7 +4479,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 0 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
-        modelDisplayName: null,
+        modelId: null,
         deltaApiCalls: 0,
         currentApiMs: 0,
         deltaTokenIn: 0,
@@ -4525,7 +4531,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       { accTokenIn: 100, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\project-scope-test",
       {
-        modelDisplayName: "MiniMax-M3",
+        modelId: "MiniMax-M3",
         deltaApiCalls: 1,
         currentApiMs: 1000,
         deltaTokenIn: 100,
@@ -4539,7 +4545,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       { accTokenIn: 250, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\project-scope-test",
       {
-        modelDisplayName: "MiniMax-M3",
+        modelId: "MiniMax-M3",
         deltaApiCalls: 1,
         currentApiMs: 1000,
         deltaTokenIn: 150,
@@ -4572,7 +4578,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       { accTokenIn: 100, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\model-scope-test",
       {
-        modelDisplayName: "MiniMax-M3",
+        modelId: "MiniMax-M3",
         deltaApiCalls: 1,
         currentApiMs: 1000,
         deltaTokenIn: 100,
@@ -4586,7 +4592,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       { accTokenIn: 250, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\model-scope-test",
       {
-        modelDisplayName: "MiniMax-M3",
+        modelId: "MiniMax-M3",
         deltaApiCalls: 1,
         currentApiMs: 1000,
         deltaTokenIn: 150,
@@ -4692,7 +4698,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       { accTokenIn: 12345, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
-        modelDisplayName: "MiniMax-M3",
+        modelId: "MiniMax-M3",
         deltaApiCalls: 1,
         currentApiMs: 1000,
         deltaTokenIn: 12345,
@@ -4722,7 +4728,7 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
       { accTokenIn: 500, accTokenOut: 250, accApiMs: 5000, accTokenCachedIn: 10000, accApiCalls: 3 , accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
       {
-        modelDisplayName: "MiniMax-M3",
+        modelId: "MiniMax-M3",
         deltaApiCalls: 3,
         currentApiMs: 5000,
         deltaTokenIn: 500,
@@ -4901,7 +4907,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
         fakeSnapshot({
           sessionId: sess,
           cwd,
-          modelDisplayName: "MiniMax-M3",
+          modelId: "MiniMax-M3",
         }),
       ),
     ).join("\n");
@@ -4965,7 +4971,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
           fakeSnapshot({
             sessionId: sess,
             cwd,
-            modelDisplayName: "MiniMax-M3",
+            modelId: "MiniMax-M3",
           }),
         ),
         nowMs: now,
@@ -5258,7 +5264,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
           fakeSnapshot({
             sessionId: sess,
             cwd,
-            modelDisplayName: "MiniMax-M3",
+            modelId: "MiniMax-M3",
           }),
         ),
         nowMs: now,
@@ -5326,7 +5332,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
         fakeSnapshot({
           sessionId: sess,
           cwd,
-          modelDisplayName: "MiniMax-M3",
+          modelId: "MiniMax-M3",
         }),
       ),
     ).join("\n");
@@ -5361,7 +5367,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
         fakeSnapshot({
           sessionId: sess,
           cwd,
-          modelDisplayName: "MiniMax-M3",
+          modelId: "MiniMax-M3",
         }),
       ),
     ).join("\n");
@@ -5384,7 +5390,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
         fakeSnapshot({
           sessionId: "sess-empty",
           cwd: "D:\\empty",
-          modelDisplayName: "MiniMax-M3",
+          modelId: "MiniMax-M3",
         }),
       ),
     ).join("\n");
@@ -5414,7 +5420,7 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
         fakeSnapshot({
           sessionId: sess,
           cwd,
-          modelDisplayName: "MiniMax-M3",
+          modelId: "MiniMax-M3",
         }),
       ),
     ).join("\n");
@@ -6294,7 +6300,7 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
       "sess-start-abs",
       { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1, accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
-      { modelDisplayName: "MiniMax-M3", deltaApiCalls: 1, currentApiMs: 1000, deltaTokenIn: 0, deltaTokenOut: 0, deltaTokenCachedIn: 0, deltaApiMs: 1000 },
+      { modelId: "MiniMax-M3", deltaApiCalls: 1, currentApiMs: 1000, deltaTokenIn: 0, deltaTokenOut: 0, deltaTokenCachedIn: 0, deltaApiMs: 1000 },
     );
     const snap = fakeSnapshot({ sessionId: "sess-start-abs", cwd: "D:\\test" });
     processTick(snap.cwd, snap);
@@ -6313,7 +6319,7 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
       "sess-start-abs-color",
       { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1, accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
-      { modelDisplayName: "MiniMax-M3", deltaApiCalls: 1, currentApiMs: 1000, deltaTokenIn: 0, deltaTokenOut: 0, deltaTokenCachedIn: 0, deltaApiMs: 1000 },
+      { modelId: "MiniMax-M3", deltaApiCalls: 1, currentApiMs: 1000, deltaTokenIn: 0, deltaTokenOut: 0, deltaTokenCachedIn: 0, deltaApiMs: 1000 },
     );
     const snap = fakeSnapshot({ sessionId: "sess-start-abs-color", cwd: "D:\\test" });
     processTick(snap.cwd, snap);
@@ -6341,7 +6347,7 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
         "sess-start-abs-bad",
         { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1, accTokenTotalIn: 0, accTokenHitRate: 0 },
         "D:\\test",
-        { modelDisplayName: "MiniMax-M3", deltaApiCalls: 1, currentApiMs: 1000, deltaTokenIn: 0, deltaTokenOut: 0, deltaTokenCachedIn: 0, deltaApiMs: 1000 },
+        { modelId: "MiniMax-M3", deltaApiCalls: 1, currentApiMs: 1000, deltaTokenIn: 0, deltaTokenOut: 0, deltaTokenCachedIn: 0, deltaApiMs: 1000 },
       );
       const snap = fakeSnapshot({ sessionId: "sess-start-abs-bad", cwd: "D:\\test" });
       processTick(snap.cwd, snap);
@@ -6366,7 +6372,7 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
       "sess-start-default",
       { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1, accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
-      { modelDisplayName: "MiniMax-M3", deltaApiCalls: 1, currentApiMs: 1000, deltaTokenIn: 0, deltaTokenOut: 0, deltaTokenCachedIn: 0, deltaApiMs: 1000 },
+      { modelId: "MiniMax-M3", deltaApiCalls: 1, currentApiMs: 1000, deltaTokenIn: 0, deltaTokenOut: 0, deltaTokenCachedIn: 0, deltaApiMs: 1000 },
     );
     const snap = fakeSnapshot({ sessionId: "sess-start-default", cwd: "D:\\test" });
     processTick(snap.cwd, snap);
@@ -6401,7 +6407,7 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
       "sess-start",
       { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1, accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
-      { modelDisplayName: "MiniMax-M3", deltaApiCalls: 1, currentApiMs: 1000, deltaTokenIn: 0, deltaTokenOut: 0, deltaTokenCachedIn: 0, deltaApiMs: 1000 },
+      { modelId: "MiniMax-M3", deltaApiCalls: 1, currentApiMs: 1000, deltaTokenIn: 0, deltaTokenOut: 0, deltaTokenCachedIn: 0, deltaApiMs: 1000 },
     );
     const snap = fakeSnapshot({ sessionId: "sess-start", cwd: "D:\\test" });
     processTick(snap.cwd, snap);
@@ -6421,7 +6427,7 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
       "sess-start-color",
       { accTokenIn: 0, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1, accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
-      { modelDisplayName: "MiniMax-M3", deltaApiCalls: 1, currentApiMs: 1000, deltaTokenIn: 0, deltaTokenOut: 0, deltaTokenCachedIn: 0, deltaApiMs: 1000 },
+      { modelId: "MiniMax-M3", deltaApiCalls: 1, currentApiMs: 1000, deltaTokenIn: 0, deltaTokenOut: 0, deltaTokenCachedIn: 0, deltaApiMs: 1000 },
     );
     const snap = fakeSnapshot({ sessionId: "sess-start-color", cwd: "D:\\test" });
     processTick(snap.cwd, snap);
@@ -6747,20 +6753,28 @@ describe("renderTemplate — v0.8.24+ m_accStartTime / m_sumStartTime / m_sumEnd
   });
 });
 
-// vX.X.X+ — m_tokenCost / m_accTokenCost / m_sumTokenCost family
-describe("renderTemplate — m_tokenCost family (vX.X.X+)", () => {
+// v0.8.40+ → v0.9.x — m_tokenCost / m_accTokenCost / m_sumTokenCost
+// family. v0.9.x switches from a single global tokenPrice to
+// tokenPrices (per-model dict keyed by stdin.model.id). USD
+// currency renders bare to preserve byte-identical v0.8.40
+// output; non-USD gets a "<code> " prefix.
+describe("renderTemplate — m_tokenCost family (v0.9.x per-model prices)", () => {
   beforeEach(() => {
-    // Set a known tokenPrice (per million tokens). The effective per-token
-    // prices are in/1e6, out/1e6, cachedIn/1e6. The top-level beforeEach
+    // v0.9.x — seed tokenPrices dict keyed by the active model's
+    // id. The default fakeSnapshot sets modelId="MiniMax-M3" so
+    // the per-model lookup hits. Per-million-token convention:
+    // in/1e6, out/1e6, cachedIn/1e6. The top-level beforeEach
     // already called beginTickForTest and reset prev tick state.
     const cfg = configStore.get();
-    cfg.tokenPrice = { in: 10_000, out: 20_000, cachedIn: 5_000, currency: "USD" };
+    cfg.tokenPrices = {
+      "MiniMax-M3": { in: 10_000, out: 20_000, cachedIn: 5_000, currency: "USD" },
+    };
   });
 
   // ------------------------------------------------------------------
   // m_tokenCost (per-turn)
   // ------------------------------------------------------------------
-  it("m_tokenCost renders 'cost:N' when tokenPrice is configured", () => {
+  it("m_tokenCost renders 'cost:N' when tokenPrices has the active model", () => {
     setPrevTick("sess-test", { totalApiMs: 0 }, "D:\\test");
     const snap = fakeSnapshot(); // current.input=38, current.output=155, cachedIn=163441
     processTick(snap.cwd, snap);
@@ -6772,10 +6786,24 @@ describe("renderTemplate — m_tokenCost family (vX.X.X+)", () => {
     assert.equal(strip(out), "cost:820.69");
   });
 
-  it("m_tokenCost with zero prices → placeholder", () => {
+  it("m_tokenCost with empty tokenPrices → placeholder", () => {
+    // v0.9.x — the active model id has no entry in the dict.
+    // resolveTokenPrice returns null → placeholder.
     const cfg = configStore.get();
-    cfg.tokenPrice = { in: 0, out: 0, cachedIn: 0, currency: "USD" };
+    cfg.tokenPrices = {};
     const snap = fakeSnapshot();
+    const out = renderTemplate(["m_tokenCost"], ctxFor(snap)).join("\n");
+    assert.match(strip(out), /cost:n\/a/);
+  });
+
+  it("m_tokenCost with no entry for the active model id → placeholder", () => {
+    // v0.9.x — entry exists for a DIFFERENT model; the active
+    // model's id still has no entry.
+    const cfg = configStore.get();
+    cfg.tokenPrices = {
+      "claude-opus-4-8": { in: 10_000, out: 20_000, cachedIn: 5_000, currency: "USD" },
+    };
+    const snap = fakeSnapshot(); // modelId = "MiniMax-M3" (default)
     const out = renderTemplate(["m_tokenCost"], ctxFor(snap)).join("\n");
     assert.match(strip(out), /cost:n\/a/);
   });
@@ -6799,7 +6827,7 @@ describe("renderTemplate — m_tokenCost family (vX.X.X+)", () => {
     const snap = fakeSnapshot();
     const out = renderTemplate(["m_tokenCost"], ctxFor(snap)).join("\n");
     // idle: live stdin values × price, STALE_COLORed
-    // cost = 820.685 → formatCost "820.7"
+    // cost = 820.685 → formatCost "820.69"
     assert.ok(out.includes("\x1b[90m"), "idle tick should use STALE_COLOR");
     assert.ok(out.includes("cost:820.69"), "idle tick should show live cost");
   });
@@ -6815,7 +6843,9 @@ describe("renderTemplate — m_tokenCost family (vX.X.X+)", () => {
 
   it("m_tokenCost only inPrice set, out and cachedIn zero", () => {
     const cfg = configStore.get();
-    cfg.tokenPrice = { in: 5_000, out: 0, cachedIn: 0, currency: "USD" };
+    cfg.tokenPrices = {
+      "MiniMax-M3": { in: 5_000, out: 0, cachedIn: 0, currency: "USD" },
+    };
     setPrevTick("sess-test", { totalApiMs: 0 }, "D:\\test");
     const snap = fakeSnapshot({ current: { tokenIn: 200, tokenOut: 999, tokenCacheCreation: 0, tokenCachedIn: 999 } });
     processTick(snap.cwd, snap);
@@ -6823,6 +6853,21 @@ describe("renderTemplate — m_tokenCost family (vX.X.X+)", () => {
     const out = renderTemplate(["m_tokenCost"], ctxFor(snap)).join("\n");
     // 200*0.005 = 1.0
     assert.equal(strip(out), "cost:1.00");
+  });
+
+  it("m_tokenCost with non-USD currency → no separator (e.g. CNY264.12, ¥264.12)", () => {
+    // v0.9.x — currency is now meaningful per entry. Non-USD
+    // prepended bare (no separator); USD stays bare.
+    const cfg = configStore.get();
+    cfg.tokenPrices = {
+      "MiniMax-M3": { in: 10_000, out: 20_000, cachedIn: 5_000, currency: "CNY" },
+    };
+    setPrevTick("sess-test", { totalApiMs: 0 }, "D:\\test");
+    const snap = fakeSnapshot();
+    processTick(snap.cwd, snap);
+    statusStore.commit();
+    const out = renderTemplate(["m_tokenCost"], ctxFor(snap)).join("\n");
+    assert.equal(strip(out), "cost:CNY820.69");
   });
 
   // ------------------------------------------------------------------
@@ -6861,7 +6906,7 @@ describe("renderTemplate — m_tokenCost family (vX.X.X+)", () => {
     const out = renderTemplate(["m_accTokenCost"], ctxFor(snap2)).join("\n");
     // tick1: 38*0.01 + 155*0.02 + 163441*0.005 = 0.38 + 3.1 + 817.205 = 820.685
     // tick2: 50*0.01 + 100*0.02 + 5*0.005 = 0.5 + 2.0 + 0.025 = 2.525
-    // total: 820.685 + 2.525 = 823.21 → formatCost rounds to 823.2 (1dp)
+    // total: 820.685 + 2.525 = 823.21 → formatCost 2dp → "823.21"
     assert.equal(strip(out), "cost:823.21");
   });
 
@@ -6906,7 +6951,9 @@ describe("renderTemplate — m_tokenCost family (vX.X.X+)", () => {
     const snap = fakeSnapshot();
     const out = renderTemplate(["m_sumTokenCost|window:all|model:all"], ctxFor(snap)).join("\n");
     // effective: 300*0.01 + 150*0.02 + 70*0.005 = 3.0 + 3.0 + 0.35 = 6.35
-    // formatCost: ≥1 < 1000 → 1dp → (6.35).toFixed(1) = "6.3" (banker's rounding)
+    // |model|all → no explicit literal, falls back to active model
+    // id "MiniMax-M3" for the price lookup.
+    // formatCost: ≥1 < 1000 → 2dp → "6.35"
     assert.equal(strip(out), "cost:6.35");
   });
 
@@ -6920,22 +6967,50 @@ describe("renderTemplate — m_tokenCost family (vX.X.X+)", () => {
     const snap = fakeSnapshot();
     const out = renderTemplate(["m_sumTokenCost|window:5h|model:all"], ctxFor(snap)).join("\n");
     // effective: 80*0.01 + 40*0.02 + 10*0.005 = 0.8 + 0.8 + 0.05 = 1.65
-    // formatCost: ≥1 < 1000 → 1dp → "1.7"
+    // formatCost: ≥1 < 1000 → 2dp → "1.65"
     assert.equal(strip(out), "cost:1.65");
   });
 
   it("m_sumTokenCost|model|active model-filtered", () => {
+    // v0.9.x — |model|active resolves to ctx.tokens.modelId, which
+    // is the new sample.model stamp. The fixture's stat cache key
+    // uses "MiniMax-M3" — the active model id (matches the default
+    // fakeSnapshot's modelId). Price lookup hits the dict at the
+    // same id.
     __resetStatCacheForTest();
     setStatCacheForTest(
       "stat:MiniMax-M3:all:false",
       { sumIn: 50, sumOut: 25, sumCached: 5, sumTotalIn: 55, sumApiMs: 15_000, rows: 1, calls: 1, lastAt: Date.now(), firstAt: Date.now() - 1000, generatedAt: Date.now() },
       300_000,
     );
-    const snap = fakeSnapshot({ modelDisplayName: "MiniMax-M3" });
+    const snap = fakeSnapshot();
     const out = renderTemplate(["m_sumTokenCost|window:all|model:active"], ctxFor(snap)).join("\n");
     // effective: 50*0.01 + 25*0.02 + 5*0.005 = 0.5 + 0.5 + 0.025 = 1.025
     // formatCost: ≥1 → 2dp → (1.025).toFixed(2) = "1.02"
     assert.equal(strip(out), "cost:1.02");
+  });
+
+  it("m_sumTokenCost|model|<literal> uses the literal id for the price lookup", () => {
+    // v0.9.x — explicit |model|<literal> wins over the active model
+    // id. Active model has prices, but the literal has zero prices
+    // → placeholder (per lookup-miss contract).
+    __resetStatCacheForTest();
+    setStatCacheForTest(
+      "stat:claude-opus-4-8:all:false",
+      { sumIn: 100, sumOut: 50, sumCached: 10, sumTotalIn: 110, sumApiMs: 20_000, rows: 1, calls: 1, lastAt: Date.now(), firstAt: Date.now() - 1000, generatedAt: Date.now() },
+      300_000,
+    );
+    const cfg = configStore.get();
+    cfg.tokenPrices = {
+      // active model has full prices (so m_tokenCost| bare would NOT be n/a)
+      "MiniMax-M3": { in: 10_000, out: 20_000, cachedIn: 5_000, currency: "USD" },
+      // literal filter target has zero prices → m_sumTokenCost|
+      // model|claude-opus-4-8 must render cost:n/a
+      "claude-opus-4-8": { in: 0, out: 0, cachedIn: 0, currency: "USD" },
+    };
+    const snap = fakeSnapshot(); // modelId = "MiniMax-M3"
+    const out = renderTemplate(["m_sumTokenCost|window:all|model:claude-opus-4-8"], ctxFor(snap)).join("\n");
+    assert.match(strip(out), /cost:n\/a/);
   });
 
   it("m_sumTokenCost|window|all (default) scans all", () => {
@@ -6948,7 +7023,7 @@ describe("renderTemplate — m_tokenCost family (vX.X.X+)", () => {
     const snap = fakeSnapshot();
     const out = renderTemplate(["m_sumTokenCost|window:all|model:all"], ctxFor(snap)).join("\n");
     // effective: 30*0.01 + 20*0.02 + 10*0.005 = 0.3 + 0.4 + 0.05 = 0.75
-    // formatCost: ≥0.1 < 1 → 2dp → "0.75"
+    // formatCost: ≥0.1 < 1 → 3dp → "0.750"
     assert.equal(strip(out), "cost:0.750");
   });
 });
@@ -7006,8 +7081,12 @@ describe("renderTemplate — |valueOnly| inline arg — label strip on label-usi
   it("m_tokenCost|valueOnly:true|color|cyan strips 'cost:' but keeps SGR wrap", () => {
     // |valueOnly| is independent of |color|. With valueOnly=true
     // the prefix is gone but the user's |color| SGR wrap remains.
+    // v0.9.x — seed tokenPrices (per-model dict) instead of
+    // tokenPrice (removed).
     const cfg = configStore.get();
-    cfg.tokenPrice = { in: 10_000, out: 20_000, cachedIn: 5_000, currency: "USD" };
+    cfg.tokenPrices = {
+      "MiniMax-M3": { in: 10_000, out: 20_000, cachedIn: 5_000, currency: "USD" },
+    };
     setPrevTick("sess-vo", { totalApiMs: 0 }, "D:\\test");
     const snap = fakeSnapshot();
     processTick(snap.cwd, snap);
@@ -7080,7 +7159,7 @@ describe("renderTemplate — |valueOnly| inline arg — label strip on label-usi
       "sess-vo",
       { accTokenIn: 42000, accTokenOut: 0, accApiMs: 0, accTokenCachedIn: 0, accApiCalls: 1, accTokenTotalIn: 0, accTokenHitRate: 0 },
       "D:\\test",
-      { modelDisplayName: "MiniMax-M3", deltaApiCalls: 1, currentApiMs: 1000, deltaTokenIn: 42000, deltaTokenOut: 0, deltaTokenCachedIn: 0, deltaApiMs: 1000 },
+      { modelId: "MiniMax-M3", deltaApiCalls: 1, currentApiMs: 1000, deltaTokenIn: 42000, deltaTokenOut: 0, deltaTokenCachedIn: 0, deltaApiMs: 1000 },
     );
     const snap = fakeSnapshot({
       sessionId: "sess-vo",

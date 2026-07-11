@@ -149,7 +149,11 @@ export type AvgSnapshot = {
 type CurrentTick = {
   sessionId: string;
   cwd: string;
-  modelDisplayName: string | null;
+  // v0.9.x — active-model id (stdin.model.id). Drives the per-model
+  // accumulator slot key and the JSONL sample.model stamp. Was
+  // modelDisplayName in v0.8.x; renamed so per-model pricing +
+  // filtering use the stable id, not the friendly label.
+  modelId: string | null;
   // snapshot fields — read straight from stdin, no cross-tick subtract
   in: number;
   out: number;
@@ -849,7 +853,9 @@ function replayAccKey(
   args: {
     sessionId?: string | null;
     cwd?: string | null;
-    modelDisplayName?: string | null;
+    // v0.9.x — active-model id (stdin.model.id) for scope=model
+    // slot key. Renamed from modelDisplayName.
+    modelId?: string | null;
   },
 ): string | null {
   if (scope === "session") {
@@ -861,8 +867,8 @@ function replayAccKey(
     return `tickStatus:${projectHash(args.cwd)}`;
   }
   // scope === "model"
-  if (!args.modelDisplayName) return null;
-  return `tickStatus:${args.modelDisplayName}`;
+  if (!args.modelId) return null;
+  return `tickStatus:${args.modelId}`;
 }
 
 // v0.8.29 — read-once per-scope helper. Walks the JSONL stream scoped
@@ -870,14 +876,17 @@ function replayAccKey(
 //   session  → state/<projectHash>/<sessionId>.jsonl (one file)
 //   project  → every *.jsonl under state/<projectHash>/ (cross-session)
 //   model    → every *.jsonl under state/<projectHash>/ filtered by
-//              sample.model === args.modelDisplayName
+//              sample.model === args.modelId
 // sinceMs=0 → no time cutoff; replay reads the full history.
 function readReplaySamples(
   scope: "session" | "project" | "model",
   args: {
     sessionId?: string | null;
     cwd?: string | null;
-    modelDisplayName?: string | null;
+    // v0.9.x — renamed from modelDisplayName. JSONL rows now stamp
+    // modelId (stdin.model.id), so the filter compares against the
+    // active model id, not the friendly label.
+    modelId?: string | null;
   },
 ): TokenSample[] {
   if (scope === "session") {
@@ -892,8 +901,8 @@ function readReplaySamples(
   const all = readProjectSamples(args.cwd, 0);
   if (scope === "project") return all;
   // scope === "model"
-  if (!args.modelDisplayName) return [];
-  return all.filter((s) => s.model === args.modelDisplayName);
+  if (!args.modelId) return [];
+  return all.filter((s) => s.model === args.modelId);
 }
 
 // readProjectSamples — mirrors readAllSamples' inner walk, but only
@@ -952,13 +961,13 @@ function readProjectSamples(cwd: string, sinceMs: number): TokenSample[] {
 //     user's confirmed value is preserved)
 //   - JSONL has zero matching rows (no history to recover; the
 //     current tick's setAvg will populate from this tick's delta)
-//   - missing sessionId / cwd / modelDisplayName (no slot to recover)
+//   - missing sessionId / cwd / modelId (no slot to recover)
 export function replayAccInit(
   scope: "session" | "project" | "model",
   args: {
     sessionId?: string | null;
     cwd?: string | null;
-    modelDisplayName?: string | null;
+    modelId?: string | null;
   },
 ): TickStatusValue | null {
   const key = replayAccKey(scope, args);
@@ -1482,7 +1491,10 @@ function normalizeTick(
     snapshot: {
       sessionId: tokens.sessionId,
       cwd: tokens.cwd,
-      modelDisplayName: tokens.modelDisplayName ?? null,
+      // v0.9.x — active-model id (stdin.model.id). Drives the
+      // per-model accumulator slot key and the JSONL sample.model
+      // stamp. Was modelDisplayName in v0.8.x.
+      modelId: tokens.modelId ?? null,
       in: in_,
       out: out_,
       cachedIn,
@@ -1645,7 +1657,10 @@ export function readAccumulator(
   args: {
     sessionId?: string | null;
     cwd?: string | null;
-    modelDisplayName?: string | null;
+    // v0.9.x — active-model id (stdin.model.id). Renamed from
+    // modelDisplayName; the per-model slot key namespace now keys
+    // off the stable id, not the friendly label.
+    modelId?: string | null;
   },
 ): AvgSnapshot | null {
   let key: string | null = null;
@@ -1656,8 +1671,8 @@ export function readAccumulator(
     if (!args.cwd) return null;
     key = `tickStatus:${projectHash(args.cwd)}`;
   } else {
-    if (!args.modelDisplayName) return null;
-    key = `tickStatus:${args.modelDisplayName}`;
+    if (!args.modelId) return null;
+    key = `tickStatus:${args.modelId}`;
   }
   const v = readTickStatus(args.cwd, key);
   if (!v) return null;
@@ -1778,7 +1793,9 @@ export function setAvg(
   snap: AvgSnapshot,
   cwd?: string | null,
   extras?: {
-    modelDisplayName?: string | null;
+    // v0.9.x — active-model id (stdin.model.id). Renamed from
+    // modelDisplayName; per-model slot key now keys off the id.
+    modelId?: string | null;
     deltaApiCalls?: number;
     currentApiMs?: number;
     deltaTokenIn?: number;
@@ -1868,8 +1885,8 @@ export function setAvg(
   if (cwd && (incrementCalls > 0 || deltaTokenIn || deltaTokenOut || deltaTokenCachedIn || deltaApiMs || deltaTokenTotalIn)) {
     bumpDeltaScope(`tickStatus:${projectHash(cwd)}`);
   }
-  if (extras?.modelDisplayName && (incrementCalls > 0 || deltaTokenIn || deltaTokenOut || deltaTokenCachedIn || deltaApiMs || deltaTokenTotalIn)) {
-    bumpDeltaScope(`tickStatus:${extras.modelDisplayName}`);
+  if (extras?.modelId && (incrementCalls > 0 || deltaTokenIn || deltaTokenOut || deltaTokenCachedIn || deltaApiMs || deltaTokenTotalIn)) {
+    bumpDeltaScope(`tickStatus:${extras.modelId}`);
   }
 }
 
@@ -1912,7 +1929,10 @@ export function processTick(
     const replayArgs = {
       sessionId: tokens.sessionId,
       cwd,
-      modelDisplayName: tokens.modelDisplayName ?? null,
+      // v0.9.x — pass modelId (stdin.model.id) into replayAccKey
+      // so the per-model slot key namespace aligns with the new
+      // sample.model stamp.
+      modelId: tokens.modelId ?? null,
     };
     for (const scope of REPLAY_SCOPES) {
       const key = replayAccKey(scope, replayArgs);
@@ -1975,7 +1995,7 @@ export function processTick(
       ?? 0,
     sessionId: tokens.sessionId,
     cwd,
-    model: tokens.modelDisplayName ?? null,
+    model: tokens.modelId ?? null,
     contextUsedPercent: tokens.contextWindow?.contextUsedPercent ?? null,
   });
 
@@ -2002,7 +2022,8 @@ export function processTick(
       ? (initialCachedIn / initialTokenTotalIn) * 100
       : 0,
   }, cwd, {
-    modelDisplayName: tokens.modelDisplayName ?? null,
+    // v0.9.x — pass modelId through to setAvg's per-model slot.
+    modelId: tokens.modelId ?? null,
     deltaApiCalls: 1,
     deltaTokenIn: snapshot.in,
     deltaTokenOut: snapshot.out,
@@ -2032,7 +2053,7 @@ export function processTick(
           out: snapshot.out,
           cacheCreation: snapshot.cacheCreation,
           cacheIn: snapshot.cachedIn,
-          model: snapshot.modelDisplayName ?? undefined,
+          model: snapshot.modelId ?? undefined,
           totalApiMs: snapshot.totalApiMs,
           apiMs: snapshot.apiMs,
           prevApiMs: snapshot.prevTotalApiMs,

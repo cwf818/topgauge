@@ -523,8 +523,22 @@ function intervalToWindow(i: Interval): Window | null {
 function renderQuotaBody(iv: Interval): string | null {
   const prefix = labelFor("quota");
   const head = `${prefix}(${iv.label}):`;
+  // vX.X.X+ — when only `remainingQuota` is set (and `usedQuota`
+  // isn't), derive `used = limit - remaining` so a Copilot-style
+  // payload ("all 1500 of 1500 are remaining") doesn't render as
+  // the misleading `0/1500`. The math stays consistent with the
+  // existing `used/limit` contract:
+  //   usedQuota + remainingQuota should equal limitQuota when
+  //   all three are set. Drift ≥ 1 (rounding, partial refunds,
+  //   quota carry-over) is clamped to the [0, limit] range so
+  //   the renderer never emits a negative or over-limit number.
   if (iv.usedQuota != null && iv.limitQuota != null) {
     return `${head}${iv.usedQuota}/${iv.limitQuota}`;
+  }
+  if (iv.remainingQuota != null && iv.limitQuota != null) {
+    const used = iv.limitQuota - iv.remainingQuota;
+    const clamped = Math.max(0, Math.min(iv.limitQuota, used));
+    return `${head}${clamped}/${iv.limitQuota}`;
   }
   if (iv.limitQuota != null) {
     return `${head}0/${iv.limitQuota}`;
@@ -1248,7 +1262,7 @@ export { peekAvg } from "./status-store.ts";
 //
 //   session  → tickStatus:<sessionId>          (clear-bounded)
 //   project  → tickStatus:<projectHash(cwd)>   (cwd-bounded; no prefix)
-//   model    → tickStatus:<modelDisplayName>   (per-model)
+//   model    → tickStatus:<modelId>   (per-model)
 //
 // Returns null when the slot has never been written, so the
 // module can render a placeholder rather than fabricating a "0".
@@ -1265,7 +1279,10 @@ function peekAcc(
   return statusStore.readAccumulator(scope, {
     sessionId: t?.sessionId,
     cwd,
-    modelDisplayName: t?.modelDisplayName,
+    // v0.9.x — pass the active-model id (stdin.model.id) so the
+    // per-model slot lookup uses the same identifier as the new
+    // sample.model stamp and the new tokenPrices keys.
+    modelId: t?.modelId,
   });
 }
 
@@ -1568,7 +1585,7 @@ function computeTickDelta(
 //
 //   scope=session (default) → "acc:N"
 //   scope=project           → "acc(total):N"
-//   scope=model             → "acc(<modelDisplayName>):N"
+//   scope=model             → "acc(<modelId>):N"
 //
 // Reads the three-layer accumulator via peekAcc. The -processor
 // (src/status-store.ts:processTick) has already written the
@@ -1807,10 +1824,13 @@ m_countdown: Object.assign(
   { type: "plan" as const },
 ),
   // v0.9.0+ — quota module. Reads the quota group from
-  // `c.shortInterval` (default term) and renders the
-  // `<label>(5h):used/limit` shape per the user spec. The
+  // `c.shortInterval` (default term; bare form), and the chosen
+  // `term` slot for the inline form. Renders
+  // `<labelQuota>(<interval.label>):used/limit` shape. The
   // placeholder (rendered when no quota data is present) is
-  // `${labelFor("quota")}(5h):--`.
+  // `${labelFor("quota")}(<term-label>):--` — bare defaults to
+  // `c.shortInterval?.label`; inline honors `params.term` so a
+  // `m_quota|term|mid` placeholder reads `(7d):--`, not `(5h):--`.
 m_quota: Object.assign(
   ((c: RenderContext) => {
     const iv = c.shortInterval;
@@ -2041,32 +2061,37 @@ m_quota: Object.assign(
       undefined,
     );
   },
-  // vX.X.X+ — per-turn token cost. Computed from current.* × tokenPrice.
-  // When all prices are zero (the default) the module falls back to
-  // placeholder "cost:n/a". Idle ticks mirror m_tokenIn's "live but
-  // stale" pattern: cost is calculated from live stdin values and
-  // wrapped in STALE_COLOR.
+  // v0.8.40+ — per-turn token cost. Computed from current.* × the
+  // active model's price entry (cfg().tokenPrices[ctx.tokens.modelId]).
+  // When no entry exists for the active model (the default), the
+  // module falls back to placeholder "cost:n/a". Idle ticks mirror
+  // m_tokenIn's "live but stale" pattern: cost is calculated from
+  // live stdin values and wrapped in STALE_COLOR.
   m_tokenCost: (c) => {
-    // vX.X.X+ — |valueOnly|true drops the "cost:" prefix from
+    // v0.8.40+ — |valueOnly|true drops the "cost:" prefix from
     // both the idle-stale branch and the live wrap branch.
     const prefix = c.passThrough?.valueOnly === "true" ? "" : labelFor("cost");
     const t = c.tokens;
     if (!t || !t.sessionId) return placeholderBare("m_tokenCost", c);
-    const tp = cfg().tokenPrice;
-    const totalPrice = tp.in + tp.out + tp.cachedIn;
-    if (totalPrice <= 0) return placeholderBare("m_tokenCost", c);
+    // v0.9.x — look up the active model's price entry by
+    // stdin.model.id. Null on miss → placeholder.
+    const tp = resolveTokenPrice(t.modelId ?? null);
+    // v0.9.x — miss OR all-zero prices → placeholder (matches
+    // the v0.8.40 "unconfigured → cost:n/a" contract; an entry
+    // with in/out/cachedIn=0 is still treated as unconfigured).
+    if (!tp || tp.in + tp.out + tp.cachedIn <= 0) return placeholderBare("m_tokenCost", c);
     const r = getDeltaForRender();
     const liveIn = t.current.tokenIn ?? 0;
     const liveOut = t.current.tokenOut ?? 0;
     const liveCached = t.current.tokenCachedIn ?? 0;
-    // tokenPrice values are per-million-tokens; divide by 1,000,000.
+    // tokenPrices values are per-million-tokens; divide by 1,000,000.
     const liveCost = ((tp.in / 1_000_000) * liveIn) + ((tp.out / 1_000_000) * liveOut) + ((tp.cachedIn / 1_000_000) * liveCached);
     if (!r.hasMeasurement) {
       // Idle tick: live stdin values × price, stale-colored
-      return `${STALE_COLOR}${prefix}${formatCost(liveCost)}${RESET}`;
+      return `${STALE_COLOR}${prefix}${formatCostWithCurrency(liveCost, tp.currency)}${RESET}`;
     }
     const cost = ((tp.in / 1_000_000) * r.in) + ((tp.out / 1_000_000) * r.out) + ((tp.cachedIn / 1_000_000) * r.cachedIn);
-    return wrapValueDefault("m_tokenCost", cost, `${prefix}${formatCost(cost)}`, undefined);
+    return wrapValueDefault("m_tokenCost", cost, `${prefix}${formatCostWithCurrency(cost, tp.currency)}`, undefined);
   },
   // v0.4.0+ — per-API-call input speed. Reads the previous-tick
   // snapshot from cache (keyed by sessionId) and computes
@@ -2219,18 +2244,23 @@ m_quota: Object.assign(
   // When all prices are zero (the default) the module falls back to
   // placeholder "cost:n/a". Scope resolved via passThrough (default session).
   m_accTokenCost: (c) => {
-    // vX.X.X+ — |valueOnly|true drops the "cost:" prefix.
+    // v0.8.40+ — |valueOnly|true drops the "cost:" prefix.
     const prefix = c.passThrough?.valueOnly === "true" ? "" : labelFor("cost");
     const scope = passThroughScope(c);
     const useScope = scope ?? "session";
     const v = peekAcc(useScope, c);
     if (!v) return placeholderBare("m_accTokenCost", c);
-    const tp = cfg().tokenPrice;
-    const totalPrice = tp.in + tp.out + tp.cachedIn;
-    if (totalPrice <= 0) return placeholderBare("m_accTokenCost", c);
-    // tokenPrice values are per-million-tokens; divide by 1,000,000.
+    // v0.9.x — active-model price entry. The accumulator is
+    // per-scope (session/project/model); cost is priced off the
+    // CURRENT active model, not the slot's source model. Miss →
+    // placeholder.
+    const tp = resolveTokenPrice(c.tokens?.modelId ?? null);
+    // v0.9.x — miss OR all-zero prices → placeholder (matches
+    // the v0.8.40 "unconfigured → cost:n/a" contract).
+    if (!tp || tp.in + tp.out + tp.cachedIn <= 0) return placeholderBare("m_accTokenCost", c);
+    // tokenPrices values are per-million-tokens; divide by 1,000,000.
     const cost = ((tp.in / 1_000_000) * v.accTokenIn) + ((tp.out / 1_000_000) * v.accTokenOut) + ((tp.cachedIn / 1_000_000) * v.accTokenCachedIn);
-    return wrapValueDefault("m_accTokenCost", cost, `${prefix}${formatCost(cost)}`, undefined);
+    return wrapValueDefault("m_accTokenCost", cost, `${prefix}${formatCostWithCurrency(cost, tp.currency)}`, undefined);
   },
   // v0.8.13+ — m_accTokenInSpeed / m_accTokenOutSpeed — session-
   // cumulative throughput (t/s) computed from the chosen scope's
@@ -2381,20 +2411,27 @@ m_quota: Object.assign(
     const prefix = c.passThrough?.valueOnly === "true" ? "" : labelFor("totalIn");
     return wrapValueDefault("m_sumTokenTotalIn", agg.sumTotalIn, `${prefix}${formatCompactToken(agg.sumTotalIn)}`, undefined);
   },
-  // vX.X.X+ — windowed token cost. Computed from sumIn/Out/Cached ×
-  // tokenPrice. When all prices are zero (default) → placeholder.
+  // v0.8.40+ — windowed token cost. Computed from sumIn/Out/Cached ×
+  // the model's price entry. When no entry exists for the resolved
+  // model id (default) → placeholder.
   m_sumTokenCost: (c) => {
     const filter = parseWindowScope(c, c.passThrough ?? {});
     if (!filter) return null;
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderBare("m_sumTokenCost", c);
-    const tp = cfg().tokenPrice;
-    const totalPrice = tp.in + tp.out + tp.cachedIn;
-    if (totalPrice <= 0) return placeholderBare("m_sumTokenCost", c);
-    // vX.X.X+ — |valueOnly|true drops the "cost:" prefix.
+    // v0.9.x — explicit |model|<literal> wins; otherwise active
+    // model id. |model|all falls back to active (sum-all doesn't
+    // make sense for pricing — the price is per-model). When
+    // modelFilter is set, use it; else use ctx.tokens.modelId.
+    const lookupId = filter.modelFilter !== undefined ? filter.modelFilter : c.tokens?.modelId;
+    const tp = resolveTokenPrice(lookupId ?? null);
+    // v0.9.x — miss OR all-zero prices → placeholder (matches
+    // the v0.8.40 "unconfigured → cost:n/a" contract).
+    if (!tp || tp.in + tp.out + tp.cachedIn <= 0) return placeholderBare("m_sumTokenCost", c);
+    // v0.8.40+ — |valueOnly|true drops the "cost:" prefix.
     const prefix = c.passThrough?.valueOnly === "true" ? "" : labelFor("cost");
     const cost = ((tp.in / 1_000_000) * agg.sumIn) + ((tp.out / 1_000_000) * agg.sumOut) + ((tp.cachedIn / 1_000_000) * agg.sumCached);
-    return wrapValueDefault("m_sumTokenCost", cost, `${prefix}${formatCost(cost)}`, undefined);
+    return wrapValueDefault("m_sumTokenCost", cost, `${prefix}${formatCostWithCurrency(cost, tp.currency)}`, undefined);
   },
   m_sumApiMs: (c) => {
     // v0.8.7+ — bare m_sum* reads c.passThrough (forwarded by an outer m_template); v0.8.14+ — zero-row renders placeholder (was: drop)
@@ -2945,10 +2982,11 @@ export function formatSpeed(tps: number | null): string {
   return `${tps.toFixed(precision)} t/s`;
 }
 
-// vX.X.X+ — tiered-precision cost formatter for m_tokenCost family.
+// v0.8.40+ — tiered-precision cost formatter for m_tokenCost family.
 // At least 2 decimal places, at most 5:
 //   < 0.01 → 5dp, < 0.1 → 4dp, < 1 → 3dp, >= 1 → 2dp
-// Non-finite / negative → "0.00". Caller attaches currency prefix via labelFor("cost").
+// Non-finite / negative → "0.00". Currency-agnostic; the renderer
+// wraps with formatCostWithCurrency to attach the per-model prefix.
 export function formatCost(n: number): string {
   if (!Number.isFinite(n) || n < 0) return "0.00";
   if (n === 0) return "0.00";
@@ -2958,6 +2996,37 @@ export function formatCost(n: number): string {
   else if (n < 1) precision = 3;
   else precision = 2;
   return n.toFixed(precision);
+}
+
+// v0.9.x — per-model token-price resolver. Returns the configured
+// price entry for the given model id (stdin.model.id), or null
+// when there's no entry — the caller falls back to cost:n/a
+// placeholder. Single source of truth for "is there a price for
+// this model?" — sits in render.ts (next to formatCost) because
+// the contract is a renderer-level business decision, not a
+// schema concern. Keeping config.ts purely about schema and
+// validation.
+type TokenPriceEntry = { in: number; out: number; cachedIn: number; currency: string };
+function resolveTokenPrice(modelId: string | null): TokenPriceEntry | null {
+  if (!modelId) return null;
+  const m = cfg().tokenPrices;
+  if (!m) return null;
+  return m[modelId] ?? null;
+}
+
+// v0.9.x — currency-aware cost formatter. USD (the historical
+// default) renders bare to keep existing renders byte-identical;
+// any other currency is prepended with no separator (e.g.
+// "￥264.12", "CNY 264.12" — the trailing space is a v0.9.x
+// convenience for ASCII codes; v0.9.x drop it for symbol codes
+// where a space breaks the visual). Co-located with formatCost
+// because the two formatters are a matched pair — formatCost
+// produces the digits, this attaches the per-model currency
+// prefix.
+function formatCostWithCurrency(cost: number, currency: string): string {
+  const body = formatCost(cost);
+  if (!currency || currency === "USD") return body;
+  return `${currency}${body}`;
 }
 
 // v0.4.0+ — 5-band color picker for the speed scale.
@@ -3178,7 +3247,11 @@ function parseWindowScope(
   if (modelRaw === "all") {
     modelFilter = undefined;
   } else if (modelRaw === "active") {
-    modelFilter = ctx.tokens?.modelDisplayName ?? undefined;
+    // v0.9.x — active-model id (stdin.model.id). Was
+    // modelDisplayName in v0.8.x; renamed so the JSONL row filter
+    // matches the new sample.model stamp (which now also stamps
+    // modelId).
+    modelFilter = ctx.tokens?.modelId ?? undefined;
   } else {
     modelFilter = modelRaw;
   }
@@ -3787,7 +3860,7 @@ function formatSepBody(body: string, repeat: string, wrap: string): string {
 // passthrough-only paths). Anything else is a parse-fail and the
 // inline token is dropped (same as :color|<garbage>). The model
 // scope is a no-op when the live TokenSnapshot has no
-// modelDisplayName (the placeholder path fires); project scope
+// modelId (the placeholder path fires); project scope
 // reads the project-wide slot, which is null until at least one
 // tick has accumulated into it.
 const SCOPE_PARAM = {
@@ -3960,27 +4033,87 @@ function placeholderDashesUnit(
 }
 
 // v0.9.0+ — variant of `placeholderDashesUnit` whose body is a
-// function of the live `RenderContext`. Used by `m_countdown` so
-// its placeholder reflects the per-term label (e.g. `5h:--`,
-// `7d:--`, `30d:--` depending on which term is rendering). The
-// default term is "short"; when `c.shortInterval` is null the
-// body falls back to the built-in "5h" label so the placeholder
-// always renders.
+// function of the live `RenderContext` AND the resolved inline
+// `params`. Used by `m_countdown` so its placeholder reflects
+// the per-term label driven by `params.term` (e.g. `5h:--`,
+// `7d:--`, `30d:--` depending on which term is rendering — not
+// the legacy hard-coded "5h" default). When the chosen interval
+// is null the body falls back to a built-in label by term so the
+// placeholder always renders something readable.
+//
+// vX.X.X+ — `params.term` is the source of truth for label
+// selection. The bare-MODULES path always defaults to "short"
+// upstream of this helper, so bare `m_countdown` keeps reading
+// `c.shortInterval?.label`. The inline path now passes the
+// `term` through, which fixes the v0.8.x bug where
+// `m_countdown|term|mid` would render "(5h:--)" instead of
+// "(7d:--)" when the mid-term interval was missing.
 function placeholderDashesUnitFn(
-  body: (ctx: RenderContext) => string,
-): (_params: Record<string, ResolvedValue>, ctx: RenderContext) => string {
-  return (_p, c) => body(c);
+  body: (params: Record<string, ResolvedValue>, ctx: RenderContext) => string,
+): (params: Record<string, ResolvedValue>, ctx: RenderContext) => string {
+  return (p, c) => body(p, c);
 }
 
-// v0.9.0+ — quota module placeholder. Always renders
-// `${labelFor("quota")}(5h):--` (the short-term default) so the
-// shape is predictable. The live `m_quota` renderer reads the
-// actual per-term label from the resolved `Interval.label`.
-function placeholderQuota(
-  _params: Record<string, ResolvedValue>,
-  _ctx: RenderContext,
+// Term-aware renderer-context lookup. Mirrors the renderer-side
+// `term → Interval` switch (used in m_windowQuota / m_countdown /
+// m_quota) so placeholder + live bodies agree on what interval
+// they read. Default is "short" to match the bare-MODULES default.
+function intervalForTerm(
+  term: Term | undefined,
+  ctx: RenderContext,
+): { label: string | null | undefined } | null {
+  if (term === "mid") return ctx.midInterval;
+  if (term === "long") return ctx.longInterval;
+  return ctx.shortInterval;
+}
+
+// Built-in fallback labels for when the chosen interval is null.
+// Keyed by term so the placeholder reads with the same family
+// the live module would render.
+const PLACEHOLDER_TERM_FALLBACK: Record<Term, string> = {
+  short: "5h",
+  mid: "7d",
+  // vX.X.X+ — long-term fallback is "30d" (label form, so the
+  // call sites can reformat it as "--:30" / "prefix:--:30").
+  long: "30d",
+};
+
+// Standard per-term + per-interval label resolver shared by
+// m_countdown / m_quota placeholders. `wrap` receives the
+// resolved term-label (e.g. "5h" / "7d" / "30d"); callers shape
+// the body uniformly across terms. The vX.X.X+ convention is
+// dashes-left, label-bracketed-right:
+//   - m_countdown        → "--:(<label>)"
+//   - m_quota            → "${prefix}--:(<label>)"
+function placeholderTermLabel(
+  params: Record<string, ResolvedValue>,
+  ctx: RenderContext,
+  wrap: (label: string) => string,
 ): string {
-  return `${labelFor("quota")}(5h):--`;
+  const term = (params.term as Term | undefined) ?? "short";
+  const iv = intervalForTerm(term, ctx);
+  const label = iv?.label ?? PLACEHOLDER_TERM_FALLBACK[term];
+  return wrap(label);
+}
+
+// v0.9.0+ — quota module placeholder. Per-term, all terms share
+// the same "${labelFor("quota")}--:(<label>)" shape:
+//   - short → "quota:--:(5h)"
+//   - mid   → "quota:--:(7d)"
+//   - long  → "quota:--:(30d)"
+// Bare-MODULES default term is "short" upstream of this helper,
+// so bare `m_quota` keeps reading `c.shortInterval?.label`.
+function placeholderQuota(
+  params: Record<string, ResolvedValue>,
+  ctx: RenderContext,
+): string {
+  const prefix = labelFor("quota");
+  return placeholderTermLabel(params, ctx, (label) =>
+    // Per-term shape — uniform dashes-left, label-right:
+    //   short / mid / long → "${prefix}--:(<label>)"
+    //     e.g. "quota:--:(5h)", "quota:--:(7d)", "quota:--:(30d)"
+    `${prefix}--:(${label})`,
+  );
 }
 
 // gauge placeholder body: returns PLAIN text (no SGR). The
@@ -4217,7 +4350,12 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   // separators don't shift. :nulldrop|true remains the opt-out.
   m_age: placeholderNA("age:"),
   m_version: placeholderNA("v:"),
-  m_countdown: placeholderDashesUnitFn((c) => `${c.shortInterval?.label ?? "5h"}:--`),
+  m_countdown: placeholderDashesUnitFn((p, c) =>
+    // Per-term shape — uniform dashes-left, label-right:
+    //   short / mid / long → "--:(<label>)"
+    //     e.g. "--:(5h)", "--:(7d)", "--:(30d)"
+    placeholderTermLabel(p, c, (label) => `--:(${label})`),
+  ),
   m_balance: placeholderNA("balance:"),
   m_quota: placeholderQuota,
   // vX.X.X+ — token cost module placeholders. Render "cost:n/a" so
@@ -5367,30 +5505,31 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
       params.color as string | undefined,
     );
   },
-  // vX.X.X+ — per-turn token cost inline. Mirrors m_tokenCost MODULES
-  // body (computed from current.* × tokenPrice). Same arg surface as
-  // m_tokenCachedIn (color + nulldrop + valueOnly).
+  // v0.8.40+ — per-turn token cost inline. Mirrors m_tokenCost MODULES
+  // body (computed from current.* × the active model's price entry).
+  // Same arg surface as m_tokenCachedIn (color + nulldrop + valueOnly).
   m_tokenCost: (params, ctx) => {
     const t = ctx.tokens;
     if (!t || !t.sessionId) return placeholderWithColor("m_tokenCost", params, ctx);
-    const tp = cfg().tokenPrice;
-    const totalPrice = tp.in + tp.out + tp.cachedIn;
-    if (totalPrice <= 0) return placeholderWithColor("m_tokenCost", params, ctx);
+    // v0.9.x — active-model price entry. Miss OR all-zero prices
+    // → placeholder (matches the v0.8.40 contract).
+    const tp = resolveTokenPrice(t.modelId ?? null);
+    if (!tp || tp.in + tp.out + tp.cachedIn <= 0) return placeholderWithColor("m_tokenCost", params, ctx);
     const r = getDeltaForRender();
     const liveIn = t.current.tokenIn ?? 0;
     const liveOut = t.current.tokenOut ?? 0;
     const liveCached = t.current.tokenCachedIn ?? 0;
-    // tokenPrice values are per-million-tokens; divide by 1,000,000.
+    // tokenPrices values are per-million-tokens; divide by 1,000,000.
     const liveCost = ((tp.in / 1_000_000) * liveIn) + ((tp.out / 1_000_000) * liveOut) + ((tp.cachedIn / 1_000_000) * liveCached);
     const userColor = params.color as string | undefined;
-    // vX.X.X+ — |valueOnly|true drops the "cost:" prefix.
+    // v0.8.40+ — |valueOnly|true drops the "cost:" prefix.
     const prefix = params.valueOnly === "true" ? "" : labelFor("cost");
     if (!r.hasMeasurement) {
       const color = userColor ?? STALE_COLOR;
-      return `${color}${prefix}${formatCost(liveCost)}${RESET}`;
+      return `${color}${prefix}${formatCostWithCurrency(liveCost, tp.currency)}${RESET}`;
     }
     const cost = ((tp.in / 1_000_000) * r.in) + ((tp.out / 1_000_000) * r.out) + ((tp.cachedIn / 1_000_000) * r.cachedIn);
-    return wrapValueDefault("m_tokenCost", cost, `${prefix}${formatCost(cost)}`, userColor);
+    return wrapValueDefault("m_tokenCost", cost, `${prefix}${formatCostWithCurrency(cost, tp.currency)}`, userColor);
   },
   // v0.4.0+ — :color|scale (or no :color| at all) → 5-band
   // scale color on the active tick, STALE_COLOR on the
@@ -5487,13 +5626,14 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const scope = resolveAccScope(params, ctx);
     const v = peekAcc(scope, ctx);
     if (!v) return placeholderWithColor("m_accTokenCost", params, ctx);
-    const tp = cfg().tokenPrice;
-    const totalPrice = tp.in + tp.out + tp.cachedIn;
-    if (totalPrice <= 0) return placeholderWithColor("m_accTokenCost", params, ctx);
+    // v0.9.x — active-model price entry. Miss OR all-zero prices
+    // → placeholder (matches the v0.8.40 contract).
+    const tp = resolveTokenPrice(ctx.tokens?.modelId ?? null);
+    if (!tp || tp.in + tp.out + tp.cachedIn <= 0) return placeholderWithColor("m_accTokenCost", params, ctx);
     const cost = ((tp.in / 1_000_000) * v.accTokenIn) + ((tp.out / 1_000_000) * v.accTokenOut) + ((tp.cachedIn / 1_000_000) * v.accTokenCachedIn);
-    // vX.X.X+ — |valueOnly|true drops the "cost:" prefix.
+    // v0.8.40+ — |valueOnly|true drops the "cost:" prefix.
     const prefix = passThroughOr<string>(params, ctx, "valueOnly") === "true" ? "" : labelFor("cost");
-    return wrapValueDefault("m_accTokenCost", cost, `${prefix}${formatCost(cost)}`, passThroughOr<string>(params, ctx, "color"));
+    return wrapValueDefault("m_accTokenCost", cost, `${prefix}${formatCostWithCurrency(cost, tp.currency)}`, passThroughOr<string>(params, ctx, "color"));
   },
   // v0.8.13+ — inline m_accTokenInSpeed / m_accTokenOutSpeed.
   // Mirrors m_tokenInSpeed / m_tokenOutSpeed contract: `:color|scale`
@@ -5625,13 +5765,17 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (!filter) return INLINE_BADARG;
     const agg = fetchSumAggregate(filter);
     if (agg.rows === 0) return placeholderWithColor("m_sumTokenCost", params, ctx);
-    const tp = cfg().tokenPrice;
-    const totalPrice = tp.in + tp.out + tp.cachedIn;
-    if (totalPrice <= 0) return placeholderWithColor("m_sumTokenCost", params, ctx);
+    // v0.9.x — explicit |model|<literal> wins; otherwise active
+    // model id. (Same rule as the MODULES form.)
+    const lookupId = filter.modelFilter !== undefined ? filter.modelFilter : ctx.tokens?.modelId;
+    const tp = resolveTokenPrice(lookupId ?? null);
+    // v0.9.x — miss OR all-zero prices → placeholder (matches
+    // the v0.8.40 "unconfigured → cost:n/a" contract).
+    if (!tp || tp.in + tp.out + tp.cachedIn <= 0) return placeholderWithColor("m_sumTokenCost", params, ctx);
     const cost = ((tp.in / 1_000_000) * agg.sumIn) + ((tp.out / 1_000_000) * agg.sumOut) + ((tp.cachedIn / 1_000_000) * agg.sumCached);
-    // vX.X.X+ — |valueOnly|true drops the "cost:" prefix.
+    // v0.8.40+ — |valueOnly|true drops the "cost:" prefix.
     const prefix = passThroughOr<string>(params, ctx, "valueOnly") === "true" ? "" : labelFor("cost");
-    return wrapValueDefault("m_sumTokenCost", cost, `${prefix}${formatCost(cost)}`, passThroughOr<string>(params, ctx, "color"));
+    return wrapValueDefault("m_sumTokenCost", cost, `${prefix}${formatCostWithCurrency(cost, tp.currency)}`, passThroughOr<string>(params, ctx, "color"));
   },
   m_sumApiMs: (params, ctx) => {
     const merged = mergePassThrough(params, ctx);

@@ -318,7 +318,18 @@ export type TokenSnapshot = {
   // null-checks each field before reading. Optional types better
   // reflect the "missing is fine" contract at the renderer level.
   sessionName?: string | null;
+  // v0.9.x — display name from stdin.model.display_name. Read by
+  // m_model (the human-readable label) and as the JSONL sample.model
+  // STAMP in older versions. Kept alongside modelId because the
+  // display axis and the id axis serve different purposes (label vs.
+  // identifier).
   modelDisplayName?: string | null;
+  // v0.9.x — model id from stdin.model.id. The canonical active-
+  // model identifier for tokenPrices lookup, the JSONL sample.model
+  // stamp, and the per-model accumulator slot key. Distinct from
+  // modelDisplayName so users can configure price by the stable id
+  // while m_model still surfaces the friendly display label.
+  modelId?: string | null;
   effort?: string | null;
   repo?: { host: string | null; owner: string | null; name: string | null } | null;
   ccversion?: string | null;
