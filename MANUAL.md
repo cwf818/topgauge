@@ -349,7 +349,7 @@ skipped when the active provider's TYPE doesn't match.
 
 | TYPE value | Active when                                       |
 | ---------- | ------------------------------------------------- |
-| `plan`     | Provider has `TYPE: "TOKEN_PLAN"`.                |
+| `plan`     | Provider has `TYPE: "Quota"`.                |
 | `balance`  | Provider has `TYPE: "BALANCE"`.                   |
 | `unknown`  | No provider entry matched `ANTHROPIC_BASE_URL`.   |
 
@@ -428,7 +428,7 @@ The seven plan + two balance presets are first-class entries in
 `statuslineTemplate` array via `m_template|_X`. The optional
 `|type|plan|balance` second arg constrains dispatch to one provider
 TYPE — default is `type|plan`, so a `_balance_*` preset silently
-drops on a TOKEN_PLAN provider unless overridden. (The legacy
+drops on a Quota provider unless overridden. (The legacy
 `|mode|…` form is still accepted.) As of v0.8.37, omitting both
 `type` and `mode` makes the reference universal — the same preset
 renders on plan, balance, AND unknown providers.
@@ -527,7 +527,7 @@ The `_` prefix marks a built-in preset — user-defined
 "statuslineTemplate": ["m_template|_standard"]
 
 // Universal renderer that works on BOTH provider types (v0.8.37+):
-//   - On a TOKEN_PLAN provider, "usage" branch renders.
+//   - On a Quota provider, "usage" branch renders.
 //   - On a BALANCE provider, "balance" branch renders.
 //   - Both branches use the same outer token list; `type:` is
 //     omitted so the dispatcher doesn't drop either side.

@@ -140,19 +140,21 @@ function isOurWrapperCommand(command) {
   // Accepts either separator since the paths in settings.json come from
   // a Cygwin / native boundary (backslashes on Windows, forward slashes
   // on Linux/macOS).
-  const pathRe = /plugins[\/\\]cache[\/\\]topgauge-cc[\/\\]topgauge-cc[\/\\]/;
+  const normalized = command.replaceAll("\\", "/");
+  const hasCachePath = normalized.includes("plugins/cache/topgauge-cc/topgauge-cc/")
+    || normalized.includes("plugins/cache/tokenplan-usage-hud/tokenplan-usage-hud/");
   // Suffix: install.sh writes `bash -c '...exec bash "<path>"'`, so the
   // last three characters of the command are literally `sh"'`. The
   // trailing `'` distinguishes our wrapper from a different command
   // that happens to mention our cache path.
-  return pathRe.test(command) && /wrapper\.sh"'\s*$/.test(command);
+  return hasCachePath && /wrapper\.sh"'\s*$/.test(command);
 }
 
 switch (op) {
   case "status": {
     const data = readJson(target);
     const sl = data.statusLine;
-    if (sl && sl._topgauge_managed === true && isOurWrapperCommand(sl.command)) {
+    if (sl && (sl._topgauge_managed === true || sl._tokenplan_managed === true) && isOurWrapperCommand(sl.command)) {
       // Both the marker AND the wrapper command are ours → safe to treat as
       // managed (uninstall can restore from upstream-cmd.txt; re-install is
       // a no-op).
@@ -212,6 +214,7 @@ switch (op) {
       next.type = "command";
       next.command = original;
       delete next._topgauge_managed;
+      delete next._tokenplan_managed;
       data.statusLine = next;
     } else if (!data.statusLine) {
       data.statusLine = { type: "command", command: original };

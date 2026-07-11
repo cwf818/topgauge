@@ -21,13 +21,12 @@
 // deepseek uses the default 5000") without restating the global
 // config for each provider.
 //
-// v0.2.21: provider dispatch is data-driven via the providers config
-// block. The hardcoded `getRemainsData` / `getBalanceData` split is
-// replaced by a single `fetchProviderData(provider, …)` that picks
-// the right fetcher based on the matched provider's `TYPE`.
+// Provider dispatch is data-driven via the providers config block. A
+// single `fetchProviderData(provider, …)` resolves the matching plugin;
+// TYPE only selects the canonical result shape and renderer branch.
 
 import * as cache from "./cache.ts";
-import { type Remains, type Balance } from "./api.ts";
+import { type Quota, type Balance } from "./api.ts";
 import type { Provider } from "./types.ts";
 import { compose } from "./composition.ts";
 import { type FetchResult, buildProviderLine } from "./dispatch.ts";
@@ -87,7 +86,7 @@ async function readStdin(): Promise<string> {
 // disk state.
 
 // v0.2.21: the cache key is now the provider NAME (was a constant
-// string per TYPE in v0.2.20). Two TOKEN_PLAN providers would share
+// string per TYPE in v0.2.20). Two Quota providers would share
 // a key today — that's fine since they have identical data shapes,
 // but if a future provider of the same TYPE returns a different
 // shape, this becomes a real distinction to make.
@@ -97,12 +96,12 @@ async function readStdin(): Promise<string> {
 // `getWithAge<T>` overload.
 // `token` is the env-sourced value read once by main() from
 // process.env.ANTHROPIC_AUTH_TOKEN (may be empty). Each fetcher
-// prefers the entry's BEARER_KEY over this; an empty `token` plus an
-// empty BEARER_KEY causes the fetcher to return null and the
+// prefers the entry's AUTHENTICATION_KEY over this; an empty `token` plus an
+// empty AUTHENTICATION_KEY causes the fetcher to return null and the
 // dispatcher to fall back to the stale cache / fail line. The
 // previous v0.5.x behavior of short-circuiting the whole tick on
 // empty env token was dropped in v0.6.0 to support per-provider
-// credential overrides (see the ProviderEntry.BEARER_KEY docstring
+// credential overrides (see the ProviderEntry.AUTHENTICATION_KEY docstring
 // in src/types.ts for the "always wins" rule).
 async function fetchProviderData(
   provider: Provider,
@@ -121,7 +120,7 @@ async function fetchProviderData(
   // cache.getWithAge is generic on the data shape. We dispatch on
   // TYPE for the concrete type; unknown is the cross-type union.
   // (noinspection is needed because TS can't narrow `unknown` to
-  // Remains/Balance purely from entry.TYPE.) The audit row in
+  // Quota/Balance purely from entry.TYPE.) The audit row in
   // diagnostics.jsonl picks up cwd via the process-level session
   // cwd store (set by `setSessionCwd` once `parseTokenSnapshot`
   // has parsed stdin above), so the top-level cache.json row
@@ -136,8 +135,8 @@ async function fetchProviderData(
     return hit ? { value: hit.value, ageMs: hit.ageMs } : null;
   };
 
-  if (entry.TYPE === "TOKEN_PLAN") {
-    const cached = readCache<Remains>();
+  if (entry.TYPE === "Quota") {
+    const cached = readCache<Quota>();
     if (cached)
       return { kind: "fresh", data: cached.value, ageMs: cached.ageMs };
   } else if (entry.TYPE === "BALANCE") {
@@ -161,16 +160,15 @@ async function fetchProviderData(
     // Fetcher returned null (e.g. base_resp.status_code != 0). Treat
     // as a hard fail, but still try the stale cache.
     const stale =
-      entry.TYPE === "TOKEN_PLAN" ? peekCache<Remains>() : peekCache<Balance>();
+      entry.TYPE === "Quota" ? peekCache<Quota>() : peekCache<Balance>();
     if (stale) return { kind: "stale", data: stale.value, ageMs: stale.ageMs };
     return { kind: "fail" };
   } catch {
-    // Network / HTTP error. Stale-on-error: keep showing the last good value.
-    // The fetch site (fetchRemains / fetchBalance) is responsible for
-    // logging the underlying error to diagnostics; we just translate
-    // the throw to a FetchResult here. See api.plan.ts / api.balance.ts.
+    // Network / plugin error. Stale-on-error: keep showing the last good
+    // value. The dynamic plugin loader records the underlying error; this
+    // layer translates the throw to a FetchResult.
     const stale =
-      entry.TYPE === "TOKEN_PLAN" ? peekCache<Remains>() : peekCache<Balance>();
+      entry.TYPE === "Quota" ? peekCache<Quota>() : peekCache<Balance>();
     if (stale) return { kind: "stale", data: stale.value, ageMs: stale.ageMs };
     return { kind: "fail" };
   }
@@ -223,7 +221,7 @@ async function main(): Promise<void> {
   // v0.4.x — when no provider entry matches ANTHROPIC_BASE_URL,
   // dispatch through buildProviderLine anyway so provider-AGNOSTIC
   // modules (m_token*, m_session, m_version, m_model, …) can still
-  // emit. Previously the plugin was a pure TOKEN_PLAN / BALANCE
+  // emit. Previously the plugin was a pure Quota / BALANCE
   // frontend, so a missing provider entry meant there was nothing
   // meaningful to display; returning null early was a clean signal
   // for the upstream wrapper to fall through. Now the dispatcher is
@@ -261,8 +259,8 @@ async function main(): Promise<void> {
 
   // v0.6.0+ — pre-read the env token once but DON'T short-circuit
   // on empty. The fetcher decides whether to make the call (it sees
-  // entry.BEARER_KEY). An empty env token with a non-empty
-  // entry.BEARER_KEY is a valid config-driven setup (e.g. CI without
+  // entry.AUTHENTICATION_KEY). An empty env token with a non-empty
+  // entry.AUTHENTICATION_KEY is a valid config-driven setup (e.g. CI without
   // env vars); the previous v0.5.x behavior of writing nothing on
   // empty env would silently break that flow.
   const envToken = process.env.ANTHROPIC_AUTH_TOKEN;

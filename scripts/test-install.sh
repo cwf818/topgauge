@@ -103,7 +103,7 @@ build_fixture() {
   local base="${root}/plugins/cache/topgauge-cc/topgauge-cc"
   local curr="${base}/0.2.8"
   local prev="${base}/0.2.7"
-  mkdir -p "${curr}/scripts/lib" "${curr}/dist" "${prev}/state" \
+  mkdir -p "${curr}/scripts/lib" "${curr}/dist/plugins/minimax" "${curr}/dist/plugins/deepseek" "${prev}/state" \
            "${root}/plugins/cache" \
            "${root}/plugins/topgauge-cc"
 
@@ -125,9 +125,12 @@ EOF
   ln -s "${SCRIPT_DIR}/wrapper.sh" "${curr}/scripts/wrapper.sh"
   ln -s "${SCRIPT_DIR}/install.sh" "${curr}/scripts/install.sh"
   ln -s "${SCRIPT_DIR}/lib/edit-settings.mjs" "${curr}/scripts/lib/edit-settings.mjs"
-  # Provide a stub dist/index.js so the install script's "build on demand"
-  # branch is skipped — we don't want tests that fail in a no-network env.
+  # Provide stub runtime artifacts so the install script's "build on
+  # demand" branch is skipped — tests must not need network access.
   printf '# stub\n' > "${curr}/dist/index.js"
+  printf '# stub\n' > "${curr}/dist/path-expr.js"
+  printf '# stub\n' > "${curr}/dist/plugins/minimax/index.js"
+  printf '# stub\n' > "${curr}/dist/plugins/deepseek/index.js"
 
   # Optionally pre-populate the STABLE state dir (the "already migrated"
   # case). When with_stable_state=yes, write a DIFFERENT upstream-cmd so
@@ -243,11 +246,14 @@ echo "-- no previous version (only one cache dir): no-op without copying --"
 root="$(mktemp -d -t topgauge-cc-install-test-XXXXXX)"
 base="${root}/plugins/cache/topgauge-cc/topgauge-cc"
 curr="${base}/0.2.8"
-mkdir -p "${curr}/scripts/lib" "${curr}/dist" "${root}/plugins/topgauge-cc"
+mkdir -p "${curr}/scripts/lib" "${curr}/dist/plugins/minimax" "${curr}/dist/plugins/deepseek" "${root}/plugins/topgauge-cc"
 ln -s "${SCRIPT_DIR}/wrapper.sh" "${curr}/scripts/wrapper.sh"
 ln -s "${SCRIPT_DIR}/install.sh" "${curr}/scripts/install.sh"
 ln -s "${SCRIPT_DIR}/lib/edit-settings.mjs" "${curr}/scripts/lib/edit-settings.mjs"
 printf '# stub\n' > "${curr}/dist/index.js"
+printf '# stub\n' > "${curr}/dist/path-expr.js"
+printf '# stub\n' > "${curr}/dist/plugins/minimax/index.js"
+printf '# stub\n' > "${curr}/dist/plugins/deepseek/index.js"
 # settings.json: matches the isOurWrapperCommand fingerprint so install.sh
 # takes the no-op (managed) branch — which is what we want to test.
 cat > "${root}/settings.json" <<EOF
@@ -276,13 +282,16 @@ echo "-- legacy one-shot state migration (v0.7.0: tokenplan-usage-hud -> topgaug
 root="$(mktemp -d -t topgauge-cc-legacy-migrate-XXXXXX)"
 base="${root}/plugins/cache/topgauge-cc/topgauge-cc"
 curr="${base}/0.2.8"
-mkdir -p "${curr}/scripts/lib" "${curr}/dist" \
+mkdir -p "${curr}/scripts/lib" "${curr}/dist/plugins/minimax" "${curr}/dist/plugins/deepseek" \
          "${root}/plugins/tokenplan-usage-hud/state" \
          "${root}/plugins/topgauge-cc"
 ln -s "${SCRIPT_DIR}/wrapper.sh" "${curr}/scripts/wrapper.sh"
 ln -s "${SCRIPT_DIR}/install.sh" "${curr}/scripts/install.sh"
 ln -s "${SCRIPT_DIR}/lib/edit-settings.mjs" "${curr}/scripts/lib/edit-settings.mjs"
 printf '# stub\n' > "${curr}/dist/index.js"
+printf '# stub\n' > "${curr}/dist/path-expr.js"
+printf '# stub\n' > "${curr}/dist/plugins/minimax/index.js"
+printf '# stub\n' > "${curr}/dist/plugins/deepseek/index.js"
 # settings.json: unmanaged (no _topgauge_managed), so install.sh takes
 # the fresh / replace branch — and the legacy migration runs before
 # anything else.

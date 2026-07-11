@@ -3,31 +3,30 @@
 //
 // v0.2.21: Provider widened to `string | null` — providers are now
 // data-driven via the `providers` config block (see src/config.ts and
-// src/providers.ts). Adding a new provider no longer requires editing
-// this type union; just add a new entry to config.json's `providers`
-// map. The TYPE discriminator below drives which fetcher / template /
-// fail-label path the dispatcher takes.
+// src/providers.ts). Adding a provider requires a config entry and a
+// plugin module, but does not require editing this type union. The TYPE
+// discriminator drives the plugin output shape and renderer / fail-label
+// path.
 
 export type Provider = string | null;
 
 // Closed enum for now. If a new TYPE is added, the fetcher / renderer /
 // template selection logic grows a new branch — data shape changes
 // cannot be made data-driven (they need code to interpret them).
-export type ProviderType = "TOKEN_PLAN" | "BALANCE";
+export type ProviderType = "Quota" | "BALANCE";
 
 export type CompareMethod = "EXACT" | "INCLUDE" | "STARTWITH";
 
 // v0.9.0+ — intervals namespace.
 //
-// Each TOKEN_PLAN provider describes up to three independent plan
+// Each Quota provider describes up to three independent plan
 // windows (a 5-hour interval, a 7-day interval, and a 30-day monthly
 // interval). Each interval has 11 fields, all of which the user can
 // supply through the `intervals` config block (top-level or per-
 // provider). `windowId` and `label` have built-in defaults
 // (`"5h"` / `"7d"` / `"30d"`); every other field must come from
-// the user's config or from the built-in defaults applied by
-// validateProviderEntry when the provider matches the minimax URL
-// gate. `intervalS` and `intervalMs` are unit twins — a path that
+// the user's config or from the effective context assembled for the
+// active plugin. `intervalS` and `intervalMs` are unit twins — a path that
 // resolves to a number-of-seconds value goes through `intervalS` and
 // is converted to ms internally; both forms are equivalent.
 //
@@ -395,7 +394,6 @@ export type ProviderEntry = {
   TYPE: ProviderType;
   BASE_URL_COMPARED_TO: string;
   COMPARE_METHOD: CompareMethod;
-  ENDPOINT: string;
   // Provider-specific Config overrides. Same shape as the top-level
   // config.json (minus the `providers` key itself). Validated at
   // config-load time: must be a plain object; unknown keys are
@@ -418,41 +416,15 @@ export type ProviderEntry = {
   // (CNY / USD / …) onto `{ label, totalBalance }` slot configs.
   // Resolved against the BALANCE provider's raw response at fetch
   // time by `resolveEffectiveCurrencies(id, entry)` in src/config.ts;
-  // the parser (`parseBalance` in src/api.ts) walks the resolved map
+  // the built-in parser (`parseBalance` in src/plugins/parsers.ts) walks the resolved map
   // and pulls each entry's `totalBalance` value via the configured
   // path expression. Used by DeepSeek out of the box (CNY default),
   // and by any BALANCE provider that wants a data-driven currency
   // map. Layer 3 of the 4-layer merge — overrides the top-level
   // `currencies` block entirely for the active provider.
   currencies?: ProviderCurrenciesConfig;
-  // v0.6.0+ — per-provider HTTP request overrides. All three are
-  // optional; absence means "use the v0.5.x default": GET, env-var
-  // bearer, no body. Each field is validated independently at
-  // config-load time (see validateProviderEntry in src/config.ts).
-  //
-  // BEARER_KEY always wins over process.env.ANTHROPIC_AUTH_TOKEN
-  // when present — there is no env fallback. This is the contract
-  // that makes per-provider credential rotation possible without
-  // touching the env. The token is sent in the standard
-  // `Authorization: Bearer <key>` header.
-  BEARER_KEY?: string;
-  // HTTP method. Closed enum; bad values (typo, wrong casing, "OPTIONS",
-  // …) drop the whole entry at config-load. Defaults to "GET" when
-  // absent — the same default the v0.5.x fetchers used unconditionally.
-  METHOD?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
-  // Static JSON body sent with the request. Only meaningful when
-  // METHOD is not GET (POST/PUT/PATCH carry a payload; DELETE
-  // tolerates a body but most servers ignore it). Serialized with
-  // JSON.stringify at fetch time. Must be a plain object — arrays,
-  // strings, numbers are rejected at config-load. No template
-  // placeholders; this is intentionally a static shape so the
-  // provider config remains declarative (no template engine).
-  BODY?: Record<string, unknown>;
-  // vX.X.X+ — env-inheritance flag for the exec + plugin transports.
-  // Defaults to true (env preserved). When false, the spawned
-  // child process runs with empty env — useful for paranoid
-  // credential isolation (prevents ANTHROPIC_AUTH_TOKEN etc. from
-  // leaking into a shell command's child env). Has no effect on the
-  // http transport (fetch() inherits its own env regardless).
-  EXEC_INHERIT_ENV?: boolean;
+  // Provider-specific credential. It takes precedence over
+  // process.env.ANTHROPIC_AUTH_TOKEN and is passed to the plugin's
+  // fetchAccountCredit method.
+  AUTHENTICATION_KEY?: string;
 };

@@ -1,8 +1,6 @@
-// v0.2.21: provider registry — URL matching, fetcher dispatch, and
-// template / fail-label routing. Replaces the v0.2.20 hardcoded
-// `resolveProvider` + per-provider `getRemainsData` / `getBalanceData`
-// with a config-driven dispatch where adding a new provider is a
-// config-only change.
+// Provider registry — URL matching, plugin dispatch, and template /
+// fail-label routing. Provider acquisition and parsing live in dynamically
+// imported plugins; config.json only selects and configures them.
 //
 // All functions in this module read from `configStore.get().providers`
 // at call time, so config changes via `__resetForTest` are picked up
@@ -80,10 +78,10 @@ export function getProviderEntry(provider: Provider): ProviderEntry | null {
 
 // ----- Type-driven dispatch -----
 
-// Fetch the provider's data via the appropriate fetcher, hitting the
-// configured ENDPOINT. Returns the parsed data shape (Remains for
-// TOKEN_PLAN, Balance for BALANCE). Throws on network/HTTP error
-// (caller catches and falls back to stale cache).
+// Fetch the provider's data through its dynamically imported plugin.
+// Returns the canonical data shape (Quota for Quota, Balance for
+// BALANCE). Throws on plugin or network error; the caller catches and
+// falls back to stale cache.
 //
 // The `unknown` return type is intentional: callers narrow at the
 // call site based on `entry.TYPE`. This keeps providers.ts ignorant
@@ -95,11 +93,10 @@ export async function fetchForProvider(
 ): Promise<unknown> {
   const entry = getProviderEntry(provider);
   if (!entry) throw new Error(`unknown provider: ${String(provider)}`);
-  // id-threaded dispatcher in src/api.ts: routes by transport
-  // (http/exec/plugin based on ENDPOINT prefix + query_plugins
-  // presence) and narrows by entry.TYPE to the parser. Throws on
-  // transport failure (caller's stale-on-error cache logic in
-  // src/index.ts:fetchProviderData catches and surfaces cached data).
+  // The id-threaded dispatcher resolves the built-in or user plugin,
+  // passes the effective config context, and narrows the result by
+  // entry.TYPE. The caller's stale-on-error cache logic in index.ts
+  // catches plugin failures and surfaces cached data.
   return fetchForProviderById(provider, entry, token, signal);
 }
 
@@ -110,12 +107,12 @@ export function failLabelForProvider(provider: Provider): string {
   const entry = getProviderEntry(provider);
   const modeLabels = configStore.get().modeLabels;
   if (!entry) return modeLabels.used;
-  if (entry.TYPE === "TOKEN_PLAN") return modeLabels.used;
+  if (entry.TYPE === "Quota") return modeLabels.used;
   return modeLabels.balance;
 }
 
 // Map a provider's TYPE to the renderer-facing type discriminator.
-// `TOKEN_PLAN → "plan"`, `BALANCE → "balance"`, and null entry (no
+// `Quota → "plan"`, `BALANCE → "balance"`, and null entry (no
 // matching ANTHROPIC_BASE_URL) → `"unknown"`. The renderer uses
 // this as the per-module `type` filter comparison target, and as
 // the m_modeLabel routing key. Replaces the older
@@ -146,7 +143,7 @@ export function providerTypeFor(
 ): "plan" | "balance" | "unknown" {
   const entry = getProviderEntry(provider);
   if (!entry) return "unknown";
-  if (entry.TYPE === "TOKEN_PLAN") return "plan";
+  if (entry.TYPE === "Quota") return "plan";
   return "balance";
 }
 

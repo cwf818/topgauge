@@ -8,8 +8,8 @@
       "name": "topgauge-cc",
       "source": "./",
       "description": "Provider-agnostic Claude Code statusline plugin (ToPGauge-CC) for token-plan usage and account balance. Picks the provider from ANTHROPIC_BASE_URL (currently MiniMax + DeepSeek); hides itself otherwise. Ships :install, :uninstall, :clean, and :clean-cache slash commands.",
-      "version": "0.7.0"
+      "version": "0.8.47"
     }
   ],
-  "version": "0.7.0"
+  "version": "0.8.47"
 }

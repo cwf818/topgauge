@@ -222,7 +222,7 @@ describe("matchProvider — custom config", () => {
     __resetForTest({
       providers: {
         minimax: {
-          TYPE: "TOKEN_PLAN",
+          TYPE: "Quota",
           BASE_URL_COMPARED_TO: "minimaxi.com",
           COMPARE_METHOD: "INCLUDE",
           ENDPOINT: "https://www.minimaxi.com/v1/token_plan/remains",
@@ -288,9 +288,9 @@ describe("getProviderEntry", () => {
   it("returns the full entry for a known provider", () => {
     const entry = getProviderEntry("minimax");
     assert.ok(entry);
-    assert.equal(entry!.TYPE, "TOKEN_PLAN");
+    assert.equal(entry!.TYPE, "Quota");
     assert.equal(entry!.COMPARE_METHOD, "EXACT");
-    assert.equal(entry!.ENDPOINT, "https://www.minimaxi.com/v1/token_plan/remains");
+    assert.equal("ENDPOINT" in entry!, false);
   });
 
   it("returns null for an unknown provider", () => {
@@ -303,7 +303,7 @@ describe("getProviderEntry", () => {
 });
 
 describe("failLabelForProvider", () => {
-  it("returns modeLabels.used for TOKEN_PLAN providers", () => {
+  it("returns modeLabels.used for Quota providers", () => {
     assert.equal(failLabelForProvider("minimax"), "Usage:");
   });
 
@@ -333,7 +333,7 @@ describe("providerTypeFor (formerly templateKeyForProvider)", () => {
   // `providerTypeFor("not-registered")` both return `"unknown"`,
   // letting the renderer's per-module `type` filter handle the
   // distinction.
-  it("returns 'plan' for TOKEN_PLAN providers", () => {
+  it("returns 'plan' for Quota providers", () => {
     assert.equal(providerTypeFor("minimax"), "plan");
   });
 
@@ -356,7 +356,7 @@ describe("providerTypeFor (formerly templateKeyForProvider)", () => {
 
 describe("providerTypeOf", () => {
   it("returns the TYPE field for known providers", () => {
-    assert.equal(providerTypeOf("minimax"), "TOKEN_PLAN");
+    assert.equal(providerTypeOf("minimax"), "Quota");
     assert.equal(providerTypeOf("deepseek"), "BALANCE");
   });
 
@@ -398,7 +398,7 @@ describe("integration: configStore.get().providers reaches providers.ts", () => 
     __resetForTest({
       providers: {
         minimax: {
-          TYPE: "TOKEN_PLAN",
+          TYPE: "Quota",
           BASE_URL_COMPARED_TO: "https://totally.different.host/anthropic",
           COMPARE_METHOD: "EXACT",
           ENDPOINT: "https://www.minimaxi.com/v1/token_plan/remains",

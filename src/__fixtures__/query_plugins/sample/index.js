@@ -10,24 +10,22 @@
 //
 //   "providers": {
 //     "sample": {
-//       "TYPE": "TOKEN_PLAN",
+//       "TYPE": "Quota",
 //       "BASE_URL_COMPARED_TO": "https://example.com",
 //       "COMPARE_METHOD": "EXACT",
-//       "ENDPOINT": ""
+//       "AUTHENTICATION_KEY": "optional-plugin-key"
 //     }
 //   }
 //
-// Contract (v0.8.46+):
+// Contract (plugin ABI):
 //   - The plugin is a regular ESM module.
-//   - Its **default export** must be `{ fetchAccountQuota(token) }`.
-//   - `token` is `process.env.ANTHROPIC_AUTH_TOKEN`; whether to
-//     honor it is the plugin author's call.
-//   - `fetchAccountQuota` returns an object already shaped like the
-//     tokenplan.schema (TOKEN_PLAN providers) or balance.schema
-//     (BALANCE providers) — the dispatcher does NOT re-parse.
+//   - Its **default export** must be `{ fetchAccountCredit(authenticationKey, context) }`.
+//   - `authenticationKey` is the configured key or `process.env.ANTHROPIC_AUTH_TOKEN`.
+//   - `fetchAccountCredit` returns an object already shaped like the
+//     canonical Quota or Balance data — the dispatcher does NOT re-parse.
 //
 // The plugin is loaded in-process via dynamic `import()` (same
-// Node runtime, same ESM loader). Throwing inside `fetchAccountQuota` is
+// Node runtime, same ESM loader). Throwing inside `fetchAccountCredit` is
 // surfaced as a stale-cache fallback by the dispatcher; timing
 // out after 5s is a hard error.
 
@@ -56,12 +54,12 @@ const payload = () => {
 
 export default {
   /**
-   * @param {string} token — process.env.ANTHROPIC_AUTH_TOKEN. Ignored
-   *   by this sample (it returns synthetic data); real plugins
+   * @param {string} authenticationKey — configured key or env fallback.
+   *   This sample ignores it (it returns synthetic data); real plugins
    *   should use it as a bearer token against the upstream API.
-   * @returns canonical `Remains` shape.
+   * @returns canonical `Quota` shape.
    */
-  async fetchAccountQuota(token) {
+  async fetchAccountCredit(authenticationKey) {
     return payload();
   },
 };

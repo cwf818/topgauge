@@ -50,10 +50,9 @@
   },
   "providers": {
     "minimax": {
-      "TYPE": "TOKEN_PLAN",
+      "TYPE": "Quota",
       "BASE_URL_COMPARED_TO": "https://api.minimaxi.com/anthropic",
       "COMPARE_METHOD": "EXACT",
-      "ENDPOINT": "https://www.minimaxi.com/v1/token_plan/remains",
       "intervals": {
         "shortInterval": {
           "remainingPercent": "model_remains.0.current_interval_remaining_percent",
@@ -72,7 +71,6 @@
       "TYPE": "BALANCE",
       "BASE_URL_COMPARED_TO": "https://api.deepseek.com/anthropic",
       "COMPARE_METHOD": "EXACT",
-      "ENDPOINT": "https://api.deepseek.com/user/balance",
       "intervals": {}
     }
   }

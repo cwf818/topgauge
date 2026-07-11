@@ -25,290 +25,28 @@ import type {
   ProviderType,
 } from "./types.ts";
 import * as diagnostics from "./diagnostics.ts";
-import { detectTransport } from "./api.ts";
+import {
+  DEFAULT_PROVIDERS,
+  VALID_COMPARE_METHODS,
+  VALID_PROVIDER_TYPES,
+  resolveEffectiveCurrenciesPure,
+  resolveEffectiveIntervalsPure,
+} from "./config.providers.ts";
 
-// ----- Defaults — must match today's hardcoded values exactly -----
+import {
+  DEFAULT_LINE_TEMPLATES,
+  DEFAULT_STATUSLINE_TEMPLATE,
+  LEGACY_PRESET_NAMES,
+  type LineTemplates,
+  type StatuslineTemplate,
+} from "./config.template.ts";
 
-// Default separator strings referenced from lineTemplate as s_0, s_1, ….
-// Empty by default in v0.4.x — the v0.4.0-release style built-in
-// characters (" ", "·") are now also available as NAMED ALIASES
-// vX.X.X+ — `separators` config array and the numeric `s_<n>`
-// dispatch are REMOVED. The six built-in characters
-// (`s_space` / `s_dot` / `s_newline` / `s_tab` / `s_colon` /
-// `s_pipe`) are the only separator tokens. To render any other
-// literal in your template, use `m_label|<your-text>` (or just
-// drop a free-form token — the renderer emits unknown tokens
-// verbatim now).
-
-// Default line layout. A template is an ordered list of tokens; each
-// token is either a display module ("m_<name>"), a named separator
-// ("s_space" / "s_dot" / …), or a free-form literal. The renderer
-// walks the list left-to-right and concatenates the output of each
-// module, with s_<name> rendered as the built-in literal character.
-// See render.ts:renderTemplate for the full grammar.
-//
-// Defaults reproduce the v0.2.16 output byte-for-byte:
-//   plan:    "Usage: <5h> <countdown5h> · <7d> <countdown7d>"
-//   balance: "Balance: <balance>"
-// with s_space / s_dot / s_space composing " · " between windows.
-//
-// v0.4.0+ — kept around as the SOURCE OF TRUTH for the `plan` / `balance`
-// entries inside `DEFAULT_LINE_TEMPLATES`. The legacy top-level
-// `lineTemplate: { plan, balance }` config field is REMOVED in v0.4.0+
-// (loader warns + ignores); the `m_template` module reads from
-// `lineTemplates[key]` instead. Tests still reference this constant via
-// __testing, so don't remove.
-const DEFAULT_LINE_TEMPLATE: {
-  plan: string[];
-  balance: string[];
-} = {
-  // v0.4.x — the default template uses the NAMED ALIASES (s_space,
-  // s_dot) so it works with the new empty default `separators`
-  // array. The visual output is byte-for-byte identical to the
-  // v0.4.0 release: the `s_0 + s_1 + s_0` composition is replaced
-  // with `s_space + s_dot + s_space`, both producing " · ".
-  plan: [
-    "m_modeLabel", "s_space",
-    "m_windowQuota|term:short", "s_space", "m_countdown|term:short",
-    "s_space", "s_dot", "s_space",
-    "m_windowQuota|term:mid", "s_space", "m_countdown|term:mid",
-  ],
-  balance: ["m_modeLabel", "s_space", "m_balance"],
+export {
+  DEFAULT_LINE_TEMPLATES,
+  DEFAULT_STATUSLINE_TEMPLATE,
+  LEGACY_PRESET_NAMES,
 };
-
-// v0.4.0+ — registry of reusable template fragments. Each value is a
-// token array (the same shape as the v0.3.x `lineTemplate.{plan,balance}`
-// entries). Allowed tokens: `m_*` modules EXCEPT `m_template`, plus
-// `s_*` separators. The loader strips `m_template:` tokens at load
-// time so nesting is impossible.
-//
-// Keys are user-chosen (e.g. `foo`, `myWorkload`). The renderer reads
-// from this registry when it encounters an `m_template|<key>` token
-// inside `statuslineTemplate`. The legacy `PLAN_PRESETS` /
-// `BALANCE_PRESETS` tables (v0.4.0–v0.8.13) are GONE in v0.8.14 — the
-// seven plan + two balance presets are now first-class entries in
-// this registry with `_`-prefixed keys. Plan presets
-// (`_1line` / `_simple` / `_simple-alone` / `_standard` /
-// `_standard-alone` / `_abundant` / `_complete`) target TOKEN_PLAN
-// providers; balance presets (`_balance_simple` /
-// `_balance_simple-alone`) target BALANCE providers (DeepSeek). The
-// user references them via `m_template|_X` (with optional
-// `|mode|plan|balance` to constrain dispatch to one provider type —
-// `m_template` defaults to `mode:plan`).
-//
-// `_`-prefix = built-in preset, NOT overridable by user. The loader
-// rejects user `lineTemplates._*` entries whose name collides with a
-// built-in key (warn + skip). Use a different key for user-defined
-// presets.
-//
-// Default entries point at the same arrays DEFAULT_LINE_TEMPLATE uses,
-// so the legacy "plan" / "balance" key names continue to resolve for
-// backward-compatible lookups via `m_template:plan` / `:balance`.
-type LineTemplates = Record<string, string[]>;
-
-
-// v0.8.14+ — `statuslineTemplate` is array-only. The legacy string-form
-// preset-name value (`"1line"`, `"standard"`, etc.) is auto-migrated
-// by `applyOverrides` to the equivalent `["m_template|_X"]` form with
-// a one-shot stderr warning. Use the array form directly to silence
-// the warning. The PLAN_PRESETS / BALANCE_PRESETS tables (v0.4.0–
-// v0.8.13) are gone — presets are now first-class entries in
-// `DEFAULT_LINE_TEMPLATES` with `_`-prefixed keys.
-type StatuslineTemplate = string[];
-
-// Default render = `["m_template|_1line"]`. The `_1line` body is the
-// byte-identical rename of the v0.4.0–v0.8.13 `PLAN_PRESETS["1line"]`
-// body, so existing users with no config.json see the same render
-// they did before v0.8.14 (TOKEN_PLAN provider — the default mode of
-// `m_template` matches).
-export const DEFAULT_STATUSLINE_TEMPLATE: StatuslineTemplate = ["m_template|_1line"];
-
-// v0.8.14 — Set of all legacy preset names (with the `_` prefix
-// stripped). `applyOverrides` uses this to detect legacy string-form
-// `statuslineTemplate` values and auto-migrate them to the equivalent
-// `["m_template|_X"]` form. `balance_simple` and `balance_simple-alone`
-// include the `_balance_` infix (e.g. `balance_simple` becomes the
-// `_balance_simple` key). Order matches the bodies above; do not add
-// names here without adding the corresponding key to
-// DEFAULT_LINE_TEMPLATES.
-export const LEGACY_PRESET_NAMES: ReadonlyArray<string> = [
-  "1line", "simple", "simple-alone", "standard",
-  "standard-alone", "abundant", "complete",
-  "balance_simple", "balance_simple-alone",
-];
-
-// v0.8.14 — built-in presets are now first-class entries in
-// DEFAULT_LINE_TEMPLATES with `_`-prefix. Bodies were migrated
-// byte-for-byte from the v0.4.0–v0.8.13 PLAN_PRESETS /
-// BALANCE_PRESETS tables; the bodies themselves are unchanged.
-//
-// Naming convention (carried over from the legacy PLAN_PRESETS /
-// BALANCE_PRESETS tables):
-//
-//   TOKEN_PLAN presets (default mode of `m_template` is "plan", so
-//   no `|mode|plan` arg needed):
-//     _1line / _simple       : tokenplan only, single line, compact
-//                              (_simple is an alias of _1line — same body)
-//     _simple-alone          : single line with "Usage:" label prefix
-//                              (for the user running this plugin as
-//                              the SOLE statusline — no upstream chain)
-//     _standard              : 2 lines (tokenplan on line 0, context
-//                              & token on line 1). Companion: this
-//                              plugin chains an upstream statusline
-//                              for session info.
-//     _standard-alone        : 3 lines (adds session on line 0).
-//     _abundant              : 4 lines (adds git on line 0).
-//     _complete              : 5 lines (adds totals on line 3).
-//
-//   BALANCE presets (use `m_template|_X|mode|balance` to constrain
-//   dispatch to BALANCE providers — the default `m_template` mode of
-//   "plan" would silently drop these on a TOKEN_PLAN provider):
-//     _balance_simple        : default balance render
-//                              ("Balance: <balance>")
-//     _balance_simple-alone  : balance render with explicit
-//                              "Balance:" label prefix for solo use.
-//
-// Per-module coloring is omitted from the presets (no `:color:` arg)
-// — the user can override per module by inlining the preset into
-// their own array if they want.
-export const DEFAULT_LINE_TEMPLATES: LineTemplates = {
-  // Legacy "plan" / "balance" entries — preserved for back-compat
-  // with pre-v0.8.14 configs that referenced `m_template:plan` /
-  // `:balance`. Bodies match DEFAULT_LINE_TEMPLATE (the `s_space +
-  // s_dot + s_space` composition that produces " · " between
-  // windows).
-  plan: DEFAULT_LINE_TEMPLATE.plan,
-  balance: DEFAULT_LINE_TEMPLATE.balance,
-
-  // ----- Built-in presets (v0.8.14+) -----
-  _1line: [
-    "m_modeLabel", "s_space",
-    "m_windowQuota|term:short", "s_space", "m_countdown|term:short",
-    "s_space", "s_dot", "s_space",
-    "m_windowQuota|term:mid", "s_space", "m_countdown|term:mid",
-  ],
-  // alias of _1line — same shape, more discoverable name
-  _simple: [
-    "m_modeLabel", "s_space",
-    "m_windowQuota|term:short", "s_space", "m_countdown|term:short",
-    "s_space", "s_dot", "s_space",
-    "m_windowQuota|term:mid", "s_space", "m_countdown|term:mid",
-  ],
-  // single line with "Usage:" label prefix
-  _simple_alone: [
-    "m_label|Usage|color:yellow", "s_newline",
-    "m_windowQuota|term:short|nulldrop:false", "s_space",
-    "m_countdown|term:short|nulldrop:false",
-    "s_space", "s_dot|color:red", "s_space",
-    "m_windowQuota|term:mid|nulldrop:false", "s_space",
-    "m_countdown|term:mid|nulldrop:false",
-  ],
-  // 2 lines: line 0 = tokenplan, line 1 = context & token.
-  _standard: [
-    "m_modeLabel", "s_space",
-    "m_windowQuota|term:short", "s_space", "m_countdown|term:short",
-    "s_space", "s_dot", "s_space",
-    "m_windowQuota|term:mid", "s_space", "m_countdown|term:mid",
-    "s_newline",
-    "m_sessionApiDuration|nulldrop:false", "s_space",
-    "m_tokenIn|nulldrop:false", "s_space",
-    "m_tokenInSpeed|nulldrop:false", "s_space",
-    "m_tokenOut|nulldrop:false", "s_space",
-    "m_tokenOutSpeed|nulldrop:false", "s_space",
-    "m_ctx|nulldrop:false", "s_space",
-    "m_tokenHitRate|nulldrop:false",
-  ],
-  // 3 lines: line 0 = session, line 1 = tokenplan, line 2 = context.
-  _standard_alone: [
-    "m_label|Session|color:yellow", "s_space",
-    "m_session|nulldrop:false", "s_space",
-    "m_model|nulldrop:false", "s_space",
-    "m_ccVersion|nulldrop:false",
-    "s_newline",
-    "m_label|Usage|color:yellow", "s_newline",
-    "m_windowQuota|term:short|nulldrop:false", "s_space",
-    "m_countdown|term:short|nulldrop:false",
-    "s_space", "s_dot|color:red", "s_space",
-    "m_windowQuota|term:mid|nulldrop:false", "s_space",
-    "m_countdown|term:mid|nulldrop:false",
-    "s_newline",
-    "m_label|Context|color:yellow", "s_newline",
-    "m_sessionApiDuration|nulldrop:false", "s_space",
-    "m_tokenIn|nulldrop:false", "s_space",
-    "m_tokenInSpeed|nulldrop:false", "s_space",
-    "m_tokenOut|nulldrop:false", "s_space",
-    "m_tokenOutSpeed|nulldrop:false", "s_space",
-    "m_ctx|nulldrop:false", "s_space",
-    "m_tokenHitRate|nulldrop:false",
-  ],
-  // 4 lines: line 0 = session + git, line 1 = tokenplan, line 2 =
-  // context, line 3 = (none — see _complete for the 5-line form).
-  _abundant: [
-    "m_label|Session|color:yellow", "s_space",
-    "m_session|nulldrop:false", "s_space",
-    "m_model|nulldrop:false", "s_space",
-    "m_branch|nulldrop:false", "s_space",
-    "m_gitStatus|nulldrop:false", "s_space",
-    "m_ccVersion|nulldrop:false",
-    "s_newline",
-    "m_label|Usage|color:yellow", "s_newline",
-    "m_windowQuota|term:short|nulldrop:false", "s_space",
-    "m_countdown|term:short|nulldrop:false",
-    "s_space", "s_dot|color:red", "s_space",
-    "m_windowQuota|term:mid|nulldrop:false", "s_space",
-    "m_countdown|term:mid|nulldrop:false",
-    "s_newline",
-    "m_label|Context|color:yellow", "s_newline",
-    "m_sessionApiDuration|nulldrop:false", "s_space",
-    "m_tokenIn|nulldrop:false", "s_space",
-    "m_tokenInSpeed|nulldrop:false", "s_space",
-    "m_tokenOut|nulldrop:false", "s_space",
-    "m_tokenOutSpeed|nulldrop:false", "s_space",
-    "m_ctx|nulldrop:false", "s_space",
-    "m_tokenHitRate|nulldrop:false",
-  ],
-  // 5 lines: line 0 = session + git, line 1 = tokenplan, line 2 =
-  // context, line 3 = totals. NOT recommended — verbose.
-  _complete: [
-    "m_label|Session|color:yellow", "s_space",
-    "m_session|nulldrop:false", "s_space",
-    "m_model|nulldrop:false", "s_space",
-    "m_branch|nulldrop:false", "s_space",
-    "m_gitStatus|nulldrop:false", "s_space",
-    "m_ccVersion|nulldrop:false",
-    "s_newline",
-    "m_label|Usage|color:yellow", "s_newline",
-    "m_windowQuota|term:short|nulldrop:false", "s_space",
-    "m_countdown|term:short|nulldrop:false",
-    "s_space", "s_dot|color:red", "s_space",
-    "m_windowQuota|term:mid|nulldrop:false", "s_space",
-    "m_countdown|term:mid|nulldrop:false",
-    "s_newline",
-    "m_label|Context|color:yellow", "s_newline",
-    "m_sessionApiDuration|nulldrop:false", "s_space",
-    "m_tokenIn|nulldrop:false", "s_space",
-    "m_tokenInSpeed|nulldrop:false", "s_space",
-    "m_tokenOut|nulldrop:false", "s_space",
-    "m_tokenOutSpeed|nulldrop:false", "s_space",
-    "m_ctx|nulldrop:false", "s_space",
-    "m_tokenHitRate|nulldrop:false",
-    "s_newline",
-    "m_label|Total|color:yellow", "s_newline",
-    "m_totalTokenIn|nulldrop:false", "s_space",
-    "m_totalTokenOut|nulldrop:false", "s_space",
-    "m_totalTokenWithCacheIn|nulldrop:false", "s_space",
-    "m_linesAdded|nulldrop:false", "s_space",
-    "m_linesRemoved|nulldrop:false",
-  ],
-  // ----- BALANCE presets (use |mode|balance when dispatching) -----
-  // Default balance render — "Balance: <balance>".
-  _balance_simple: ["m_modeLabel", "s_space", "m_balance"],
-  // Balance render with explicit "Balance:" label prefix for solo use.
-  _balance_simple_alone: [
-    "m_label|Balance|color:yellow", "s_space",
-    "m_balance|nulldrop:false",
-  ],
-};
+export type { LineTemplates, StatuslineTemplate };
 
 // 256-color SGR sequences. The colors are kept as plain ANSI strings
 // (not symbolic names) so a downstream user can copy/paste a value
@@ -495,48 +233,10 @@ const DEFAULT_COUNTDOWN: Countdown = {
 };
 
 
-// v0.2.21: declarative provider list. Each entry is a self-contained
-// provider spec: how to recognize its base URL, how to talk to its API,
-// and how to dispatch the rendering. The defaults below reproduce the
-// v0.2.20 hardcoded behavior exactly — same base URLs, same endpoints.
-// Adding a new provider is a config-only change: drop a new entry into
-// `providers` and the dispatcher / fetcher / template picker all pick
-// it up automatically.
-const DEFAULT_PROVIDERS: Record<string, ProviderEntry> = {
-  minimax: {
-    TYPE: "TOKEN_PLAN",
-    BASE_URL_COMPARED_TO: "https://api.minimaxi.com/anthropic",
-    COMPARE_METHOD: "EXACT",
-    ENDPOINT: "https://www.minimaxi.com/v1/token_plan/remains",
-    config: {},
-  },
-  deepseek: {
-    TYPE: "BALANCE",
-    BASE_URL_COMPARED_TO: "https://api.deepseek.com/anthropic",
-    COMPARE_METHOD: "EXACT",
-    ENDPOINT: "https://api.deepseek.com/user/balance",
-    config: {},
-    intervals: {},
-  },
-};
-
-const VALID_PROVIDER_TYPES: ReadonlySet<ProviderType> = new Set([
-  "TOKEN_PLAN",
-  "BALANCE",
-]);
-
-const VALID_COMPARE_METHODS: ReadonlySet<CompareMethod> = new Set([
-  "EXACT",
-  "INCLUDE",
-  "STARTWITH",
-]);
-
-// v0.6.0+ — closed enum for the per-provider HTTP method override.
-// Keep in sync with ProviderEntry.METHOD in src/types.ts.
-const VALID_HTTP_METHODS: ReadonlySet<
-  "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
-> = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
-
+// Declarative provider list. Each entry describes URL matching,
+// rendering overrides, interval/currency mappings, and credentials.
+// Acquisition and parsing are owned by the dynamically imported plugin
+// selected by the provider key.
 const DEFAULT_CONFIG: {
   cacheTtlMs: number;
   fetchTimeoutMs: number;
@@ -1635,7 +1335,7 @@ function mergeConfig(raw: Record<string, unknown>): Config {
   // their fields overridden; new keys are appended. Per-entry
   // validation drops malformed entries with a stderr warn rather
   // than auto-filling (so a typo can't silently produce a half-
-  // configured provider that fetches from the wrong endpoint).
+  // configured provider with the wrong rendering or authentication settings).
   //
   // The "missing `providers` key in user config" case falls back
   // to DEFAULT_PROVIDERS via the deep-clone at the top of
@@ -1650,9 +1350,9 @@ function mergeConfig(raw: Record<string, unknown>): Config {
       const merged: Record<string, ProviderEntry> = {};
       for (const [name, defaultEntry] of Object.entries(DEFAULT_PROVIDERS)) {
         // Start with the default for known keys; user overrides
-        // fields on top below. A partial user entry (e.g. only
-        // `ENDPOINT`) inherits the other three fields from the
-        // default — so the user can change just one knob without
+        // fields on top below. A partial user entry inherits the
+        // remaining matcher, rendering, and authentication fields from
+        // the default — so the user can change just one knob without
         // restating the whole entry. A non-object user value (string,
         // array, null) is a user error — drop the entry and warn.
         let seed: Record<string, unknown> | null = null;
@@ -1701,7 +1401,7 @@ function mergeConfig(raw: Record<string, unknown>): Config {
 //
 // The 7 path fields are stored as raw strings here; runtime
 // resolution (against the provider response) happens in
-// src/api.plan.ts:parseRemains via the path-expr.ts grammar. We don't
+// src/api.plan.ts:parseQuota via the path-expr.ts grammar. We don't
 // pre-validate paths at config-load time (the response shape
 // isn't known yet) — only the SHAPE of each path field
 // (string-only).
@@ -1742,274 +1442,21 @@ function validateIntervalSlot(
   return next;
 }
 
-// v0.9.0+ — built-in default intervals for the minimax provider.
-// Applied at FETCH TIME by resolveEffectiveIntervals (below) when
-// the active provider id matches "minimax". The legacy code-path
-// inside `validateProviderEntry` used a URL gate
-// (`ENDPOINT.includes("minimaxi.com")`); the move to id-gating
-// fixes the case where a user renames the provider id but keeps
-// the minimaxi.com URL — they would silently lose defaults. The
-// longInterval term has no built-in minimax mapping (the
-// /v1/token_plan/remains endpoint doesn't ship a 30-day window) —
-// its slot defaults to `{}`.
-const MINIMAX_DEFAULT_INTERVALS: IntervalConfig = {
-  shortInterval: {
-    remainingPercent: "model_remains.0.current_interval_remaining_percent",
-    startAt: "model_remains.0.start_time",
-    endAt: "model_remains.0.end_time",
-  },
-  midInterval: {
-    remainingPercent: "model_remains.0.current_weekly_remaining_percent",
-    startAt: "model_remains.0.weekly_start_time",
-    endAt: "model_remains.0.weekly_end_time",
-  },
-  longInterval: {},
-};
-
-// ----- 4-layer intervals merge -----
-//
-// v0.X.X+ — replace the v0.9.0 single-layer "URL-gate MINIMAX_DEFAULT
-// _INTERVALS + validateIntervalSlot user block" model with a 4-layer
-// merge keyed on the ACTIVE provider id:
-//
-//   layer 0  project-builtin GLOBAL defaults (GLOBAL_DEFAULT_INTERVALS)
-//   layer 1  project-builtin PER-PROVIDER defaults
-//            (BUILTIN_PROVIDER_INTERVALS[id])
-//   layer 2  user config.json top-level intervals (configStore.get().intervals)
-//   layer 3  user providers.<id>.intervals (entry.intervals)
-//
-// Layer 1 and layer 3 fire ONLY when the active provider id matches
-// the layer's key — so a kimi active provider never inherits minimax
-// defaults, and a user's `providers.minimax.intervals` block is never
-// applied to a non-minimax provider. Layer 0 and layer 2 are
-// unconditional globals.
-//
-// Each layer deep-merges on top of the previous. The merge is O(9)
-// string fields at most — safe to call from the fetch hot path.
-
-// Layer 0 — project-builtin GLOBAL defaults. Maps the canonical
-// v0.9.0+ plugin schema (query_plugins/<id>/index.js output) so a
-// plugin-style body works out of the box without the user
-// configuring intervalsConfig. The mapping assumes the body has
-// {shortInterval, midInterval, longInterval} at root, each an
-// Interval-shape sub-object with the field names below.
-//
-// windowId / label are static ("5h" / "7d" / "30d") rather than
-// path expressions — the plugin author is free to set whatever
-// they want on the sub-object's windowId, but the canonical
-// schema's labels are the de-facto industry names. Users who
-// want different labels override via layer 2 or layer 3.
-//
-// usedPercent is NOT mapped: resolvePercentGroup auto-derives
-// `100 - remainingPercent` when usedPercent is absent, so
-// emitting remainingPercent alone is enough.
-const GLOBAL_DEFAULT_INTERVALS: IntervalConfig = {
-  shortInterval: {
-    windowId: "5h",
-    label: "5h",
-    remainingPercent: "shortInterval.remainingPercent",
-    startAt: "shortInterval.startAt",
-    endAt: "shortInterval.endAt",
-  },
-  midInterval: {
-    windowId: "7d",
-    label: "7d",
-    remainingPercent: "midInterval.remainingPercent",
-    startAt: "midInterval.startAt",
-    endAt: "midInterval.endAt",
-  },
-  longInterval: {
-    windowId: "30d",
-    label: "30d",
-    remainingPercent: "longInterval.remainingPercent",
-    startAt: "longInterval.startAt",
-    endAt: "longInterval.endAt",
-  },
-};
-
-// Built-in provider defaults. Currently only minimax ships a non-empty
-// IntervalConfig; deepseek uses parseBalance which doesn't read
-// intervalsConfig today, but the empty constant is shipped so the
-// contract is symmetric and a future deepseek parseBalance that does
-// read intervals has somewhere to land without a config schema change.
-const BUILTIN_PROVIDER_INTERVALS: Record<string, IntervalConfig> = {
-  minimax: MINIMAX_DEFAULT_INTERVALS,
-  // deepseek ships no intervals defaults (it uses parseBalance
-  // / currenciesConfig instead); absent key = Layer 1 doesn't fire.
-  deepseek: {},
-};
-
-// Resolve the effective IntervalConfig for the active provider by
-// merging all four layers in order. See the block comment above for
-// the merge contract. Pure read against configStore — no mutation.
-// `entry` is the active provider's ProviderEntry (from
-// configStore.get().providers[id]); pass null for the no-provider
-// case to still get layers 0 + 2.
-//
-// vX.X.X+ — switch to SHALLOW ASSIGNMENT per layer. Each layer's
-// `shortInterval` / `midInterval` / `longInterval` slot, when
-// present, REPLACES the previous layer's value verbatim rather
-// than deep-merging on top of it. Rationale: per-layer configs are
-// authored as whole units (e.g. `intervals.shortInterval: { … }`),
-// not as additive patches; a partial slot would otherwise inherit
-// stale fields from an earlier layer (e.g. a user who sets only
-// `label` would silently keep the built-in `remainingPercent`
-// path). The shallow-assign contract mirrors the vX.X.X+ change to
-// `resolveEffectiveCurrencies` and the `multi-layer override wins`
-// principle from [[new-feature-convention]] — no default silently
-// leaks through.
+// Provider-specific defaults and four-layer resolution live in
+// config.providers.ts. These wrappers preserve the public config.ts API
+// while reading the live singleton snapshot.
 export function resolveEffectiveIntervals(
   activeProviderId: string,
   entry: ProviderEntry | null,
 ): IntervalConfig {
-  // Layer 0 — project-builtin GLOBAL defaults (unconditional).
-  const out: IntervalConfig = {
-    shortInterval: { ...GLOBAL_DEFAULT_INTERVALS.shortInterval },
-    midInterval: { ...GLOBAL_DEFAULT_INTERVALS.midInterval },
-    longInterval: { ...GLOBAL_DEFAULT_INTERVALS.longInterval },
-  };
-  // Layer 1 — built-in per-provider defaults. Gate on active id.
-  // Shallow: each declared slot fully replaces the layer-0 value.
-  // Empty slots ({}) are skipped so they don't wipe layer-0 fields
-  // — important for MINIMAX_DEFAULT_INTERVALS.longInterval which
-  // intentionally ships as {} (no 30d window in the real API).
-  const builtin = BUILTIN_PROVIDER_INTERVALS[activeProviderId];
-  if (builtin) {
-    if (hasAnyField(builtin.shortInterval))
-      out.shortInterval = { ...builtin.shortInterval };
-    if (hasAnyField(builtin.midInterval))
-      out.midInterval = { ...builtin.midInterval };
-    if (hasAnyField(builtin.longInterval))
-      out.longInterval = { ...builtin.longInterval };
-  }
-  // Layer 2 — user top-level intervals (unconditional). Shallow:
-  // each declared slot fully replaces the layer-1 (or layer-0)
-  // value. Absent slots keep the previous layer's value. Empty
-  // slots ({}) are treated as absent — the user must declare at
-  // least one field for a slot to be considered an override,
-  // otherwise a typo'd `intervals: { shortInterval: {} }` would
-  // silently wipe built-in defaults.
-  const top = configStore.get().intervals;
-  if (top) {
-    if (hasAnyField(top.shortInterval))
-      out.shortInterval = { ...top.shortInterval };
-    if (hasAnyField(top.midInterval))
-      out.midInterval = { ...top.midInterval };
-    if (hasAnyField(top.longInterval))
-      out.longInterval = { ...top.longInterval };
-  }
-  // Layer 3 — user per-provider intervals. By construction entry IS
-  // the active provider's entry, but we re-check the id so the gate
-  // logic is obvious to a reader skimming this function in
-  // isolation. Shallow: same rule as layers 1 + 2. Empty slots
-  // ({}) are treated as absent.
-  if (entry && entry.intervals) {
-    if (hasAnyField(entry.intervals.shortInterval))
-      out.shortInterval = { ...entry.intervals.shortInterval };
-    if (hasAnyField(entry.intervals.midInterval))
-      out.midInterval = { ...entry.intervals.midInterval };
-    if (hasAnyField(entry.intervals.longInterval))
-      out.longInterval = { ...entry.intervals.longInterval };
-  }
-  return out;
+  return resolveEffectiveIntervalsPure(activeProviderId, entry, _current.intervals);
 }
 
-// Helper: a slot "overrides" when it has at least one defined
-// field. `{}` is treated as no-op so empty-slot placeholders
-// (e.g. MINIMAX_DEFAULT_INTERVALS.longInterval, where minimax's
-// real API doesn't ship a 30d window) don't wipe earlier-layer
-// fields. `{ remainingPercent: "x" }` is an override — the
-// shallow-assign contract means missing fields now read undefined
-// for that slot, which is exactly the user's intent when they
-// author a partial slot.
-function hasAnyField(slot: IntervalSlotConfig | undefined): boolean {
-  if (!slot) return false;
-  for (const _ in slot) return true;
-  return false;
-}
-
-// ----- 4-layer currencies merge (vX.X.X+) -----
-//
-// Mirror of the intervalsConfig 4-layer merge, keyed on currency
-// code (CNY / USD / …) instead of interval term. Each layer is a
-// flat dict `{ CODE: { label?, totalBalance? } }`; the merge is
-// done per-KEY with SHALLOW ASSIGNMENT — a layer that declares
-// `{ CNY: { label: "$" } }` fully replaces the previous layer's
-// CNY slot (the path expression `totalBalance` from layer-1 is
-// NOT preserved alongside the new label).
-//
-//   layer 0  project-builtin GLOBAL defaults (empty by design —
-//            per-provider defaults are richer than any global)
-//   layer 1  project-builtin PER-PROVIDER defaults
-//            (BUILTIN_PROVIDER_CURRENCIES[id])
-//   layer 2  user config.json top-level currencies
-//            (configStore.get().currencies)
-//   layer 3  user providers.<id>.currencies (entry.currencies)
-//
-// Layer 1 and layer 3 fire ONLY when the active provider id matches
-// the layer's key — same gate pattern as resolveEffectiveIntervals.
-// Layer 0 and layer 2 are unconditional globals.
-
-// Built-in per-provider defaults. Currently only deepseek ships a
-// non-empty CurrenciesConfig: CNY → balance_infos.0.total_balance,
-// which mirrors the v0.5.0–v0.8.x DeepSeek default response shape
-// (a single CNY entry under `balance_infos[0]`). The label is the
-// same ￥ glyph the legacy `cfg().currency.prefixes.CNY` mapping
-// produced, so existing renders stay byte-identical after upgrade.
-// minimax uses parseRemains (TOKEN_PLAN), so its slot is empty.
-const BUILTIN_PROVIDER_CURRENCIES: Record<string, CurrenciesConfig> = {
-  deepseek: {
-    CNY: {
-      label: "￥",
-      totalBalance: "balance_infos.0.total_balance",
-    },
-  },
-  minimax: {},
-};
-
-// Resolve the effective CurrenciesConfig for the active provider by
-// merging all four layers in order. See the block comment above for
-// the shallow-assign / per-key merge contract. Pure read against
-// configStore — no mutation. `entry` is the active provider's
-// ProviderEntry (from configStore.get().providers[id]); pass null
-// for the no-provider case to still get layers 0 + 2.
-//
-// The output keys are the union of all declared keys across layers,
-// in declaration order (layer 0 → 1 → 2 → 3). A key absent from
-// every layer is dropped. A key whose slot ends up empty after
-// merge is preserved with `{}` so the renderer can still surface
-// the code (e.g. for "CNY: --" rendering) without losing key
-// ordering.
 export function resolveEffectiveCurrencies(
   activeProviderId: string,
   entry: ProviderEntry | null,
 ): CurrenciesConfig {
-  const out: CurrenciesConfig = {};
-  // Layer 1 — built-in per-provider defaults. Gate on active id.
-  const builtin = BUILTIN_PROVIDER_CURRENCIES[activeProviderId];
-  if (builtin) {
-    for (const [k, v] of Object.entries(builtin)) {
-      out[k] = { ...v };
-    }
-  }
-  // Layer 2 — user top-level currencies (unconditional). Per-key
-  // shallow assign.
-  const top = configStore.get().currencies;
-  if (top) {
-    for (const [k, v] of Object.entries(top)) {
-      out[k] = { ...v };
-    }
-  }
-  // Layer 3 — user per-provider currencies. Per-key shallow
-  // assign. By construction entry IS the active provider's entry,
-  // but we re-check the id so the gate logic is obvious to a
-  // reader skimming this function in isolation.
-  if (entry && entry.currencies) {
-    for (const [k, v] of Object.entries(entry.currencies)) {
-      out[k] = { ...v };
-    }
-  }
-  return out;
+  return resolveEffectiveCurrenciesPure(activeProviderId, entry, _current.currencies);
 }
 
 // Validate one CurrencySlotConfig (vX.X.X+). Mirrors
@@ -2077,10 +1524,10 @@ function validateCurrenciesBlock(
 // the entry is fatally malformed. The caller (`mergeConfig`) is
 // responsible for filling missing fields from the default entry
 // before calling this — we validate the merged result, not the raw
-// user input. A partial user entry (e.g. only `ENDPOINT`) thus
-// preserves the other three fields from the default; an invalid
-// `TYPE` on an otherwise-OK entry drops the whole thing.
-function validateProviderEntry(name: string, v: unknown): ProviderEntry | null {
+// user input. A partial user entry thus preserves the remaining
+// matcher, rendering, and authentication fields from the default;
+// an invalid `TYPE` on an otherwise-OK entry drops the whole thing.
+function validateProviderEntry(_name: string, v: unknown): ProviderEntry | null {
   if (!v || typeof v !== "object" || Array.isArray(v)) {
     warn("provider entry must be an object; dropping");
     return null;
@@ -2089,7 +1536,7 @@ function validateProviderEntry(name: string, v: unknown): ProviderEntry | null {
   // TYPE
   const t = e.TYPE;
   if (typeof t !== "string" || !VALID_PROVIDER_TYPES.has(t as ProviderType)) {
-    warn(`provider TYPE must be "TOKEN_PLAN" or "BALANCE" (got ${JSON.stringify(t)}); dropping`);
+    warn(`provider TYPE must be "Quota" or "BALANCE" (got ${JSON.stringify(t)}); dropping`);
     return null;
   }
   // BASE_URL_COMPARED_TO
@@ -2104,108 +1551,12 @@ function validateProviderEntry(name: string, v: unknown): ProviderEntry | null {
     warn(`provider COMPARE_METHOD must be one of "EXACT", "INCLUDE", "STARTWITH" (got ${JSON.stringify(cm)}); dropping`);
     return null;
   }
-  // ENDPOINT — see src/api.ts:detectTransport for the runtime
-  // interpretation. Three accepted shapes:
-  //   - "http://..." / "https://..." → httpTransport
-  //   - any other non-empty string    → execTransport (execSync(ep))
-  //   - "" (only valid when
-  //     query_plugins/<id>/index.{js,mjs} exists) → pluginTransport.
-  //     config-load accepts the empty string here so the user's
-  //     "wire a plugin script later" workflow doesn't trip the
-  //     validator; detectTransport THROWS at fetch time if the
-  //     plugin file is absent, but we mirror that decision here so
-  //     a misconfigured entry never silently becomes a no-provider
-  //     render (which would drop every type:"plan"/"balance" module).
-  const ep = e.ENDPOINT;
-  if (typeof ep !== "string") {
-    warn(`providers.${name} ENDPOINT must be a string; dropping`);
-    return null;
-  }
-  if (ep.length === 0) {
-    // Reuse detectTransport's resolution: it walks .js then .mjs.
-    // If neither exists it would throw — we want a boolean here,
-    // so wrap in try/catch. The empty-string branch is the only
-    // path in detectTransport that throws, so the catch is narrow.
-    let pluginOk = false;
-    try {
-      detectTransport(ep, name);
-      pluginOk = true;
-    } catch {
-      pluginOk = false;
-    }
-    if (!pluginOk) {
-      warn(
-        `providers.${name} ENDPOINT="" but no query_plugins/${name}/index.{js,mjs} on disk; dropping`,
-      );
-      return null;
-    }
-  }
-  // Surface-to-stderr hint when the ENDPOINT looks like a shell
-  // command (non-HTTP, non-empty). The transport dispatcher is going
-  // to execSync() this verbatim — the user almost certainly intended
-  // an http URL if they didn't start with http(s), so the warn helps
-  // catch typos at config-load rather than at runtime. The empty
-  // string is exempt: it's the explicit "use the bundled plugin"
-  // signal, never executed as a shell command.
-  if (ep.length > 0 && !/^https?:\/\//.test(ep)) {
-    warn(
-      `provider ENDPOINT "${ep}" does not start with http(s) — will be executed as a shell command`,
-    );
-  }
-  // v0.6.0+ — optional per-provider HTTP method. STRICT: any value
-  // outside the closed enum drops the whole entry, matching the
-  // TYPE/COMPARE_METHOD pattern. The user almost certainly has a
-  // typo or copied a verb from a different API ("get" lowercase,
-  // "PATCH " with stray whitespace, "OPTIONS", …). Silently
-  // coercing or accepting would mask the bug.
-  let validatedMethod:
-    | "GET"
-    | "POST"
-    | "PUT"
-    | "PATCH"
-    | "DELETE"
-    | undefined;
-  if ("METHOD" in e && e.METHOD !== undefined) {
-    const m = e.METHOD;
-    if (typeof m !== "string" || !VALID_HTTP_METHODS.has(m as never)) {
-      warn(
-        `provider METHOD must be one of ${[...VALID_HTTP_METHODS].join(", ")} (got ${JSON.stringify(m)}); dropping the entry`,
-      );
-      return null;
-    }
-    validatedMethod = m as
-      | "GET"
-      | "POST"
-      | "PUT"
-      | "PATCH"
-      | "DELETE";
-  }
-  // v0.6.0+ — optional per-provider Bearer token. LENIENT: a bad
-  // value drops just the field; the entry still loads. Rationale:
-  // BEARER_KEY without an entry-level fallback is recoverable
-  // because the fetcher falls back to process.env.ANTHROPIC_AUTH_TOKEN
-  // when BEARER_KEY is absent. The user might be testing the field
-  // incrementally and a partial block shouldn't cost the whole entry.
-  let validatedBearer: string | undefined;
-  if ("BEARER_KEY" in e && e.BEARER_KEY !== undefined) {
-    const b = e.BEARER_KEY;
-    if (typeof b === "string" && b.length > 0) {
-      validatedBearer = b;
+  let validatedAuthenticationKey: string | undefined;
+  if ("AUTHENTICATION_KEY" in e && e.AUTHENTICATION_KEY !== undefined) {
+    if (typeof e.AUTHENTICATION_KEY === "string" && e.AUTHENTICATION_KEY.length > 0) {
+      validatedAuthenticationKey = e.AUTHENTICATION_KEY;
     } else {
-      warn("provider BEARER_KEY must be a non-empty string; dropping the field");
-    }
-  }
-  // v0.6.0+ — optional static JSON request body. LENIENT: same
-  // rationale as BEARER_KEY. A bad body shape drops the field; the
-  // entry survives. Note: an empty `{}` is a valid object and will
-  // be forwarded (some servers accept it).
-  let validatedBody: Record<string, unknown> | undefined;
-  if ("BODY" in e && e.BODY !== undefined) {
-    const body = e.BODY;
-    if (body && typeof body === "object" && !Array.isArray(body)) {
-      validatedBody = body as Record<string, unknown>;
-    } else {
-      warn("provider BODY must be a plain object; dropping the field");
+      warn("provider AUTHENTICATION_KEY must be a non-empty string; dropping the field");
     }
   }
   // v0.4.0+ — optional provider-specific Config overrides. Validated
@@ -2299,15 +1650,12 @@ function validateProviderEntry(name: string, v: unknown): ProviderEntry | null {
     TYPE: t as ProviderType,
     BASE_URL_COMPARED_TO: base,
     COMPARE_METHOD: cm as CompareMethod,
-    ENDPOINT: ep,
     ...(validatedConfig ? { config: validatedConfig } : {}),
     ...(validatedIntervals ? { intervals: validatedIntervals } : {}),
     ...(validatedCurrencies && Object.keys(validatedCurrencies).length > 0
       ? { currencies: validatedCurrencies }
       : {}),
-    ...(validatedBearer ? { BEARER_KEY: validatedBearer } : {}),
-    ...(validatedMethod ? { METHOD: validatedMethod } : {}),
-    ...(validatedBody ? { BODY: validatedBody } : {}),
+    ...(validatedAuthenticationKey ? { AUTHENTICATION_KEY: validatedAuthenticationKey } : {}),
   };
 }
 

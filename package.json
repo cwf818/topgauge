@@ -1,13 +1,15 @@
 {
   "name": "topgauge-cc",
-  "version": "0.8.46",
+  "version": "0.8.47",
   "private": true,
   "description": "Claude Code statusline plugin (ToPGauge-CC) that renders MiniMax token-plan usage (5h + weekly) or DeepSeek account balance, picked by ANTHROPIC_BASE_URL. Composes with another statusline via the TOPGAUGE_CC_UPSTREAM_CMD env var.",
   "type": "module",
   "license": "MIT",
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --platform=node --target=node18 --format=esm --outfile=dist/index.js",
-    "dev": "esbuild src/index.ts --bundle --platform=node --target=node18 --format=esm --outfile=dist/index.js --watch",
+    "build": "npm run build:entry && npm run build:plugins",
+    "build:entry": "esbuild src/index.ts --bundle --platform=node --target=node18 --format=esm --outfile=dist/index.js",
+    "build:plugins": "tsc -p tsconfig.plugins.json",
+    "dev": "npm run build:entry -- --watch",
     "typecheck": "tsc --noEmit",
     "test": "node --test --import tsx src/**/*.test.ts",
     "settings:install": "bash scripts/install.sh",

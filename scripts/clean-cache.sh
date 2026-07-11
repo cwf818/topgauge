@@ -122,7 +122,12 @@ if [ "$ANY_FOUND" = 0 ]; then
   exit 0
 fi
 if [ "${#SORTED_ROWS[@]}" -le 1 ]; then
-  echo "clean-cache.sh: nothing to clean — at most one version dir present"
+  if [ "${#SORTED_ROWS[@]}" = 1 ]; then
+    ONLY_VERSION="${SORTED_ROWS[0]%%	*}"
+    echo "clean-cache.sh: nothing to clean — at most one version dir present (${ONLY_VERSION})"
+  else
+    echo "clean-cache.sh: nothing to clean — at most one version dir present"
+  fi
   exit 0
 fi
 
@@ -134,7 +139,7 @@ NEWEST_ROW="${SORTED_ROWS[${#SORTED_ROWS[@]}-1]}"
 NEWEST_VERSION="${NEWEST_ROW%%	*}"
 NEWEST_PATH="${NEWEST_ROW#*	}"
 echo "clean-cache.sh: plan"
-echo "  keep:    ${NEWEST_PATH}  (version ${NEWEST_VERSION})"
+echo "  keep:    ${NEWEST_VERSION} (${NEWEST_PATH})"
 echo "  remove:"
 
 REMOVE_LIST=()

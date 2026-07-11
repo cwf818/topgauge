@@ -66,13 +66,13 @@ export type Window = {
 };
 
 // v0.9.0+ — unified interval shape. Replaces the v0.5.0–v0.8.x
-// pair-of-Windows model (`Remains.fiveHour` / `Remains.weekly`) with
+// pair-of-Windows model (`Quota.fiveHour` / `Quota.weekly`) with
 // three independent intervals (`shortInterval` / `midInterval` /
 // `longInterval`). All fields are derived from the user's `intervals`
 // config block (top-level or per-provider override) plus the
 // built-in defaults. See `IntervalKey` / `IntervalSlotConfig` in
-// src/types.ts for the user-facing schema; see `parseRemains` in
-// src/api.plan.ts for the resolution rules (percent / time / quota group
+// src/types.ts for the user-facing schema; see `parseQuota` in
+// src/plugins/parsers.ts for the resolution rules (percent / time / quota group
 // derivation + 3-step intervalMs fallback chain).
 //
 // The renderer (m_windowQuota / m_countdown / m_quota) reads these fields
@@ -108,7 +108,7 @@ export type Interval = {
   // startAt nor endAt nor intervalMs is available.
   intervalMs: number | null;
   // [0, 100] — at least one of {remainingPercent, usedPercent}
-  // is always non-null after parseRemains. The two are
+  // is always non-null after parseQuota. The two are
   // mirror-derived when only one is mapped.
   remainingPercent: number | null;
   usedPercent: number | null;
@@ -463,7 +463,7 @@ export function pctBar(usedPctValue: number, width = configStore.get().bar.width
 // v0.9.0+ — project an `Interval` into the `Window` shape the
 // gauge / countdown renderers consume. Returns null when the
 // interval has no usable percent data (the same condition that
-// drives the v0.8.x `slotsToWindow` in src/api.plan.ts:160-175 to return
+// drives the v0.8.x `slotsToWindow` in src/plugins/parsers.ts:160-175 to return
 // null). Mirrors the v0.8.x projection rules:
 //
 //   pct             ← usedPercent (or 100 - remainingPercent if
@@ -536,7 +536,7 @@ function renderQuotaBody(iv: Interval): string | null {
 }
 
 // v0.9.0+ — epoch-ms → ISO timestamp. Local to render.ts (same
-// impl as the v0.8.x src/api.plan.ts:tsToIso; hoisted here so
+// impl as the v0.8.x src/plugins/parsers.ts:tsToIso; hoisted here so
 // intervalToWindow can use it without dragging the api module
 // into render's hot path).
 function tsToIso(ms: number | null): string | null {
@@ -1043,7 +1043,7 @@ type RenderContext = {
   contextWindow: Window | null;
   // v0.4.x — the provider's TYPE discriminator. Populated by
   // renderProviderLine from providerTypeFor. `"plan"` for
-  // TOKEN_PLAN providers, `"balance"` for BALANCE providers, and
+  // Quota providers, `"balance"` for BALANCE providers, and
   // `"unknown"` when ANTHROPIC_BASE_URL doesn't match any
   // supported provider.
   // configured provider (the entry-tolerant dispatch path).
@@ -4451,7 +4451,7 @@ const QUOTE_INSECURE_TLS_PARAM = {
 } as const;
 
 // v0.8.18+ — walk a JSON value along a dot-separated path, mirroring
-// the recursive shape inspection in `parseRemains` (api.plan.ts). At each
+// the recursive shape inspection in `parseQuota` (plugins/parsers.ts). At each
 // step: if the current value is a string, return it (and IGNORE the
 // rest of the path — the field param is only meaningful for object
 // / array navigation). If it's an object, treat the segment as a
@@ -4494,7 +4494,7 @@ export function getFieldByPath(value: unknown, path: string): string | null {
 
 // v0.8.19+ — fetch a remote quote payload via `curl` (synchronous).
 // Mirrors the tolerant shape inspection pattern from
-// src/api.plan.ts:parseRemains (try JSON parse → walk path → return
+// src/plugins/parsers.ts:parseQuota (try JSON parse → walk path → return
 // string). `renderTemplate` is sync (per-tick deadline in the
 // statusline slot) so the renderer can't await; `curl -sSf` is
 // shipped on every modern OS (Win10+1803, macOS, Linux distros)
@@ -6733,7 +6733,7 @@ export function renderProviderLine(
   ctx: Omit<RenderContext, "shortInterval" | "midInterval" | "longInterval" | "balance" | "tokens" | "contextWindow" | "providerType"> & {
     // v0.9.0+ — three Interval fields replace the v0.5.0–v0.8.x
     // `fiveHour` + `weekly` Windows. Caller (dispatch.ts) passes
-    // the parsed Remains directly; default to null when missing.
+    // the parsed Quota directly; default to null when missing.
     shortInterval?: Interval | null;
     midInterval?: Interval | null;
     longInterval?: Interval | null;
@@ -6765,7 +6765,7 @@ export function renderProviderLine(
         : null;
   // v0.2.21: template picked by provider TYPE via providers.ts, not
   // by provider-name literal. Same outward behavior — defaults put
-  // TOKEN_PLAN at "plan" and BALANCE at "balance" — but the
+  // Quota at "plan" and BALANCE at "balance" — but the
   // indirection lets a third provider slot in without code changes.
   //
   // v0.8.14+ — `statuslineTemplate` is always `string[]`. The legacy

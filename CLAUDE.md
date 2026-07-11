@@ -8,7 +8,7 @@ A Claude Code statusline plugin (`topgauge-cc`, formal name **ToPGauge-CC**) tha
 
 The plugin is shipped as a **single-plugin marketplace**: the repo root IS the marketplace, and `.claude-plugin/plugin.json` declares the plugin. Install with `/plugin marketplace add cwf818/topgauge-cc` then `/plugin install topgauge-cc@topgauge-cc`, then run `/topgauge-cc:install` to wire it into `settings.json`. Uninstall with `/topgauge-cc:uninstall` (a self-contained cleanup that works even after the cache and marketplace are gone).
 
-**v0.7.0 — renamed from `tokenplan-usage-hud` to `topgauge-cc`.** Package id, marketplace id, plugin name, env-var namespace (`TOKENPLAN_*` → `TOPGAUGE_CC_*`), slash-command prefix, internal state-dir path (`plugins/tokenplan-usage-hud/state/` → `plugins/topgauge-cc/state/`), settings.json marker (`_tokenplan_managed` → `_topgauge_managed`), and stderr banner are all renamed. Provider strings (`minimax`, `MiniMax`, `MiniMax-M3`, `minimaxi.com`, `TOKEN_PLAN`, `BALANCE`, `DeepSeek`, `deepseek`, `/v1/token_plan/remains`, `/user/balance`) are NOT renamed. Users upgrading from a pre-rename install get a one-shot state-dir migration in `install.sh`; `uninstall.sh` recognizes BOTH the old and the new name for at least one release.
+**v0.7.0 — renamed from `tokenplan-usage-hud` to `topgauge-cc`.** Package id, marketplace id, plugin name, env-var namespace (`TOKENPLAN_*` → `TOPGAUGE_CC_*`), slash-command prefix, internal state-dir path (`plugins/tokenplan-usage-hud/state/` → `plugins/topgauge-cc/state/`), settings.json marker (`_tokenplan_managed` → `_topgauge_managed`), and stderr banner are all renamed. Provider strings (`minimax`, `MiniMax`, `MiniMax-M3`, `minimaxi.com`, `Quota`, `BALANCE`, `DeepSeek`, `deepseek`, `/v1/token_plan/remains`, `/user/balance`) are NOT renamed. Users upgrading from a pre-rename install get a one-shot state-dir migration in `install.sh`; `uninstall.sh` recognizes BOTH the old and the new name for at least one release.
 
 ## Commands
 
@@ -27,9 +27,12 @@ There is no separate `lint` step; `typecheck` covers it. Tests run with built-in
 ```
 src/
   index.ts            # entry — stdin drain, provider dispatch, cache, render, compose, loadConfig()
-  types.ts            # Provider union: 'minimax' | 'deepseek' | null
-  api.plan.ts         # TOKEN_PLAN fetch + tolerant parser for /v1/token_plan/remains
-  api.balance.ts      # BALANCE fetch + parser for /user/balance + URL gate
+  types.ts            # Provider union + transport-free config/data types
+  api.ts              # dynamic plugin loader + canonical Quota/Balance exports
+  plugins/data.ts     # plugin ABI and canonical Quota/Balance shapes
+  plugins/parsers.ts  # built-in field-mapping parsers
+  plugins/minimax/    # standalone Quota plugin source
+  plugins/deepseek/   # standalone BALANCE plugin source
   # v0.8.36+ — m_windowMemUsage is the RAM-usage sibling of
   # m_memUsage (which renders absolute bytes "Mem:X.XG/Y.YG" with
   # a fixed cyan tint). m_windowMemUsage renders a bar+percent
@@ -42,7 +45,9 @@ src/
   render.ts           # v1.0 READ-ONLY against tickState.pending: pctBar + ANSI color thresholds + formatLine + formatBalanceLine; NO setAvg/setPrevTick/setLastSpeed calls (those moved to data-processor.ts)
   data-processor.ts   # v1.0 processTick + setPrevTick + setAvg + setLastSpeed/ApiMs/TokenHitRate + computeAndCacheTickDeltaPure + getDeltaForRender — owns ALL writes to tickState.pending
   cache.ts            # TTL + stale-on-error (Map<key, {at, value}>) — TTL passed in by index.ts from configStore
-  config.ts           # loads ~/.claude/plugins/topgauge-cc/config.json; module-level singleton store
+  config.ts           # config loader/store and provider facade
+  config.providers.ts  # provider defaults, type validation, effective mappings
+  config.template.ts   # line-template defaults and template-only types
   composition.ts      # reads TOPGAUGE_CC_UPSTREAM env, prepends (preserving ANSI/multi-line) and appends line
   tick-state.ts       # v1.0 per-tick in-memory Store: beginTick / mark / commit; backing the data-processor's writes + the single commit() flush
   __fixtures__/       # remains.real.json, balance.real.json, balance.multi.json, …
@@ -73,8 +78,8 @@ settings.example.json # template (NEVER commit a real settings.json)
 Claude Code's `statusLine.command` spawns a child process that reads a session JSON from stdin and writes statusline text to stdout. Per-turn invocation — the plugin must be fast and never block.
 
 1. `statusLine.command` (written by `scripts/lib/edit-settings.mjs` `write-managed` op) is a `bash -c '…'` snippet that, at invocation time, `ls -d`s every directory under `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache/topgauge-cc/topgauge-cc/*/`, sorts by version (`sort -t. -k1,1n …`), tails the highest, and execs `scripts/wrapper.sh` from that `plugin_dir`. Same pattern claude-hud uses. This makes the command **version-independent** — when `/plugin install` rolls the cache forward (0.2.5 → 0.2.6), the existing `statusLine` keeps working without re-running `install.sh`. The command then optionally runs the bash script at `$TOPGAUGE_CC_UPSTREAM_CMD` (so the user can compose with another statusline, e.g. `ccstatusline` or `claude-hud`), captures its stdout into the `TOPGAUGE_CC_UPSTREAM` env var, then execs `dist/index.js` forwarding stdin. If `TOPGAUGE_CC_UPSTREAM_CMD` is unset, `TOPGAUGE_CC_UPSTREAM` is empty and this plugin becomes the sole statusline. Note: `TOPGAUGE_CC_UPSTREAM_CMD` is an **absolute path** to a bash script (a shebang + `exec bash -c '...'` wrapper written by install.sh), not a shell command line — older v0.1.10–v0.1.11 used `bash -c` against the path and silently failed; v0.1.12 runs it as a script (`bash "$TOPGAUGE_CC_UPSTREAM_CMD"`).
-2. `src/index.ts` reads stdin (drains it; we don't use the session fields), gates on `ANTHROPIC_BASE_URL` containing `minimaxi.com`, and reads `process.env.ANTHROPIC_AUTH_TOKEN` as the Bearer token for the API call.
-3. The API response is parsed by `parseRemains` in `src/api.plan.ts`. It accepts two shapes:
+2. `src/index.ts` reads stdin, matches `ANTHROPIC_BASE_URL` against `config.json.providers`, and dispatches through `src/api.ts` to a dynamically imported built-in or user plugin. The selected provider's `AUTHENTICATION_KEY` overrides `process.env.ANTHROPIC_AUTH_TOKEN`.
+3. Built-in plugins fetch and parse their own upstream responses. They return the canonical `Quota` or `Balance` shape through the shared `fetchAccountCredit(authenticationKey, context?)` ABI; user plugins use the same ABI and are loaded from `query_plugins/<id>/index.js` or `.mjs`. The MiniMax plugin's response parser accepts two shapes:
    - **Real shape** (verified against `https://www.minimaxi.com/v1/token_plan/remains` on 2026-06-24): `{ model_remains: [{ model_name, current_interval_remaining_percent, current_weekly_remaining_percent, start_time, end_time, weekly_start_time, weekly_end_time, … }, …], base_resp: { status_code } }`. We pick the entry with the **lowest interval remaining %** as the source of truth (the most-active model). `start_time`/`end_time` (and their weekly counterparts) populate `Window.resetStartAt` and `Window.resetDurationMs` so the renderer can pick a window-fill-aware reset arrow.
    - **Legacy/fallback shape**: `{ data: { five_hour: { remaining, limit }, weekly: { remaining, limit } } }` — for any provider that returns the simpler schema (no start fields → reset arrow falls back to `resetArrows[0]`).
 4. Cache: `src/cache.ts` holds a single 60-second TTL entry. On fetch failure it returns the stale value so the statusline doesn't blank.

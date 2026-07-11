@@ -130,20 +130,23 @@ if [ -d "$LEGACY_STATE_DIR" ] && [ ! -d "$STATE_DIR" ]; then
   fi
 fi
 
-# Build dist/index.js on demand. The marketplace install copies the source
-# tree but does not run `npm run build`, so a fresh install needs us to do
-# that. Skip silently if the file is already present (re-install case).
+# Build the entry bundle and standalone built-in plugins on demand. The
+# marketplace install copies the source tree but does not run npm build, so
+# a fresh install needs all runtime artifacts before statusLine can start.
 DIST_JS="${PLUGIN_DIR%/}/dist/index.js"
-if [ ! -f "$DIST_JS" ]; then
+DIST_PATH_EXPR="${PLUGIN_DIR%/}/dist/path-expr.js"
+DIST_MINIMAX="${PLUGIN_DIR%/}/dist/plugins/minimax/index.js"
+DIST_DEEPSEEK="${PLUGIN_DIR%/}/dist/plugins/deepseek/index.js"
+if [ ! -f "$DIST_JS" ] || [ ! -f "$DIST_PATH_EXPR" ] || [ ! -f "$DIST_MINIMAX" ] || [ ! -f "$DIST_DEEPSEEK" ]; then
   if [ "$DRY_RUN" = 1 ]; then
-    echo "install.sh: --dry-run: would build ${DIST_JS} (npm install && npm run build) in ${PLUGIN_DIR%/}"
+    echo "install.sh: --dry-run: would build runtime artifacts (${DIST_JS}, ${DIST_PATH_EXPR}, ${DIST_MINIMAX}, and ${DIST_DEEPSEEK}) (npm install && npm run build) in ${PLUGIN_DIR%/}"
   else
     if ! command -v npm >/dev/null 2>&1; then
-      echo "install.sh: npm not found on PATH; cannot build dist/index.js" >&2
+      echo "install.sh: npm not found on PATH; cannot build runtime artifacts" >&2
       echo "install.sh: install Node.js (https://nodejs.org) and re-run." >&2
       exit 1
     fi
-    echo "install.sh: dist/index.js missing; running npm install + npm run build in ${PLUGIN_DIR%/}" >&2
+    echo "install.sh: runtime artifacts missing; running npm install + npm run build in ${PLUGIN_DIR%/}" >&2
     (
       cd "${PLUGIN_DIR%/}" || exit 1
       npm install --no-audit --no-fund || exit 1
@@ -327,18 +330,25 @@ if [ "$INSTALL_MODE" = "replace" ]; then
   TS=$(date +%Y%m%dT%H%M%S)
   cp "$TARGET" "${TARGET}.bak.${TS}"
   mkdir -p "$STATE_DIR"
-  {
-    printf '#!/usr/bin/env bash\n'
-    printf '# Original statusLine.command preserved by topgauge-cc install.sh\n'
-    printf '# Restored via: install.sh --uninstall\n'
-    printf 'exec %s\n' "$ORIGINAL_CMD"
-  } > "$UPSTREAM_CMD_FILE"
-  chmod +x "$UPSTREAM_CMD_FILE"
-  # Also write the bare original command (no shebang/comments) so --uninstall
-  # can re-embed it verbatim into statusLine.command.
-  printf '%s\n' "$ORIGINAL_CMD" > "$UPSTREAM_CMD_ONLY"
+  # A migrated stable state is authoritative. Do not overwrite it with the
+  # command currently in settings.json; this keeps the pre-rename upstream
+  # command intact during a first install after migration.
+  if [ ! -f "$UPSTREAM_CMD_ONLY" ]; then
+    {
+      printf '#!/usr/bin/env bash\n'
+      printf '# Original statusLine.command preserved by topgauge-cc install.sh\n'
+      printf '# Restored via: install.sh --uninstall\n'
+      printf 'exec %s\n' "$ORIGINAL_CMD"
+    } > "$UPSTREAM_CMD_FILE"
+    chmod +x "$UPSTREAM_CMD_FILE"
+    # Also write the bare original command (no shebang/comments) so --uninstall
+    # can re-embed it verbatim into statusLine.command.
+    printf '%s\n' "$ORIGINAL_CMD" > "$UPSTREAM_CMD_ONLY"
+    echo "install.sh: preserved original command at ${UPSTREAM_CMD_FILE}"
+  else
+    echo "install.sh: preserved existing upstream command at ${UPSTREAM_CMD_FILE}"
+  fi
   echo "install.sh: backed up ${TARGET} -> ${TARGET}.bak.${TS}"
-  echo "install.sh: preserved original command at ${UPSTREAM_CMD_FILE}"
 fi
 
 node "$HELPER" "$WIN_TARGET" write-managed "$WIN_WRAPPER" "$WIN_UPSTREAM"

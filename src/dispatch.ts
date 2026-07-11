@@ -18,10 +18,10 @@
 // v0.2.21: switched from provider-name literals ("minimax" /
 // "deepseek") to TYPE-based dispatch. buildProviderLine now reads
 // the provider's `TYPE` field from the providers config block and
-// routes accordingly. Adding a new TOKEN_PLAN or BALANCE provider
-// is a config-only change.
+// routes accordingly. Adding a new provider requires a matching
+// plugin module plus its config entry.
 
-import type { Remains, Balance } from "./api.ts";
+import type { Quota, Balance } from "./api.ts";
 import {
   RED,
   renderProviderLine,
@@ -156,8 +156,8 @@ function renderDataLine(
       quoteBodies,
     });
   }
-  if (entry.TYPE === "TOKEN_PLAN") {
-    const r = data as Remains;
+  if (entry.TYPE === "Quota") {
+    const r = data as Quota;
     // v0.9.0+ — three independent Intervals. No partial-window
     // fallback synthesis (the v0.5.0–v0.8.x `zero = { pct: 0 }`
     // trick): each interval is independent now, and the renderer
@@ -197,7 +197,7 @@ function renderDataLine(
 // Maps a (provider, FetchResult) pair to the final statusline line.
 //
 // v0.4.x — collapsed: previously dispatched on `entry.TYPE` to
-// renderPlanLine (TOKEN_PLAN) or formatBalanceLine (BALANCE) and
+// renderPlanLine (Quota) or formatBalanceLine (BALANCE) and
 // the per-TYPE helpers hardcoded their data shape. Now every path
 // funnels through renderDataLine, which reads TYPE only to pick
 // the right ctx fields (`fiveHour`/`weekly` vs `balance`) and
@@ -219,7 +219,7 @@ export function buildProviderLine(
   quoteBodies?: Map<string, string>,
 ): string | null {
   // v0.4.x — the "no provider configured" early-return was removed
-  // here on purpose. Previously the plugin was purely a TOKEN_PLAN or
+  // here on purpose. Previously the plugin was purely a Quota or
   // BALANCE frontend, so a missing provider entry meant there was
   // nothing meaningful to display; returning null was a clean signal
   // for the upstream wrapper to fall through.
@@ -295,7 +295,7 @@ export function buildProviderLine(
   // Empty-output guard. Two paths land here:
   //   (a) renderDataLine returned the literal null (provider has
   //       an entry but data is unusable — both fiveHour + weekly
-  //       missing on a TOKEN_PLAN provider, OR the provider TYPE
+  //       missing on a Quota provider, OR the provider TYPE
   //       is something renderDataLine doesn't know how to handle),
   //   (b) renderDataLine returned a label-only degenerate output
   //       like "Usage: · · " (no provider data + no opt-in
@@ -322,7 +322,7 @@ export function buildProviderLine(
 // `display: "remaining"` in config.json (the v0.2.x migration path
 // from TOPGAUGE_CC_DISPLAY).
 export function renderPlanLine(
-  data: Remains,
+  data: Quota,
   _mode: ReturnType<typeof resolveDisplayMode>,
   ageMs?: number,
   stale: boolean = false,

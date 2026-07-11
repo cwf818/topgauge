@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { buildProviderLine, type FetchResult } from "./dispatch.ts";
-import type { Remains, Balance } from "./api.ts";
+import type { Quota, Balance } from "./api.ts";
 import type { TokenSnapshot } from "./types.ts";
 import { __resetForTest } from "./config.ts";
 
@@ -13,8 +13,8 @@ const BROKEN_COLOR = "\x1b[31m";
 
 const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
-// A minimally valid Remains payload (two windows) — enough for the renderer.
-const MINI_DATA: Remains = {
+// A minimally valid Quota payload (two windows) — enough for the renderer.
+const MINI_DATA: Quota = {
   shortInterval: { windowId: "5h", label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 38, remainingPercent: 62, remainingQuota: null, usedQuota: null, limitQuota: null },
   midInterval: { windowId: "7d", label: "7d", startAt: null, endAt: null, intervalMs: null, usedPercent: 39, remainingPercent: 61, remainingQuota: null, usedQuota: null, limitQuota: null },
   longInterval: null,
@@ -55,7 +55,7 @@ const pinDefaults = () =>
 describe("buildProviderLine — fresh (no age suffix; data just arrived)", () => {
   it("MiniMax: fresh tick with ageMs=0 renders no X-ago suffix", () => {
     pinDefaults();
-    const result: FetchResult<Remains> = { kind: "fresh", data: MINI_DATA, ageMs: 0 };
+    const result: FetchResult<Quota> = { kind: "fresh", data: MINI_DATA, ageMs: 0 };
     const line = buildProviderLine("minimax", result);
     assert.ok(line);
     assert.ok(line!.startsWith("Usage: "));
@@ -80,7 +80,7 @@ describe("buildProviderLine — fresh (no age suffix; data just arrived)", () =>
     // indicator is reserved for stale state. Users opt in to the
     // healthy-emoji path by listing m_age in their lineTemplate.
     pinDefaults();
-    const result: FetchResult<Remains> = {
+    const result: FetchResult<Quota> = {
       kind: "fresh",
       data: MINI_DATA,
       ageMs: 30_000,
@@ -117,7 +117,7 @@ describe("buildProviderLine — fresh (no age suffix; data just arrived)", () =>
       ],
     });
     try {
-      const result: FetchResult<Remains> = {
+      const result: FetchResult<Quota> = {
         kind: "fresh",
         data: MINI_DATA,
         ageMs: 30_000,
@@ -140,7 +140,7 @@ describe("buildProviderLine — fresh (no age suffix; data just arrived)", () =>
     // the emptiness downstream, which keeps the per-module filter
     // pipeline consistent.
     pinDefaults();
-    const result: FetchResult<Remains> = { kind: "fresh", data: MINI_DATA, ageMs: 0 };
+    const result: FetchResult<Quota> = { kind: "fresh", data: MINI_DATA, ageMs: 0 };
     assert.equal(buildProviderLine(null, result), null);
   });
 });
@@ -150,7 +150,7 @@ describe("buildProviderLine — stale (fetch failed, cache reused; broken emoji)
     pinDefaults();
     // Stale-on-error → ageMs from cache.peekWithAge (time since last
     // successful fetch), NOT from any API timestamp.
-    const result: FetchResult<Remains> = {
+    const result: FetchResult<Quota> = {
       kind: "stale",
       data: MINI_DATA,
       ageMs: 5 * 60_000,
@@ -192,7 +192,7 @@ describe("buildProviderLine — stale (fetch failed, cache reused; broken emoji)
     // "⛓️‍💥 0m ago" (or "<1s ago" with minUnit=s) instead of a bare
     // emoji. The visibility gate is now stale=true at the renderer.
     pinDefaults();
-    const result: FetchResult<Remains> = {
+    const result: FetchResult<Quota> = {
       kind: "stale",
       data: MINI_DATA,
       ageMs: 0,
@@ -206,7 +206,7 @@ describe("buildProviderLine — stale (fetch failed, cache reused; broken emoji)
 describe("buildProviderLine — fail", () => {
   it("MiniMax: renders 'Usage: not available!' in RED", () => {
     pinDefaults();
-    const result: FetchResult<Remains> = { kind: "fail" };
+    const result: FetchResult<Quota> = { kind: "fail" };
     const line = buildProviderLine("minimax", result);
     assert.equal(line, `Usage: ${RED}not available!${RESET}`);
     assert.equal(strip(line!), "Usage: not available!");
@@ -230,7 +230,7 @@ describe("buildProviderLine — fail", () => {
     // buildProviderLine re-routes the would-be-empty render through
     // failLabelForProvider + the RED sentinel.
     pinDefaults();
-    const result: FetchResult<Remains> = { kind: "fail" };
+    const result: FetchResult<Quota> = { kind: "fail" };
     const line = buildProviderLine(null, result);
     assert.equal(line, `Usage: ${RED}not available!${RESET}`);
     assert.equal(strip(line!), "Usage: not available!");
@@ -298,7 +298,7 @@ describe("buildProviderLine — null provider (no ANTHROPIC_BASE_URL match)", ()
       ],
     });
     try {
-      const result: FetchResult<Remains> = {
+      const result: FetchResult<Quota> = {
         kind: "fresh",
         data: MINI_DATA,
         ageMs: 0,
@@ -327,7 +327,7 @@ describe("buildProviderLine — null provider (no ANTHROPIC_BASE_URL match)", ()
       ],
     });
     try {
-      const result: FetchResult<Remains> = {
+      const result: FetchResult<Quota> = {
         kind: "fresh",
         data: MINI_DATA,
         ageMs: 0,
@@ -362,7 +362,7 @@ describe("buildProviderLine — null provider (no ANTHROPIC_BASE_URL match)", ()
       ],
     });
     try {
-      const result: FetchResult<Remains> = { kind: "fail" };
+      const result: FetchResult<Quota> = { kind: "fail" };
       const line = buildProviderLine(null, result, TOKENS);
       assert.ok(line);
       const text = strip(line!);
@@ -383,7 +383,7 @@ describe("buildProviderLine — null provider (no ANTHROPIC_BASE_URL match)", ()
     // a sub-template that emits only the "plan" lineTemplate. With
     // no provider and no tokens, that whole fragment drops → the
     // empty-output guard kicks in → null.
-    const result: FetchResult<Remains> = {
+    const result: FetchResult<Quota> = {
       kind: "fresh",
       data: MINI_DATA,
       ageMs: 0,
@@ -399,7 +399,7 @@ describe("buildProviderLine — null provider (no ANTHROPIC_BASE_URL match)", ()
     // a configured provider's hard fail, so the user sees a
     // consistent signal across both paths.
     pinDefaults();
-    const result: FetchResult<Remains> = { kind: "fail" };
+    const result: FetchResult<Quota> = { kind: "fail" };
     const line = buildProviderLine(null, result);
     assert.equal(line, `Usage: ${RED}not available!${RESET}`);
   });

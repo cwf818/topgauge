@@ -589,7 +589,7 @@
 ### Preserved (intentional)
 
 - Provider-string constants — `minimax`, `MiniMax`, `MiniMax-M3`,
-  `minimaxi.com`, `TOKEN_PLAN`, `BALANCE`, `DeepSeek`, `deepseek`,
+  `minimaxi.com`, `Quota`, `BALANCE`, `DeepSeek`, `deepseek`,
   `/v1/token_plan/remains`, `/user/balance` — are NOT renamed. They
   reference external API surfaces and are stable contract.
 - Repo directory `D:\WorkSpace\tokenplan-usage-hud` is NOT renamed on
@@ -641,7 +641,7 @@
 ### Added
 
 - Three optional per-provider HTTP request overrides on `ProviderEntry`:
-  - `BEARER_KEY` — Bearer token sent in the `Authorization` header.
+  - `AUTHENTICATION_KEY` — Bearer token sent in the `Authorization` header.
     Always wins over `process.env.ANTHROPIC_AUTH_TOKEN` when present;
     no env fallback.
   - `METHOD` — closed enum (`"GET" | "POST" | "PUT" | "PATCH" |
@@ -652,12 +652,12 @@
     arrays / strings / numbers drop just the field (lenient). No
     template placeholders.
 - `fetchBalance` accepts the same `provider` 4th argument as
-  `fetchRemains` so BALANCE providers can declare the same overrides
+  `fetchQuota` so BALANCE providers can declare the same overrides
   symmetrically. The dispatcher in `src/providers.ts` now passes the
   entry to both fetchers.
 - `src/index.ts` no longer short-circuits the whole tick when
   `ANTHROPIC_AUTH_TOKEN` is empty — the fetcher decides whether to
-  make the call (it sees `entry.BEARER_KEY`). This makes per-provider
+  make the call (it sees `entry.AUTHENTICATION_KEY`). This makes per-provider
   credential rotation work in CI / sandboxed environments that don't
   carry the env var.
 
