@@ -7,7 +7,7 @@
 //     upstream output passes through.
 //   - Composes with upstream claude-hud output (passed via TOPGAUGE_CC_UPSTREAM
 //     by the bash wrapper in scripts/wrapper.sh).
-//   - Loads ~/.claude/plugins/topgauge-cc/config.json once at
+//   - Loads ~/.claude/plugins/topgauge/config.json once at
 //     startup; every tunable (cache TTL, fetch timeout, colors, display
 //     mode, …) reads from there via the configStore singleton.
 //
@@ -304,7 +304,7 @@ async function main(): Promise<void> {
 // Handle unexpected throws by emitting upstream output (so claude-hud is
 // never blanked by our crash). Token is never logged.
 process.on("uncaughtException", (err) => {
-  process.stderr.write(`topgauge-cc: ${(err as Error).message}\n`);
+  process.stderr.write(`topgauge: ${(err as Error).message}\n`);
   process.stdout.write(UPSTREAM ?? "");
   process.exit(0);
 });

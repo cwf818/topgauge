@@ -1,4 +1,4 @@
-# ToPGauge-CC — Display Modules Manual (v0.8.37)
+# ToPGauge — Display Modules Manual (v0.9.0)
 
 This file documents every token you can write inside `statuslineTemplate`
 and inside entries of `lineTemplates.<key>` (consumed via
@@ -256,7 +256,7 @@ Standalone modules — no acc/sum variant, no 3-tuple sibling.
 | `m_session` | User-defined session name, e.g. `fix-bar-color-regressions`. | `tokens.sessionName` | `color`, `nulldrop` |
 | `m_model` | Display name of active model, e.g. `MiniMax-M3`. | `tokens.modelDisplayName` | `color`, `nulldrop` |
 | `m_effort` | Effort level: `low` / `medium` / `high` / `max`. | `tokens.effort` | `color`, `nulldrop` |
-| `m_repo` | `host/owner/name`, e.g. `github.com/cwf818/topgauge-cc`. | `tokens.workspace.repo` | `color`, `nulldrop` |
+| `m_repo` | `host/owner/name`, e.g. `github.com/cwf818/topgauge`. | `tokens.workspace.repo` | `color`, `nulldrop` |
 | `m_branch` | Current git branch. | git info from cwd | `color`, `nulldrop` |
 | `m_gitStatus` | Git dirty / clean indicator: `dirty` / `clean`. | git status | `color`, `nulldrop` |
 | `m_ccVersion` | Claude Code version, e.g. `2.1.191`. | `tokens.ccversion` | `color`, `nulldrop` | Lowercase alias `m_ccversion` also accepted (legacy). |

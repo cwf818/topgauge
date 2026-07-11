@@ -4,11 +4,11 @@ Usage: ▓▓▓▓░░░░ 40% (1h27m🕗 5h) · ▓▓░░░░░░ 2
 Balance: ￥110.00 · $3.5                                        # Balance
 </pre>
 
-# topgauge-cc
+# topgauge
 
-[![License](https://img.shields.io/github/license/cwf818/topgauge-cc)](LICENSE)
-[![Tag](https://img.shields.io/github/tag/cwf818/topgauge-cc)](https://github.com/cwf818/topgauge-cc/tags)
-[![Stars](https://img.shields.io/github/stars/cwf818/topgauge-cc)](https://github.com/cwf818/topgauge-cc/stargazers)
+[![License](https://img.shields.io/github/license/cwf818/topgauge)](LICENSE)
+[![Tag](https://img.shields.io/github/tag/cwf818/topgauge)](https://github.com/cwf818/topgauge/tags)
+[![Stars](https://img.shields.io/github/stars/cwf818/topgauge)](https://github.com/cwf818/topgauge/stargazers)
 
 A provider-agnostic Claude Code statusline plugin for **token-plan usage / remaining quota**. It picks what to render from `ANTHROPIC_BASE_URL`, so the same plugin works against any supported provider's plan endpoint — no per-provider re-install. Currently supported:
 
@@ -49,7 +49,8 @@ For the per-version detail, see [CHANGELOG.md](CHANGELOG.md). Recent highlights:
 - **v0.8.14** — `statuslineTemplate` is **array-only**; legacy bare-string preset names auto-migrate to `["m_template|_X"]`. Built-in presets are now first-class `lineTemplates._*` entries (replaces the exported `PLAN_PRESETS` / `BALANCE_PRESETS` constants). Balance-provider default render is now silent unless `m_template|_balance_simple|mode:balance` is explicit.
 - **v0.8.13** — `labelFor()` resolver extended to `labelApi` / `labelApiCalls` / `labelInSpeed` / `labelOutSpeed` (4 new axes; defaults match v0.8.x literals).
 - **v0.8.0** — **major rewrite**. Renamed modules: `m_tokenInTotal` / `m_tokenTotalOut` (was `m_tokenOutTotal`); `m_tokenCachedIn` (was `m_cachedTokenIn` / `m_cacheRead`); `m_contextSize` (was `m_ctx`); `m_contextUsedPercent` (was `m_contextUsed`); new sibling `m_contextRemainingPercent`. New three-tuple family — per-turn / `m_acc*` (3-layer accumulator: session / project / model) / `m_sum*` (cross-project JSONL scan, TTL=300s). New `m_tokenTotalIn` invariant: `total_input_tokens == current.input_tokens + current.cache_read_input_tokens`. **Removed** (no alias): `m_token5h`, `m_token7d`, `m_tokenInAvg`, `m_tokenOutAvg`, `m_totalTokenIn`, `m_totalTokenOut`, `m_totalTokenWithCacheIn`. See [CHANGELOG.md](CHANGELOG.md) for the full v0.8.0 contract and the v0.4.x ADR at `memory/token-usage-design-adr.md` (marked DEPRECATED — superseded by the v0.8.0 modules redesign).
-- **v0.7.0** — full rename to `topgauge-cc` (ToPGauge-CC). Package id, marketplace id, plugin name, env-var namespace, slash-command prefix, settings.json marker, state-dir path, all stderr banners, and the docs are renamed. Provider strings (`minimax`, `deepseek`, etc.) are unchanged. Users upgrading from a pre-rename install get a one-shot state-dir migration (`plugins/tokenplan-usage-hud/state/` → `plugins/topgauge-cc/state/`), and `:uninstall` recognizes BOTH the old and the new name so a clean uninstall doesn't require a manual migration first.
+- **v0.9.0** — full rename to `topgauge` (ToPGauge). Package id, marketplace id, plugin name, plugin key (`topgauge@topgauge`), state-dir path, settings.json marker, all stderr banners, and the docs are renamed. Provider strings (`minimax`, `deepseek`, `copilot`) are unchanged. The legacy `topgauge-cc` and `tokenplan-usage-hud` plugin names are NOT recognized — users upgrading from a pre-rename install should run `:uninstall` against the old name first (or wipe by hand), then re-install.
+- **v0.7.0** — renamed from `tokenplan-usage-hud` to `topgauge-cc` (ToPGauge-CC). Superseded by v0.9.0 below.
 - **v0.4.0** — exposes 16 new statusline modules reading the captured Claude Code stdin payload: session identity (`m_session`, `m_model`, `m_effort`, `m_repo`, `m_ccVersion`), session metrics (`m_sessionDuration`, `m_sessionApiDuration`, `m_linesAdded`, `m_linesRemoved`), cumulative token counters (`m_tokenInTotal`, `m_tokenTotalOut`), context-window stats (`m_contextSize`, `m_contextUsed`, `m_windowContext`). Also: `m_tokenIn` / `m_tokenOut` and `m_tokenInSpeed` / `m_tokenOutSpeed` now read the per-turn `current_usage` fields instead of session-cumulative. **BREAKING**: the `lineTemplate: { plan, balance }` config field is removed — replaced by `lineTemplates` (registry of reusable fragments) + `statuslineTemplate` (the rendered template). See [Upgrading to v0.4.0](#upgrading-to-v040-from-v03x) below.
 
 For the exhaustive module reference and inline-args grammar, see [MANUAL.md](./MANUAL.md).
@@ -59,8 +60,8 @@ For the exhaustive module reference and inline-args grammar, see [MANUAL.md](./M
 The plugin is a single-plugin marketplace. Install it in three steps:
 
 ```
-/plugin marketplace add cwf818/topgauge-cc
-/plugin install topgauge-cc@topgauge-cc
+/plugin marketplace add cwf818/topgauge
+/plugin install topgauge@topgauge
 ```
 
 > After the plugin install, run `/reload-plugins` so the loader picks up the new commands before wiring it into `settings.json`. Forgetting this step is the most common cause of "command not found" right after install.
@@ -68,26 +69,26 @@ The plugin is a single-plugin marketplace. Install it in three steps:
 Then wire it into `settings.json`:
 
 ```
-/topgauge-cc:install
+/topgauge:install
 ```
 
 This patches the active `settings.json` (user-level by default; pass `--project` for project-level):
 
 1. If `statusLine` is already managed by us (`_topgauge_managed: true`), the command is a no-op.
 2. Otherwise, the current `settings.json` is backed up to `settings.json.bak.<ISO-timestamp>`.
-3. The original `statusLine.command` is preserved at `<claude-root>/plugins/topgauge-cc/state/upstream-cmd.sh` and `<claude-root>/plugins/topgauge-cc/state/upstream-cmd.txt` — sibling of `config.json`, **stable** across `/plugin install` rolls and cache wipes.
+3. The original `statusLine.command` is preserved at `<claude-root>/plugins/topgauge/state/upstream-cmd.sh` and `<claude-root>/plugins/topgauge/state/upstream-cmd.txt` — sibling of `config.json`, **stable** across `/plugin install` rolls and cache wipes.
 4. The `statusLine` is rewritten to invoke our wrapper, which sets `TOPGAUGE_CC_UPSTREAM_CMD=<upstream-cmd.sh>` so the original statusline runs above our line.
 
 `install.sh` auto-builds `dist/index.js` if it's missing (the marketplace install only copies source, not the bundle). Re-running the slash command is always a no-op once installed.
 
-If you want to preview what install will do, run `/topgauge-cc:install --dry-run` first.
+If you want to preview what install will do, run `/topgauge:install --dry-run` first.
 
 If your active `settings.json` doesn't exist at the project level, install creates a minimal one (with `permissions.defaultMode: bypassPermissions`). It does **not** copy from the user-level file.
 
 ### Restore from backup
 
 ```
-/topgauge-cc:install --restore
+/topgauge:install --restore
 ```
 
 Replaces the active `settings.json` with the most recent `settings.json.bak.<ts>`. Useful if you want to roll back an edit that wasn't made by us.
@@ -98,31 +99,29 @@ Four slash commands ship with the plugin:
 
 | Command                                  | What it does                                                                                    |
 | ---------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `/topgauge-cc:install`           | Wire the wrapper into `settings.json` (or `--uninstall` / `--restore`).                          |
-| `/topgauge-cc:uninstall`         | Restore `settings.json`, wipe cache + marketplace + loader rows.                                   |
-| `/topgauge-cc:clean`             | Trim old `.bak.<ts>` files (keeps the most recent per file).                                      |
-| `/topgauge-cc:clean-cache`       | Remove stale version dirs from the plugin cache, keeping only the newest.                          |
+| `/topgauge:install`           | Wire the wrapper into `settings.json` (or `--uninstall` / `--restore`).                          |
+| `/topgauge:uninstall`         | Restore `settings.json`, wipe cache + marketplace + loader rows.                                   |
+| `/topgauge:clean`             | Trim old `.bak.<ts>` files (keeps the most recent per file).                                      |
+| `/topgauge:clean-cache`       | Remove stale version dirs from the plugin cache, keeping only the newest.                          |
 
 Each is a Pattern B2 slash command — the body is a `!`-fenced shell block that loads `scripts/<name>.sh` directly via `${CLAUDE_PLUGIN_ROOT}`, with `allowed-tools` scoped to that script. See [Project layout](#project-layout) for the file map.
 
 ## Uninstall
 
 ```
-/topgauge-cc:uninstall
+/topgauge:uninstall
 ```
 
 This is a self-contained cleanup that works even after the plugin's cache and marketplace have been wiped. It does all of the following:
 
 1. **Restore `statusLine`** — strategy in order:
-   - If `${CLAUDE_ROOT}/plugins/topgauge-cc/state/upstream-cmd.txt` exists (the stable state dir, sibling of `config.json`), restore the original command byte-for-byte from that file.
-   - Else, fall back to the legacy state dir `${CLAUDE_ROOT}/plugins/tokenplan-usage-hud/state/upstream-cmd.txt` (v0.7.0 legacy dual-strip — preserved so users upgrading from a pre-rename install can still uninstall cleanly).
-   - Else, fall back to the highest-version cache dir's legacy `state/upstream-cmd.txt` (v0.2.18 and older layout, before the stable state dir existed). Same ordering as the wrapper's `ls + sort + tail` resolver.
-   - Else, fall back to the most recent `settings.json.bak.<ts>` whose `statusLine` does **not** have `_topgauge_managed: true` (or `_tokenplan_managed: true`, the v0.6.x marker) (the state before the plugin was installed).
+   - If `${CLAUDE_ROOT}/plugins/topgauge/state/upstream-cmd.txt` exists (the stable state dir, sibling of `config.json`), restore the original command byte-for-byte from that file.
+   - Else, fall back to the most recent `settings.json.bak.<ts>` whose `statusLine` does **not** have `_topgauge_managed: true` (the state before the plugin was installed).
    - Else, strip the marker but leave the wrapper in place and print a warning.
-2. **Remove `topgauge-cc@topgauge-cc` from `settings.json.enabledPlugins`** (other plugins preserved). v0.7.0 also strips the legacy key `tokenplan-usage-hud@tokenplan-usage-hud` if present (legacy dual-strip).
-3. **Remove `topgauge-cc` from `settings.json.extraKnownMarketplaces`** (Claude Code records the marketplace source there too — leaving it would re-add the marketplace on next `/plugin marketplace add` with no visible diff). v0.7.0 also strips the legacy `tokenplan-usage-hud` key if present.
-4. **Wipe** `cache/topgauge-cc/`, `marketplaces/topgauge-cc/`, and the legacy `marketplaces/cwf818-topgauge-cc/` alias — AND the legacy `cache/tokenplan-usage-hud/`, `marketplaces/tokenplan-usage-hud/`, `marketplaces/cwf818-tokenplan-usage-hud/`, `plugins/tokenplan-usage-hud/state/` paths left by users upgrading from a pre-rename install.
-5. **Strip the plugin's row** from `installed_plugins.json` and `known_marketplaces.json` (with timestamped `.bak.<TS>` backups). v0.7.0 also strips both old and new key shapes from each file.
+2. **Remove `topgauge@topgauge` from `settings.json.enabledPlugins`** (other plugins preserved).
+3. **Remove `topgauge` from `settings.json.extraKnownMarketplaces`** (Claude Code records the marketplace source there too — leaving it would re-add the marketplace on next `/plugin marketplace add` with no visible diff).
+4. **Wipe** `cache/topgauge/`, `marketplaces/topgauge/`, and the loader's leftover `marketplaces/cwf818-topgauge/` alias.
+5. **Strip the plugin's row** from `installed_plugins.json` and `known_marketplaces.json` (with timestamped `.bak.<TS>` backups).
 6. **Trim old `.bak.<ts>` files** — invokes `scripts/clean.sh` as the final step so uninstall leaves a tidy filesystem (one newest backup per file). User-named backups like `settings.json.bak-pre-v0.1.8` are NOT touched.
 
 `settings.json` and the two JSON files are backed up **before** any destructive change. Line endings (CRLF/LF) are preserved. The script is **idempotent** — re-running on a clean system prints `nothing to do` and exits 0. Add `--dry-run` to preview actions without modifying anything.
@@ -132,20 +131,20 @@ The `env` block of `settings.json` (including your `ANTHROPIC_AUTH_TOKEN`) is **
 After uninstall, re-install with the four-step flow:
 
 ```
-/plugin marketplace add cwf818/topgauge-cc
-/plugin install topgauge-cc@topgauge-cc
+/plugin marketplace add cwf818/topgauge
+/plugin install topgauge@topgauge
 /reload-plugins
-/topgauge-cc:install
+/topgauge:install
 ```
 
-The legacy `/topgauge-cc:install --uninstall` flag still works (it's a thin shim that calls the same uninstaller). Prefer the dedicated `:uninstall` slash command in new scripts.
+The legacy `/topgauge:install --uninstall` flag still works (it's a thin shim that calls the same uninstaller). Prefer the dedicated `:uninstall` slash command in new scripts.
 
 For dev iteration, `npm run dev:uninstall` (or `npm run dev:uninstall:dry`) does the same thing from the command line.
 
 ## Clean
 
 ```
-/topgauge-cc:clean
+/topgauge:clean
 ```
 
 Removes the old `.bak.YYYYMMDDTHHMMSS` backup files our installer leaves behind, keeping only the most recent one per base file:
@@ -163,19 +162,19 @@ For dev iteration, `npm run settings:clean` (or `npm run settings:clean:dry`) do
 ## Clean cache
 
 ```
-/topgauge-cc:clean-cache
+/topgauge:clean-cache
 ```
 
-Every `/plugin install` rolls the cache forward — Claude Code creates a new `<version>` directory under `<cache>/topgauge-cc/` but does **not** remove the previous one. Old version dirs pile up over time (~40-50 MB each: full source tree + node_modules). The `statusLine.command` written by `:install` is already version-independent — it `ls -d`s every version dir, sorts by version, and `exec`s the highest — so old dirs are pure dead weight.
+Every `/plugin install` rolls the cache forward — Claude Code creates a new `<version>` directory under `<cache>/topgauge/` but does **not** remove the previous one. Old version dirs pile up over time (~40-50 MB each: full source tree + node_modules). The `statusLine.command` written by `:install` is already version-independent — it `ls -d`s every version dir, sorts by version, and `exec`s the highest — so old dirs are pure dead weight.
 
-`/topgauge-cc:clean-cache` walks the cache, finds all `^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$` version directories, sorts numerically (so `0.2.10` sorts AFTER `0.2.9`, not lexically), keeps the newest, and removes the rest.
+`/topgauge:clean-cache` walks the cache, finds all `^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$` version directories, sorts numerically (so `0.2.10` sorts AFTER `0.2.9`, not lexically), keeps the newest, and removes the rest.
 
 **Safety:** non-version entries (`.in_use`, `.orphaned_at_*`, hidden dirs, files, anything not matching the version regex) are left untouched. Idempotent: re-running is a no-op once only the newest remains. Add `--dry-run` to preview.
 
 ## How it composes with other statuslines
 
 - The wrapper script is `scripts/wrapper.sh`. If `TOPGAUGE_CC_UPSTREAM_CMD` is set, it runs that path as a bash script (`bash "$TOPGAUGE_CC_UPSTREAM_CMD"`), captures stdout, and exposes it to the plugin entry as the `TOPGAUGE_CC_UPSTREAM` env var. If unset, the wrapper runs the plugin as the sole statusline.
-- `TOPGAUGE_CC_UPSTREAM_CMD` is an **absolute path** to a bash script — `install.sh` writes one at `${CLAUDE_ROOT}/plugins/topgauge-cc/state/upstream-cmd.sh` whose body is `exec bash -c '<original-command>'`. This path is **stable** (sibling of `config.json`, NOT inside the per-version cache dir), so `/plugin install` rolls don't move it. Older v0.1.10–v0.1.11 used `bash -c` against the path itself, which silently failed — fixed in v0.1.12.
+- `TOPGAUGE_CC_UPSTREAM_CMD` is an **absolute path** to a bash script — `install.sh` writes one at `${CLAUDE_ROOT}/plugins/topgauge/state/upstream-cmd.sh` whose body is `exec bash -c '<original-command>'`. This path is **stable** (sibling of `config.json`, NOT inside the per-version cache dir), so `/plugin install` rolls don't move it. Older v0.1.10–v0.1.11 used `bash -c` against the path itself, which silently failed — fixed in v0.1.12.
 - The plugin preserves interior newlines in upstream output and injects `\x1b[0m` before its own line if upstream ends with an unclosed ANSI SGR — so multi-line, ANSI-colored upstream statuslines render correctly.
 
 ## Activation
@@ -268,10 +267,10 @@ In remaining mode the line begins with `Remain:` and the percentage is what's le
 
 A single JSON file parameterizes every hardcoded tunable (color thresholds, cache TTL, fetch timeout, currency prefixes, bar geometry, stale-annotation formatting, display-mode label, per-module labels). Path:
 
-- **Unix**: `~/.claude/plugins/topgauge-cc/config.json`
-- **Windows**: `%USERPROFILE%\.claude\plugins\topgauge-cc\config.json`
+- **Unix**: `~/.claude/plugins/topgauge/config.json`
+- **Windows**: `%USERPROFILE%\.claude\plugins\topgauge\config.json`
 
-Loaded once at startup. **Missing file** → all defaults (today's behavior, bit-for-bit identical). **Malformed JSON** or a **single bad field** → one stderr line (`topgauge-cc: config <reason>; using defaults`) and the default for _that_ field only — the rest of your config is still honored. The plugin never blanks the statusline on bad config.
+Loaded once at startup. **Missing file** → all defaults (today's behavior, bit-for-bit identical). **Malformed JSON** or a **single bad field** → one stderr line (`topgauge: config <reason>; using defaults`) and the default for _that_ field only — the rest of your config is still honored. The plugin never blanks the statusline on bad config.
 
 A reference with every field is at [config.example.json](./config.example.json). Copy it to the path above and edit.
 
@@ -524,7 +523,7 @@ The cache key for a provider's response is its name (so two Quota providers get 
 
 #### Dynamic plugins
 
-Provider acquisition is always handled by a dynamically imported plugin. Built-in `minimax` and `deepseek` plugins are emitted at `dist/plugins/<id>/index.js`; user-defined providers load from `~/.claude/plugins/topgauge-cc/query_plugins/<id>/index.js` (or `index.mjs`). Each plugin exports the same default ABI:
+Provider acquisition is always handled by a dynamically imported plugin. Built-in `minimax` and `deepseek` plugins are emitted at `dist/plugins/<id>/index.js`; user-defined providers load from `~/.claude/plugins/topgauge/query_plugins/<id>/index.js` (or `index.mjs`). Each plugin exports the same default ABI:
 
 ```js
 export default {
@@ -774,7 +773,7 @@ captured by `/statusline`):
 | `m_session`              | The session name — e.g. `fix-bar-color-regressions`. Reads stdin `session_name`. |
 | `m_model`                | The model display name — e.g. `MiniMax-M3`. Reads stdin `model.display_name`. |
 | `m_effort`               | The effort level — e.g. `high`. Reads stdin `effort` (accepts string or `{level}` object). |
-| `m_repo`                 | Repository identity — e.g. `github.com/cwf818/topgauge-cc`. Reads stdin `workspace.repo.{host, owner, name}`, drops null components. |
+| `m_repo`                 | Repository identity — e.g. `github.com/cwf818/topgauge`. Reads stdin `workspace.repo.{host, owner, name}`, drops null components. |
 | `m_branch`               | Current git branch. Reads git info from `cwd`. Drops when not a git repo. |
 | `m_gitStatus`            | Git dirty / clean indicator: `dirty` / `clean`. |
 | `m_ccVersion`            | The Claude Code CLI version — e.g. `2.1.191`. Reads stdin `version`. Lowercase alias `m_ccversion` also accepted (legacy). |
@@ -968,7 +967,7 @@ The seven plan + two balance presets are first-class entries in `lineTemplates` 
 
 ### Upgrading to v0.8.33 from v0.8.32 (BREAKING — user rewrite required)
 
-The inline-args grammar changed to two-class. Every `lineTemplates.<key>` entry in your `~/.claude/plugins/topgauge-cc/config.json` must be rewritten.
+The inline-args grammar changed to two-class. Every `lineTemplates.<key>` entry in your `~/.claude/plugins/topgauge/config.json` must be rewritten.
 
 ```diff
 - "m_sumTokenIn|window|5h"            // pre-v0.8.33 — pair boundary on |
@@ -999,7 +998,7 @@ To silence the warn, write the array form directly. **Balance-provider users on 
 
 ### Upgrading to v0.4.0 from v0.3.x
 
-The `lineTemplate: { plan, balance }` config field is **removed** in v0.4.0. The loader emits one `topgauge-cc: config lineTemplate is removed in v0.4.0; use lineTemplates + statuslineTemplate. See CHANGELOG.md for the upgrade path. Ignoring the legacy field.` warning per config load and ignores the legacy field — there is **no auto-promotion** of `lineTemplate.plan` → `lineTemplates.plan`.
+The `lineTemplate: { plan, balance }` config field is **removed** in v0.4.0. The loader emits one `topgauge: config lineTemplate is removed in v0.4.0; use lineTemplates + statuslineTemplate. See CHANGELOG.md for the upgrade path. Ignoring the legacy field.` warning per config load and ignores the legacy field — there is **no auto-promotion** of `lineTemplate.plan` → `lineTemplates.plan`.
 
 To migrate a customized `lineTemplate`:
 
@@ -1166,7 +1165,7 @@ In addition to the tokenplan 5h/7d window percentages, the plugin reads Claude C
 - `session_id`, `cwd`, `transcript_path` — used to scope the state file for `m_acc*` / `m_sum*` modules
 - `m_tokenTotalIn` invariant: `total_input_tokens == current.input_tokens + current.cache_read_input_tokens`. Violations are checked at `src/session-parse.ts` and a `warning` row is appended to `state/<projectHash>/diagnostics.jsonl` (gated on `TOPGAUGE_CC_DIAGNOSTICS_ENABLE=1`, 60s dedupe).
 
-**Persistent state file** (only for `m_acc*` / `m_sum*`): one JSON line per tick, appended to `~/.claude/plugins/topgauge-cc/state/<projectHash>/<sessionId>.jsonl` (v0.4.x+ Per-Project Layout; was `state/token-samples/<hash>/<sid>.jsonl` in v0.4.0–v0.4.<n-1>). ~120B per row, ~700KB over 7d. Lives in the stable `state/` directory — survives cache rolls and version bumps. Legacy `state/token-samples/<hash>/<sid>.jsonl` files can be preserved across an upgrade with `bash scripts/migrate-state.sh` (preview with `--dry-run`).
+**Persistent state file** (only for `m_acc*` / `m_sum*`): one JSON line per tick, appended to `~/.claude/plugins/topgauge/state/<projectHash>/<sessionId>.jsonl` (v0.4.x+ Per-Project Layout; was `state/token-samples/<hash>/<sid>.jsonl` in v0.4.0–v0.4.<n-1>). ~120B per row, ~700KB over 7d. Lives in the stable `state/` directory — survives cache rolls and version bumps. Legacy `state/token-samples/<hash>/<sid>.jsonl` files can be preserved across an upgrade with `bash scripts/migrate-state.sh` (preview with `--dry-run`).
 
 **Example template** with token counts alongside the windows (v0.8.33+ two-class grammar):
 
@@ -1264,8 +1263,8 @@ If you previously set `TOKENPLAN_DISPLAY=remaining` (pre-v0.2.0) or
 `config.json`:
 
 ```bash
-mkdir -p ~/.claude/plugins/topgauge-cc
-echo '{ "display": "remaining" }' > ~/.claude/plugins/topgauge-cc/config.json
+mkdir -p ~/.claude/plugins/topgauge
+echo '{ "display": "remaining" }' > ~/.claude/plugins/topgauge/config.json
 ```
 
 Restart Claude Code (or run `/reload-plugins`) for the change to take effect.
@@ -1277,7 +1276,7 @@ config field, a fetcher that returned an unexpected status code, an
 `m_quote` address fetch failure — it can append a JSONL entry to:
 
 ```
-~/.claude/plugins/topgauge-cc/state/<projectHash>/diagnostics.jsonl
+~/.claude/plugins/topgauge/state/<projectHash>/diagnostics.jsonl
 ```
 
 (`v0.4.x+` Per-Project Layout: the log is partitioned by project directory so
@@ -1321,14 +1320,14 @@ is best-effort and runs after every append.
 
 ### Wiping the log
 
-`/topgauge-cc:clean --purge-runtime` walks every
+`/topgauge:clean --purge-runtime` walks every
 `state/<projectHash>/` subdir and wipes its `diagnostics.jsonl`,
 `cache.json`, and `<*.jsonl>` token-sample files (v0.4.x+ Per-Project
 Layout). It also cleans the legacy top-level `state/diagnostics.jsonl`,
 `state/cache.json`, and the legacy `state/token-samples/` tree for users
 upgrading from v0.4.0–v0.4.<n-1>. Top-level `upstream-cmd.{sh,txt}` and
 `config.json` are NEVER purged. Preview first with
-`/topgauge-cc:clean --purge-runtime --dry-run`.
+`/topgauge:clean --purge-runtime --dry-run`.
 
 ## Auth
 
@@ -1338,7 +1337,7 @@ The plugin reuses `process.env.ANTHROPIC_AUTH_TOKEN` to call the provider's plan
 
 The Claude Code statusline is updated in response to interaction events by default (every prompt, every tool result). Starting with **Claude Code 2.1.97**, the `statusLine.refreshInterval` field is honored, letting the statusline refresh on a fixed cadence instead. Two scopes of "refresh interval" are involved and they're independent:
 
-- **This plugin's 60 s TTL** — how long we cache a successful API response before re-fetching. MiniMax and DeepSeek have different rate-limit policies and refresh cadences; 60 s is a deliberate default that keeps the statusline responsive without hammering the API. Cache entries are shadowed to disk under `state/<projectHash>/cache.json` (sibling of `config.json`, wiped by `:uninstall`; v0.4.x+ Per-Project Layout — was `state/cache.json` in v0.4.0–v0.4.<n-1>), so the TTL is honored **across per-tick child-process spawns** — the second tick within 60 s reuses the first tick's value instead of re-fetching. Per-project isolation: `render.ts` prefixes every cache key with `<projectHash>:` so different projects never collide on the same `cache.json`. (v0.7.0: state dir renamed from `plugins/tokenplan-usage-hud/state/` to `plugins/topgauge-cc/state/`.)
+- **This plugin's 60 s TTL** — how long we cache a successful API response before re-fetching. MiniMax and DeepSeek have different rate-limit policies and refresh cadences; 60 s is a deliberate default that keeps the statusline responsive without hammering the API. Cache entries are shadowed to disk under `state/<projectHash>/cache.json` (sibling of `config.json`, wiped by `:uninstall`; v0.4.x+ Per-Project Layout — was `state/cache.json` in v0.4.0–v0.4.<n-1>), so the TTL is honored **across per-tick child-process spawns** — the second tick within 60 s reuses the first tick's value instead of re-fetching. Per-project isolation: `render.ts` prefixes every cache key with `<projectHash>:` so different projects never collide on the same `cache.json`.
 - **Claude Code's `statusLine.refreshInterval`** — how often the harness invokes the statusline command. Set in `~/.claude/settings.json` independently of this plugin:
 
   ```json
@@ -1456,22 +1455,22 @@ Use the bundled dev helper (does **not** touch `settings.json` — your statusLi
 # Preview what will be removed:
 npm run dev:uninstall:dry
 
-# Wipe topgauge-cc state:
+# Wipe topgauge state:
 npm run dev:uninstall
 ```
 
 It removes:
 
-- the topgauge row from `installed_plugins.json` and `known_marketplaces.json` (with timestamped `.bak.<ts>` backups of both files). v0.7.0: also strips the legacy `tokenplan-usage-hud` keys if present.
-- `cache/topgauge-cc/`, `marketplaces/topgauge-cc/`, and the loader's leftover `marketplaces/cwf818-topgauge-cc/` directory. v0.7.0: also wipes the legacy `cache/tokenplan-usage-hud/`, `marketplaces/tokenplan-usage-hud/`, and `plugins/tokenplan-usage-hud/state/` paths.
+- the topgauge row from `installed_plugins.json` and `known_marketplaces.json` (with timestamped `.bak.<ts>` backups of both files).
+- `cache/topgauge/`, `marketplaces/topgauge/`, and the loader's leftover `marketplaces/cwf818-topgauge/` directory.
 
 Then re-install:
 
 ```
-/plugin marketplace add cwf818/topgauge-cc
-/plugin install topgauge-cc@topgauge-cc
+/plugin marketplace add cwf818/topgauge
+/plugin install topgauge@topgauge
 /reload-plugins
-/topgauge-cc:install
+/topgauge:install
 ```
 
 If the loader still says "EPERM" after `dev:uninstall`, the most common cause is a Claude Code process holding a file lock on the marketplace dir. **Quit all running Claude Code sessions** (not just this one) and re-run `npm run dev:uninstall`.
@@ -1493,7 +1492,7 @@ src/
   status-store.ts     # three-layer acc (session/project/model) + cold-slot JSONL replay (v0.8.29) + stat cache
   cache.ts            # 60s TTL + stale-on-error; per-project cache.json shadowing
   composition.ts      # reads TOPGAUGE_CC_UPSTREAM, prepends (preserving ANSI/multi-line) and appends line
-  config.ts           # loads ~/.claude/plugins/topgauge-cc/config.json; module-level singleton store
+  config.ts           # loads ~/.claude/plugins/topgauge/config.json; module-level singleton store
   diagnostics.ts      # JSONL append logger (opt-in via TOPGAUGE_CC_DIAGNOSTICS_ENABLE); 1000-line cap (v0.8.34+)
   dispatch.ts         # providerType → module-set dispatch (provider-aware gating)
   path-expr.ts        # path-expression grammar evaluator (v0.4.x+) for intervals.<term>.* slot mapping
@@ -1506,16 +1505,16 @@ src/
   plugin.json         # plugin manifest (declares commands, version, keywords)
   marketplace.json    # single-plugin marketplace wiring
 commands/
-  install.md          # /topgauge-cc:install slash command
-  uninstall.md        # /topgauge-cc:uninstall slash command
-  clean.md            # /topgauge-cc:clean slash command
-  clean-cache.md      # /topgauge-cc:clean-cache slash command
+  install.md          # /topgauge:install slash command
+  uninstall.md        # /topgauge:uninstall slash command
+  clean.md            # /topgauge:clean slash command
+  clean-cache.md      # /topgauge:clean-cache slash command
 scripts/
   wrapper.sh          # bash wrapper: TOPGAUGE_CC_UPSTREAM_CMD → TOPGAUGE_CC_UPSTREAM → us
   install.sh          # settings.json patcher (install + thin shim for --uninstall)
   uninstall.sh        # self-contained uninstaller (used by :uninstall and dev:uninstall)
   clean.sh            # trim old .bak.<ts> files; --purge-runtime also wipes state/<projectHash>/{cache.json,diagnostics.jsonl,*.jsonl} + legacy top-level + token-samples
-  clean-cache.sh      # prune old version dirs under cache/topgauge-cc/, keep newest
+  clean-cache.sh      # prune old version dirs under cache/topgauge/, keep newest
   migrate-state.sh    # v0.4.x legacy state/token-samples/<hash>/<sid>.jsonl → state/<hash>/<sid>.jsonl
   dev-uninstall.sh    # DEV-ONLY thin shim → exec uninstall.sh
   lib/edit-settings.mjs  # ESM helper used by install.sh

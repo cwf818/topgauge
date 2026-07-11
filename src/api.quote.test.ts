@@ -135,7 +135,7 @@ describe("diagnostics — v0.8.34 level + cap", () => {
   let prevGate: string | undefined;
 
   beforeEach(() => {
-    sandbox = mkdtempSync(join(tmpdir(), "topgauge-cc-q34-"));
+    sandbox = mkdtempSync(join(tmpdir(), "topgauge-q34-"));
     prevConfigDir = process.env.CLAUDE_CONFIG_DIR;
     prevGate = process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE;
     process.env.CLAUDE_CONFIG_DIR = sandbox;

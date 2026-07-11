@@ -82,16 +82,16 @@ function buildLatestCacheCommand(_upstreamCmdFileUnused) {
   //
   // Pattern, broken across lines for readability (NOT what's written):
   //   bash -c '
-  //     plugin_dir=$(ls -d …/topgauge-cc/*/ | awk -F/ '\''{…}'\'' | sort … | tail -1 | cut -f2-)
+  //     plugin_dir=$(ls -d …/topgauge/*/ | awk -F/ '\''{…}'\'' | sort … | tail -1 | cut -f2-)
   //     [ -d "$plugin_dir" ] || { echo … >&2; exit 1; }
-  //     export TOPGAUGE_CC_UPSTREAM_CMD="<root>/plugins/topgauge-cc/state/upstream-cmd.sh"
+  //     export TOPGAUGE_CC_UPSTREAM_CMD="<root>/plugins/topgauge/state/upstream-cmd.sh"
   //     exec bash "${plugin_dir}scripts/wrapper.sh"
   //   '
   //
   // TOPGAUGE_CC_UPSTREAM_CMD points at a STABLE location
-  // (<root>/plugins/topgauge-cc/state/upstream-cmd.sh) — NOT
+  // (<root>/plugins/topgauge/state/upstream-cmd.sh) — NOT
   // inside the version-specific cache dir. Two reasons:
-  //   1. config.json lives at <root>/plugins/topgauge-cc/, so
+  //   1. config.json lives at <root>/plugins/topgauge/, so
   //      the state dir is the obvious sibling and survives cache wipes
   //      (so an uninstall on a future version can still find the
   //      pre-managed command to restore).
@@ -108,9 +108,9 @@ function buildLatestCacheCommand(_upstreamCmdFileUnused) {
   void _upstreamCmdFileUnused;
   return [
     "bash -c '",
-    "plugin_dir=$(ls -d \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}\"/plugins/cache/topgauge-cc/topgauge-cc/*/ 2>/dev/null | awk -F/ '\"'\"'{ print $(NF-1) \"\\t\" $(0) }'\"'\"' | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n | tail -1 | cut -f2-); ",
-    "[ -d \"$plugin_dir\" ] || { echo \"topgauge-cc: no installed version found under cache\" >&2; exit 1; }; ",
-    "export TOPGAUGE_CC_UPSTREAM_CMD=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/topgauge-cc/state/upstream-cmd.sh\"; ",
+    "plugin_dir=$(ls -d \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}\"/plugins/cache/topgauge/topgauge/*/ 2>/dev/null | awk -F/ '\"'\"'{ print $(NF-1) \"\\t\" $(0) }'\"'\"' | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n | tail -1 | cut -f2-); ",
+    "[ -d \"$plugin_dir\" ] || { echo \"topgauge: no installed version found under cache\" >&2; exit 1; }; ",
+    "export TOPGAUGE_CC_UPSTREAM_CMD=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/topgauge/state/upstream-cmd.sh\"; ",
     "exec bash \"${plugin_dir}scripts/wrapper.sh\"",
     "'",
   ].join("");
@@ -134,15 +134,8 @@ function buildLatestCacheCommand(_upstreamCmdFileUnused) {
 // foreign command with our cached wrapper — losing the user's intent.
 function isOurWrapperCommand(command) {
   if (typeof command !== "string" || command.length === 0) return false;
-  // Path matches "plugins[/\]cache[/\]topgauge-cc[/\]topgauge-cc[/\]".
-  // Using a runtime regex (not a string .includes) sidesteps the JS string
-  // escape rules: in the regex source `\\` matches a single literal `\`.
-  // Accepts either separator since the paths in settings.json come from
-  // a Cygwin / native boundary (backslashes on Windows, forward slashes
-  // on Linux/macOS).
   const normalized = command.replaceAll("\\", "/");
-  const hasCachePath = normalized.includes("plugins/cache/topgauge-cc/topgauge-cc/")
-    || normalized.includes("plugins/cache/tokenplan-usage-hud/tokenplan-usage-hud/");
+  const hasCachePath = normalized.includes("plugins/cache/topgauge/topgauge/");
   // Suffix: install.sh writes `bash -c '...exec bash "<path>"'`, so the
   // last three characters of the command are literally `sh"'`. The
   // trailing `'` distinguishes our wrapper from a different command
@@ -154,7 +147,7 @@ switch (op) {
   case "status": {
     const data = readJson(target);
     const sl = data.statusLine;
-    if (sl && (sl._topgauge_managed === true || sl._tokenplan_managed === true) && isOurWrapperCommand(sl.command)) {
+    if (sl && sl._topgauge_managed === true && isOurWrapperCommand(sl.command)) {
       // Both the marker AND the wrapper command are ours → safe to treat as
       // managed (uninstall can restore from upstream-cmd.txt; re-install is
       // a no-op).
@@ -214,7 +207,6 @@ switch (op) {
       next.type = "command";
       next.command = original;
       delete next._topgauge_managed;
-      delete next._tokenplan_managed;
       data.statusLine = next;
     } else if (!data.statusLine) {
       data.statusLine = { type: "command", command: original };
@@ -223,7 +215,7 @@ switch (op) {
       // it alone. The marker is no longer meaningful; the user owns the
       // current command.
       process.stderr.write(
-        "edit-settings.mjs: restore-from-file skipped — current statusLine.command is not the topgauge-cc wrapper\n"
+        "edit-settings.mjs: restore-from-file skipped — current statusLine.command is not the topgauge wrapper\n"
       );
     }
     writeJson(target, data);

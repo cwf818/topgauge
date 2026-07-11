@@ -22,10 +22,7 @@
 # Per-Project Layout (v0.4.x+): with `--purge-runtime`, this script
 # walks every `<projectHash>/` subdirectory under state/ and removes
 # the cache.json, diagnostics.jsonl, and `<sessionId>.jsonl` files
-# inside each. It ALSO cleans the legacy top-level `state/cache.json`,
-# `state/diagnostics.jsonl`, and the old `state/token-samples/` tree
-# for users upgrading from v0.4.0–v0.4.<n-1> — those entries may
-# still exist on disk and would otherwise be orphaned.
+# inside each.
 #
 # `state/upstream-cmd.{sh,txt}` are NEVER purged here — they're
 # managed by install/uninstall, not by per-tick IO, and wiping them
@@ -39,8 +36,7 @@
 #   clean.sh --project        # project-level (cwd's .claude/settings.json)
 #   clean.sh --dry-run        # print what would be removed, change nothing
 #   clean.sh --purge-runtime  # also wipe state/<projectHash>/{cache.json,
-#                             # diagnostics.jsonl, <sessionId>.jsonl} +
-#                             # legacy top-level files + token-samples/
+#                             # diagnostics.jsonl, <sessionId>.jsonl}
 #   clean.sh -h | --help
 #
 # Portable: Linux, macOS, Git Bash on Windows.
@@ -146,33 +142,7 @@ if [ "$PURGE_RUNTIME" = 1 ]; then
   if [ "$PROJECT_LEVEL" = 1 ]; then
     echo "clean.sh: --purge-runtime ignored under --project (state is user-level)" >&2
   else
-    STATE_DIR="${PLUGINS_DIR}/topgauge-cc/state"
-    LEGACY_STATE_DIR="${PLUGINS_DIR}/tokenplan-usage-hud/state"
-
-    # Legacy top-level + old token-samples tree (v0.4.0–v0.4.<n-1>).
-    # Kept here so upgrading users get a one-shot cleanup; new installs
-    # never create these.
-    LEGACY_TARGETS=(
-      "${STATE_DIR}/diagnostics.jsonl"
-      "${STATE_DIR}/cache.json"
-      "${STATE_DIR}/token-samples"
-      # v0.7.0 — also purge the OLD state dir left by users
-      # upgrading from the pre-rename `tokenplan-usage-hud` install.
-      # Same per-project layout lives underneath, so we wipe the
-      # whole subtree rather than enumerating files.
-      "${LEGACY_STATE_DIR}"
-      "${LEGACY_STATE_DIR}/diagnostics.jsonl"
-      "${LEGACY_STATE_DIR}/cache.json"
-      "${LEGACY_STATE_DIR}/token-samples"
-    )
-    for f in "${LEGACY_TARGETS[@]}"; do
-      if [ -e "$f" ]; then
-        echo "  rm $f"
-        if [ "$DRY_RUN" = 0 ]; then
-          rm -rf "$f"
-        fi
-      fi
-    done
+    STATE_DIR="${PLUGINS_DIR}/topgauge/state"
 
     # Per-project layout: walk every <projectHash>/ subdir of state/ and
     # remove cache.json, diagnostics.jsonl, and any <sessionId>.jsonl
@@ -200,31 +170,6 @@ if [ "$PURGE_RUNTIME" = 1 ]; then
         done
         # If the project dir is now empty, drop it too — keeps state/
         # tidy for users who want to see the layout at a glance.
-        if [ "$DRY_RUN" = 0 ] && [ -z "$(ls -A "$proj_dir" 2>/dev/null)" ]; then
-          rmdir "$proj_dir" 2>/dev/null || true
-        fi
-      done
-      shopt -u nullglob
-    fi
-    # v0.7.0 — same per-project walk for the LEGACY state dir, so
-    # an upgrading user's `tokenplan-usage-hud/state/<projectHash>/`
-    # tree gets wiped too. We only run it if the legacy dir exists;
-    # fresh installs never have it.
-    if [ -d "$LEGACY_STATE_DIR" ]; then
-      shopt -s nullglob
-      for proj_dir in "${LEGACY_STATE_DIR}"/*/; do
-        [ -d "$proj_dir" ] || continue
-        for f in \
-          "${proj_dir}cache.json" \
-          "${proj_dir}diagnostics.jsonl" \
-          "${proj_dir}"*.jsonl; do
-          if [ -e "$f" ]; then
-            echo "  rm $f"
-            if [ "$DRY_RUN" = 0 ]; then
-              rm -f "$f"
-            fi
-          fi
-        done
         if [ "$DRY_RUN" = 0 ] && [ -z "$(ls -A "$proj_dir" 2>/dev/null)" ]; then
           rmdir "$proj_dir" 2>/dev/null || true
         fi

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# statusLine wrapper for topgauge-cc (ToPGauge-CC).
+# statusLine wrapper for topgauge (ToPGauge).
 #
 # 1. Caches stdin to a temp file so both the optional upstream statusline
 #    and our bundled dist/index.js can read it. Without this, whichever
@@ -24,14 +24,14 @@ if [ -z "$NODE_BIN" ]; then
   done
 fi
 if [ -z "$NODE_BIN" ]; then
-  echo "topgauge-cc: node not found on PATH" >&2
+  echo "topgauge: node not found on PATH" >&2
   exit 0
 fi
 
 CLAUDE_ROOT="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-SELF_CACHE_GLOB="${CLAUDE_ROOT}/plugins/cache/topgauge-cc/topgauge-cc/*/"
+SELF_CACHE_GLOB="${CLAUDE_ROOT}/plugins/cache/topgauge/topgauge/*/"
 
-# Pick the highest-version installed topgauge-cc (ourselves).
+# Pick the highest-version installed topgauge (ourselves).
 SELF_DIR=$(ls -d $SELF_CACHE_GLOB 2>/dev/null \
   | awk -F/ '{ print $(NF-1) "\t" $(0) }' \
   | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n \
@@ -45,13 +45,13 @@ SELF_DIR=$(ls -d $SELF_CACHE_GLOB 2>/dev/null \
 # platforms (macOS needs -t, some BSDs ignore args), so fall back to
 # a pid-suffixed path under TMPDIR or /tmp. The trap covers normal exit
 # plus the usual termination signals so the file doesn't accumulate.
-TMP_STDIN="$(mktemp 2>/dev/null || echo "${TMPDIR:-/tmp}/topgauge-cc-stdin.$$")"
+TMP_STDIN="$(mktemp 2>/dev/null || echo "${TMPDIR:-/tmp}/topgauge-stdin.$$")"
 trap 'rm -f "$TMP_STDIN"' EXIT INT TERM HUP
 cat > "$TMP_STDIN"
 
 # Run the optional upstream statusline, if the user has set TOPGAUGE_CC_UPSTREAM_CMD.
 # install.sh writes this as the absolute path to
-# <claude-root>/plugins/topgauge-cc/state/upstream-cmd.sh
+# <claude-root>/plugins/topgauge/state/upstream-cmd.sh
 # (a bash script with a shebang and an `exec bash -c '...'` line for the original
 # statusLine command). The path is STABLE — sibling of config.json, survives
 # cache wipes and version rolls. We run it as a script, NOT pass it to `bash -c` —
@@ -64,7 +64,7 @@ if [ -n "${TOPGAUGE_CC_UPSTREAM_CMD:-}" ] && [ -f "$TOPGAUGE_CC_UPSTREAM_CMD" ];
 fi
 
 if [ -z "$SELF_DIR" ] || [ ! -f "${SELF_DIR}dist/index.js" ]; then
-  # No topgauge-cc plugin installed — fall back to whatever upstream gave us.
+  # No topgauge plugin installed — fall back to whatever upstream gave us.
   printf '%s' "$UPSTREAM_OUT"
   exit 0
 fi

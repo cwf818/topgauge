@@ -1243,7 +1243,7 @@ type RenderContext = {
 // because their `type` value doesn't match. Reserved for future
 // modules that want to render only in the unregistered case
 // (e.g. an m_setupHint module that nudges the user toward running
-// `/topgauge-cc:install`).
+// `/topgauge:install`).
 type Module = ((ctx: RenderContext) => string | null) & {
   type?: "quota" | "balance" | "unknown";
 };
@@ -3496,7 +3496,7 @@ function fetchSumAggregate(filter: SumFilter): StatAggregate {
 function warnUnknownModuleOnce(name: string): void {
   if (_unknownModuleWarned) return;
   _unknownModuleWarned = true;
-  process.stderr.write(`topgauge-cc: unknown lineTemplate module '${name}'; ignoring\n`);
+  process.stderr.write(`topgauge: unknown lineTemplate module '${name}'; ignoring\n`);
 }
 
 // Reset the once-per-process warn flag. Exported so tests can clear

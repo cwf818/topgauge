@@ -58,8 +58,8 @@ let _prevConfigDir: string | undefined;
 let _prevDiagEnv: string | undefined;
 
 beforeEach(() => {
-  _tmpDir = mkdtempSync(join(tmpdir(), "topgauge-cc-replay-status-"));
-  _stateRootDir = mkdtempSync(join(tmpdir(), "topgauge-cc-replay-state-"));
+  _tmpDir = mkdtempSync(join(tmpdir(), "topgauge-replay-status-"));
+  _stateRootDir = mkdtempSync(join(tmpdir(), "topgauge-replay-state-"));
   _prevConfigDir = process.env.CLAUDE_CONFIG_DIR;
   _prevDiagEnv = process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE;
   process.env.CLAUDE_CONFIG_DIR = _tmpDir;
@@ -317,18 +317,18 @@ describe("status-store — v0.8.29 cold-slot JSONL replay", () => {
   it("diagnostics: TOPGAUGE_CC_DIAGNOSTICS_ENABLE=1 writes replay-acc-init row; default off writes nothing", () => {
     // Note: src/diagnostics.ts:53 has its OWN stateRoot() that reads
     // process.env.CLAUDE_CONFIG_DIR directly and appends a hardcoded
-    // "plugins/topgauge-cc/state/" segment. The setStateRoot hook in
+    // "plugins/topgauge/state/" segment. The setStateRoot hook in
     // status-store does NOT route diagnostics writes. So the
     // diagnostics file lives at:
-    //   ${CLAUDE_CONFIG_DIR}/plugins/topgauge-cc/state/<projectHash>/diagnostics.jsonl
+    //   ${CLAUDE_CONFIG_DIR}/plugins/topgauge/state/<projectHash>/diagnostics.jsonl
     // not at the JSONL stateRoot we configured for status-store.
     // The projectHash is the same either way (computed by the
     // exported projectHash() function), so we read from the right
     // path by computing it the same way.
 
     // Sub-test A: env=0 (default) — no row.
-    const tmpA = mkdtempSync(join(tmpdir(), "topgauge-cc-diag-A-"));
-    const stateA = mkdtempSync(join(tmpdir(), "topgauge-cc-diag-A-state-"));
+    const tmpA = mkdtempSync(join(tmpdir(), "topgauge-diag-A-"));
+    const stateA = mkdtempSync(join(tmpdir(), "topgauge-diag-A-state-"));
     process.env.CLAUDE_CONFIG_DIR = tmpA;
     statusStore.setStateRoot(() => stateA);
     statusStore.setStatusPathResolver(() => join(tmpA, "status.json"));
@@ -342,7 +342,7 @@ describe("status-store — v0.8.29 cold-slot JSONL replay", () => {
     statusStore.appendSample("D:\\test", "sess-test", makeSample({ at: 1_000_002, in: 200, out: 100, apiMs: 2000, startAt: 50_000 }));
     statusStore.processAndSaveTick("D:\\test", validTokens());
 
-    const diagA = join(tmpA, "plugins", "topgauge-cc", "state", statusStore.projectHash("D:\\test"), "diagnostics.jsonl");
+    const diagA = join(tmpA, "plugins", "topgauge", "state", statusStore.projectHash("D:\\test"), "diagnostics.jsonl");
     if (existsSync(diagA)) {
       const content = readFileSync(diagA, "utf8");
       assert.ok(!content.includes("replay-acc-init"), "no replay-acc-init row when env=0");
@@ -353,8 +353,8 @@ describe("status-store — v0.8.29 cold-slot JSONL replay", () => {
     // Sub-test B: env=1 — row emitted. Separate tmp dir for the
     // dedupe map (per-process) — a different scope+counts msg gets
     // a different dedupe key, so this naturally writes a fresh row.
-    const tmpB = mkdtempSync(join(tmpdir(), "topgauge-cc-diag-B-"));
-    const stateB = mkdtempSync(join(tmpdir(), "topgauge-cc-diag-B-state-"));
+    const tmpB = mkdtempSync(join(tmpdir(), "topgauge-diag-B-"));
+    const stateB = mkdtempSync(join(tmpdir(), "topgauge-diag-B-state-"));
     process.env.CLAUDE_CONFIG_DIR = tmpB;
     statusStore.setStateRoot(() => stateB);
     statusStore.setStatusPathResolver(() => join(tmpB, "status.json"));
@@ -368,7 +368,7 @@ describe("status-store — v0.8.29 cold-slot JSONL replay", () => {
     statusStore.appendSample("D:\\test", "sess-test", makeSample({ at: 1_000_002, in: 200, out: 100, apiMs: 2000, startAt: 50_000 }));
     statusStore.processAndSaveTick("D:\\test", validTokens());
 
-    const diagB = join(tmpB, "plugins", "topgauge-cc", "state", statusStore.projectHash("D:\\test"), "diagnostics.jsonl");
+    const diagB = join(tmpB, "plugins", "topgauge", "state", statusStore.projectHash("D:\\test"), "diagnostics.jsonl");
     assert.ok(existsSync(diagB), `diagnostics.jsonl exists at ${diagB}`);
     const content = readFileSync(diagB, "utf8");
     assert.ok(

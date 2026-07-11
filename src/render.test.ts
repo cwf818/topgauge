@@ -2428,7 +2428,7 @@ describe("m_pluginSource (v0.9.x)", () => {
 // (ignores TTL) so a stale data row doesn't hide a fresh kind.
 describe("pluginSource cache row (v0.9.x)", () => {
   // Stub HOME so cache.flushToDisk writes to a tmp file rather
-  // than the real ~/.claude/plugins/topgauge-cc/state/cache.json.
+  // than the real ~/.claude/plugins/topgauge/state/cache.json.
   let oldHome: string | undefined;
   let oldUserProfile: string | undefined;
   let tempHome: string;
@@ -2478,7 +2478,7 @@ describe("pluginSource cache row (v0.9.x)", () => {
     // Reach into the on-disk file and backdate the `at` field
     // so the row is logically expired. cache.peek doesn't read
     // TTL on the get path, so it should still return the value.
-    const cachePath = resolve(tempHome, ".claude", "plugins", "topgauge-cc", "state", "cache.json");
+    const cachePath = resolve(tempHome, ".claude", "plugins", "topgauge", "state", "cache.json");
     const raw = JSON.parse(readFileSync(cachePath, "utf8")) as Record<string, { at: number; value: string; ttlMs: number }>;
     const row = raw["deepseek:pluginSource"];
     assert.ok(row, "the just-set row should be on disk");

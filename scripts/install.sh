@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh — install / uninstall / restore the topgauge-cc (ToPGauge-CC)
+# install.sh — install / uninstall / restore the topgauge (ToPGauge)
 # wrapper into Claude Code's settings.json.
 #
 # Usage:
@@ -13,16 +13,12 @@
 #   - Idempotent: re-running on an already-managed statusLine is a no-op.
 #   - If a non-managed statusLine is found, the current settings.json is backed
 #     up to settings.json.bak.<ISO-timestamp>, and the original statusLine
-#     command is preserved in <claude-root>/plugins/topgauge-cc/state/upstream-cmd.sh
+#     command is preserved in <claude-root>/plugins/topgauge/state/upstream-cmd.sh
 #     (sibling of config.json) so the wrapper can invoke it as the upstream.
 #     This location is STABLE across /plugin install rolls — the per-version
 #     cache dir can come and go, but the state dir is permanent.
 #   - Settings are rewritten via scripts/lib/edit-settings.js, which preserves
 #     the original line ending (CRLF on Windows, LF elsewhere).
-#   - v0.7.0: when an old `plugins/tokenplan-usage-hud/state/` directory exists
-#     (from a pre-rename install) and the new location does not, its contents
-#     are copied into the new location so existing token-sample history,
-#     diagnostics logs, preserved upstream command, etc. follow the user.
 #
 # Portable: Linux, macOS, Git Bash on Windows.
 
@@ -41,7 +37,7 @@ for arg in "$@"; do
     --uninstall) UNINSTALL=1 ;;
     --dry-run) DRY_RUN=1 ;;
     --help|-h)
-      sed -n '2,18p' "$0"
+      sed -n '2,17p' "$0"
       exit 0
       ;;
     *)
@@ -71,63 +67,32 @@ if [ ! -f "$HELPER" ]; then
 fi
 
 CLAUDE_ROOT="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-PLUGIN_BASE="${CLAUDE_ROOT}/plugins/cache/topgauge-cc/topgauge-cc"
+PLUGIN_BASE="${CLAUDE_ROOT}/plugins/cache/topgauge/topgauge"
 PLUGIN_DIR=$(ls -d ${PLUGIN_BASE}/*/ 2>/dev/null \
   | awk -F/ '{ print $(NF-1) "\t" $(0) }' \
   | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n \
   | tail -1 | cut -f2-)
 # State lives at a STABLE location — sibling of config.json
-# (~/.claude/plugins/topgauge-cc/state/) — so it survives
+# (~/.claude/plugins/topgauge/state/) — so it survives
 # /plugin install rolls and cache wipes. v0.2.19 moved it here from
 # the per-version ${PLUGIN_DIR}/state/ so a future uninstall can find
 # the pre-managed command even after the cache has been cleaned.
-STATE_DIR="${CLAUDE_ROOT}/plugins/topgauge-cc/state"
+STATE_DIR="${CLAUDE_ROOT}/plugins/topgauge/state"
 UPSTREAM_CMD_FILE="${STATE_DIR}/upstream-cmd.sh"
 UPSTREAM_CMD_ONLY="${STATE_DIR}/upstream-cmd.txt"
-# vX.X.X+ — bundled query_plugins drop-in dir. Users can drop
-# scripts at ~/.claude/plugins/topgauge-cc/query_plugins/<provider>/
+# v0.9.0+ — bundled query_plugins drop-in dir. Users can drop
+# scripts at ~/.claude/plugins/topgauge/query_plugins/<provider>/
 # index.js and wire a custom data source via providers.<provider>.
 # ENDPOINT="" in their config. Created on every (re-)install; users
 # who don't use it leave it empty. Symmetric with config.json
-# (~/.claude/plugins/topgauge-cc/config.json) — sibling of state/.
-QUERY_PLUGINS_DIR="${CLAUDE_ROOT}/plugins/topgauge-cc/query_plugins"
+# (~/.claude/plugins/topgauge/config.json) — sibling of state/.
+QUERY_PLUGINS_DIR="${CLAUDE_ROOT}/plugins/topgauge/query_plugins"
 WRAPPER="${PLUGIN_DIR%/}/scripts/wrapper.sh"
 
 if [ -z "$PLUGIN_DIR" ] || [ ! -f "$WRAPPER" ]; then
   echo "install.sh: cannot find plugin cache. Expected ${PLUGIN_BASE}/<version>/scripts/wrapper.sh" >&2
-  echo "install.sh: install via '/plugin install topgauge-cc@topgauge-cc' first." >&2
+  echo "install.sh: install via '/plugin install topgauge@topgauge' first." >&2
   exit 1
-fi
-
-# --- One-shot migration from pre-rename path (v0.7.0) --------------------
-# When a user upgrades from the old `tokenplan-usage-hud` install, their
-# existing state dir (token-sample history, diagnostics, preserved upstream
-# command) is still at the OLD path. Copy it into the new path so the user
-# keeps their data. Never delete the old dir — preserve for inspection.
-# Idempotent: only copies when the new dir is missing.
-LEGACY_STATE_DIR="${CLAUDE_ROOT}/plugins/tokenplan-usage-hud/state"
-if [ -d "$LEGACY_STATE_DIR" ] && [ ! -d "$STATE_DIR" ]; then
-  if [ "$DRY_RUN" = 1 ]; then
-    echo "install.sh: --dry-run: would migrate ${LEGACY_STATE_DIR} -> ${STATE_DIR}"
-  else
-    mkdir -p "$STATE_DIR"
-    # Copy contents recursively; use cp -R which works on POSIX and Git Bash.
-    # We don't use rsync (not always present); cp -R is portable.
-    if cp -R "${LEGACY_STATE_DIR}/." "$STATE_DIR/" 2>/dev/null; then
-      echo "install.sh: migrated existing tokenplan-usage-hud state to topgauge-cc" >&2
-    else
-      # Fallback: at least grab the upstream-cmd files so uninstall/restore
-      # works on this version even if full copy failed.
-      mkdir -p "$STATE_DIR"
-      for f in upstream-cmd.sh upstream-cmd.txt; do
-        if [ -f "${LEGACY_STATE_DIR}/${f}" ] && [ ! -f "${STATE_DIR}/${f}" ]; then
-          cp "${LEGACY_STATE_DIR}/${f}" "${STATE_DIR}/${f}"
-        fi
-      done
-      chmod +x "${STATE_DIR}/upstream-cmd.sh" 2>/dev/null || true
-      echo "install.sh: partial migration from tokenplan-usage-hud; preserved upstream-cmd only" >&2
-    fi
-  fi
 fi
 
 # Build the entry bundle and standalone built-in plugins on demand. The
@@ -249,13 +214,13 @@ CURRENT=$(node "$HELPER" "$WIN_TARGET" status)
 case "$CURRENT" in
   managed)
     # Carry the upstream-cmd forward into our stable STATE_DIR
-    # (${CLAUDE_ROOT}/plugins/topgauge-cc/state/), in case:
+    # (${CLAUDE_ROOT}/plugins/topgauge/state/), in case:
     #   - The user just upgraded from v0.2.18 (where state lived at
     #     the per-version cache dir); the OLD location still has the
     #     pre-managed command, and we need to move it to the new home.
     #   - The previous version's cache was wiped but a foreign-install
     #     state survived somewhere (rare).
-    #   - The user manually deleted ${CLAUDE_ROOT}/plugins/topgauge-cc/state/
+    #   - The user manually deleted ${CLAUDE_ROOT}/plugins/topgauge/state/
     #     after uninstall but the settings.json still points at us.
     #
     # Sources to check, in priority order:
@@ -294,7 +259,7 @@ case "$CURRENT" in
         echo "install.sh: migrated legacy state/ from $(basename "${PREV%/}") to ${STATE_DIR}"
       fi
     fi
-    echo "install.sh: ${TARGET} already managed by topgauge-cc; no-op."
+    echo "install.sh: ${TARGET} already managed by topgauge; no-op."
     exit 0
     ;;
   none)
@@ -330,13 +295,10 @@ if [ "$INSTALL_MODE" = "replace" ]; then
   TS=$(date +%Y%m%dT%H%M%S)
   cp "$TARGET" "${TARGET}.bak.${TS}"
   mkdir -p "$STATE_DIR"
-  # A migrated stable state is authoritative. Do not overwrite it with the
-  # command currently in settings.json; this keeps the pre-rename upstream
-  # command intact during a first install after migration.
   if [ ! -f "$UPSTREAM_CMD_ONLY" ]; then
     {
       printf '#!/usr/bin/env bash\n'
-      printf '# Original statusLine.command preserved by topgauge-cc install.sh\n'
+      printf '# Original statusLine.command preserved by topgauge install.sh\n'
       printf '# Restored via: install.sh --uninstall\n'
       printf 'exec %s\n' "$ORIGINAL_CMD"
     } > "$UPSTREAM_CMD_FILE"

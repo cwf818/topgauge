@@ -1,12 +1,12 @@
-// Sample bundled plugin for topgauge-cc.
+// Sample bundled plugin for topgauge.
 //
 // Drop this script into place to wire it up:
 //
-//   mkdir -p ~/.claude/plugins/topgauge-cc/query_plugins/sample
+//   mkdir -p ~/.claude/plugins/topgauge/query_plugins/sample
 //   cp src/__fixtures__/query_plugins/sample/index.js \
-//      ~/.claude/plugins/topgauge-cc/query_plugins/sample/index.js
+//      ~/.claude/plugins/topgauge/query_plugins/sample/index.js
 //
-// Then add a provider to ~/.claude/plugins/topgauge-cc/config.json:
+// Then add a provider to ~/.claude/plugins/topgauge/config.json:
 //
 //   "providers": {
 //     "sample": {

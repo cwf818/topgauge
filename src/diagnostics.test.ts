@@ -51,7 +51,7 @@ describe("diagnostics — append + readLatest", () => {
   let prevConfigDir: string | undefined;
 
   beforeEach(() => {
-    sandbox = mkdtempSync(join(tmpdir(), "topgauge-cc-diag-"));
+    sandbox = mkdtempSync(join(tmpdir(), "topgauge-diag-"));
     prevConfigDir = process.env.CLAUDE_CONFIG_DIR;
     process.env.CLAUDE_CONFIG_DIR = sandbox;
   });
@@ -252,7 +252,7 @@ describe("diagnostics — file-IO audit helpers (v0.8.x+)", () => {
   let prevEnable: string | undefined;
 
   beforeEach(() => {
-    sandbox = mkdtempSync(join(tmpdir(), "topgauge-cc-diag-fs-"));
+    sandbox = mkdtempSync(join(tmpdir(), "topgauge-diag-fs-"));
     prevConfigDir = process.env.CLAUDE_CONFIG_DIR;
     process.env.CLAUDE_CONFIG_DIR = sandbox;
     diag.__resetDedupeForTest();
@@ -381,7 +381,7 @@ describe("diagnostics — Entry schema (v0.8.x+: iso + fn)", () => {
   let prevEnable: string | undefined;
 
   beforeEach(() => {
-    sandbox = mkdtempSync(join(tmpdir(), "topgauge-cc-diag-iso-"));
+    sandbox = mkdtempSync(join(tmpdir(), "topgauge-diag-iso-"));
     prevConfigDir = process.env.CLAUDE_CONFIG_DIR;
     process.env.CLAUDE_CONFIG_DIR = sandbox;
     diag.__resetDedupeForTest();

@@ -1,8 +1,8 @@
-// User-tunable configuration for topgauge-cc (ToPGauge-CC).
+// User-tunable configuration for topgauge (ToPGauge).
 //
 // Loaded once at startup from
-//   ~/.claude/plugins/topgauge-cc/config.json
-// (Windows: %USERPROFILE%\.claude\plugins\topgauge-cc\config.json).
+//   ~/.claude/plugins/topgauge/config.json
+// (Windows: %USERPROFILE%\.claude\plugins\topgauge\config.json).
 //
 // Missing file → DEFAULT_CONFIG silently. Malformed JSON or a single
 // bad field → one stderr line + DEFAULT_CONFIG. Never crashes.
@@ -322,7 +322,7 @@ const DEFAULT_CONFIG: {
     labelPluginSystem: string;
     // vX.X.X+ — glyph shown by `m_pluginSource` when the active
     // provider's plugin resolved to a user override at
-    // `~/.claude/plugins/topgauge-cc/query_plugins/<id>/`. Default
+    // `~/.claude/plugins/topgauge/query_plugins/<id>/`. Default
     // "🎨" preserves the v0.9.x ship literal; user-overridable
     // independently of `labelPluginSystem`.
     labelPluginUserDefined: string;
@@ -513,7 +513,7 @@ function defaultConfigPath(): string {
     homedir(),
     ".claude",
     "plugins",
-    "topgauge-cc",
+    "topgauge",
     "config.json",
   );
 }
@@ -598,7 +598,7 @@ export function applyProviderOverrides(raw: Record<string, unknown>): void {
 // duplicating the stderr + diagnostics JSONL wiring. Config-side
 // callers (this file) keep using the bare name.
 export function warn(msg: string): void {
-  process.stderr.write(`topgauge-cc: config ${msg}\n`);
+  process.stderr.write(`topgauge: config ${msg}\n`);
   // v0.4.0+ — also append to the diagnostics JSONL log so the
   // m_warning module can surface the latest signal and the user can
   // postmortem the plugin's recent history. Stderr stays the

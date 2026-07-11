@@ -3,9 +3,9 @@
 # cache, keeping only the newest one.
 #
 # Background:
-#   When you /plugin install a new version of topgauge-cc,
+#   When you /plugin install a new version of topgauge,
 #   Claude Code's loader creates a new <version> dir under
-#     ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache/topgauge-cc/topgauge-cc/
+#     ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache/topgauge/topgauge/
 #   but does NOT remove the previous version's dir. Old dirs pile up
 #   over time. Each one is ~40-50MB (full source tree + node_modules).
 #
@@ -15,15 +15,10 @@
 #   older dirs are pure dead weight.
 #
 # Behavior:
-#   - Walks <cache>/topgauge-cc/, finds all <version> dirs.
+#   - Walks <cache>/topgauge/, finds all <version> dirs.
 #   - Sorts by version numerically (4-component dotted-decimal).
 #   - Keeps the highest. Removes the rest.
 #   - This is destructive: --dry-run is supported for preview.
-#
-# v0.7.0 — also walks the LEGACY cache root
-# (<cache>/tokenplan-usage-hud/tokenplan-usage-hud/) left behind by
-# users upgrading from the pre-rename install, so leftover version
-# dirs from the old plugin get pruned the same way.
 #
 # Safety:
 #   - Only touches dirs whose name matches the <version> shape
@@ -51,7 +46,7 @@ set -u
 DRY_RUN=0
 
 print_help() {
-  sed -n '2,42p' "$0"
+  sed -n '2,38p' "$0"
 }
 
 for arg in "$@"; do
@@ -70,22 +65,11 @@ for arg in "$@"; do
 done
 
 # Resolve SCRIPT_DIR ONCE so a later `rm -rf` of THIS dir doesn't
-# resolve to a dangling path. Same defensive pattern as uninstall.sh
-# (commit 8030e4c). The script itself lives in
-# <cache>/topgauge-cc/<version>/scripts/clean-cache.sh, so
-# SCRIPT_DIR is exactly the dir we will eventually remove. That's
-# fine — we don't need to read this file again after the rm.
+# resolve to a dangling path. Same defensive pattern as uninstall.sh.
 SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || true)"
 
 CLAUDE_ROOT="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-# v0.7.0 — dual-root: walk the NEW cache (`topgauge-cc`) and the
-# LEGACY cache (`tokenplan-usage-hud`) left behind by users
-# upgrading from the pre-rename install. We dedupe later so a
-# version dir that happens to match in both roots only triggers a
-# single plan entry. CACHE_BASES is the iterate-over list.
-CACHE_BASE="${CLAUDE_ROOT}/plugins/cache/topgauge-cc/topgauge-cc"
-LEGACY_CACHE_BASE="${CLAUDE_ROOT}/plugins/cache/tokenplan-usage-hud/tokenplan-usage-hud"
-CACHE_BASES=("$CACHE_BASE" "$LEGACY_CACHE_BASE")
+CACHE_BASE="${CLAUDE_ROOT}/plugins/cache/topgauge/topgauge"
 
 # Version dir name: at least 3 dot-separated components (e.g. 0.2.7),
 # at most 4 (e.g. 0.2.7.1 for prereleases). Anything with fewer than
@@ -95,32 +79,24 @@ CACHE_BASES=("$CACHE_BASE" "$LEGACY_CACHE_BASE")
 # `..`, `.`, hidden dirs, names with letters).
 VERSION_RE='^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$'
 
-# Build the sorted-by-version list of version dirs across ALL
-# CACHE_BASES. Each entry is a "<cache_base>\t<version>" pair so
-# the keep/newest selection can disambiguate when the same version
-# string appears under two roots. We then emit a list of
-# <full_path>\t<basename> rows, one per version dir found under any
-# of the CACHE_BASES.
-ANY_FOUND=0
-SORTED_ROWS=()
-for BASE in "${CACHE_BASES[@]}"; do
-  if [ ! -d "$BASE" ]; then continue; fi
-  ANY_FOUND=1
-  shopt -s nullglob
-  while IFS= read -r row; do
-    [ -z "$row" ] && continue
-    SORTED_ROWS+=("$row")
-  done < <(
-    ls -1d "${BASE}/"*/ 2>/dev/null \
-      | awk -F/ '{ n=$(NF-1); if (n ~ /^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$/) print n "\t" $0 }' \
-      | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n
-  )
-  shopt -u nullglob
-done
-if [ "$ANY_FOUND" = 0 ]; then
-  echo "clean-cache.sh: no cache dir at ${CACHE_BASES[*]}; nothing to clean"
+if [ ! -d "$CACHE_BASE" ]; then
+  echo "clean-cache.sh: no cache dir at ${CACHE_BASE}; nothing to clean"
   exit 0
 fi
+
+# Build the sorted-by-version list of version dirs.
+SORTED_ROWS=()
+shopt -s nullglob
+while IFS= read -r row; do
+  [ -z "$row" ] && continue
+  SORTED_ROWS+=("$row")
+done < <(
+  ls -1d "${CACHE_BASE}/"*/ 2>/dev/null \
+    | awk -F/ '{ n=$(NF-1); if (n ~ /^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$/) print n "\t" $0 }' \
+    | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n
+)
+shopt -u nullglob
+
 if [ "${#SORTED_ROWS[@]}" -le 1 ]; then
   if [ "${#SORTED_ROWS[@]}" = 1 ]; then
     ONLY_VERSION="${SORTED_ROWS[0]%%	*}"
@@ -132,9 +108,6 @@ if [ "${#SORTED_ROWS[@]}" -le 1 ]; then
 fi
 
 # Newest is the last row. Everything before is a removal target.
-# We use a unique-keyed dedupe so the same path appearing under two
-# CACHE_BASES (rare; only happens when legacy and new roots collide)
-# is only listed once.
 NEWEST_ROW="${SORTED_ROWS[${#SORTED_ROWS[@]}-1]}"
 NEWEST_VERSION="${NEWEST_ROW%%	*}"
 NEWEST_PATH="${NEWEST_ROW#*	}"
@@ -143,18 +116,10 @@ echo "  keep:    ${NEWEST_VERSION} (${NEWEST_PATH})"
 echo "  remove:"
 
 REMOVE_LIST=()
-SEEN=()
 for row in "${SORTED_ROWS[@]:0:${#SORTED_ROWS[@]}-1}"; do
   path="${row#*	}"
-  # Skip if this is the same path as the one we just kept (covers
-  # the dual-root case where the newest version appears under
-  # both legacy and new cache roots).
+  # Skip if this is the same path as the one we just kept (defensive).
   if [ "$path" = "$NEWEST_PATH" ]; then continue; fi
-  # Dedupe across CACHE_BASES.
-  for s in "${SEEN[@]}"; do
-    if [ "$s" = "$path" ]; then continue 2; fi
-  done
-  SEEN+=("$path")
   REMOVE_LIST+=("$path")
   echo "    rm -rf ${path}"
 done

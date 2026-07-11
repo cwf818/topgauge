@@ -11,8 +11,8 @@ import { projectHash, sampleFilePath, setStateRoot, resetStateRoot, stateRoot } 
 describe("token-store — path helpers", () => {
   it("projectHash: replaces path separators with -", () => {
     assert.equal(
-      projectHash("D:\\WorkSpace\\tokenplan-usage-hud"),
-      "d--workspace-tokenplan-usage-hud",
+      projectHash("D:\\WorkSpace\\topgauge-cc"),
+      "d--workspace-topgauge-cc",
     );
     assert.equal(projectHash("/home/user/proj"), "-home-user-proj");
   });

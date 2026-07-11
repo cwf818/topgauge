@@ -13,8 +13,9 @@
 # Why a separate tool (not auto-migration):
 #   - Auto-migration would add 3-10ms IO to every statusline tick.
 #   - Sample data is time-decaying — a week-old sample contributes
-#     little to m_token5h / m_token7d. Most users are better off
-#     re-accumulating from a clean slate.
+#     little to m_sumTokenIn / m_sumTokenOut (sum/avg modules over
+#     the 5h/7d window). Most users are better off re-accumulating
+#     from a clean slate.
 #   - `scripts/uninstall.sh` already wipes the entire state/ tree
 #     on uninstall, so users who don't care about preserving
 #     history have an easy "reset to clean" path: uninstall, then
@@ -59,17 +60,9 @@ for arg in "$@"; do
 done
 
 CLAUDE_ROOT="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-# v0.7.0 — `state/` lives under the new plugin name. We also accept
-# the LEGACY path so users who installed the previous name and never
-# upgraded can still run this script. Pick whichever exists.
-NEW_STATE_DIR="${CLAUDE_ROOT}/plugins/topgauge-cc/state"
-LEGACY_STATE_DIR="${CLAUDE_ROOT}/plugins/tokenplan-usage-hud/state"
-if [ -d "$NEW_STATE_DIR" ]; then
-  STATE_DIR="$NEW_STATE_DIR"
-elif [ -d "$LEGACY_STATE_DIR" ]; then
-  STATE_DIR="$LEGACY_STATE_DIR"
-else
-  echo "migrate-state.sh: no state dir at $NEW_STATE_DIR or $LEGACY_STATE_DIR"
+STATE_DIR="${CLAUDE_ROOT}/plugins/topgauge/state"
+if [ ! -d "$STATE_DIR" ]; then
+  echo "migrate-state.sh: no state dir at $STATE_DIR"
   echo "  (nothing to migrate; you are already on the v0.4.x+ layout, or"
   echo "   this is a fresh install)"
   exit 0

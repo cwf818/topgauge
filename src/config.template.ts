@@ -252,7 +252,7 @@ export const DEFAULT_LINE_TEMPLATES: LineTemplates = {
     "m_contextWindowsSize|valueOnly:true",
     "s_pipe|wrap:true",
     "m_label|Memory: |color:yellow",
-    "m_windowMemUsage",
+    "m_windowMemUsage|display:used",
     "s_space",
     "m_memUsage|valueOnly:true"
   ],

@@ -293,7 +293,7 @@ describe("dynamic plugin loader", () => {
   });
 
   it("passes AUTHENTICATION_KEY-selected values to user plugins", async () => {
-    const pluginDir = resolve(tempHome, ".claude", "plugins", "topgauge-cc", "query_plugins", "custom");
+    const pluginDir = resolve(tempHome, ".claude", "plugins", "topgauge", "query_plugins", "custom");
     mkdirSync(pluginDir, { recursive: true });
     // v0.8.47+: plugin ABI is a single `fetchAccountCredit` method
     // returning whatever shape the plugin chose to project (the host
@@ -320,7 +320,7 @@ describe("dynamic plugin loader", () => {
   });
 
   it("rejects plugins missing fetchAccountCredit", async () => {
-    const pluginDir = resolve(tempHome, ".claude", "plugins", "topgauge-cc", "query_plugins", "old");
+    const pluginDir = resolve(tempHome, ".claude", "plugins", "topgauge", "query_plugins", "old");
     mkdirSync(pluginDir, { recursive: true });
     writeFileSync(resolve(pluginDir, "index.mjs"), "export default { fetch() { return {}; } };");
     await assert.rejects(() => pluginTransport("old", "token"), /default export must be \{ fetchAccountCredit\(authenticationKey, context\?\) \}/);
@@ -333,7 +333,7 @@ describe("dynamic plugin loader", () => {
     // shape (see `fetchForProviderById`). Plugins can return any
     // projection they want; each ensure function decides what it can
     // normalise (or returns null if the projection isn't recognisable).
-    const pluginDir = resolve(tempHome, ".claude", "plugins", "topgauge-cc", "query_plugins", "bad");
+    const pluginDir = resolve(tempHome, ".claude", "plugins", "topgauge", "query_plugins", "bad");
     mkdirSync(pluginDir, { recursive: true });
     writeFileSync(resolve(pluginDir, "index.mjs"), `export default {
       fetchAccountCredit() { return "bad"; },
@@ -343,7 +343,7 @@ describe("dynamic plugin loader", () => {
   });
 });
 
-// v0.9.0+ — user plugins at ~/.claude/plugins/topgauge-cc/query_plugins/<id>/
+// v0.9.0+ — user plugins at ~/.claude/plugins/topgauge/query_plugins/<id>/
 // override built-ins. Built-in IDs (minimax / deepseek / copilot) are no
 // longer a closed set; anyone can ship a same-id user plugin to replace
 // the bundled one. Override is silent (no stderr, no diagnostics). These
@@ -351,7 +351,7 @@ describe("dynamic plugin loader", () => {
 // end-to-end pluginTransport loading path.
 describe("resolvePluginOnDiskWithKind (v0.9.0+ override)", () => {
   function userDir(id: string): string {
-    return resolve(tempHome, ".claude", "plugins", "topgauge-cc", "query_plugins", id);
+    return resolve(tempHome, ".claude", "plugins", "topgauge", "query_plugins", id);
   }
 
   it("returns kind=user when query_plugins/<id>/index.js exists", () => {
@@ -459,7 +459,7 @@ describe("resolvePluginOnDiskWithKind (v0.9.0+ override)", () => {
 // the user file was the one that ran.
 describe("pluginTransport override end-to-end (v0.9.0+)", () => {
   it("user plugin at query_plugins/minimax/index.mjs wins over the bundled built-in", async () => {
-    const userDirPath = resolve(tempHome, ".claude", "plugins", "topgauge-cc", "query_plugins", "minimax");
+    const userDirPath = resolve(tempHome, ".claude", "plugins", "topgauge", "query_plugins", "minimax");
     mkdirSync(userDirPath, { recursive: true });
     writeFileSync(resolve(userDirPath, "index.mjs"), `export default {
       fetchAccountCredit(token, ctx) {

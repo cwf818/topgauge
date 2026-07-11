@@ -4,13 +4,13 @@ argument-hint: "[--dry-run]"
 allowed-tools: ["Bash(${CLAUDE_PLUGIN_ROOT}/scripts/clean-cache.sh:*)"]
 ---
 
-# topgauge-cc :clean-cache
+# topgauge :clean-cache
 
 Targets the version directories that accumulate under the plugin
 cache after every `/plugin install` roll-forward:
 
 ```
-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache/topgauge-cc/topgauge-cc/
+${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache/topgauge/topgauge/
   0.2.7/        ← old, no longer used
   0.2.7.1/      ← old, no longer used
   0.2.8/        ← currently live
@@ -32,14 +32,8 @@ source tree + node_modules). This command:
   statusline itself. Idempotent: re-running is a no-op once only the
   newest remains.
 
-v0.7.0 — also walks the LEGACY cache root
-(`cache/tokenplan-usage-hud/tokenplan-usage-hud/`) left behind by
-users upgrading from the pre-rename install, so leftover version
-dirs from the old plugin get pruned the same way. The newest
-version across both roots is the only one kept.
-
 After `:clean-cache` you can run `:install` (or `/plugin install
-topgauge-cc@topgauge-cc`) again to refresh the remaining dir, or
+topgauge@topgauge`) again to refresh the remaining dir, or
 just leave it — `install.sh` will detect the carried state from
 the previous version automatically.
 

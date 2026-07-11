@@ -5,19 +5,13 @@
 # cover the bits that a wrong regex / wrong escape would silently break:
 #
 #   - isOurWrapperCommand recognizes the latest-cache-dir command we
-#     write today AND keeps matching the legacy fixed-version command
-#     (so uninstall doesn't mistake old installs for foreign).
+#     write today. (Earlier the fingerprint also accepted the legacy
+#     `tokenplan-usage-hud` cache path; that legacy is gone as of v0.9.0.)
 #   - buildLatestCacheCommand actually runs in bash — the '"'"'
 #     escape chain is correct, plugin_dir resolves to the highest-
 #     version cache dir, and the wrapper script execs.
 #   - restore-from-file preserves user-set fields like refreshInterval
 #     (regression for v0.2.4).
-#
-# v0.7.0 — fingerprint now accepts BOTH the old plugin name
-# (`tokenplan-usage-hud`) and the new name (`topgauge-cc`); status
-# op prints "managed" in either case so an upgrade-time reinstall
-# of an existing user doesn't accidentally trigger the foreign
-# path. Assertions updated accordingly.
 #
 # Portable: Linux, macOS, Git Bash on Windows.
 
@@ -42,7 +36,7 @@ winpath() {
 
 PASS=0
 FAIL=0
-TMPDIR="$(mktemp -d -t topgauge-cc-tests-XXXXXX)"
+TMPDIR="$(mktemp -d -t topgauge-tests-XXXXXX)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
 # assert_eq <label> <expected> <actual>
@@ -97,14 +91,14 @@ node "$LIB" "$WIN_SETTINGS" write-managed "$WIN_WRAPPER" "$WIN_UPSTREAM" >/dev/n
 
 CMD="$(jget "$SETTINGS" statusLine.command)"
 assert_match "command starts with bash -c '" "bash -c '" "$CMD"
-assert_match "command references new cache dir glob" "topgauge-cc/topgauge-cc/\*/" "$CMD"
+assert_match "command references new cache dir glob" "topgauge/topgauge/\*/" "$CMD"
 assert_match "command uses sort -t. for version sort" "sort -t\\." "$CMD"
 assert_match "command tails -1 + cut -f2-" "tail -1 \\| cut -f2-" "$CMD"
 assert_match "command guards against missing cache" '\[ -d "\$plugin_dir" \]' "$CMD"
-assert_match "command points upstream at new stable state dir" 'TOPGAUGE_CC_UPSTREAM_CMD="\$\{CLAUDE_CONFIG_DIR:-\$HOME/.claude\}/plugins/topgauge-cc/state/upstream-cmd.sh"' "$CMD"
+assert_match "command points upstream at new stable state dir" 'TOPGAUGE_CC_UPSTREAM_CMD="\$\{CLAUDE_CONFIG_DIR:-\$HOME/.claude\}/plugins/topgauge/state/upstream-cmd.sh"' "$CMD"
 assert_match "command execs wrapper from \$plugin_dir" 'exec bash "\$\{plugin_dir\}scripts/wrapper.sh"' "$CMD"
 assert_eq "refreshInterval preserved" "90" "$(jget "$SETTINGS" statusLine.refreshInterval)"
-assert_eq "managed marker set (new name)" "true" "$(jget "$SETTINGS" statusLine._topgauge_managed)"
+assert_eq "managed marker set" "true" "$(jget "$SETTINGS" statusLine._topgauge_managed)"
 
 echo ""
 echo "=== status op: fingerprint matches latest-cache command ==="
@@ -112,27 +106,15 @@ STATUS="$(node "$LIB" "$WIN_SETTINGS" status)"
 assert_eq "status reports managed" "managed" "$STATUS"
 
 echo ""
-echo "=== status op: fingerprint still matches legacy fixed-version command ==="
-# v0.7.0 — accept the OLD name too, so an upgrade-time reinstall
-# doesn't mistakenly classify the existing statusLine as "foreign".
-LEGACY_CMD='bash -c '"'"'export TOPGAUGE_CC_UPSTREAM_CMD="C:\Users\test\.claude\plugins\cache\tokenplan-usage-hud\tokenplan-usage-hud\0.2.3\state\upstream-cmd.sh"; exec bash "C:\Users\test\.claude\plugins\cache\tokenplan-usage-hud\tokenplan-usage-hud\0.2.3\scripts\wrapper.sh"'"'"''
-python -c "import json,sys; print(json.dumps({'statusLine':{'type':'command','command':sys.argv[1],'_tokenplan_managed':True}}, indent=2))" "$LEGACY_CMD" > "$SETTINGS"
-STATUS="$(node "$LIB" "$WIN_SETTINGS" status)"
-assert_eq "legacy v0.2.3 command still recognized (legacy dual-strip)" "managed" "$STATUS"
-
-echo ""
 echo "=== restore-from-file preserves refreshInterval ==="
-# v0.7.0 — also verify the legacy marker is dropped along with the
-# new one, so a subsequent re-install of either name starts clean.
-RESTORE_CMD='bash -c '"'"'export TOPGAUGE_CC_UPSTREAM_CMD="/home/test/.claude/upstream.sh"; exec bash "/home/test/.claude/plugins/cache/topgauge-cc/topgauge-cc/0.2.5/scripts/wrapper.sh"'"'"''
-python -c "import json,sys; print(json.dumps({'statusLine':{'type':'command','command':sys.argv[1],'refreshInterval':75,'_topgauge_managed':True,'_tokenplan_managed':True}}, indent=2))" "$RESTORE_CMD" > "$SETTINGS"
+RESTORE_CMD='bash -c '"'"'export TOPGAUGE_CC_UPSTREAM_CMD="/home/test/.claude/upstream.sh"; exec bash "/home/test/.claude/plugins/cache/topgauge/topgauge/0.2.5/scripts/wrapper.sh"'"'"''
+python -c "import json,sys; print(json.dumps({'statusLine':{'type':'command','command':sys.argv[1],'refreshInterval':75,'_topgauge_managed':True}}, indent=2))" "$RESTORE_CMD" > "$SETTINGS"
 echo 'echo restored' > "$TMPDIR/upstream.txt"
 WIN_UPSTREAM_TXT="$(winpath "$TMPDIR/upstream.txt")"
 node "$LIB" "$WIN_SETTINGS" restore-from-file "$WIN_UPSTREAM_TXT" >/dev/null
 assert_eq "refreshInterval survives restore" "75" "$(jget "$SETTINGS" statusLine.refreshInterval)"
 assert_match "command restored to upstream" "echo restored" "$(jget "$SETTINGS" statusLine.command)"
-assert_eq "new marker cleared" "" "$(jget "$SETTINGS" statusLine._topgauge_managed)"
-assert_eq "legacy marker also cleared (dual-strip)" "" "$(jget "$SETTINGS" statusLine._tokenplan_managed)"
+assert_eq "marker cleared" "" "$(jget "$SETTINGS" statusLine._topgauge_managed)"
 
 echo ""
 echo "=== bash can actually execute the latest-cache command ==="

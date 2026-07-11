@@ -5,10 +5,10 @@
 //
 // Per-Project Layout (v0.4.x+): when a `cwd` is provided to `append` /
 // `readLatest` / `diagnosticsPath`, the log lives at
-// `${CLAUDE_CONFIG_DIR}/plugins/topgauge-cc/state/<projectHash>/diagnostics.jsonl`.
+// `${CLAUDE_CONFIG_DIR}/plugins/topgauge/state/<projectHash>/diagnostics.jsonl`.
 // When `cwd` is omitted (or null/empty), the log falls back to the
 // legacy top-level
-// `${CLAUDE_CONFIG_DIR}/plugins/topgauge-cc/state/diagnostics.jsonl`.
+// `${CLAUDE_CONFIG_DIR}/plugins/topgauge/state/diagnostics.jsonl`.
 // The fallback is used for plugin-level errors that have no project
 // affiliation (e.g. config-parse warnings from `src/config.ts`).
 //
@@ -53,7 +53,7 @@ import { projectHash } from "./status-store.ts";
 function stateRoot(): string {
   const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
   const claudeRoot = process.env.CLAUDE_CONFIG_DIR ?? join(home, ".claude");
-  return join(claudeRoot, "plugins", "topgauge-cc", "state");
+  return join(claudeRoot, "plugins", "topgauge", "state");
 }
 
 // Resolve the diagnostics.jsonl path for a given project cwd. When
@@ -355,7 +355,7 @@ export function append(
     // fails we just leave the file alone — the next append will retry.
     trimToMax(path, DEFAULT_MAX_ENTRIES);
   } catch {
-    process.stderr.write("topgauge-cc: diagnostics append failed\n");
+    process.stderr.write("topgauge: diagnostics append failed\n");
   }
 }
 
@@ -367,7 +367,7 @@ export function append(
 // gate (TOPGAUGE_CC_DIAGNOSTICS_ENABLE) and the per-project JSONL
 // layout — the IO site's `path` is the same string the caller
 // passed to fs.*, so the per-project scoping falls out naturally:
-//   - IO under `${CLAUDE_CONFIG_DIR}/plugins/topgauge-cc/state/` —
+//   - IO under `${CLAUDE_CONFIG_DIR}/plugins/topgauge/state/` —
 //     cwd is already encoded in the path components the caller
 //     passed in. We still surface each call's full path so a
 //     postmortem can grep it without parsing the layout.
@@ -409,7 +409,7 @@ const IO_SOURCE = {
 } as const;
 
 // Truncate `path` to a stable per-call message. State paths under
-// `${CLAUDE_CONFIG_DIR}/plugins/topgauge-cc/state/` are project-scoped
+// `${CLAUDE_CONFIG_DIR}/plugins/topgauge/state/` are project-scoped
 // — when the call site is in token-store.ts/status-store.ts, the
 // `path` it already carries includes the projectHash, so no extra
 // per-project dedupe is needed. We just cap the message length so

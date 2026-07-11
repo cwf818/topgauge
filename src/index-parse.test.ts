@@ -27,7 +27,7 @@ describe("parseTokenSnapshot — happy path", () => {
     assert.ok(snap);
     // Existing fields (unchanged from v0.4.0 dev work)
     assert.equal(snap!.sessionId, "b2bee628-bc4f-4c79-a198-cb39b098b547");
-    assert.equal(snap!.cwd, "D:\\WorkSpace\\tokenplan-usage-hud");
+    assert.equal(snap!.cwd, "D:\\WorkSpace\\topgauge-cc");
     assert.equal(snap!.totals.tokenTotalIn, 126860);
     assert.equal(snap!.totals.tokenTotalOut, 265);
     assert.equal(snap!.current.tokenIn, 140);
@@ -42,7 +42,7 @@ describe("parseTokenSnapshot — happy path", () => {
     assert.deepEqual(snap!.repo, {
       host: "github.com",
       owner: "cwf818",
-      name: "topgauge-cc",
+      name: "topgauge",
     });
     assert.equal(snap!.ccversion, "2.1.191");
     // v0.4.0+ — context window
@@ -225,7 +225,7 @@ describe("parseTokenSnapshot — v0.8.0 tokenTotalIn invariant", () => {
   let prevGate: string | undefined;
 
   beforeEach(() => {
-    sandbox = mkdtempSync(join(tmpdir(), "topgauge-cc-invariant-"));
+    sandbox = mkdtempSync(join(tmpdir(), "topgauge-invariant-"));
     prevConfigDir = process.env.CLAUDE_CONFIG_DIR;
     prevGate = process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE;
     process.env.CLAUDE_CONFIG_DIR = sandbox;
