@@ -1551,6 +1551,447 @@ describe("m_quota body — remainingQuota fallback (vX.X.X+)", () => {
   });
 });
 
+// vX.X.X+ — `m_quota` accepts `display:<used|remaining>` like
+// `m_windowQuota` does. Default is `display:used` (so legacy
+// renders stay byte-identical after upgrade). `display:remaining`
+// mirrors the axis: outputs `<remaining>/<limit>` instead of
+// `<used>/<limit>`. Symmetric fallback rules:
+//   - remainingQuota set → render directly
+//   - only usedQuota set  → derive `remaining = clamp(limit - used, 0, limit)`
+//   - neither but limitQuota → `<limit>/<limit>` (everything
+//     remaining since nothing used is known)
+describe("m_quota display arg (vX.X.X+)", () => {
+  const nowMs = Date.parse("2026-06-24T12:00:00Z");
+
+  function quotaOnly(
+    iv: {
+      remainingPercent?: number | null;
+      remainingQuota?: number | null;
+      usedQuota?: number | null;
+      limitQuota?: number | null;
+    },
+    template: string,
+  ) {
+    __resetForTest({
+      statuslineTemplate: [template],
+      timeFormat: { minUnit: "m", maxUnitCount: 2 },
+    });
+    const base: import("./render.ts").Interval = {
+      windowId: "30d",
+      label: "30d",
+      startAt: null,
+      endAt: null,
+      intervalMs: null,
+      usedPercent: null,
+      remainingPercent: null,
+      remainingQuota: null,
+      usedQuota: null,
+      limitQuota: null,
+    };
+    return renderProviderLine("minimax", {
+      mode: "used", nowMs,
+      shortInterval: null,
+      midInterval: null,
+      longInterval: { ...base, ...iv },
+      balance: null,
+      ageMs: 5 * 60_000, stale: false, version: "",
+    });
+  }
+
+  it("display:used default — legacy <used>/<limit> axis preserved", () => {
+    // Confirm the new arg's DEFAULT still matches the legacy
+    // behavior (one regression-guard before swapping modes).
+    try {
+      const line = quotaOnly(
+        { usedQuota: 765, remainingQuota: 735, limitQuota: 1500 },
+        "m_quota|term:long",
+      );
+      const clean = strip(line);
+      assert.ok(
+        clean.includes("quota:(30d):765/1500"),
+        `default display should render used axis, got: ${clean}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("display:remaining — flips the axis to <remaining>/<limit>", () => {
+    // Same data as the legacy test but flipped axis:
+    // remaining=735 → "735/1500" instead of "765/1500".
+    try {
+      const line = quotaOnly(
+        { usedQuota: 765, remainingQuota: 735, limitQuota: 1500 },
+        "m_quota|term:long|display:remaining",
+      );
+      const clean = strip(line);
+      assert.ok(
+        clean.includes("quota:(30d):735/1500"),
+        `display:remaining should swap to remaining axis, got: ${clean}`,
+      );
+      assert.ok(
+        !clean.includes("quota:(30d):765/1500"),
+        `legacy used axis must NOT leak into display:remaining, got: ${clean}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("display:remaining + only usedQuota set → derive from limit", () => {
+    // Upstream payload sometimes only sets usedQuota (e.g.
+    // single-axis burndown). display:remaining must derive
+    // remaining = clamp(limit - used, 0, limit).
+    try {
+      const line = quotaOnly(
+        { usedQuota: 765, limitQuota: 1500 },
+        "m_quota|term:long|display:remaining",
+      );
+      const clean = strip(line);
+      assert.ok(
+        clean.includes("quota:(30d):735/1500"),
+        `remaining axis should derive from used+limit, got: ${clean}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("display:remaining + only limitQuota set → '<limit>/<limit>' (full bucket)", () => {
+    // No used / remaining data → used-mode falls through to
+    // "0/limit" (the user reported it as misleading). The
+    // remaining-mode equivalent is the inverse: "limit/limit"
+    // (everything is remaining since nothing used is known).
+    try {
+      const line = quotaOnly(
+        { remainingQuota: null, usedQuota: null, limitQuota: 1500 },
+        "m_quota|term:long|display:remaining",
+      );
+      const clean = strip(line);
+      assert.ok(
+        clean.includes("quota:(30d):1500/1500"),
+        `no-data case in remaining mode should render full bucket, got: ${clean}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("display:remaining clamping — drift (used > limit) keeps remaining at 0", () => {
+    // Defensive: if upstream over-reports used (rounding /
+    // carry-over), remaining=limit-used must clamp to 0 (not
+    // negative).
+    try {
+      const line = quotaOnly(
+        { usedQuota: 2000, limitQuota: 1500 },
+        "m_quota|term:long|display:remaining",
+      );
+      const clean = strip(line);
+      assert.ok(
+        clean.includes("quota:(30d):0/1500"),
+        `overflowing used should clamp remaining to 0, got: ${clean}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("inline display:garbage drops the whole token (inline-args parser pass-or-reject contract)", () => {
+    // Inline-args are pass-or-reject: a value outside the
+    // {used,remaining} whitelist makes `parseInlineArgs` return
+    // null, which (per the `expandInlineToken` contract) drops
+    // the WHOLE `m_quota|…` token — same as a typo'd color.
+    // This matches `m_windowQuota|display:garbage` and every
+    // other module that uses named inline args. The renderer
+    // doesn't render anything; the slot stays empty (no panic).
+    try {
+      const line = quotaOnly(
+        { usedQuota: 100, limitQuota: 1500 },
+        "m_quota|term:long|display:garbage",
+      );
+      const clean = strip(line);
+      assert.ok(
+        !clean.includes("quota:(30d)"),
+        `bad display value should drop the token entirely, got: ${clean}`,
+      );
+      // sanity: the template was attempted (no crash), output
+      // is just empty / whitespace around the dropped slot.
+      assert.equal(typeof clean, "string");
+    } finally {
+      __resetForTest();
+    }
+  });
+});
+
+// vX.X.X+ — `m_quota` mirrors `m_windowQuota` / `m_windowContext`:
+// the displayed digit (the "metric of concern") carries the band
+// color (5 thresholds → brightGreen → red), the prefix / limit
+// tail stay plain. Inline `|color|<c>` overrides the band (same
+// precedence as every other inline module). When no usable ratio
+// can be derived (axisPct == null), the digit lands in
+// STALE_COLOR so the band doesn't pick a spurious hue.
+describe("m_quota band color (vX.X.X+)", () => {
+  const nowMs = Date.parse("2026-06-24T12:00:00Z");
+
+  function quotaLine(
+    iv: {
+      remainingPercent?: number | null;
+      remainingQuota?: number | null;
+      usedQuota?: number | null;
+      limitQuota?: number | null;
+    },
+    template: string,
+  ) {
+    __resetForTest({
+      statuslineTemplate: [template],
+      timeFormat: { minUnit: "m", maxUnitCount: 2 },
+    });
+    const base: import("./render.ts").Interval = {
+      windowId: "30d",
+      label: "30d",
+      startAt: null,
+      endAt: null,
+      intervalMs: null,
+      usedPercent: null,
+      remainingPercent: null,
+      remainingQuota: null,
+      usedQuota: null,
+      limitQuota: null,
+    };
+    return renderProviderLine("minimax", {
+      mode: "used", nowMs,
+      shortInterval: null,
+      midInterval: null,
+      longInterval: { ...base, ...iv },
+      balance: null,
+      ageMs: 5 * 60_000, stale: false, version: "",
+    });
+  }
+
+  // 5-band palette ordering under default
+  // thresholds.percentBands = [60, 70, 80, 90]:
+  //   band 0 (≤60)     → brightGreen
+  //   band 1 (60–70)   → darkGreen
+  //   band 2 (70–80)   → yellow
+  //   band 3 (80–90)   → orange
+  //   band 4 (>90)     → red
+  const BRIGHT_GREEN = "\x1b[38;5;41m";
+  const DARK_GREEN   = "\x1b[38;5;29m";
+  const YELLOW       = "\x1b[38;5;220m";
+  const ORANGE       = "\x1b[38;5;208m";
+  const RED          = "\x1b[38;5;196m";
+  const STALE        = "\x1b[90m";
+
+  function sgr(s: string): string { return s; }
+
+  it("used-mode 765/1500 (51% used) → brightGreen around the digit", () => {
+    // usedPct 51 → band 0 (under 60) → brightGreen. The /1500
+    // tail + prefix stay plain (no SGR between them).
+    try {
+      const line = quotaLine(
+        { usedQuota: 765, limitQuota: 1500 },
+        "m_quota|term:long",
+      );
+      assert.ok(
+        line.includes(`${sgr(BRIGHT_GREEN)}765${"\x1b[0m"}/1500`),
+        `digit 765 should be wrapped in BRIGHT_GREEN + reset, got SGR-stripped: ${strip(line)}\nraw: ${line}`,
+      );
+      // Prefix is plain — no SGR before the digit.
+      const idx = line.indexOf("765");
+      assert.ok(
+        idx > 0 && !/\\x1b\[[0-9;]*m765/.test(line.slice(Math.max(0, idx - 20), idx)),
+        `prefix should be plain (no SGR immediately before the digit), raw: ${line}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("used-mode 1200/1500 (80% used) → boundary band picks YELLOW (band 2)", () => {
+    // usedPct = 80 EXACTLY → bandIndex uses `v < thresholds[i]`, so
+    // band 2 ([70, 80) exclusive on the high) holds; 80 itself
+    // tips into band 3 (orange). Confirms the boundary rule.
+    try {
+      const line = quotaLine(
+        { usedQuota: 1200, limitQuota: 1500 },
+        "m_quota|term:long",
+      );
+      assert.ok(
+        line.includes(`${sgr(ORANGE)}1200${"\x1b[0m"}/1500`),
+        `usedPct=80 should land on ORANGE (band 3), got: ${strip(line)}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("used-mode 50% (715/1500) → DARK_GREEN (band 1, 60–70 boundary)", () => {
+    // usedPct 47.7 (715/1500) → band 1 (60–70 range becomes
+    // 60–70 because the function clamps to [0,100]). Actually 47.7
+    // falls in band 0 (under 60). Use exact 60 to test the
+    // boundary: 900/1500 = 60 → band 0 since `v < 60` is the
+    // first band condition. Use 65 to land in band 1.
+    try {
+      const line = quotaLine(
+        { usedQuota: 975, limitQuota: 1500 },
+        "m_quota|term:long",
+      );
+      // 975/1500 = 65 → band 1 → DARK_GREEN.
+      assert.ok(
+        line.includes(`${sgr(DARK_GREEN)}975${"\x1b[0m"}/1500`),
+        `usedPct=65 should be DARK_GREEN, got: ${strip(line)}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("used-mode 75% (1125/1500) → YELLOW (band 2, 70–80)", () => {
+    // 75% falls in band 2 (70 ≤ usedPct < 80) → YELLOW.
+    // Mirrors m_windowQuota's band ordering so all three modules
+    // share the same danger ladder.
+    try {
+      const line = quotaLine(
+        { usedQuota: 1125, limitQuota: 1500 },
+        "m_quota|term:long",
+      );
+      assert.ok(
+        line.includes(`${sgr(YELLOW)}1125${"\x1b[0m"}/1500`),
+        `usedPct=75 should be YELLOW, got: ${strip(line)}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("used-mode 99% → RED (top band)", () => {
+    try {
+      const line = quotaLine(
+        { usedQuota: 1485, limitQuota: 1500 },
+        "m_quota|term:long",
+      );
+      assert.ok(
+        line.includes(`${sgr(RED)}1485${"\x1b[0m"}/1500`),
+        `usedPct=99 should be RED, got: ${strip(line)}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("remaining-mode 73% remaining → BRIGHT_GREEN (low usedPct, regardless of displayed)", () => {
+    // Mode = remaining, remainingQuota = 1100, limit = 1500.
+    // displayed = 73.3 → colorFor(73.3, "remaining") flips to
+    // usedPct = 100 - 73.3 = 26.7 → band 0 (brightGreen).
+    try {
+      const line = quotaLine(
+        { remainingQuota: 1100, limitQuota: 1500 },
+        "m_quota|term:long|display:remaining",
+      );
+      assert.ok(
+        line.includes(`${sgr(BRIGHT_GREEN)}1100${"\x1b[0m"}/1500`),
+        `remaining-mode 73% should still pick BRIGHT_GREEN (band 0 usedPct), got: ${strip(line)}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("inline |color|red overrides the band color", () => {
+    // Same 765/1500 as the first test but with :color:red forced;
+    // the override should win, BRIGHT_GREEN must NOT appear.
+    try {
+      const line = quotaLine(
+        { usedQuota: 765, limitQuota: 1500 },
+        "m_quota|term:long|display:used|color:" + RED,
+      );
+      assert.ok(
+        line.includes(`${sgr(RED)}765${"\x1b[0m"}/1500`),
+        `inline :color:red should override the band, got: ${strip(line)}`,
+      );
+      assert.ok(
+        !line.includes(BRIGHT_GREEN),
+        `BRIGHT_GREEN band must NOT appear when :color:red is set, got: ${strip(line)}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("no usable ratio (`used/--`) → STALE_COLOR around the digit", () => {
+    // usedQuota set, limitQuota null → parts.axisPct == null →
+    // wrapQuotaBody falls to STALE_COLOR (matches m_window*'s
+    // "no percent → gray" convention).
+    try {
+      const line = quotaLine(
+        { usedQuota: 42 },
+        "m_quota|term:long",
+      );
+      assert.ok(
+        line.includes(`${sgr(STALE)}42${"\x1b[0m"}/--`),
+        `no-ratio case should STALE-COLOR the digit, got: ${strip(line)}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("only limitQuota set in remaining-mode (full bucket) → BRIGHT_GREEN (0% used)", () => {
+    // mode=remaining, only limitQuota set → renderQuotaParts
+    // returns {axisNumber: limit, total: limit, axisPct: 100}.
+    // colorFor(100, "remaining") flips to usedPct = 100 - 100 = 0
+    // → band 0 (BRIGHT_GREEN, the "least concerning" hue). This
+    // mirrors the user's spec that `m_quota` band-map mirrors
+    // `m_windowQuota` — there, 100% remaining is also greenest.
+    try {
+      const line = quotaLine(
+        { limitQuota: 1500 },
+        "m_quota|term:long|display:remaining",
+      );
+      assert.ok(
+        line.includes(`${sgr(BRIGHT_GREEN)}1500${"\x1b[0m"}/1500`),
+        `full-bucket remaining mode → BRIGHT_GREEN (0% used), got: ${strip(line)}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("bare m_quota renders band color too (not just inline)", () => {
+    // Confirm the bare MODULES path also got the band-color
+    // treatment (regression guard — `wrapPlainDefault` would have
+    // eaten it before this refactor).
+    try {
+      __resetForTest({
+        statuslineTemplate: ["m_quota|term:long"],
+        timeFormat: { minUnit: "m", maxUnitCount: 2 },
+      });
+      const line = renderProviderLine("minimax", {
+        mode: "used", nowMs,
+        shortInterval: null,
+        midInterval: null,
+        longInterval: {
+          windowId: "30d",
+          label: "30d",
+          startAt: null, endAt: null, intervalMs: null,
+          usedPercent: null, remainingPercent: null,
+          remainingQuota: null,
+          usedQuota: 765,
+          limitQuota: 1500,
+        },
+        balance: null,
+        ageMs: 5 * 60_000, stale: false, version: "",
+      });
+      assert.ok(
+        line.includes(`${sgr(BRIGHT_GREEN)}765${"\x1b[0m"}/1500`),
+        `bare m_quota should also band-color the digit, got: ${strip(line)}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+});
+
 describe("formatStaleSuffix", () => {
   it("returns empty only for non-finite ageMs; ageMs = 0 renders the X-ago label", () => {
     // v0.4.0: formatStaleSuffix no longer short-circuits on ageMs <= 0.

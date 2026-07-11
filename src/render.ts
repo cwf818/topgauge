@@ -520,33 +520,135 @@ function intervalToWindow(i: Interval): Window | null {
 // user who set `intervals.shortInterval.label = "5h🕐"` sees that
 // label in the body). The leading `quota:` prefix is read from
 // `labels.labelQuota` via `labelFor("quota")`.
-function renderQuotaBody(iv: Interval): string | null {
+// v0.9.0+ — splits an Interval's quota axis into the structural
+// parts so the renderer can color just the digit (the "metric of
+// concern"), not the prefix / limit tail. Mirrors the
+// `m_windowQuota` / `m_windowContext` convention where only the
+// displayed value gets the band color and the static labels stay
+// plain.
+//
+// Returns null when there's no body to render (placeholder path
+// takes over). `axisPct` is the displayed percentage the band
+// index is computed against — null when no percent can be derived
+// (e.g. `used/--` or `--/1500` with no ratio); the caller then
+// falls back to STALE_COLOR or no color so the digit doesn't get
+// a spurious band tint.
+function renderQuotaParts(
+  iv: Interval,
+  mode: DisplayMode = "used",
+): {
+  prefix: string;
+  head: string;          // e.g. "quota:(30d):"
+  axisNumber: number;    // the displayed digit
+  total: number | null;  // the right side ("1500" or "--")
+  axisPct: number | null;// 0..100 of the displayed digit relative to limit
+} | null {
   const prefix = labelFor("quota");
   const head = `${prefix}(${iv.label}):`;
-  // vX.X.X+ — when only `remainingQuota` is set (and `usedQuota`
-  // isn't), derive `used = limit - remaining` so a Copilot-style
-  // payload ("all 1500 of 1500 are remaining") doesn't render as
-  // the misleading `0/1500`. The math stays consistent with the
-  // existing `used/limit` contract:
-  //   usedQuota + remainingQuota should equal limitQuota when
-  //   all three are set. Drift ≥ 1 (rounding, partial refunds,
-  //   quota carry-over) is clamped to the [0, limit] range so
-  //   the renderer never emits a negative or over-limit number.
+
+  if (mode === "remaining") {
+    if (iv.remainingQuota != null && iv.limitQuota != null) {
+      return {
+        prefix, head,
+        axisNumber: iv.remainingQuota,
+        total: iv.limitQuota,
+        axisPct: (iv.remainingQuota / iv.limitQuota) * 100,
+      };
+    }
+    if (iv.usedQuota != null && iv.limitQuota != null) {
+      const remaining = iv.limitQuota - iv.usedQuota;
+      const clamped = Math.max(0, Math.min(iv.limitQuota, remaining));
+      return {
+        prefix, head,
+        axisNumber: clamped,
+        total: iv.limitQuota,
+        axisPct: (clamped / iv.limitQuota) * 100,
+      };
+    }
+    if (iv.limitQuota != null) {
+      return {
+        prefix, head,
+        axisNumber: iv.limitQuota,
+        total: iv.limitQuota,
+        axisPct: 100, // nothing used ⇒ full remaining
+      };
+    }
+    if (iv.remainingQuota != null) {
+      return {
+        prefix, head,
+        axisNumber: iv.remainingQuota,
+        total: null,
+        axisPct: null, // no limit → no ratio possible
+      };
+    }
+    return null;
+  }
+
+  // mode === "used" (default)
   if (iv.usedQuota != null && iv.limitQuota != null) {
-    return `${head}${iv.usedQuota}/${iv.limitQuota}`;
+    return {
+      prefix, head,
+      axisNumber: iv.usedQuota,
+      total: iv.limitQuota,
+      axisPct: (iv.usedQuota / iv.limitQuota) * 100,
+    };
   }
   if (iv.remainingQuota != null && iv.limitQuota != null) {
     const used = iv.limitQuota - iv.remainingQuota;
     const clamped = Math.max(0, Math.min(iv.limitQuota, used));
-    return `${head}${clamped}/${iv.limitQuota}`;
+    return {
+      prefix, head,
+      axisNumber: clamped,
+      total: iv.limitQuota,
+      axisPct: (clamped / iv.limitQuota) * 100,
+    };
   }
   if (iv.limitQuota != null) {
-    return `${head}0/${iv.limitQuota}`;
+    return {
+      prefix, head,
+      axisNumber: 0,
+      total: iv.limitQuota,
+      axisPct: 0, // nothing known used ⇒ 0% consumed
+    };
   }
   if (iv.usedQuota != null) {
-    return `${head}${iv.usedQuota}/--`;
+    return {
+      prefix, head,
+      axisNumber: iv.usedQuota,
+      total: null,
+      axisPct: null,
+    };
   }
   return null;
+}
+
+// vX.X.X+ — band-color a quota body, mirroring m_windowQuota:
+// the displayed digit (the "metric of concern") gets the
+// `colorFor(displayedPct, mode)` band tint, the prefix / limit
+// tail stays plain. `userColor` overrides the band (same precedence
+// as every other inline module's :color| override). When the band
+// index can't be derived (axisPct == null), STALE_COLOR applies.
+// Default-mode users (no inline color) get the band's natural hue
+// instead of the legacy single tint from `DEFAULT_COLORS.m_quota`,
+// which is the behavior change the user asked for.
+function wrapQuotaBody(
+  parts: NonNullable<ReturnType<typeof renderQuotaParts>>,
+  mode: DisplayMode,
+  userColor: string | undefined,
+): string {
+  const total = parts.total == null ? "--" : `${parts.total}`;
+  // Pick the tint: user override wins; else band color when
+  // ratio is known; else STALE_COLOR (matches m_window*'s
+  // "no percent → gray" convention).
+  let tint: string;
+  if (userColor) {
+    tint = userColor;
+  } else if (parts.axisPct == null) {
+    tint = STALE_COLOR;
+  } else {
+    tint = colorFor(parts.axisPct, mode);
+  }
+  return `${parts.head}${tint}${parts.axisNumber}${RESET}/${total}`;
 }
 
 // v0.9.0+ — epoch-ms → ISO timestamp. Local to render.ts (same
@@ -1826,7 +1928,9 @@ m_countdown: Object.assign(
   // v0.9.0+ — quota module. Reads the quota group from
   // `c.shortInterval` (default term; bare form), and the chosen
   // `term` slot for the inline form. Renders
-  // `<labelQuota>(<interval.label>):used/limit` shape. The
+  // `<labelQuota>(<interval.label>):<axis>/limit` shape where
+  // `<axis>` is `used` by default and `remaining` when
+  // `c.mode === "remaining"` (mirrors `m_windowQuota`). The
   // placeholder (rendered when no quota data is present) is
   // `${labelFor("quota")}(<term-label>):--` — bare defaults to
   // `c.shortInterval?.label`; inline honors `params.term` so a
@@ -1835,9 +1939,9 @@ m_quota: Object.assign(
   ((c: RenderContext) => {
     const iv = c.shortInterval;
     if (!iv) return placeholderBare("m_quota", c);
-    const body = renderQuotaBody(iv);
-    if (body === null) return placeholderBare("m_quota", c);
-    return wrapPlainDefault("m_quota", body, undefined);
+    const parts = renderQuotaParts(iv, c.mode);
+    if (!parts) return placeholderBare("m_quota", c);
+    return wrapQuotaBody(parts, c.mode, undefined);
   }),
   { type: "plan" as const },
 ),
@@ -4833,7 +4937,7 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   // param; the renderer just reads params.color and applies it.
   m_windowQuota: { named: { ...COLOR_PARAM.named, ...DISPLAY_PARAM.named, ...TERM_PARAM.named, ...NULDROP_PARAM.named } },
   m_countdown: { named: { ...COLOR_PARAM.named, ...TERM_PARAM.named, ...NULDROP_PARAM.named } },
-  m_quota: { named: { ...COLOR_PARAM.named, ...TERM_PARAM.named, ...NULDROP_PARAM.named } },
+  m_quota: { named: { ...COLOR_PARAM.named, ...DISPLAY_PARAM.named, ...TERM_PARAM.named, ...NULDROP_PARAM.named } },
   m_balance: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_age: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
   m_version: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
@@ -5330,15 +5434,19 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // v0.9.0+ — NEW module. Renders the quota group as
     // `<labelQuota>(<interval.label>):used/limit` (or `0/limit`
     // or `used/--` depending on what's mapped). `term` arg same
-    // shape as `m_windowQuota` / `m_countdown`.
+    // shape as `m_windowQuota` / `m_countdown`. vX.X.X+ —
+    // `display` inline arg swaps the rendered axis:
+    //   |display|used      → `<used>/<limit>`      (default)
+    //   |display|remaining → `<remaining>/<limit>`
     const term = (params.term as Term | undefined) ?? "short";
     const iv = term === "short" ? ctx.shortInterval
              : term === "mid"   ? ctx.midInterval
                                 : ctx.longInterval;
     if (!iv) return placeholderWithColor("m_quota", params, ctx);
-    const body = renderQuotaBody(iv);
-    if (body === null) return placeholderWithColor("m_quota", params, ctx);
-    return wrapPlainDefault("m_quota", body, params.color as string | undefined);
+    const mode = (params.display as DisplayMode | undefined) ?? ctx.mode;
+    const parts = renderQuotaParts(iv, mode);
+    if (!parts) return placeholderWithColor("m_quota", params, ctx);
+    return wrapQuotaBody(parts, mode, params.color as string | undefined);
   },
   m_balance: (params, ctx) => {
     // v6.x: missing balance → "balance:n/a" placeholder (was:
