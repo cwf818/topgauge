@@ -742,7 +742,7 @@ describe("formatBalanceLine — single-currency", () => {
   it("CNY uses ￥ prefix, integer value, bright-green band", () => {
     const line = formatBalanceLine({
       isAvailable: true,
-      entries: [{ currency: "CNY", totalBalance: 110 }],
+      entries: [{ currency: "CNY", totalBalance: 110, label: "￥" }],
       minValue: 110,
     });
     assert.equal(strip(line), "Balance: ￥110");
@@ -753,44 +753,38 @@ describe("formatBalanceLine — single-currency", () => {
   it("USD uses $ prefix", () => {
     const line = formatBalanceLine({
       isAvailable: true,
-      entries: [{ currency: "USD", totalBalance: 25 }],
+      entries: [{ currency: "USD", totalBalance: 25, label: "$" }],
       minValue: 25,
     });
     assert.equal(strip(line), "Balance: $25");
   });
 
-  it("unknown currency falls back to uppercased code as prefix", () => {
+  it("unknown currency falls back to bare code as prefix", () => {
+    // vX.X.X+ — when currenciesConfig doesn't declare a label for
+    // the code, the renderer uses the bare code itself (no
+    // uppercasing, no cfg().currency.prefixes lookup).
     const line = formatBalanceLine({
       isAvailable: true,
-      entries: [{ currency: "EUR", totalBalance: 42 }],
+      entries: [{ currency: "EUR", totalBalance: 42, label: "" }],
       minValue: 42,
     });
     assert.equal(strip(line), "Balance: EUR42");
   });
 
-  it("lowercase currency is uppercased", () => {
-    const line = formatBalanceLine({
-      isAvailable: true,
-      entries: [{ currency: "usd", totalBalance: 5 }],
-      minValue: 5,
-    });
-    assert.equal(strip(line), "Balance: $5");
-  });
-
   it("decimal value preserved up to 2 dp, trailing zeros stripped", () => {
     // 110.10 → "110.1"; 110.00 → "110"; 110.05 → "110.05".
-    const a = formatBalanceLine({ isAvailable: true, entries: [{ currency: "USD", totalBalance: 110.1 }], minValue: 110.1 });
+    const a = formatBalanceLine({ isAvailable: true, entries: [{ currency: "USD", totalBalance: 110.1, label: "$" }], minValue: 110.1 });
     assert.equal(strip(a), "Balance: $110.1");
-    const b = formatBalanceLine({ isAvailable: true, entries: [{ currency: "USD", totalBalance: 110.05 }], minValue: 110.05 });
+    const b = formatBalanceLine({ isAvailable: true, entries: [{ currency: "USD", totalBalance: 110.05, label: "$" }], minValue: 110.05 });
     assert.equal(strip(b), "Balance: $110.05");
   });
 
   it("color band reflects the lowest entry (single entry = that entry)", () => {
     // 3.5 → ORANGE band (5<=3.5<10? no, 3.5<5 → RED)
-    const red = formatBalanceLine({ isAvailable: true, entries: [{ currency: "CNY", totalBalance: 3.5 }], minValue: 3.5 });
+    const red = formatBalanceLine({ isAvailable: true, entries: [{ currency: "CNY", totalBalance: 3.5, label: "￥" }], minValue: 3.5 });
     assert.ok(red.startsWith(`Balance: ${RED}`));
     // 25 → DARK_GREEN band (20<=25<50)
-    const dg = formatBalanceLine({ isAvailable: true, entries: [{ currency: "USD", totalBalance: 25 }], minValue: 25 });
+    const dg = formatBalanceLine({ isAvailable: true, entries: [{ currency: "USD", totalBalance: 25, label: "$" }], minValue: 25 });
     assert.ok(dg.startsWith(`Balance: ${DARK_GREEN}`));
   });
 });
@@ -807,11 +801,14 @@ describe("formatBalanceLine — multi-currency joined by ·", () => {
 
   it("renders all entries, joined by ' · ', single color from lowest", () => {
     // CNY 110 (BRIGHT_GREEN) + USD 3.5 (RED). minValue=3.5 → RED band.
+    // vX.X.X+ — labels are explicit on each entry (the parser
+    // populates them from currenciesConfig); no more legacy
+    // prefix lookup.
     const line = formatBalanceLine({
       isAvailable: true,
       entries: [
-        { currency: "CNY", totalBalance: 110 },
-        { currency: "USD", totalBalance: 3.5 },
+        { currency: "CNY", totalBalance: 110, label: "￥" },
+        { currency: "USD", totalBalance: 3.5, label: "$" },
       ],
       minValue: 3.5,
     });
@@ -827,8 +824,8 @@ describe("formatBalanceLine — multi-currency joined by ·", () => {
     const line = formatBalanceLine({
       isAvailable: true,
       entries: [
-        { currency: "CNY", totalBalance: 100 },
-        { currency: "USD", totalBalance: 200.5 },
+        { currency: "CNY", totalBalance: 100, label: "￥" },
+        { currency: "USD", totalBalance: 200.5, label: "$" },
       ],
       minValue: 100,
     });
@@ -847,7 +844,7 @@ describe("formatBalanceLine — unavailable", () => {
     assert.equal(strip(line), "Balance: not available!");
   });
   it("renders 'not available!' when minValue is null", () => {
-    const line = formatBalanceLine({ isAvailable: true, entries: [{ currency: "USD", totalBalance: 0 }], minValue: null });
+    const line = formatBalanceLine({ isAvailable: true, entries: [{ currency: "USD", totalBalance: 0, label: "$" }], minValue: null });
     assert.equal(strip(line), "Balance: not available!");
   });
 });
@@ -1358,7 +1355,7 @@ describe("formatLine — stale suffix integration", () => {
 describe("formatBalanceLine — stale suffix integration", () => {
   it("appends the stale suffix with broken emoji when stale=true", () => {
     const line = formatBalanceLine(
-      { isAvailable: true, entries: [{ currency: "CNY", totalBalance: 110 }], minValue: 110 },
+      { isAvailable: true, entries: [{ currency: "CNY", totalBalance: 110, label: "￥" }], minValue: 110 },
       5 * 60_000,
       true,  // stale → broken emoji
     );
@@ -1371,8 +1368,8 @@ describe("formatBalanceLine — stale suffix integration", () => {
       {
         isAvailable: true,
         entries: [
-          { currency: "CNY", totalBalance: 110 },
-          { currency: "USD", totalBalance: 3.5 },
+          { currency: "CNY", totalBalance: 110, label: "￥" },
+          { currency: "USD", totalBalance: 3.5, label: "$" },
         ],
         minValue: 3.5,
       },
@@ -1398,7 +1395,7 @@ describe("formatBalanceLine — stale suffix integration", () => {
   it("does NOT append the stale suffix when ageMs is omitted", () => {
     const line = formatBalanceLine({
       isAvailable: true,
-      entries: [{ currency: "USD", totalBalance: 25 }],
+      entries: [{ currency: "USD", totalBalance: 25, label: "$" }],
       minValue: 25,
     });
     assert.ok(!line.includes("ago"));

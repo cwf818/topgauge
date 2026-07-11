@@ -23,7 +23,7 @@ const MINI_DATA: Remains = {
 // A minimally valid Balance payload.
 const DEEP_DATA: Balance = {
   isAvailable: true,
-  entries: [{ currency: "USD", totalBalance: 25, label: "" }],
+  entries: [{ currency: "USD", totalBalance: 25, label: "$" }],
   minValue: 25,
 };
 

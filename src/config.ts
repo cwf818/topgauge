@@ -745,11 +745,7 @@ const DEFAULT_CONFIG: {
   },
   version: "",
   providers: DEFAULT_PROVIDERS,
-  intervals: {
-    shortInterval: {},
-    midInterval: {},
-    longInterval: {},
-  },
+  intervals: {},
   // vX.X.X+ — top-level currencies config. Maps currency codes
   // (CNY / USD / …) onto `{ label, totalBalance }` slot configs.
   // Layer 2 of the 4-layer merge in resolveEffectiveCurrencies
@@ -1814,7 +1810,6 @@ const GLOBAL_DEFAULT_INTERVALS: IntervalConfig = {
     remainingPercent: "shortInterval.remainingPercent",
     startAt: "shortInterval.startAt",
     endAt: "shortInterval.endAt",
-    intervalMs: "shortInterval.intervalMs",
   },
   midInterval: {
     windowId: "7d",
@@ -1822,7 +1817,6 @@ const GLOBAL_DEFAULT_INTERVALS: IntervalConfig = {
     remainingPercent: "midInterval.remainingPercent",
     startAt: "midInterval.startAt",
     endAt: "midInterval.endAt",
-    intervalMs: "midInterval.intervalMs",
   },
   longInterval: {
     windowId: "30d",
@@ -1830,7 +1824,6 @@ const GLOBAL_DEFAULT_INTERVALS: IntervalConfig = {
     remainingPercent: "longInterval.remainingPercent",
     startAt: "longInterval.startAt",
     endAt: "longInterval.endAt",
-    intervalMs: "longInterval.intervalMs",
   },
 };
 
@@ -1841,11 +1834,9 @@ const GLOBAL_DEFAULT_INTERVALS: IntervalConfig = {
 // read intervals has somewhere to land without a config schema change.
 const BUILTIN_PROVIDER_INTERVALS: Record<string, IntervalConfig> = {
   minimax: MINIMAX_DEFAULT_INTERVALS,
-  deepseek: {
-    shortInterval: {},
-    midInterval: {},
-    longInterval: {},
-  },
+  // deepseek ships no intervals defaults (it uses parseBalance
+  // / currenciesConfig instead); absent key = Layer 1 doesn't fire.
+  deepseek: {},
 };
 
 // Resolve the effective IntervalConfig for the active provider by
@@ -1877,53 +1868,61 @@ export function resolveEffectiveIntervals(
     midInterval: { ...GLOBAL_DEFAULT_INTERVALS.midInterval },
     longInterval: { ...GLOBAL_DEFAULT_INTERVALS.longInterval },
   };
-  console.log("DBG out.shortInterval:", JSON.stringify(out.shortInterval));
   // Layer 1 — built-in per-provider defaults. Gate on active id.
   // Shallow: each declared slot fully replaces the layer-0 value.
+  // Empty slots ({}) are skipped so they don't wipe layer-0 fields
+  // — important for MINIMAX_DEFAULT_INTERVALS.longInterval which
+  // intentionally ships as {} (no 30d window in the real API).
   const builtin = BUILTIN_PROVIDER_INTERVALS[activeProviderId];
   if (builtin) {
-    if (nonEmptySlot(builtin.shortInterval))
+    if (hasAnyField(builtin.shortInterval))
       out.shortInterval = { ...builtin.shortInterval };
-    if (nonEmptySlot(builtin.midInterval))
+    if (hasAnyField(builtin.midInterval))
       out.midInterval = { ...builtin.midInterval };
-    if (nonEmptySlot(builtin.longInterval))
+    if (hasAnyField(builtin.longInterval))
       out.longInterval = { ...builtin.longInterval };
   }
   // Layer 2 — user top-level intervals (unconditional). Shallow:
   // each declared slot fully replaces the layer-1 (or layer-0)
-  // value. Absent slots keep the previous layer's value.
+  // value. Absent slots keep the previous layer's value. Empty
+  // slots ({}) are treated as absent — the user must declare at
+  // least one field for a slot to be considered an override,
+  // otherwise a typo'd `intervals: { shortInterval: {} }` would
+  // silently wipe built-in defaults.
   const top = configStore.get().intervals;
   if (top) {
-    if (nonEmptySlot(top.shortInterval))
+    if (hasAnyField(top.shortInterval))
       out.shortInterval = { ...top.shortInterval };
-    if (nonEmptySlot(top.midInterval))
+    if (hasAnyField(top.midInterval))
       out.midInterval = { ...top.midInterval };
-    if (nonEmptySlot(top.longInterval))
+    if (hasAnyField(top.longInterval))
       out.longInterval = { ...top.longInterval };
   }
   // Layer 3 — user per-provider intervals. By construction entry IS
   // the active provider's entry, but we re-check the id so the gate
   // logic is obvious to a reader skimming this function in
-  // isolation. Shallow: same rule as layers 1 + 2.
+  // isolation. Shallow: same rule as layers 1 + 2. Empty slots
+  // ({}) are treated as absent.
   if (entry && entry.intervals) {
-    if (nonEmptySlot(entry.intervals.shortInterval))
+    if (hasAnyField(entry.intervals.shortInterval))
       out.shortInterval = { ...entry.intervals.shortInterval };
-    if (nonEmptySlot(entry.intervals.midInterval))
+    if (hasAnyField(entry.intervals.midInterval))
       out.midInterval = { ...entry.intervals.midInterval };
-    if (nonEmptySlot(entry.intervals.longInterval))
+    if (hasAnyField(entry.intervals.longInterval))
       out.longInterval = { ...entry.intervals.longInterval };
   }
   return out;
 }
 
-// Helper: a slot "overrides" when it has at least one defined field.
-// `{}` is treated as no-op (NOT an override) so the default
-// DEFAULT_CONFIG.intervals empty-slot literal doesn't silently wipe
-// built-in defaults. `{ remainingPercent: "x" }` is an override even
-// though most fields are absent — the shallow-assign contract means
-// the missing fields now read `undefined` for that slot, which is
-// exactly the user's intent when they author a partial slot.
-function nonEmptySlot(slot: IntervalSlotConfig | undefined): boolean {
+// Helper: a slot "overrides" when it has at least one defined
+// field. `{}` is treated as no-op so empty-slot placeholders
+// (e.g. MINIMAX_DEFAULT_INTERVALS.longInterval, where minimax's
+// real API doesn't ship a 30d window) don't wipe earlier-layer
+// fields. `{ remainingPercent: "x" }` is an override — the
+// shallow-assign contract means missing fields now read undefined
+// for that slot, which is exactly the user's intent when they
+// author a partial slot.
+function hasAnyField(slot: IntervalSlotConfig | undefined): boolean {
   if (!slot) return false;
   for (const _ in slot) return true;
   return false;

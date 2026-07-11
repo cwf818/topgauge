@@ -579,7 +579,6 @@ describe("parseRemains — plugin schema via intervalsConfig", () => {
       remainingPercent: "shortInterval.remainingPercent",
       startAt: "shortInterval.startAt",
       endAt: "shortInterval.endAt",
-      intervalMs: "shortInterval.intervalMs",
     },
     midInterval: {
       windowId: "7d",
@@ -587,7 +586,6 @@ describe("parseRemains — plugin schema via intervalsConfig", () => {
       remainingPercent: "midInterval.remainingPercent",
       startAt: "midInterval.startAt",
       endAt: "midInterval.endAt",
-      intervalMs: "midInterval.intervalMs",
     },
     longInterval: {
       windowId: "30d",
@@ -595,7 +593,6 @@ describe("parseRemains — plugin schema via intervalsConfig", () => {
       remainingPercent: "longInterval.remainingPercent",
       startAt: "longInterval.startAt",
       endAt: "longInterval.endAt",
-      intervalMs: "longInterval.intervalMs",
     },
   };
 
@@ -973,7 +970,7 @@ describe("pluginTransport", () => {
          async fetchAccountQuota(token) {
            return {
              isAvailable: token === "good-token",
-             entries: [{ currency: "CNY", totalBalance: 42 }],
+             entries: [{ currency: "CNY", totalBalance: 42, label: "￥" }],
              minValue: null,
            };
          },
@@ -996,7 +993,7 @@ describe("pluginTransport", () => {
       join(pluginDir!, "index.mjs"),
       `export default {
          async fetchAccountQuota(token) {
-           return { isAvailable: true, entries: [{ currency: token, totalBalance: 0 }], minValue: null };
+           return { isAvailable: true, entries: [{ currency: token, totalBalance: 0, label: "" }], minValue: null };
          },
        };`,
     );
@@ -1105,7 +1102,7 @@ describe("fetchForProviderById — end-to-end dispatcher", () => {
          async fetchAccountQuota() {
            return {
              isAvailable: true,
-             entries: [{ currency: "USD", totalBalance: 7.5 }],
+             entries: [{ currency: "USD", totalBalance: 7.5, label: "$" }],
              minValue: null,
            };
          },

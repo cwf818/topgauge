@@ -400,7 +400,7 @@ describe("lineTemplate — m_modeLabel picks modeLabels.balance for the deepseek
     const line = renderProviderLine("deepseek", {
       mode: "used",
       nowMs: Date.now(),
-      balance: { isAvailable: true, entries: [{ currency: "USD", totalBalance: 25 }], minValue: 25 },
+      balance: { isAvailable: true, entries: [{ currency: "USD", totalBalance: 25, label: "$" }], minValue: 25 },
       ageMs: null,
       stale: false,
       version: "",
@@ -417,7 +417,7 @@ describe("lineTemplate — m_modeLabel picks modeLabels.balance for the deepseek
       const line = renderProviderLine("deepseek", {
         mode: "used",
         nowMs: Date.now(),
-        balance: { isAvailable: true, entries: [{ currency: "USD", totalBalance: 25 }], minValue: 25 },
+        balance: { isAvailable: true, entries: [{ currency: "USD", totalBalance: 25, label: "$" }], minValue: 25 },
         ageMs: null,
         stale: false,
         version: "",
@@ -933,7 +933,7 @@ describe("lineTemplate — m_modeLabel:color inline-args tokens", () => {
     });
     const line = renderProviderLine("deepseek", {
       mode: "used", nowMs: Date.now(),
-      balance: { isAvailable: true, entries: [{ currency: "USD", totalBalance: 25 }], minValue: 25 },
+      balance: { isAvailable: true, entries: [{ currency: "USD", totalBalance: 25, label: "$" }], minValue: 25 },
       ageMs: null, stale: false, version: "",
     });
     // Compare WITHOUT stripping ANSI — we want the SGR wrapper intact.
@@ -1023,7 +1023,7 @@ describe("lineTemplate — m_modeLabel|display inline-args tokens", () => {
     });
     const line = renderProviderLine("deepseek", {
       mode: "used", nowMs: Date.now(),
-      balance: { isAvailable: true, entries: [{ currency: "USD", totalBalance: 25 }], minValue: 25 },
+      balance: { isAvailable: true, entries: [{ currency: "USD", totalBalance: 25, label: "$" }], minValue: 25 },
       ageMs: null, stale: false, version: "",
     });
     assert.equal(line, "Balance:", `got: ${JSON.stringify(line)}`);
@@ -1414,7 +1414,7 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
     });
     const line = renderProviderLine("deepseek", {
       mode: "used", nowMs: Date.now(),
-      balance: { isAvailable: true, entries: [{ currency: "USD", totalBalance: 25 }], minValue: 25 },
+      balance: { isAvailable: true, entries: [{ currency: "USD", totalBalance: 25, label: "$" }], minValue: 25 },
       ageMs: null, stale: false, version: "",
     });
     // Band color for $25 was brightGreen; override forces red.
@@ -1428,7 +1428,7 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
     });
     const line = renderProviderLine("deepseek", {
       mode: "used", nowMs: Date.now(),
-      balance: { isAvailable: true, entries: [{ currency: "USD", totalBalance: 25 }], minValue: 25 },
+      balance: { isAvailable: true, entries: [{ currency: "USD", totalBalance: 25, label: "$" }], minValue: 25 },
       ageMs: null, stale: false, version: "",
     });
     // Band color for $25 with default thresholds is darkGreen (\x1b[38;5;29m),
@@ -2023,7 +2023,7 @@ describe("m_template — mode filter drops on mismatch (deepseek vs plan)", () =
     const line = renderProviderLine("deepseek", {
       mode: "used",
       nowMs: Date.now(),
-      balance: { isAvailable: true, entries: [{ currency: "USD", totalBalance: 25 }], minValue: 25 },
+      balance: { isAvailable: true, entries: [{ currency: "USD", totalBalance: 25, label: "$" }], minValue: 25 },
       ageMs: null,
       stale: false,
       version: "",
@@ -2063,7 +2063,18 @@ describe("m_template — provider-agnostic fragment (no |mode arg, v0.8.37)", ()
     const line = renderProviderLine("minimax", {
       mode: "used",
       nowMs: Date.now(),
-      shortInterval: { label: "5h", startTime: 0, endTime: 1, remainingPercent: 0, usedPercent: 100 },
+      shortInterval: {
+        windowId: "5h",
+        label: "5h",
+        startAt: 0,
+        endAt: 1,
+        remainingPercent: 0,
+        usedPercent: 100,
+        intervalMs: null,
+        remainingQuota: null,
+        usedQuota: null,
+        limitQuota: null,
+      },
       ageMs: null,
       stale: false,
       version: "",
@@ -2075,7 +2086,7 @@ describe("m_template — provider-agnostic fragment (no |mode arg, v0.8.37)", ()
     const line = renderProviderLine("deepseek", {
       mode: "used",
       nowMs: Date.now(),
-      balance: { isAvailable: true, entries: [{ currency: "USD", totalBalance: 25 }], minValue: 25 },
+      balance: { isAvailable: true, entries: [{ currency: "USD", totalBalance: 25, label: "$" }], minValue: 25 },
       ageMs: null,
       stale: false,
       version: "",

@@ -28,7 +28,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { configStore, resolveEffectiveCurrencies, resolveEffectiveIntervals } from "./config.ts";
+import { resolveEffectiveCurrencies, resolveEffectiveIntervals } from "./config.ts";
 import * as diagnostics from "./diagnostics.ts";
 import { resolveSlot } from "./path-expr.ts";
 import type {
@@ -803,26 +803,6 @@ export function parseRemains(
 //  BALANCE parser (v0.x — ported verbatim from api.balance.ts)
 // ============================================================================
 
-// Legacy (pre-vX.X.X+) entry normalizer — kept for the no-
-// currenciesConfig fallback path so a plugin transport returning
-// the legacy `{ is_available, balance_infos }` shape still works
-// without forcing every plugin author to ship the new block. The
-// `label` is derived from the legacy `cfg().currency.prefixes[code]`
-// lookup (USD → $, CNY/RMB → ￥, anything else → empty so the
-// renderer falls back to the bare code).
-function normalizeEntryLegacy(raw: unknown): BalanceEntry | null {
-  if (!raw || typeof raw !== "object") return null;
-  const r = raw as Record<string, unknown>;
-  const totalBalance = asNumber(r.total_balance);
-  if (totalBalance == null) return null;
-  const currency = typeof r.currency === "string" && r.currency !== ""
-    ? r.currency
-    : configStore.get().currency.default;
-  const upper = currency.toUpperCase();
-  const mapped = configStore.get().currency.prefixes[upper];
-  return { currency: upper, totalBalance, label: mapped ?? "" };
-}
-
 // Resolve one entry from the currenciesConfig block (vX.X.X+).
 // Walks `currenciesConfig[key]`, runs the configured
 // `totalBalance` path expression against `root`, and returns a
@@ -845,7 +825,7 @@ function resolveCurrenciesEntry(
 
 export function parseBalance(
   raw: unknown,
-  currenciesConfig: CurrenciesConfig = {},
+  currenciesConfig: CurrenciesConfig,
 ): Balance | null {
   if (!raw || typeof raw !== "object") return null;
   const root = raw as Record<string, unknown>;
@@ -858,30 +838,16 @@ export function parseBalance(
     (typeof availRaw === "string" && availRaw.toLowerCase() === "false");
   const isAvailable = !explicitlyFalse;
 
-  let entries: BalanceEntry[] = [];
-
   // vX.X.X+ — currenciesConfig-driven path. Each declared currency
   // key in the resolved map is projected out of `root` via its
   // configured `totalBalance` path. When the map is empty (no
   // built-in defaults matched the active provider id AND the user
-  // didn't supply a top-level / per-provider block) we fall back to
-  // the v0.5.0–v0.8.x `balance_infos[]` array shape — preserves
-  // byte-identical renders for any plugin transport that returns
-  // the legacy `{ is_available, balance_infos }` body without
-  // shipping a currenciesConfig.
-  const keys = Object.keys(currenciesConfig);
-  if (keys.length > 0) {
-    entries = keys
-      .map((k) => resolveCurrenciesEntry(root, k, currenciesConfig[k]))
-      .filter((e): e is BalanceEntry => e !== null);
-  } else {
-    const arr = root.balance_infos;
-    if (Array.isArray(arr)) {
-      entries = arr
-        .map(normalizeEntryLegacy)
-        .filter((e): e is BalanceEntry => e !== null);
-    }
-  }
+  // didn't supply a top-level / per-provider block) the response
+  // carries no entries — the plugin author / user is expected to
+  // ship currenciesConfig.
+  const entries = Object.keys(currenciesConfig)
+    .map((k) => resolveCurrenciesEntry(root, k, currenciesConfig[k]))
+    .filter((e): e is BalanceEntry => e !== null);
 
   if (!isAvailable) {
     return {

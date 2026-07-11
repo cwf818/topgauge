@@ -936,46 +936,26 @@ function formatBalanceValue(v: number): string {
   return v.toFixed(2).replace(/\.?0+$/, "");
 }
 
-// Per-currency display prefix. vX.X.X+ — the parser stores the
-// resolved `label` on each BalanceEntry (see api.ts:parseBalance),
-// so the renderer reads it directly from the entry rather than
-// consulting `cfg().currency.prefixes` at render time. The
-// `prefixForCurrency` helper is RETAINED for the legacy plugin
-// path (a plugin transport returning a pre-built Balance object
-// that lacks the `label` field) — the legacy
-// normalizeEntryLegacy normalizer still uses
-// `cfg().currency.prefixes[code]` for its label so plugin authors
-// upgrading don't have to ship the new field on every entry.
-function prefixForCurrency(currency: string): string {
-  const upper = currency.toUpperCase();
-  const mapped = cfg().currency.prefixes[upper];
-  if (mapped !== undefined) return mapped;
-  // Default: show the currency code itself, uppercased. If even the code
-  // is empty, fall back to the configured fallback prefix.
-  return upper || cfg().currency.fallback;
-}
-
+// Display prefix for one balance entry. vX.X.X+ — the parser
+// stores the resolved `label` on each BalanceEntry (see
+// api.ts:parseBalance), and the renderer reads it directly.
+// When the label is empty (the user omitted `label` from
+// currenciesConfig), the renderer falls back to the bare
+// currency code (e.g. "EUR10.50") — never blanks, so a new
+// provider currency never silently disappears.
 function formatBalanceChunk(currency: string, label: string, v: number): string {
-  // Three-tier resolution:
-  //   1. entry-supplied label (parseBalance populated it from
-  //      currenciesConfig) — single source of truth post-vX.X.X+
-  //   2. legacy `cfg().currency.prefixes[code]` lookup — kept for
-  //      plugin transports returning pre-built Balance objects
-  //      without a `label` field on each entry
-  //   3. bare uppercase code (e.g. "EUR10.50") — never blanks, so a
-  //      new provider currency never silently disappears
-  const prefix = label !== "" ? label : prefixForCurrency(currency);
+  const prefix = label !== "" ? label : currency;
   return `${prefix}${formatBalanceValue(v)}`;
 }
 
 export type BalanceLike = {
   isAvailable: boolean;
-  // vX.X.X+ — entries MAY carry a per-entry `label` (populated by
-  // parseBalance from currenciesConfig). Pre-existing plugin shapes
-  // that omit `label` are tolerated: the renderer falls back to the
-  // legacy prefixes lookup. The field is optional in the type so
-  // legacy fixtures don't need a rewrite.
-  entries: ReadonlyArray<{ currency: string; totalBalance: number; label?: string }>;
+  // vX.X.X+ — entries always carry a `label` (populated by
+  // parseBalance from currenciesConfig). Plugin transports that
+  // return a pre-built Balance object must ship the label field
+  // on each entry; the type marks it required so a missing label
+  // surfaces as a compile error rather than a silent blank.
+  entries: ReadonlyArray<{ currency: string; totalBalance: number; label: string }>;
   minValue: number | null;
 };
 
@@ -991,7 +971,7 @@ function formatBalanceEntriesColored(b: BalanceLike, override?: string): string 
   if (!b.isAvailable || b.entries.length === 0 || b.minValue == null) {
     return "";
   }
-  const chunks = b.entries.map((e) => formatBalanceChunk(e.currency, e.label ?? "", e.totalBalance));
+  const chunks = b.entries.map((e) => formatBalanceChunk(e.currency, e.label, e.totalBalance));
   // Color follows the LOWEST entry — most urgent currency drives the hue.
   const color = override ?? colorForBalance(b.minValue);
   return `${color}${chunks.join(" · ")}${RESET}`;

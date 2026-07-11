@@ -43,21 +43,36 @@ describe("isDeepSeekBaseUrl", () => {
   });
 });
 
+// vX.X.X+ — parseBalance now requires a currenciesConfig argument
+// and projects entries from the response via the configured
+// `totalBalance` paths. The legacy `balance_infos[]` shape is
+// NO LONGER supported — tests below all thread a currenciesConfig
+// matching the deepseek built-in default.
+
+const DEEPSEEK_CNY_CONFIG = {
+  CNY: { label: "￥", totalBalance: "currencies.CNY.total_balance" },
+} as const;
+
 describe("parseBalance — single-currency real shape", () => {
   it("parses the captured real fixture", () => {
-    const b = parseBalance(fixture("balance.real.json"));
+    const b = parseBalance(fixture("balance.real.json"), DEEPSEEK_CNY_CONFIG);
     assert.ok(b);
     assert.equal(b!.isAvailable, true);
     assert.equal(b!.entries.length, 1);
     assert.equal(b!.entries[0].currency, "CNY");
     assert.equal(b!.entries[0].totalBalance, 110);
+    assert.equal(b!.entries[0].label, "￥");
     assert.equal(b!.minValue, 110);
   });
 });
 
 describe("parseBalance — multi-currency", () => {
   it("keeps all entries and picks the minimum for color", () => {
-    const b = parseBalance(fixture("balance.multi.json"));
+    const config = {
+      CNY: { label: "￥", totalBalance: "currencies.CNY.total_balance" },
+      USD: { label: "$", totalBalance: "currencies.USD.total_balance" },
+    };
+    const b = parseBalance(fixture("balance.multi.json"), config);
     assert.ok(b);
     assert.equal(b!.isAvailable, true);
     assert.equal(b!.entries.length, 2);
@@ -71,99 +86,96 @@ describe("parseBalance — multi-currency", () => {
 });
 
 describe("parseBalance — unavailable / missing fields", () => {
-  it("is_available=false → isAvailable=false, empty entries", () => {
-    const b = parseBalance({ is_available: false, balance_infos: [] });
+  it("is_available=false → isAvailable=false, entries from config still populated", () => {
+    const b = parseBalance({ is_available: false }, DEEPSEEK_CNY_CONFIG);
     assert.ok(b);
     assert.equal(b!.isAvailable, false);
+    // config has CNY but the response doesn't carry currencies.CNY.total_balance,
+    // so the entry is dropped (path resolution returns null).
     assert.equal(b!.entries.length, 0);
     assert.equal(b!.minValue, null);
   });
-  it("is_available=true but balance_infos=[] → isAvailable=true, no entries", () => {
-    const b = parseBalance({ is_available: true, balance_infos: [] });
-    assert.ok(b);
-    // We honor the is_available flag literally; the renderer falls back to
-    // "not available!" when entries is empty.
-    assert.equal(b!.isAvailable, true);
-    assert.equal(b!.entries.length, 0);
-    assert.equal(b!.minValue, null);
-  });
-  it("missing balance_infos → isAvailable=true, no entries (renderer decides what to show)", () => {
-    const b = parseBalance({ is_available: true });
+  it("empty currenciesConfig → no entries, isAvailable honored", () => {
+    const b = parseBalance({ is_available: true }, {});
     assert.ok(b);
     assert.equal(b!.isAvailable, true);
     assert.equal(b!.entries.length, 0);
     assert.equal(b!.minValue, null);
+  });
+  it("missing is_available → optimistic true (renders entries)", () => {
+    const body = {
+      currencies: { CNY: { total_balance: 110 } },
+    };
+    const b = parseBalance(body, DEEPSEEK_CNY_CONFIG);
+    assert.ok(b);
+    assert.equal(b!.isAvailable, true);
+    assert.equal(b!.entries.length, 1);
+    assert.equal(b!.entries[0].totalBalance, 110);
   });
   it("entries with non-numeric total_balance are dropped", () => {
-    const b = parseBalance({
+    const config = {
+      CNY: { label: "￥", totalBalance: "currencies.CNY.total_balance" },
+      USD: { label: "$", totalBalance: "currencies.USD.total_balance" },
+    };
+    const body = {
       is_available: true,
-      balance_infos: [
-        { currency: "CNY", total_balance: "abc" },
-        { currency: "USD", total_balance: "5" },
-      ],
-    });
+      currencies: {
+        CNY: { total_balance: "abc" },
+        USD: { total_balance: "5" },
+      },
+    };
+    const b = parseBalance(body, config);
     assert.ok(b);
-    assert.equal(b!.isAvailable, true);
     assert.equal(b!.entries.length, 1);
     assert.equal(b!.entries[0].currency, "USD");
     assert.equal(b!.entries[0].totalBalance, 5);
   });
   it("accepts numeric total_balance (not just string)", () => {
-    const b = parseBalance({
+    const body = {
       is_available: true,
-      balance_infos: [{ currency: "CNY", total_balance: 42.5 }],
-    });
+      currencies: { CNY: { total_balance: 42.5 } },
+    };
+    const b = parseBalance(body, DEEPSEEK_CNY_CONFIG);
     assert.ok(b);
     assert.equal(b!.entries[0].totalBalance, 42.5);
   });
   it("rejects non-object input", () => {
-    assert.equal(parseBalance(null), null);
-    assert.equal(parseBalance(undefined), null);
-    assert.equal(parseBalance("string"), null);
-    assert.equal(parseBalance(42), null);
+    assert.equal(parseBalance(null, DEEPSEEK_CNY_CONFIG), null);
+    assert.equal(parseBalance(undefined, DEEPSEEK_CNY_CONFIG), null);
+    assert.equal(parseBalance("string", DEEPSEEK_CNY_CONFIG), null);
+    assert.equal(parseBalance(42, DEEPSEEK_CNY_CONFIG), null);
   });
   it("tolerates truthy/falsy variants of is_available", () => {
-    assert.equal(parseBalance({ is_available: 1, balance_infos: [] })!.isAvailable, true);
-    assert.equal(parseBalance({ is_available: "true", balance_infos: [] })!.isAvailable, true);
-    assert.equal(parseBalance({ is_available: "false", balance_infos: [] })!.isAvailable, false);
+    assert.equal(parseBalance({ is_available: 1 }, DEEPSEEK_CNY_CONFIG)!.isAvailable, true);
+    assert.equal(parseBalance({ is_available: "true" }, DEEPSEEK_CNY_CONFIG)!.isAvailable, true);
+    assert.equal(parseBalance({ is_available: "false" }, DEEPSEEK_CNY_CONFIG)!.isAvailable, false);
   });
-
-  // ----- vX.X.X+ — optimistic-fallback contract on missing is_available -----
-  //
-  // Standard schema (src/__fixtures__/balance.schema.json) drops
-  // `isAvailable` from the required list. Most non-DeepSeek providers
-  // don't ship the flag at all — when a plugin forgets to set it,
-  // parseBalance must treat the response as available so the user
-  // still sees the balance. Only an explicit `false` (or string
-  // `"false"`) lands on the unavailable branch.
-  it("missing is_available key → fallback true, renders entries", () => {
-    const b = parseBalance({
-      balance_infos: [{ currency: "CNY", total_balance: "110.00" }],
-    });
+  it("missing currencies object → no entries (paths resolve to null)", () => {
+    const b = parseBalance({ is_available: true }, DEEPSEEK_CNY_CONFIG);
     assert.ok(b);
-    assert.equal(b!.isAvailable, true);
-    assert.equal(b!.entries.length, 1);
-    assert.equal(b!.entries[0].currency, "CNY");
-    assert.equal(b!.entries[0].totalBalance, 110);
+    assert.equal(b!.entries.length, 0);
+    assert.equal(b!.minValue, null);
   });
-  it("is_available: null → fallback true, renders entries", () => {
-    const b = parseBalance({
+  it("is_available: null → optimistic true, renders entries", () => {
+    const body = {
       is_available: null,
-      balance_infos: [{ currency: "CNY", total_balance: 50 }],
-    });
+      currencies: { CNY: { total_balance: 50 } },
+    };
+    const b = parseBalance(body, DEEPSEEK_CNY_CONFIG);
     assert.ok(b);
     assert.equal(b!.isAvailable, true);
     assert.equal(b!.entries.length, 1);
   });
-  it("is_available: false (with entries) → does NOT render entries (minValue still computed)", () => {
+  it("is_available: false (with entries) → isAvailable=false; minValue still computed", () => {
     // The unavailable branch still surfaces entries + minValue so the
     // renderer can choose to display a "frozen" / "suspended" hint with
     // the balance list attached. The contract is the `isAvailable`
     // flag, not the entries list — renderer's call.
-    const b = parseBalance({
+    const body = {
       is_available: false,
-      balance_infos: [{ currency: "CNY", total_balance: 110 }],
-    });
+      currencies: { CNY: { total_balance: 110 } },
+    };
+    const b = parseBalance(body, DEEPSEEK_CNY_CONFIG);
     assert.ok(b);
     assert.equal(b!.isAvailable, false);
     assert.equal(b!.entries.length, 1);
@@ -171,7 +183,7 @@ describe("parseBalance — unavailable / missing fields", () => {
   });
   it("case-insensitive string 'FALSE' → false (preserve v0.5.x tolerance)", () => {
     assert.equal(
-      parseBalance({ is_available: "FALSE", balance_infos: [] })!.isAvailable,
+      parseBalance({ is_available: "FALSE" }, DEEPSEEK_CNY_CONFIG)!.isAvailable,
       false,
     );
   });
@@ -195,7 +207,7 @@ function installMockFetch(recorder: RecordedCall[]) {
     return new Response(
       JSON.stringify({
         is_available: true,
-        balance_infos: [{ currency: "CNY", total_balance: "5.00" }],
+        currencies: { CNY: { total_balance: "5.00" } },
       }),
       { status: 200, headers: { "content-type": "application/json" } },
     ) as unknown as Response;
