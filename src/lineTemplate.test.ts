@@ -280,7 +280,7 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
     // so the first m_age instance claims the slot, every subsequent
     // instance (including the fallback) skips.
     __resetForTest({
-      statuslineTemplate:["m_template|plan_alt|mode:plan"],
+      statuslineTemplate:["m_template|plan_alt|type:quota"],
       lineTemplates:{
         plan_alt: ["m_age"],
         balance: [],
@@ -316,7 +316,7 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
     // ONE ⛓️‍💥 should fire. The ageEmittedRef is shared across the
     // whole render tree.
     __resetForTest({
-      statuslineTemplate:["m_template|outer|mode:plan", "m_age"],
+      statuslineTemplate:["m_template|outer|type:quota", "m_age"],
       lineTemplates:{
         outer: ["s_space", "m_windowQuota|term:short", "s_space", "m_age"],
         balance: [],
@@ -395,7 +395,7 @@ describe("lineTemplate — m_modeLabel picks modeLabels.balance for the deepseek
   // balance-form template via `__resetForTest` below.
   it("uses 'Balance:' by default (preserves v0.2.16 label)", () => {
     __resetForTest({
-      statuslineTemplate: ["m_template|_balance_simple|mode:balance"],
+      statuslineTemplate: ["m_template|_balance_simple|type:balance"],
     });
     const line = renderProviderLine("deepseek", {
       mode: "used",
@@ -411,7 +411,7 @@ describe("lineTemplate — m_modeLabel picks modeLabels.balance for the deepseek
   it("uses the configured modeLabels.balance override", () => {
     __resetForTest({
       modeLabels: { used: "Usage:", remaining: "Remain:", balance: "Wallet:" },
-      statuslineTemplate: ["m_template|_balance_simple|mode:balance"],
+      statuslineTemplate: ["m_template|_balance_simple|type:balance"],
     });
     try {
       const line = renderProviderLine("deepseek", {
@@ -1982,7 +1982,7 @@ describe("m_template — end-to-end expansion on minimax (plan mode)", () => {
       lineTemplates: {
         shared: ["m_modeLabel", "s_space", "m_windowQuota|term:short", "s_space", "m_countdown|term:short"],
       },
-      statuslineTemplate: ["m_template|shared|mode:plan"],
+      statuslineTemplate: ["m_template|shared|type:quota"],
     });
   });
   afterEach(() => __resetForTest());
@@ -1997,7 +1997,7 @@ describe("m_template — end-to-end expansion on minimax (plan mode)", () => {
       stale: false,
       version: "",
     });
-    // mode:plan matches the minimax provider's mode key, so the
+    // type:quota matches the minimax provider's mode key, so the
     // shared fragment renders and we see 5h label + 38%.
     assert.ok(strip(line).includes("5h"), `got: ${line}`);
     assert.ok(strip(line).includes("38%"), `got: ${line}`);
@@ -2010,16 +2010,16 @@ describe("m_template — mode filter drops on mismatch (deepseek vs plan)", () =
       lineTemplates: {
         shared: ["m_modeLabel", "s_space", "m_windowQuota|term:short"],
       },
-      // Combine m_template:shared:mode:plan (will drop on deepseek)
+      // Combine m_template:shared:type:quota (will drop on deepseek)
       // with an unconditional m_balance chunk. The m_balance chunk
       // is the deepseek-only default and proves the rest of the
       // template still renders when one chunk is filtered out.
-      statuslineTemplate: ["m_template|shared|mode:plan", "s_space", "m_balance"],
+      statuslineTemplate: ["m_template|shared|type:quota", "s_space", "m_balance"],
     });
   });
   afterEach(() => __resetForTest());
 
-  it("mode:plan chunk drops on a deepseek provider (providerType is 'balance')", () => {
+  it("type:quota chunk drops on a deepseek provider (providerType is 'balance')", () => {
     const line = renderProviderLine("deepseek", {
       mode: "used",
       nowMs: Date.now(),
@@ -2029,7 +2029,7 @@ describe("m_template — mode filter drops on mismatch (deepseek vs plan)", () =
       version: "",
     });
     // The shared chunk is dropped because providerType=balance
-    // and the chunk wants mode:plan. No 5h content should leak.
+    // and the chunk wants type:quota. No 5h content should leak.
     assert.ok(!strip(line).includes("5h"), `got: ${line}`);
     // The m_balance chunk should still render.
     assert.ok(strip(line).includes("$25"), `got: ${line}`);
@@ -2043,8 +2043,8 @@ describe("m_template — mode filter drops on mismatch (deepseek vs plan)", () =
 // (`context` / `git_info` / `realtime` / `tokens_acc` /
 // `tokens_stat`) silently disappeared on the deepseek provider
 // because the bare-default "plan" filter dropped them on
-// providerType === "balance". Explicit `|mode:plan` /
-// `|mode:balance` is still strict-match (see describe above).
+// providerType === "balance". Explicit `|type:quota` /
+// `|type:balance` is still strict-match (see describe above).
 describe("m_template — provider-agnostic fragment (no |mode arg, v0.8.37)", () => {
   beforeEach(() => {
     __resetForTest({
@@ -2285,7 +2285,7 @@ describe("lineTemplate — two-class separator (| + : or =)", () => {
     // a character in the name, not a separator.
     __resetForTest({
       lineTemplates: { "a:b": ["m_modeLabel"] },
-      statuslineTemplate: ["m_template|a:b|mode:plan"],
+      statuslineTemplate: ["m_template|a:b|type:quota"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),

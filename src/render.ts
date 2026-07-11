@@ -1166,7 +1166,7 @@ type RenderContext = {
   // read by formatOneChunk. Null when stdin lacks used_percentage.
   contextWindow: Window | null;
   // v0.4.x — the provider's TYPE discriminator. Populated by
-  // renderProviderLine from providerTypeFor. `"plan"` for
+  // renderProviderLine from providerTypeFor. `"quota"` for
   // Quota providers, `"balance"` for BALANCE providers, and
   // `"unknown"` when ANTHROPIC_BASE_URL doesn't match any
   // supported provider.
@@ -1176,7 +1176,7 @@ type RenderContext = {
   // avoid collision with the display-mode field `mode` (`used` /
   // `remaining` / `balance`); the type discriminator is a TYPE, not
   // a mode.
-  providerType: "plan" | "balance" | "unknown";
+  providerType: "quota" | "balance" | "unknown";
   // v0.6.0+ — mutable cross-recursion dedup ref for the m_age module.
   // Initialized to `{ value: false }` by renderProviderLine and
   // propagated by reference through any nested `m_template:`
@@ -1226,8 +1226,8 @@ type RenderContext = {
 // formatBalanceLine into a single `renderDataLine`, the per-provider
 // gate that used to live in dispatch.ts:buildProviderLine now lives
 // here: a bare `m_window5h` in a balance provider's template
-// silently drops (the module is type:`"plan"`), and `m_balance` in a
-// plan provider's template silently drops too. Modules without a
+// silently drops (the module is type:`"quota"`), and `m_balance` in a
+// quota provider's template silently drops too. Modules without a
 // type tag (m_token*, m_age, m_version, …) are provider-agnostic
 // and emit on every ctx.
 //
@@ -1236,20 +1236,16 @@ type RenderContext = {
 // canonical; the `type` field is read-only metadata on the same
 // record.
 //
-// Renamed from `mode` to `type` because `mode` is reserved for the
-// display-mode field on RenderContext (`used` / `remaining` /
-// `balance`). The provider discriminator is a TYPE, not a mode.
-//
 // v0.4.x — `type` widened to include `"unknown"` (a hypothetical
 // `m_xxx:type:"unknown"` would only emit when ANTHROPIC_BASE_URL
 // doesn't match any configured provider). No module currently
-// uses this — plan-only and balance-only modules drop on unknown
+// uses this — quota-only and balance-only modules drop on unknown
 // because their `type` value doesn't match. Reserved for future
 // modules that want to render only in the unregistered case
 // (e.g. an m_setupHint module that nudges the user toward running
 // `/topgauge-cc:install`).
 type Module = ((ctx: RenderContext) => string | null) & {
-  type?: "plan" | "balance" | "unknown";
+  type?: "quota" | "balance" | "unknown";
 };
 
 // v0.8.x — cwf-tickStatus-v2. Per-tick state lives in
@@ -1886,24 +1882,15 @@ function placeholderAcc(
 }
 
 const MODULES: Record<string, Module> = {
-  // The leading prefix. For the plan path, picks the mode-aware
-  // label ("Usage:" / "Remain:"). For the balance path, the label
-  // is the dedicated modeLabels.balance entry (default "Balance:").
-  // Returns the label WITHOUT a trailing space — the surrounding
-  // s_0 separator token provides spacing.
-  // The leading prefix. For the plan path, picks the mode-aware
-  // label ("Usage:" / "Remain:"). For the balance path, the label
-  // is the dedicated modeLabels.balance entry (default "Balance:").
   // v0.4.x — body routes on ctx.providerType. providerType === "balance"
-  // gets the dedicated Balance label; providerType === "plan" or
+  // gets the dedicated Balance label; providerType === "quota" or
   // "unknown" both get the display-mode label (`used` / `remaining`).
-  // "unknown" sharing the plan label is intentional — there's no
-  // plan-shaped provider configured, but if the user's display mode
+  // "unknown" sharing the quota label is intentional — there's no
+  // quota-shaped provider configured, but if the user's display mode
   // is "used" we still want "Usage:" as the prefix. The surrounding
-  // m_window5h/m_balance modules carry the per-provider `type`
-  // filter; m_modeLabel doesn't need to.
-  // Returns the label WITHOUT a trailing space — the surrounding
-  // s_0 separator token provides spacing.
+  // m_windowQuota / m_balance modules carry the per-provider `type`
+  // filter; m_modeLabel doesn't need to. Returns the label WITHOUT a
+  // trailing space — the surrounding s_0 separator token provides spacing.
   m_modeLabel: (c) => wrapPlainDefault("m_modeLabel",
     c.providerType === "balance"
       ? cfg().modeLabels.balance
@@ -1924,7 +1911,7 @@ m_windowQuota: Object.assign(
     if (!w) return placeholderBare("m_windowQuota", c);
     return formatOneChunk(w, c.mode, cfg().bar.width, c.stale);
   }),
-  { type: "plan" as const },
+  { type: "quota" as const },
 ),
   // Reset-suffix portion of the shortInterval (default term). The
   // label is read from the live `Interval.label` rather than being
@@ -1943,7 +1930,7 @@ m_countdown: Object.assign(
     }
     return wrapPlainDefault("m_countdown", formatOneResetSuffix(iv.label, w, c.nowMs), undefined);
   }),
-  { type: "plan" as const },
+  { type: "quota" as const },
 ),
   // v0.9.0+ — quota module. Reads the quota group from
   // `c.shortInterval` (default term; bare form), and the chosen
@@ -1963,7 +1950,7 @@ m_quota: Object.assign(
     if (!parts) return placeholderBare("m_quota", c);
     return wrapQuotaBody(parts, c.mode, undefined);
   }),
-  { type: "plan" as const },
+  { type: "quota" as const },
 ),
   // The DeepSeek balance chunk. v6.x: when there's nothing to
   // render (unavailable / empty / no min), emit a "balance:n/a"
@@ -5111,7 +5098,7 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   // v0.4.0+ — sub-template reference. First argument is the key
   // into cfg().lineTemplates (the user's reusable-fragment
   // registry). Optional `:type|<plan|balance>` filter (default
-  // "plan"): when the current provider's mode key does not match,
+  // "quota"): when the current provider's type key does not match,
   // the chunk drops so adjacent separators are skipped. We do
   // NOT accept `:color|` here — propagating a color across an
   // expanded template requires a more invasive design (the
@@ -5119,12 +5106,10 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   // re-styled). Users wanting per-chunk color put `:color|` on
   // the inner modules inside their lineTemplates entry.
   //
-  // v0.8.15+ — `type` is the recommended name (matches
-  // ctx.providerType semantics — TYPE discriminator, not mode).
-  // The legacy `mode` arg is still accepted for back-compat with
-  // pre-v0.8.15 configs (`m_template:plan:mode|plan`). When both
-  // are present on the same token, `type` wins (it's the newer
-  // name; users with both likely have a typo).
+  // m_template's `type` named arg is the providerType filter.
+  // Accepts `quota` or `balance` — matches ctx.providerType
+  // values verbatim. NOT forwarded via passThrough (m_template-
+  // local concern, not an arg value to push to inner modules).
   m_template: {
     implicit: {
       name: "key",
@@ -5132,16 +5117,7 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
         typeof raw === "string" && raw !== "" ? raw : null,
     },
     named: {
-      // Intrinsic — providerType filter (recommended name). NOT
-      // forwarded via passThrough (it's a m_template-local
-      // concern, not an arg value to push to inner modules).
-      type: (raw) => (raw === "plan" || raw === "balance" ? raw : null),
-      // Intrinsic alias — same resolver as `type`. Accepted for
-      // back-compat with pre-v0.8.15 configs that used
-      // `m_template:plan:mode|plan`. New templates should write
-      // `type`; `mode` is deprecated and will be removed in a
-      // future major release. NOT forwarded via passThrough either.
-      mode: (raw) => (raw === "plan" || raw === "balance" ? raw : null),
+      type: (raw) => (raw === "quota" || raw === "balance" ? raw : null),
       // v0.8.7+ — passthrough whitelist. Each of these named
       // params is accepted on `m_template` and forwarded to the
       // inner module list as a fallback when the inner module's
@@ -5173,19 +5149,6 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
     },
   },
 };
-
-// NOTE: the `mode:` named arg on `m_template` is the legacy name
-// preserved for back-compat with existing config.json files that
-// reference `m_template:plan:mode|plan`. The recommended name is
-// `type` (v0.8.15+) — same resolver, same semantics, matches
-// ctx.providerType (a TYPE discriminator, not a mode). When both
-// `type` and `mode` are present on the same token, `type` wins
-// (the renderer-side check is `(params.type ?? params.mode) ?? "plan"`).
-// The param value still parses "plan" / "balance" (the renderer-side
-// filter only matches the registered TYPE values, not the new
-// "unknown" — unknown providers never reach this branch because
-// dispatch wires a default lineTemplate that doesn't reference
-// m_template).
 
 // Pure helper: wrap a plain-text body in `<color>…<RESET>`. Returns
 // the body unchanged when `color` is undefined. Safe ONLY for bodies
@@ -5335,10 +5298,10 @@ function passThroughScope(
 // Renamed from INLINE_MODE_FILTERS to INLINE_TYPE_FILTERS in v0.4.x
 // to avoid collision with the display-mode field (`used` /
 // `remaining` / `balance`).
-const INLINE_TYPE_FILTERS: Partial<Record<string, "plan" | "balance" | "unknown">> = {
-  m_windowQuota: "plan",
-  m_countdown: "plan",
-  m_quota: "plan",
+const INLINE_TYPE_FILTERS: Partial<Record<string, "quota" | "balance" | "unknown">> = {
+  m_windowQuota: "quota",
+  m_countdown: "quota",
+  m_quota: "quota",
   m_balance: "balance",
 };
 
@@ -6438,19 +6401,18 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
       );
       return null;
     }
-    // v0.8.15+ — `type` is the recommended intrinsic name; `mode`
-    // is the legacy alias. When both are present, `type` wins (the
-    // user likely typo'd one of them — prefer the newer name). The
-    // comparison target is ctx.providerType. Explicit `|type:plan` /
-    // `|mode:balance` / etc. is strict-match against ctx.providerType
-    // — an unknown provider (matchProvider returned null) does NOT
-    // match either, so an explicit-mode fragment is silently dropped
-    // when ANTHROPIC_BASE_URL doesn't match a configured provider.
-    // That's intentional: a fragment gated on `mode:plan` is asking
-    // for plan-only data, which doesn't exist on an unknown provider.
+    // v0.8.15+ — `type` is the only intrinsic name; matches
+    // ctx.providerType values verbatim (`quota` / `balance`).
+    // Explicit `|type:quota` / `|type:balance` is strict-match
+    // against ctx.providerType — an unknown provider (matchProvider
+    // returned null) does NOT match either, so an explicit-type
+    // fragment is silently dropped when ANTHROPIC_BASE_URL doesn't
+    // match a configured provider. That's intentional: a fragment
+    // gated on `type:quota` is asking for quota-only data, which
+    // doesn't exist on an unknown provider.
     //
-    // v0.8.37 — when the user does NOT pass `type` OR `mode`, the
-    // fragment is provider-agnostic and renders under "plan" /
+    // v0.8.37 — when the user does NOT pass `type`, the
+    // fragment is provider-agnostic and renders under "quota" /
     // "balance" providers (context-level templates like `context` /
     // `git_info` / `realtime` / `tokens_acc` / `tokens_stat`
     // typically fall in this bucket — they read from stdin +
@@ -6474,22 +6436,20 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // every provider" promise for users who organize their
     // template as a top-level statuslineTemplate composed of named
     // fragments. Now the agnostic gate has no provider-type filter
-    // at all — only explicit `|mode:…` does strict-match.
-    const wantExplicit =
-      (params.type as "plan" | "balance" | undefined) ??
-      (params.mode as "plan" | "balance" | undefined);
+    // at all — only explicit `|type:…` does strict-match.
+    const wantExplicit = params.type as "quota" | "balance" | undefined;
     if (wantExplicit != null && ctx.providerType !== wantExplicit) return null;
     // v0.8.7+ — passthrough: build a passThrough view from every
-    // param except the THREE intrinsics (`key` is the lookup target;
-    // `type` + `mode` are the providerType filter, both names of the
-    // same intrinsic — both are m_template-local concerns, NOT
-    // values to push to inner modules). Nested m_template is
+    // param except the TWO intrinsics (`key` is the lookup target;
+    // `type` is the providerType filter — a m_template-local
+    // concern, NOT a value to push to inner modules). Nested
+    // m_template is
     // impossible because config.ts strips them at load time, so we
     // don't need to merge with a pre-existing passThrough on the
     // outer context.
     const passThrough: Record<string, ResolvedValue> = {};
     for (const [k, v] of Object.entries(params)) {
-      if (k === "key" || k === "type" || k === "mode") continue;
+      if (k === "key" || k === "type") continue;
       passThrough[k] = v as ResolvedValue;
     }
     const innerCtx: RenderContext = { ...ctx, passThrough };
@@ -6980,7 +6940,7 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         piece = tok;
       } else {
         // v0.4.x — provider-type filter. Modules tagged with a type
-        // (`m_windowQuota: "plan"`, `m_balance: "balance"`, …) silently
+        // (`m_windowQuota: "quota"`, `m_balance: "balance"`, …) silently
         // drop on a non-matching provider type. Untagged modules
         // (m_token*, m_age, m_version, …) skip the check and emit
         // on every ctx — those are provider-agnostic by design.
@@ -7080,7 +7040,7 @@ export function renderProviderLine(
         : null;
   // v0.2.21: template picked by provider TYPE via providers.ts, not
   // by provider-name literal. Same outward behavior — defaults put
-  // Quota at "plan" and BALANCE at "balance" — but the
+  // Quota at "quota" and BALANCE at "balance" — but the
   // indirection lets a third provider slot in without code changes.
   //
   // v0.8.14+ — `statuslineTemplate` is always `string[]`. The legacy
@@ -7093,7 +7053,7 @@ export function renderProviderLine(
   //
   // The provider type is still threaded through to the full ctx so
   // per-module `type` filters can compare against it.
-  // providerTypeFor returns "plan" / "balance" / "unknown"
+  // providerTypeFor returns "quota" / "balance" / "unknown"
   // (replaces the older templateKeyForProvider name).
   const providerType = providerTypeFor(provider);
   const cfgSnap = cfg();

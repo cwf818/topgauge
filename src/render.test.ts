@@ -734,11 +734,11 @@ describe("colorForBalance — 5-band thresholds (5/10/20/50)", () => {
 describe("formatBalanceLine — single-currency", () => {
   // v0.8.14 — `formatBalanceLine` delegates to `renderProviderLine`
   // with the "deepseek" provider. The default `statuslineTemplate`
-  // is `["m_template|_1line"]` (plan-mode), which silently drops on
+  // is `["m_template|_1line"]` (quota-mode), which silently drops on
   // a balance provider. Tests pin the balance preset explicitly.
   beforeEach(() => {
     __resetForTest({
-      statuslineTemplate: ["m_template|_balance_simple|mode:balance"],
+      statuslineTemplate: ["m_template|_balance_simple|type:balance"],
     });
   });
   afterEach(() => __resetForTest());
@@ -798,7 +798,7 @@ describe("formatBalanceLine — multi-currency joined by ·", () => {
   // single-currency describe above).
   beforeEach(() => {
     __resetForTest({
-      statuslineTemplate: ["m_template|_balance_simple|mode:balance"],
+      statuslineTemplate: ["m_template|_balance_simple|type:balance"],
     });
   });
   afterEach(() => __resetForTest());

@@ -37,16 +37,16 @@ const pinDefaults = () =>
     },
     timeFormat: { minUnit: "m", maxUnitCount: 2 },
     // v0.8.14 — `statuslineTemplate` is array-only. The default
-    // `["m_template|_1line"]` defaults to `mode:plan` and silently
+    // `["m_template|_1line"]` defaults to `type:quota` and silently
     // drops on a BALANCE provider (DeepSeek). Tests that exercise
     // DeepSeek rendering need the balance preset explicitly. We
-    // pin both: the plan default (for minimax tests that don't
+    // pin both: the quota default (for minimax tests that don't
     // override) and the balance default (for deepseek tests that
     // don't override). Each test that wants a different template
     // overrides `statuslineTemplate` directly via the second arg
     // to `__resetForTest`.
     statuslineTemplate: [
-      "m_template|_balance_simple|mode:balance",
+      "m_template|_balance_simple|type:balance",
       "s_newline",
       "m_template|_1line",
     ],

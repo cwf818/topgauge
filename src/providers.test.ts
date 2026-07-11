@@ -333,8 +333,8 @@ describe("providerTypeFor (formerly templateKeyForProvider)", () => {
   // `providerTypeFor("not-registered")` both return `"unknown"`,
   // letting the renderer's per-module `type` filter handle the
   // distinction.
-  it("returns 'plan' for Quota providers", () => {
-    assert.equal(providerTypeFor("minimax"), "plan");
+  it("returns 'quota' for Quota providers", () => {
+    assert.equal(providerTypeFor("minimax"), "quota");
   });
 
   it("returns 'balance' for BALANCE providers", () => {
@@ -348,7 +348,7 @@ describe("providerTypeFor (formerly templateKeyForProvider)", () => {
 
   // Back-compat: the old function name is kept as a deprecated alias.
   it("templateKeyForProvider alias still works", () => {
-    assert.equal(templateKeyForProvider("minimax"), "plan");
+    assert.equal(templateKeyForProvider("minimax"), "quota");
     assert.equal(templateKeyForProvider("deepseek"), "balance");
     assert.equal(templateKeyForProvider(null), "unknown");
   });

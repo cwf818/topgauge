@@ -38,7 +38,7 @@ const BALANCE = {
   minValue: 25,
 };
 
-const ctxFor = (providerType: "plan" | "balance" | "unknown") => ({
+const ctxFor = (providerType: "quota" | "balance" | "unknown") => ({
   mode: "used" as const,
   nowMs: 1_000_000,
   shortInterval: { windowId: "5h" as const, label: "5h", startAt: null, endAt: null, intervalMs: null, usedPercent: 30, remainingPercent: 70, remainingQuota: null, usedQuota: null, limitQuota: null },
@@ -57,7 +57,7 @@ beforeEach(() => __resetForTest());
 
 describe("MODULES path: per-provider type filter", () => {
   it("m_windowQuota|term:short renders on plan ctx; drops on balance ctx", () => {
-    const planLines = renderTemplate(["m_windowQuota|term:short"], ctxFor("plan"));
+    const planLines = renderTemplate(["m_windowQuota|term:short"], ctxFor("quota"));
     assert.equal(planLines.length, 1);
     assert.ok(planLines[0]!.length > 0, "plan ctx must render the bar chunk");
 
@@ -67,7 +67,7 @@ describe("MODULES path: per-provider type filter", () => {
 
   it("m_windowQuota|term:mid / m_countdown|term:short / m_countdown|term:mid all plan-only", () => {
     for (const mod of ["m_windowQuota|term:mid", "m_countdown|term:short", "m_countdown|term:mid"]) {
-      const planLines = renderTemplate([mod], ctxFor("plan"));
+      const planLines = renderTemplate([mod], ctxFor("quota"));
       assert.ok(planLines.length === 1, `${mod}: plan ctx rendered`);
       assert.ok(planLines[0]!.length > 0, `${mod}: plan ctx non-empty`);
       const balanceLines = renderTemplate([mod], ctxFor("balance"));
@@ -84,12 +84,12 @@ describe("MODULES path: per-provider type filter", () => {
     assert.equal(balanceLines.length, 1);
     assert.ok(balanceLines[0]!.includes("$25"), "balance ctx renders $25");
 
-    const planLines = renderTemplate(["m_balance"], ctxFor("plan"));
+    const planLines = renderTemplate(["m_balance"], ctxFor("quota"));
     assert.deepEqual(planLines, [], "m_balance must drop on plan ctx");
   });
 
   it("provider-agnostic modules (m_version) render on ALL ctxs", () => {
-    const planLines = renderTemplate(["m_version"], ctxFor("plan"));
+    const planLines = renderTemplate(["m_version"], ctxFor("quota"));
     const balanceLines = renderTemplate(["m_version"], ctxFor("balance"));
     const unknownLines = renderTemplate(["m_version"], ctxFor("unknown"));
     assert.equal(planLines.length, 1);
@@ -111,7 +111,7 @@ describe("MODULES path: per-provider type filter", () => {
     // "unknown" ctx: routes through the same branch as "plan" (the
     // display-mode label), since the user still has a modeLabels
     // entry for that display mode. Asserted below.
-    const plan = renderTemplate(["m_modeLabel"], ctxFor("plan"));
+    const plan = renderTemplate(["m_modeLabel"], ctxFor("quota"));
     const balance = renderTemplate(["m_modeLabel"], ctxFor("balance"));
     const unknown = renderTemplate(["m_modeLabel"], ctxFor("unknown"));
     assert.equal(plan.length, 1);
@@ -161,7 +161,7 @@ describe("inline-args path: per-provider type filter", () => {
   it("m_windowQuota|term:short|color:red drops on balance ctx", () => {
     const planLines = renderTemplate(
       ["m_windowQuota|term:short|color:red"],
-      ctxFor("plan"),
+      ctxFor("quota"),
     );
     assert.equal(planLines.length, 1);
     assert.ok(planLines[0]!.includes("30%"));
@@ -185,18 +185,18 @@ describe("inline-args path: per-provider type filter", () => {
     assert.ok(balanceLines[0]!.includes("$25"));
     const planLines = renderTemplate(
       ["m_balance|color:darkGreen"],
-      ctxFor("plan"),
+      ctxFor("quota"),
     );
     assert.deepEqual(planLines, []);
   });
 
   it("m_balance (bare) drops on plan ctx (mirrors MODULES path)", () => {
-    const planLines = renderTemplate(["m_balance"], ctxFor("plan"));
+    const planLines = renderTemplate(["m_balance"], ctxFor("quota"));
     assert.deepEqual(planLines, []);
   });
 
   it("provider-agnostic inline form (m_version:color:red) renders on ALL ctxs", () => {
-    const plan = renderTemplate(["m_version|color:red"], ctxFor("plan"));
+    const plan = renderTemplate(["m_version|color:red"], ctxFor("quota"));
     const balance = renderTemplate(["m_version|color:red"], ctxFor("balance"));
     const unknown = renderTemplate(["m_version|color:red"], ctxFor("unknown"));
     assert.equal(plan.length, 1);
@@ -232,7 +232,7 @@ describe("composition: a balance ctx with mixed-type template", () => {
     const plan = renderTemplate(
       ["m_modeLabel", "s_space", "m_windowQuota|term:short", "s_space", "m_windowQuota|term:mid",
         "s_space", "m_balance"],
-      ctxFor("plan"),
+      ctxFor("quota"),
     );
     assert.equal(plan.length, 1);
     const text = strip(plan[0]!);

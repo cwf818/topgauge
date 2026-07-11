@@ -128,38 +128,33 @@ export function failLabelForProvider(provider: Provider): string {
 }
 
 // Map a provider's TYPE to the renderer-facing type discriminator.
-// `Quota → "plan"`, `BALANCE → "balance"`, and null entry (no
+// `Quota → "quota"`, `BALANCE → "balance"`, and null entry (no
 // matching ANTHROPIC_BASE_URL) → `"unknown"`. The renderer uses
 // this as the per-module `type` filter comparison target, and as
 // the m_modeLabel routing key. Replaces the older
-// `provider === "minimax" ? cfg().lineTemplate.plan : …` switch in
-// render.ts, AND replaces the older `templateKeyForProvider` name
-// — kept as a deprecated alias below for the build's lifetime.
+// `templateKeyForProvider` name — kept as a deprecated alias below
+// for the build's lifetime.
 //
 // v0.4.x — return type widened to include `"unknown"`. Previously
 // null entry fell through to `"plan"` so a user with no configured
-// provider but a default plan template still rendered the plan
+// provider but a default quota template still rendered the quota
 // line. With Phase 2 of the provider-agnostic refactor we want a
 // distinct value here so:
 //
 //   1. `m_modeLabel` can choose a dedicated label for the "no
-//      provider configured" case (vs "this provider is plan type").
+//      provider configured" case (vs "this provider is quota type").
 //   2. Per-module `type` filters can opt-in to the unknown case
-//      independently of plan. (None exist today; reserved for
+//      independently of quota. (None exist today; reserved for
 //      future use.)
-//   3. `m_template:plan:mode:plan` and the equivalent `m_window5h`
-//      module still drop on unknown — that's the same as plan-only
+//   3. `m_template|<key>|type|quota` and the equivalent `m_windowQuota`
+//      module still drop on unknown — that's the same as quota-only
 //      modules dropping on balance.
-//
-// Note: `mode` is reserved for the display-mode field on
-// RenderContext (`used` / `remaining` / `balance`); the per-module
-// discriminator is now `type` to avoid collision. See render.ts.
 export function providerTypeFor(
   provider: Provider,
-): "plan" | "balance" | "unknown" {
+): "quota" | "balance" | "unknown" {
   const entry = getProviderEntry(provider);
   if (!entry) return "unknown";
-  if (entry.TYPE === "Quota") return "plan";
+  if (entry.TYPE === "Quota") return "quota";
   return "balance";
 }
 

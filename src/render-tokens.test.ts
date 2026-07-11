@@ -135,7 +135,7 @@ const ctxFor = (
   shortInterval: Interval | null = null,
   midInterval: Interval | null = null,
   longInterval: Interval | null = null,
-  providerType: "plan" | "balance" | "unknown" = "plan",
+  providerType: "quota" | "balance" | "unknown" = "quota",
 ) => ({
   mode: "used" as const,
   nowMs: 1_000_000,
@@ -155,7 +155,7 @@ const ctxFor = (
       ? { pct: tokens.contextWindow.contextUsedPercent }
       : null,
   // v0.4.x — the provider TYPE discriminator. Tests that don't care
-  // about type filtering use the default "plan"; m_template coverage
+  // about type filtering use the default "quota"; m_template coverage
   // in §5.3 overrides this. Renamed from `providerModeKey` (v0.4.x-
   // beta) to avoid collision with the display-mode field.
   providerType,
@@ -3434,7 +3434,7 @@ describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
       lineTemplates: { foo: ["m_windowQuota|term:short"] },
     });
     const out = renderTemplate(
-      ["m_template|foo|type:plan"],
+      ["m_template|foo|type:quota"],
       ctxFor(null, null, null, null, "balance"),
     );
     // Dropped because providerType=balance but type wants plan.
@@ -3448,70 +3448,59 @@ describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
       lineTemplates: { foo: ["m_windowQuota|term:short"] },
     });
     const out = renderTemplate(
-      ["m_template|foo|type:plan"],
-      ctxFor(null, legacyToIv({ pct: 42 }), null, null, "plan"),
+      ["m_template|foo|type:quota"],
+      ctxFor(null, legacyToIv({ pct: 42 }), null, null, "quota"),
     );
     assert.match(out.map(strip).join("\n"), /42%/);
   });
 
-  it("m_template|foo|mode|plan (legacy mode arg, v0.8.15+ back-compat) → same as type|plan", () => {
-    // v0.8.15 — legacy `mode` arg is still accepted (same resolver,
-    // same semantics). Pre-v0.8.15 configs that wrote
-    // `m_template|<key>|mode|plan` keep rendering byte-for-byte.
+  it("m_template|foo|mode|quota — `mode` is now an unknown arg (no compat shim)", () => {
+    // `mode` was the legacy name for `type`. It was removed without
+    // a back-compat alias — see CLAUDE.md "mode→type rename, plan→quota".
+    // parseInlineArgs rejects unknown args with badarg → warn + drop,
+    // so a token containing `mode|quota` fails loud and the chunk
+    // doesn't render. Confirmed by the empty array below.
     __resetForTest({
       lineTemplates: { foo: ["m_windowQuota|term:short"] },
     });
-    const outLegacy = renderTemplate(
-      ["m_template|foo|mode:plan"],
-      ctxFor(null, legacyToIv({ pct: 42 }), null, null, "plan"),
+    const out = renderTemplate(
+      ["m_template|foo|mode:quota"],
+      ctxFor(null, legacyToIv({ pct: 42 }), null, null, "quota"),
     );
-    const outType = renderTemplate(
-      ["m_template|foo|type:plan"],
-      ctxFor(null, legacyToIv({ pct: 42 }), null, null, "plan"),
-    );
-    assert.equal(
-      outLegacy.map(strip).join("\n"),
-      outType.map(strip).join("\n"),
-      "legacy mode|plan must render identically to type|plan",
-    );
-    assert.match(outLegacy.map(strip).join("\n"), /42%/);
+    assert.deepEqual(out, []);
   });
 
-  it("m_template|foo|type|X|mode|Y (both present) — type wins (recommendation: prefer type)", () => {
-    // v0.8.15+ — when both `type` and `mode` are present on the
-    // same token, the renderer-side check prefers `type`. A user
-    // who accidentally writes both has a typo in one of them;
-    // preferring the newer name keeps the renderer consistent.
+  it("m_template|foo|type|quota|type|balance (same arg twice) — last-value-wins for parser", () => {
+    // The parser maps to a flat object, so a repeated `type` arg
+    // resolves to the last value. This is documented inline-args
+    // behavior. The test pins that `type:quota|type:balance` ends
+    // up matching `balance` (last value wins).
     __resetForTest({
       lineTemplates: { foo: ["m_windowQuota|term:short"] },
     });
-    // type=plan, mode=balance → plan wins (m_windowQuota|term:short renders
-    // because the inner ctx.providerType is "plan" which matches).
-    const outPlanWins = renderTemplate(
-      ["m_template|foo|type:plan|mode:balance"],
-      ctxFor(null, legacyToIv({ pct: 42 }), null, null, "plan"),
+    const outBalance = renderTemplate(
+      ["m_template|foo|type:quota|type:balance"],
+      ctxFor(null, legacyToIv({ pct: 42 }), null, null, "quota"),
     );
-    assert.match(outPlanWins.map(strip).join("\n"), /42%/);
-    // type=balance, mode=plan → balance wins (the plan context
-    // is filtered out, chunk drops).
-    const outBalanceWins = renderTemplate(
-      ["m_template|foo|type:balance|mode:plan"],
-      ctxFor(null, null, null, null, "plan"),
+    assert.deepEqual(outBalance, []);
+    const outQuota = renderTemplate(
+      ["m_template|foo|type:balance|type:quota"],
+      ctxFor(null, legacyToIv({ pct: 42 }), null, null, "quota"),
     );
-    assert.deepEqual(outBalanceWins, []);
+    assert.match(outQuota.map(strip).join("\n"), /42%/);
   });
 
-  it("m_template|foo — bare key (no type/mode) defaults to type=plan", () => {
-    // Both `type` and `mode` are absent → renderer falls back to
-    // "plan" (the default intrinsic value). A bare key in a
-    // BALANCE ctx drops silently, same behavior as the legacy
-    // bare-key path.
+  it("m_template|foo — bare key (no type) renders agnostic", () => {
+    // `type` is absent → renderer falls back to provider-agnostic
+    // behavior (renders under any providerType, including "balance").
+    // A bare key in a BALANCE ctx drops only when an INNER module's
+    // `type:"quota"` filter doesn't match.
     __resetForTest({
       lineTemplates: { foo: ["m_windowQuota|term:short"] },
     });
     const outPlan = renderTemplate(
       ["m_template|foo"],
-      ctxFor(null, legacyToIv({ pct: 42 }), null, null, "plan"),
+      ctxFor(null, legacyToIv({ pct: 42 }), null, null, "quota"),
     );
     assert.match(outPlan.map(strip).join("\n"), /42%/);
     const outBalance = renderTemplate(
@@ -3521,15 +3510,15 @@ describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
     assert.deepEqual(outBalance, []);
   });
 
-  it("m_template — passthrough excludes both `type` and `mode` (intrinsics never leak)", () => {
+  it("m_template — passthrough excludes `type` (intrinsic never leaks)", () => {
     // v0.8.15+ — the passThrough build loops over Object.entries
     // and skips every key in the intrinsic-exclusion set:
-    // ["key", "type", "mode"]. Confirming that an intrinsic arg
-    // does NOT get pushed to inner modules as `passThrough.type`
-    // (which would shadow `ctx.providerType` semantics and confuse
-    // inner modules that look at the type field by accident).
+    // ["key", "type"]. Confirming that an intrinsic arg does NOT
+    // get pushed to inner modules as `passThrough.type` (which
+    // would shadow `ctx.providerType` semantics and confuse inner
+    // modules that look at the type field by accident).
     //
-    // Mechanism: render `m_template|<key>|type|plan` (intrinsic
+    // Mechanism: render `m_template|<key>|type|quota` (intrinsic
     // consumed) and `m_template|<key>` (bare). Both must produce
     // byte-identical output, proving `type` had no effect on the
     // inner module. The inner m_session has no `sessionName` so
@@ -3540,27 +3529,17 @@ describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
       },
     });
     const outWithType = renderTemplate(
-      ["m_template|probe|type:plan"],
-      ctxFor(fakeSnapshot(), null, null, null, "plan"),
+      ["m_template|probe|type:quota"],
+      ctxFor(fakeSnapshot(), null, null, null, "quota"),
     );
     const outBare = renderTemplate(
       ["m_template|probe"],
-      ctxFor(fakeSnapshot(), null, null, null, "plan"),
+      ctxFor(fakeSnapshot(), null, null, null, "quota"),
     );
     assert.equal(
       outWithType.map(strip).join("\n"),
       outBare.map(strip).join("\n"),
-      "m_template|probe|type|plan must render identically to m_template|probe (type is consumed by m_template, not forwarded)",
-    );
-    // Same identity check for the legacy `mode` alias.
-    const outWithMode = renderTemplate(
-      ["m_template|probe|mode:plan"],
-      ctxFor(fakeSnapshot(), null, null, null, "plan"),
-    );
-    assert.equal(
-      outWithMode.map(strip).join("\n"),
-      outBare.map(strip).join("\n"),
-      "m_template|probe|mode|plan must render identically to m_template|probe (mode is also consumed by m_template)",
+      "m_template|probe|type|quota must render identically to m_template|probe (type is consumed by m_template, not forwarded)",
     );
   });
   it("m_template|nonexistent (missing key) warns and drops", () => {
