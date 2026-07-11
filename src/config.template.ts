@@ -109,7 +109,18 @@ export const DEFAULT_STATUSLINE_TEMPLATE: StatuslineTemplate = ["m_template|quot
 // re-introduction of `_`-prefix built-ins won't quietly lose user
 // overrides.
 //
-// v0.8.14 — built-in presets are now first-class entries in
+// vX.X.X+ — top-level `statuslineTemplate` presets (`simple` /
+// `standard` / `abundant`) live in a sibling registry
+// DEFAULT_STATUSLINE_PRESETS, NOT in DEFAULT_LINE_TEMPLATES. The
+// distinction: DEFAULT_LINE_TEMPLATES.<key> is consumed via
+// `m_template|<key>` indirection (fragments can be inlined anywhere
+// in a template); DEFAULT_STATUSLINE_PRESETS.<key> is consumed
+// directly by `statuslineTemplate: "<key>"` at the top level (a
+// preset is the WHOLE statusline, not a fragment). Putting both in
+// the same registry would conflate the two namespaces and let
+// users shoot themselves in the foot with `m_template|simple`.
+// `simple` here has no relation to the legacy v0.8.x `_simple`
+// fragment (which was removed).
 // DEFAULT_LINE_TEMPLATES with `_`-prefix. Bodies were migrated
 // byte-for-byte from the v0.4.0–v0.8.13 PLAN_PRESETS /
 // BALANCE_PRESETS tables; the bodies themselves are unchanged.
@@ -243,8 +254,9 @@ export const DEFAULT_LINE_TEMPLATES: LineTemplates = {
     "m_label|Memory: |color:yellow",
     "m_windowMemUsage",
     "s_space",
-    "m_memUsage|valueOnly:true",
-    "s_pipe|wrap:true",
+    "m_memUsage|valueOnly:true"
+  ],
+  git_info: [
     "m_label|Git: |color:yellow",
     "m_branch",
     "s_space",
@@ -260,6 +272,7 @@ export const DEFAULT_LINE_TEMPLATES: LineTemplates = {
   // regression per v0.8.x contract).
   tick_eval: [
     "m_label|⚡Tick-tock: |color:cyan",
+    "s_tab",
     "m_tokenInSpeed",
     "s_space",
     "m_tokenOutSpeed",
@@ -271,8 +284,12 @@ export const DEFAULT_LINE_TEMPLATES: LineTemplates = {
     "m_apiMs",
     "s_space",
     "m_tokenCachedIn",
-    "s_pipe|wrap:true",
+    "s_space",
+    "m_tokenTotalIn",
+  ],
+  acc_eval: [
     "m_label|🟢Session: |color:orange",
+    "s_tab",
     "m_accTokenInSpeed|scope:session",
     "s_space",
     "m_accTokenOutSpeed|scope:session",
@@ -286,12 +303,29 @@ export const DEFAULT_LINE_TEMPLATES: LineTemplates = {
     "m_accTokenHitRate|scope:session",
     "s_space",
     "m_accApiCalls|scope:session",
+    "s_tab",
+    "s_pipe|wrap:true",
+    "m_label|🟢Project: |color:orange",
+    "m_accTokenInSpeed|scope:project",
+    "s_space",
+    "m_accTokenOutSpeed|scope:project",
+    "s_space",
+    "m_accTokenIn|scope:project",
+    "s_space",
+    "m_accTokenOut|scope:project",
+    "s_space",
+    "m_accTokenCachedIn|scope:project",
+    "s_space",
+    "m_accTokenHitRate|scope:project",
+    "s_space",
+    "m_accApiCalls|scope:project",
   ],
   // "stat_eval" — cross-project JSONL scan aligned to the 5h /
   // 7d plan windows. `m_statTtlStatus` at the tail surfaces the
   // cache freshness of the underlying sum/avg scan (TTL=300s).
   stat_eval: [
     "m_label|⌛5h-align: |color:yellow",
+    "s_tab",
     "m_sumTokenInSpeed|window:5h|align:true",
     "s_space",
     "m_sumTokenOutSpeed|window:5h|align:true",
@@ -305,6 +339,7 @@ export const DEFAULT_LINE_TEMPLATES: LineTemplates = {
     "m_sumTokenHitRate|window:5h|align:true",
     "s_space",
     "m_sumApiCalls|window:5h|align:true",
+    "s_tab",
     "s_pipe|wrap:true",
     "m_label|⌛7d-align: |color:yellow",
     "m_sumTokenInSpeed|window:7d|align:true",
@@ -346,6 +381,103 @@ export const DEFAULT_LINE_TEMPLATES: LineTemplates = {
     "m_contextUsedPercent",
     "s_space",
     "m_contextRemainingPercent",
+  ],
+};
+
+// vX.X.X+ — top-level `statuslineTemplate` preset registry. Distinct
+// from DEFAULT_LINE_TEMPLATES (which holds fragments consumed via
+// `m_template|<key>`). A preset here IS the whole statusline — the
+// loader resolves a string-form `statuslineTemplate: "<key>"`
+// against this registry and substitutes the body array. Fragment
+// names (`tokens_tick` / `information` / etc.) are NOT valid here
+// and vice versa.
+//
+// Bodies reuse fragments where helpful — `m_template|<fragment>`
+// indirection inside a preset body is fine; the strip-on-load rule
+// that blocks nesting of `m_template:<key>` *inside lineTemplates
+// entries* still applies (a fragment cannot itself reference
+// another fragment). At the preset level there is no such
+// restriction — a preset can compose as many fragments as it
+// wants.
+export const DEFAULT_STATUSLINE_PRESETS: Record<string, StatuslineTemplate> = {
+  // minimal: provider-type-aware quota/balance dispatch +
+  // m_age (chain emoji) + m_pluginSource.
+  simple: [
+    "m_pluginSource",
+    "m_template|quota|type:quota",
+    "m_template|balance|type:balance",
+    "s_space",
+    "m_age",
+  ],
+  // multi-line: context-info / tick-eval / stat-eval stacked.
+  standard: [
+    "m_template|information",
+    "s_pipe|wrap:true",
+    "m_template|git_info",
+    "s_newline",
+    "m_template|tick_eval",
+    "s_newline",
+    "m_template|acc_eval",
+    "s_newline",
+    "m_template|stat_eval",
+    "s_newline",
+    "m_pluginSource",
+    "m_template|quota|type:quota",
+    "m_template|balance|type:balance",
+    "s_space",
+    "m_age",
+    "s_space",
+    "m_version|color:yellow",
+  ],
+  // kitchen-sink: every fragment + per-scope acc + per-window
+  // stat + long-interval quota + chain emoji + version.
+  abundant: [
+    "m_template|information",
+    "s_newline",
+    "m_template|git_info_all",
+    "s_pipe|wrap:true",
+    "m_quote|address:https://api.quotable.io/random|quote:content|author:author|freq:120s|color:rainbow|insecureTls:true",
+    "s_newline",
+    "m_label|⚡Tick-tock: |color:cyan",
+    "s_tab",
+    "m_template|tokens_tick",
+    "s_newline",
+    "m_label|🟢Session: |color:orange",
+    "s_tab",
+    "m_template|tokens_acc|scope:session",
+    "s_newline",
+    "m_label|🟢Model: |color:orange",
+    "s_tab",
+    "m_template|tokens_acc|scope:model",
+    "s_newline",
+    "m_label|🟢Project: |color:orange",
+    "s_tab",
+    "m_template|tokens_acc|scope:project",
+    "s_newline",
+    "m_label|⌛2h:|color:yellow",
+    "s_tab",
+    "s_tab",
+    "m_template|tokens_stat|window:2h",
+    "s_newline",
+    "m_label|⌛5h-align:|color:yellow",
+    "s_tab",
+    "m_template|tokens_stat|window:5h|align:true",
+    "s_newline",
+    "m_label|⌛7d-align:|color:yellow",
+    "s_tab",
+    "m_template|tokens_stat|window:7d|align:true",
+    "s_space",
+    "m_statTtlStatus",
+    "s_newline",
+    "m_pluginSource",
+    "m_template|quota|type:quota",
+    "m_template|balance|type:balance",
+    "s_space",
+    "m_quota|term:long|display:remaining|nulldrop:true",
+    "s_space",
+    "m_age",
+    "s_space",
+    "m_version|color:yellow",
   ],
 };
 

@@ -81,3 +81,60 @@ describe("config facade", () => {
     assert.ok(__testing.DEFAULT_CONFIG.lineTemplates.tokens_stat.length > 0);
   });
 });
+
+describe("statuslineTemplate — string-form preset lookup (vX.X.X+)", () => {
+  // Each string-form statuslineTemplate in config.json is resolved
+  // against DEFAULT_STATUSLINE_PRESETS at load time. The loader
+  // clones the preset body so a later mutation doesn't leak back.
+  it('"simple" resolves to the simple preset body', async () => {
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ statuslineTemplate: "simple" }));
+    const cfg = await loadConfig();
+    assert.deepEqual(cfg.statuslineTemplate[0], "m_pluginSource");
+    assert.ok(cfg.statuslineTemplate.includes("m_template|quota|type:quota"));
+    assert.ok(cfg.statuslineTemplate.includes("m_template|balance|type:balance"));
+  });
+
+  it('"standard" resolves to the standard preset body', async () => {
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ statuslineTemplate: "standard" }));
+    const cfg = await loadConfig();
+    assert.ok(cfg.statuslineTemplate[0].startsWith("m_template|information"));
+    assert.ok(cfg.statuslineTemplate.includes("m_template|tick_eval"));
+    assert.ok(cfg.statuslineTemplate.includes("m_template|stat_eval"));
+    assert.ok(cfg.statuslineTemplate.includes("m_version|color:yellow"));
+  });
+
+  it('"abundant" resolves to the abundant preset body', async () => {
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ statuslineTemplate: "abundant" }));
+    const cfg = await loadConfig();
+    assert.ok(cfg.statuslineTemplate[0].startsWith("m_template|information"));
+    assert.ok(cfg.statuslineTemplate.includes("m_template|tokens_stat|window:2h"));
+    assert.ok(cfg.statuslineTemplate.includes("m_template|tokens_stat|window:5h|align:true"));
+    assert.ok(cfg.statuslineTemplate.includes("m_template|tokens_stat|window:7d|align:true"));
+    assert.ok(cfg.statuslineTemplate.includes("m_statTtlStatus"));
+    assert.ok(cfg.statuslineTemplate.includes("m_quota|term:long|display:remaining|nulldrop:true"));
+  });
+
+  it("unknown string falls back to DEFAULT_STATUSLINE_TEMPLATE with one warn", async () => {
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ statuslineTemplate: "bogus" }));
+    const cfg = await loadConfig();
+    assert.deepEqual(cfg.statuslineTemplate, ["m_template|quota|type:quota", "m_template|balance|type:balance"]);
+  });
+
+  it("array-form statuslineTemplate still works (no preset lookup)", async () => {
+    writeFileSync(
+      join(dir, "config.json"),
+      JSON.stringify({ statuslineTemplate: ["m_modeLabel", "s_space", "m_balance"] }),
+    );
+    const cfg = await loadConfig();
+    assert.deepEqual(cfg.statuslineTemplate, ["m_modeLabel", "s_space", "m_balance"]);
+  });
+
+  it("fragment key (DEFAULT_LINE_TEMPLATES-only) is NOT a valid preset name", async () => {
+    // tokens_tick is in DEFAULT_LINE_TEMPLATES but NOT in
+    // DEFAULT_STATUSLINE_PRESETS. Setting it as statuslineTemplate
+    // must fall back with a warn, NOT silently resolve.
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ statuslineTemplate: "tokens_tick" }));
+    const cfg = await loadConfig();
+    assert.deepEqual(cfg.statuslineTemplate, ["m_template|quota|type:quota", "m_template|balance|type:balance"]);
+  });
+});

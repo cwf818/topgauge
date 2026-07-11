@@ -35,6 +35,7 @@ import {
 
 import {
   DEFAULT_LINE_TEMPLATES,
+  DEFAULT_STATUSLINE_PRESETS,
   DEFAULT_STATUSLINE_TEMPLATE,
   type LineTemplates,
   type StatuslineTemplate,
@@ -42,6 +43,7 @@ import {
 
 export {
   DEFAULT_LINE_TEMPLATES,
+  DEFAULT_STATUSLINE_PRESETS,
   DEFAULT_STATUSLINE_TEMPLATE,
 };
 export type { LineTemplates, StatuslineTemplate };
@@ -1247,13 +1249,12 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
     }
   }
 
-  // vX.X.X+ — `statuslineTemplate` is array-only. The legacy
-  // string-form value (e.g. `"1line"` from v0.8.x configs) is no
-  // longer auto-migrated: the `_`-prefix preset family was removed,
-  // and the fragment library (DEFAULT_LINE_TEMPLATES) uses bare
-  // keys. A string-form value now falls back to
-  // DEFAULT_STATUSLINE_TEMPLATE with one warn. Users should write
-  // the array form directly.
+  // vX.X.X+ — `statuslineTemplate` accepts both array-form (raw
+  // token list) and string-form (a preset name resolved against
+  // DEFAULT_STATUSLINE_PRESETS). String-form lets users reference a
+  // whole preset without inlining the body in config.json. A bare
+  // fragment name (DEFAULT_LINE_TEMPLATES key) is NOT valid here —
+  // presets and fragments live in distinct registries, on purpose.
   if ("statuslineTemplate" in raw) {
     const st = raw.statuslineTemplate;
     if (Array.isArray(st)) {
@@ -1264,15 +1265,23 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
       out.statuslineTemplate =
         cleaned.length > 0 ? cleaned : DEFAULT_STATUSLINE_TEMPLATE.slice();
     } else if (typeof st === "string") {
-      warn(
-        `statuslineTemplate "${st}" is not a valid form; use a string[] ` +
-        `(e.g. ["m_template|quota|type:quota"]). ` +
-        `Using DEFAULT_STATUSLINE_TEMPLATE.`,
-      );
-      out.statuslineTemplate = DEFAULT_STATUSLINE_TEMPLATE.slice();
+      const preset = DEFAULT_STATUSLINE_PRESETS[st];
+      if (preset !== undefined) {
+        // Clone the body so a later user mutation of their
+        // in-memory config doesn't leak back into the registry.
+        out.statuslineTemplate = preset.slice();
+      } else {
+        warn(
+          `statuslineTemplate "${st}" is not a known preset ` +
+          `(valid: ${Object.keys(DEFAULT_STATUSLINE_PRESETS).join(", ")}); ` +
+          `use a string[] (e.g. ["m_template|quota|type:quota"]) or a ` +
+          `preset name. Using DEFAULT_STATUSLINE_TEMPLATE.`,
+        );
+        out.statuslineTemplate = DEFAULT_STATUSLINE_TEMPLATE.slice();
+      }
     } else {
       warn(
-        "statuslineTemplate must be a string[]; using default",
+        "statuslineTemplate must be a string or string[]; using default",
       );
     }
   }
