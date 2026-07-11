@@ -46,7 +46,7 @@ For the per-version detail, see [CHANGELOG.md](CHANGELOG.md). Recent highlights:
 - **v0.8.17** — `m_memUsage` module (renamed from `m_memUsageStatus`); system RAM usage `Mem:X.XG/Y.YG` with configurable `labels.labelMemUsage`.
 - **v0.8.16** — `m_memUsageStatus` module: system RAM usage with Darwin `vm_stat` support.
 - **v0.8.15** — TTL gauge modules (`m_cacheTtlStatus` / `m_statTtlStatus`); `m_template` `type` intrinsic (clean replacement for the legacy `mode`).
-- **v0.8.14** — `statuslineTemplate` is **array-only**; legacy bare-string preset names auto-migrate to `["m_template|_X"]`. Built-in presets are now first-class `lineTemplates._*` entries (replaces the exported `PLAN_PRESETS` / `BALANCE_PRESETS` constants). Balance-provider default render is now silent unless `m_template|_balance_simple|mode:balance` is explicit.
+- **v0.8.14** — `statuslineTemplate` accepts a `string` (preset name) or `string[]` (raw token list). Legacy bare-string preset names (`"1line"`, `"standard"`, etc., from v0.4.0–v0.8.13) auto-migrate to the equivalent array form with a one-shot stderr warning. The v0.8.14 `lineTemplates._*` built-in preset family (`_1line` / `_simple` / `_simple-alone` / `_standard` / `_standard-alone` / `_abundant` / `_complete` / `_balance_simple` / `_balance_simple-alone`) is **removed in v0.8.47+** — current built-ins are top-level presets (`simple` / `standard` / `abundant`) in `DEFAULT_STATUSLINE_PRESETS` plus the bare-keyed fragment library (`quota` / `balance` / `tokens_*` / `information` / `git_info*` / `tick_eval` / `acc_eval` / `stat_eval` / `context_all`) in `DEFAULT_LINE_TEMPLATES`. Default render is `["m_template|quota|type:quota", "m_template|balance|type:balance"]` — provider-type dispatch, no more silent `mode`-based dropping on BALANCE.
 - **v0.8.13** — `labelFor()` resolver extended to `labelApi` / `labelApiCalls` / `labelInSpeed` / `labelOutSpeed` (4 new axes; defaults match v0.8.x literals).
 - **v0.8.0** — **major rewrite**. Renamed modules: `m_tokenInTotal` / `m_tokenTotalOut` (was `m_tokenOutTotal`); `m_tokenCachedIn` (was `m_cachedTokenIn` / `m_cacheRead`); `m_contextSize` (was `m_ctx`); `m_contextUsedPercent` (was `m_contextUsed`); new sibling `m_contextRemainingPercent`. New three-tuple family — per-turn / `m_acc*` (3-layer accumulator: session / project / model) / `m_sum*` (cross-project JSONL scan, TTL=300s). New `m_tokenTotalIn` invariant: `total_input_tokens == current.input_tokens + current.cache_read_input_tokens`. **Removed** (no alias): `m_token5h`, `m_token7d`, `m_tokenInAvg`, `m_tokenOutAvg`, `m_totalTokenIn`, `m_totalTokenOut`, `m_totalTokenWithCacheIn`. See [CHANGELOG.md](CHANGELOG.md) for the full v0.8.0 contract and the v0.4.x ADR at `memory/token-usage-design-adr.md` (marked DEPRECATED — superseded by the v0.8.0 modules redesign).
 - **v0.9.0** — full rename to `topgauge` (ToPGauge). Package id, marketplace id, plugin name, plugin key (`topgauge@topgauge`), state-dir path, settings.json marker, all stderr banners, and the docs are renamed. Provider strings (`minimax`, `deepseek`, `copilot`) are unchanged. The legacy `topgauge-cc` and `tokenplan-usage-hud` plugin names are NOT recognized — users upgrading from a pre-rename install should run `:uninstall` against the old name first (or wipe by hand), then re-install.
@@ -428,18 +428,22 @@ A reference with every field is at [config.example.json](./config.example.json).
     // is a token array. Allowed tokens: any m_* module EXCEPT
     // m_template, plus s_* separators. Keys are user-chosen; the
     // renderer reads from this registry when it sees an
-    // `m_template:<key>` token inside `statuslineTemplate`.
-    // Built-in presets (`_1line`, `_standard`, `_abundant`, …) are
-    // registered with `_`-prefixed keys; user entries whose names
-    // collide with a built-in are warned + skipped. Pick a different
-    // key for your own presets (e.g. `my1line`).
+    // `m_template|<key>` token inside `statuslineTemplate`. The
+    // shipped fragment library (quota / balance / tokens_tick /
+    // tokens_acc / tokens_stat / information / git_info / tick_eval /
+    // acc_eval / stat_eval / git_info_all / context_all) is registered
+    // with bare keys. User entries whose names collide with a shipped
+    // fragment are warned + skipped. Pick a different key for your own
+    // fragments (e.g. `myHeader`).
     //
     // Example: a shared `header` chunk used in both plan and
     // balance templates.
     "header": ["m_modeLabel", "s_space"]
   },
-  "statuslineTemplate": ["m_template|_1line"],  // or a raw token array, e.g.:
-  // ["m_template|_standard", "m_windowQuota|term:short", "s_0", "m_windowQuota|term:mid"],
+  "statuslineTemplate": ["m_template|quota|type:quota", "m_template|balance|type:balance"],
+  // v0.8.47+ — string-form values reference DEFAULT_STATUSLINE_PRESETS
+  // (whole-line presets `simple` / `standard` / `abundant`):
+  //   "statuslineTemplate": "standard"
 
   // v0.4.0+ replaces the v0.3.x `lineTemplate: { plan, balance }`
   // shape with the two fields above. See the "Upgrading to v0.4.0"
@@ -726,10 +730,10 @@ The `balances` slot is array-typed; the parser iterates `balance_infos[]` and ap
 
 ### Module tokens
 
-The line layout is declared as `statuslineTemplate` (v0.4.0+). **v0.8.14+ — `statuslineTemplate` is array-only.** The default is `["m_template|_1line"]` — the same single-line shape v0.3.x / v0.4.x / … / v0.8.13 rendered with the default `1line` preset. Use `m_template|_X` to reference a built-in preset (see [Built-in presets (v0.8.14+)](#built-in-presets-v0814) below), or write a raw token array.
+The line layout is declared as `statuslineTemplate` (v0.4.0+). **v0.8.14+ — `statuslineTemplate` accepts `string[]` (token list) or a `string` (a preset name from [Built-in presets](#built-in-presets) below).** The default is `["m_template|quota|type:quota", "m_template|balance|type:balance"]` — provider-type dispatch: the `quota` fragment renders on a Quota provider (MiniMax), the `balance` fragment renders on a BALANCE provider (DeepSeek), and the other is silently dropped. Use `m_template|<key>` to reference a [shipped fragment](#shipped-fragments-v0847) from `lineTemplates`, or write a raw token array.
 
 - For shared / reusable fragments, register them under `lineTemplates` and pull them into `statuslineTemplate` with `m_template|<key>[|type|<plan|balance>]`. See [`m_template`](#mtemplatekeytypeplnbalance-v040) below.
-- **v0.8.14+ auto-migration:** legacy string-form `statuslineTemplate` values (`"1line"`, `"standard"`, etc., from v0.4.0–v0.8.13) are auto-migrated to the equivalent `["m_template|_X"]` form with a one-shot stderr warning. To silence the warn, write the array form directly.
+- **v0.8.14+ auto-migration (legacy warning only):** legacy string-form `statuslineTemplate` values (`"1line"`, `"standard"`, etc., from v0.4.0–v0.8.13) are auto-migrated to the equivalent array form with a one-shot stderr warning. **The legacy preset names themselves (`_1line` / `_standard` / `_abundant` / `_balance_simple` / …) are no longer registered** — see [Built-in presets](#built-in-presets) for the current `simple` / `standard` / `abundant` top-level preset keys. To silence the warn, write the array form directly.
 
 The exhaustive module reference (per-module source fields, inline args, default placeholders, edge cases) lives at [MANUAL.md](./MANUAL.md). The summary table below lists every module with its rendered shape and family; cross-reference [MANUAL.md §3](./MANUAL.md#3-module-reference-m_) for full inline-args and behavior contracts.
 
@@ -941,24 +945,40 @@ Pulls a registered fragment from `lineTemplates` into the rendered template. Use
 }
 ```
 
-### Built-in presets (v0.8.14+)
+### Built-in presets (v0.8.47+)
 
-The seven plan + two balance presets are first-class entries in `lineTemplates` with `_`-prefixed keys. Use `m_template|_X` (with an optional `|type|<plan|balance>` to constrain dispatch — default `type:plan`) to reference them from your `statuslineTemplate` array. As of v0.8.37, omitting both `type` and `mode` makes the reference **universal** — the same preset renders on plan, balance, AND unknown providers.
+Top-level `statuslineTemplate` accepts a `string` (preset name) or a `string[]` (raw token list). String-form resolves against `DEFAULT_STATUSLINE_PRESETS` in `src/config.template.ts`; the body is cloned into your config so subsequent user mutations don't leak back.
 
-| Key                       | Lines | Description                                                                           | Default type |
-| ------------------------- | ----- | ------------------------------------------------------------------------------------- | ------------ |
-| `_1line` / `_simple`      | 1     | Token-plan only, single line (aliases of each other — byte-identical)                 | `plan`       |
-| `_simple-alone`           | 1     | Single line with an explicit `"Usage:"` label prefix (for solo use, no upstream)      | `plan`       |
-| `_standard`               | 2     | Line 0 = token-plan, line 1 = context + tokens (no session line — pair with upstream) | `plan`       |
-| `_standard-alone`         | 3     | Adds session info on line 0 (for solo use, no upstream chain)                         | `plan`       |
-| `_abundant`               | 4     | Line 0 = session + git (deep git workflow)                                            | `plan`       |
-| `_complete`               | 5     | Adds totals on line 3 (verbose — not recommended)                                     | `plan`       |
-| `_balance_simple`         | 1     | Default balance render (`"Balance: <balance>"`)                                       | `balance`    |
-| `_balance_simple-alone`   | 1     | Balance render with explicit `"Balance:"` label prefix (for solo use)                 | `balance`    |
+| Key         | Lines | Body summary                                                                                            |
+| ----------- | ----- | ------------------------------------------------------------------------------------------------------- |
+| `simple`    | 1     | `m_pluginSource` + provider-type dispatch (`m_template|quota|type:quota` / `m_template|balance|type:balance`) + `m_age`. Single line. |
+| `standard`  | 5     | `information` + `git_info` on line 0; `tick_eval` / `acc_eval` / `stat_eval` on lines 1–3; provider-type dispatch + `m_age` + `m_version` on line 4. |
+| `abundant`  | 9     | `information` + `git_info_all` + address-mode `m_quote` on line 0; `tokens_tick` / per-scope `tokens_acc` (session/model/project) on lines 1–4; per-window `tokens_stat` (2h / 5h-align / 7d-align) + `m_statTtlStatus` on lines 5–7; provider-type dispatch + `m_quota|term:long|display:remaining|nulldrop:true` + `m_age` + `m_version` on line 8. Kitchen-sink; verbose. |
 
-**Provider-aware dispatch (v0.8.14+):** `m_template` takes an optional `|type|<plan|balance>` second arg. `m_template|_standard` (the default — `type:plan`) silently drops on a BALANCE provider (DeepSeek) — use `m_template|_balance_simple|type:balance` instead. Pick the preset matching your provider's TYPE, or omit `type` to render on both.
+Set `"statuslineTemplate": "standard"` (or `"abundant"`) in your `config.json`. To customize, copy the preset body from `src/config.template.ts:DEFAULT_STATUSLINE_PRESETS` into your `lineTemplates` and reference it via `m_template|<key>`.
 
-**`_`-prefix is reserved:** user-defined `lineTemplates._*` entries whose name collides with a built-in key are rejected with a warning (the built-in wins). Use a different key for user presets (e.g. `my1line`).
+**Note:** the v0.4.0–v0.8.46 `_1line` / `_simple` / `_simple-alone` / `_standard` / `_standard-alone` / `_abundant` / `_complete` / `_balance_simple` / `_balance_simple-alone` preset family is REMOVED. Old configs that referenced these strings get a one-shot stderr warning and auto-migrate to a closest-matching preset body (typically the `quota` / `balance` fragment); user-defined `lineTemplates._*` entries that collide with a removed preset name still load but are no longer gated by the `_`-prefix collision check (any name is fine now).
+
+### Shipped fragments (v0.8.47+)
+
+`lineTemplates` ships a fragment library that you reference via `m_template|<key>` indirection. Each entry is a token array; the renderer expands it inline and forwards pass-through args (e.g. `scope`, `window`, `align`, `color`, `nulldrop`, `valueOnly`) to the inner modules per the [passthrough whitelist](https://github.com/cwf818/topgauge/blob/main/src/render.ts).
+
+| Key            | Lines | Summary                                                                                                                  |
+| -------------- | ----- | ------------------------------------------------------------------------------------------------------------------------ |
+| `quota`        | 1     | Provider-type-aware quota render (5h / weekly windows via `m_windowQuota`). Matches `type:quota`.                        |
+| `balance`      | 1     | Provider-type-aware balance render (`Balance: <balance>`). Matches `type:balance`.                                       |
+| `tokens_tick`  | 1     | Per-turn tick diagnostics: speed (in/out), hit rate, `m_apiMs`, in/out/cached/total tokens, `m_tokenCost`.              |
+| `tokens_acc`   | 1     | Session-scoped accumulator (default `scope:ccsession`): speed (in/out), hit rate, `m_accApiMs`, in/out/cached/total tokens, `m_accApiCalls`, `m_accTokenCost`, `m_accStartTime`. Inline arg `:scope:<session|project|model|ccsession>` selects the scope. |
+| `tokens_stat`  | 1     | Cross-project sum/avg scan: speed (in/out), hit rate, `m_sumApiMs`, in/out/cached/total tokens, `m_sumApiCalls`, `m_sumTokenCost`, `m_sumStartTime`, `m_sumEndTime`. Inline args `:window:<dhms|all>` (default `all`), `:model:<active|name|all>` (default `active`), `:align:<true|false>` (default `false`; `true` aligns to declared plan window when available). |
+| `information`  | 1     | Context-window + memory + model header: `[m_model] Context: <bar> <used>/<cap> \| Memory: <bar> <used>/<total>`.        |
+| `git_info`     | 1     | `Git: <branch> <status> <linesAdded> <linesRemoved>`.                                                                    |
+| `git_info_all` | 1     | `Git: <repo> <branch> <status> <linesAdded> <linesRemoved>`.                                                             |
+| `context_all`  | 1     | `Context: <bar> <used> <cap> <usedPct> <remainingPct>`.                                                                  |
+| `tick_eval`    | 1     | Per-turn tick diagnostics with `⚡Tick-tock:` label prefix (cyan).                                                       |
+| `acc_eval`     | 2     | Session + project scoped accumulators on one logical row separated by `s_pipe|wrap:true`.                                |
+| `stat_eval`    | 2     | 5h-align + 7d-align cross-project scans with `⌛<window>:` label prefixes (yellow) + `m_statTtlStatus` at the tail.      |
+
+**Provider-aware dispatch (v0.8.15+):** `m_template` takes an optional `|type|<quota|balance>` named arg. `m_template|<key>|type:quota` matches a Quota provider and silently drops on a BALANCE provider (and vice versa). **Omit `type` for universal fragments** (context/git/tokens_acc/tokens_stat) — they render on every tick regardless of provider.
 
 ### Upgrading to v0.8.37 from v0.8.36
 
@@ -987,14 +1007,21 @@ After migrating, run `npm test` (or `bash scripts/test-install.sh`) to spot-chec
 
 ### Upgrading to v0.8.14 from v0.8.13
 
-`statuslineTemplate` is now **array-only**. Pre-v0.8.14 string-form preset-name values (`"1line"`, `"standard"`, etc.) auto-migrate to the equivalent `["m_template|_X"]` form with a one-shot stderr warning:
+`statuslineTemplate` is now a `string[]` (token list) or a `string` (preset name). Pre-v0.8.14 string-form preset-name values (`"1line"`, `"standard"`, etc.) auto-migrate to the equivalent `["m_template|_X"]` array with a one-shot stderr warning — but those `_`-prefixed preset keys are themselves removed in v0.8.47+. The current registry is `DEFAULT_STATUSLINE_PRESETS` with unprefixed keys (`simple` / `standard` / `abundant`), and the fragment library in `DEFAULT_LINE_TEMPLATES` uses bare keys (`quota` / `balance` / `tokens_*` / `information` / `git_info*` / `tick_eval` / `acc_eval` / `stat_eval` / `context_all`). To silence the warning and pin the new shape:
 
 ```diff
 - "statuslineTemplate": "standard",
-+ "statuslineTemplate": ["m_template|_standard"],
++ "statuslineTemplate": "standard",  // still valid — now resolves against DEFAULT_STATUSLINE_PRESETS["standard"]
 ```
 
-To silence the warn, write the array form directly. **Balance-provider users on the default render** (DeepSeek) need an explicit migration — pre-v0.8.14, `statuslineTemplate: "1line"` silently fell back to the balance preset on a BALANCE provider; v0.8.14+ drops the chunk instead. Set `statuslineTemplate: ["m_template|_balance_simple|type:balance"]` for a DeepSeek render.
+or write the body directly:
+
+```diff
+- "statuslineTemplate": ["m_template|_standard"],
++ "statuslineTemplate": ["m_template|information", "s_pipe|wrap:true", "m_template|git_info", ...],
+```
+
+**Balance-provider users on the default render** (DeepSeek) need an explicit migration — pre-v0.8.14, `statuslineTemplate: "1line"` silently fell back to the balance preset on a BALANCE provider; v0.8.14+ drops the chunk instead. Use the default render (`["m_template|quota|type:quota", "m_template|balance|type:balance"]`) which dispatches by provider type, or pin explicitly: `"statuslineTemplate": ["m_template|balance|type:balance"]` for DeepSeek.
 
 ### Upgrading to v0.4.0 from v0.3.x
 
@@ -1019,7 +1046,7 @@ To migrate a customized `lineTemplate`:
 + ]
 ```
 
-The default `statuslineTemplate` is `["m_template|_1line"]`, which reproduces the v0.3.6 default rendering — only customized configs require manual migration. To switch presets, set `"statuslineTemplate": ["m_template|_standard"]` / `["m_template|_abundant"]` / `["m_template|_complete"]` (the full list lives in `DEFAULT_LINE_TEMPLATES` at the top of `src/config.ts` with `_`-prefixed keys; see [Built-in presets (v0.8.14+)](#built-in-presets-v0814)).
+The default `statuslineTemplate` is `["m_template|quota|type:quota", "m_template|balance|type:balance"]` — provider-type dispatch: the `quota` fragment renders on a Quota provider (MiniMax), the `balance` fragment renders on a BALANCE provider (DeepSeek), the other is silently dropped. To switch to a whole-line preset, set `"statuslineTemplate": "simple"` / `"standard"` / `"abundant"` (the top-level presets live in `DEFAULT_STATUSLINE_PRESETS` in `src/config.template.ts`; see [Built-in presets](#built-in-presets)).
 
 ### `m_quote` (v0.8.21+)
 
