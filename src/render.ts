@@ -6151,26 +6151,44 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // v0.8.15+ — `type` is the recommended intrinsic name; `mode`
     // is the legacy alias. When both are present, `type` wins (the
     // user likely typo'd one of them — prefer the newer name). The
-    // comparison target is ctx.providerType. "unknown" never matches
-    // either arg, so unknown providers silently drop m_template
-    // references — same behavior as before.
+    // comparison target is ctx.providerType. Explicit `|type:plan` /
+    // `|mode:balance` / etc. is strict-match against ctx.providerType
+    // — an unknown provider (matchProvider returned null) does NOT
+    // match either, so an explicit-mode fragment is silently dropped
+    // when ANTHROPIC_BASE_URL doesn't match a configured provider.
+    // That's intentional: a fragment gated on `mode:plan` is asking
+    // for plan-only data, which doesn't exist on an unknown provider.
     //
     // v0.8.37 — when the user does NOT pass `type` OR `mode`, the
-    // fragment is provider-agnostic and renders under BOTH "plan"
-    // and "balance" providers (context-level templates like
-    // `context` / `git_info` / `realtime` / `tokens_acc` /
-    // `tokens_stat` typically fall in this bucket — they read from
-    // stdin + per-project state, not from provider-specific fields,
-    // and the user's intent is "show this on every tick regardless
-    // of provider"). The previous "default = plan" silently dropped
-    // these on the balance provider. Explicit `|mode:plan` or
-    // `|mode:balance` still does strict-match (verified by
-    // lineTemplate.test.ts:1942).
+    // fragment is provider-agnostic and renders under "plan" /
+    // "balance" providers (context-level templates like `context` /
+    // `git_info` / `realtime` / `tokens_acc` / `tokens_stat`
+    // typically fall in this bucket — they read from stdin +
+    // per-project state, not from provider-specific fields, and the
+    // user's intent is "show this on every tick regardless of
+    // provider"). The previous "default = plan" silently dropped
+    // these on the balance provider.
+    //
+    // v0.8.47+ — extend the agnostic guarantee to unknown providers.
+    // The previous v0.8.37 contract said "provider-agnostic renders
+    // on every tick regardless of provider", but the implementation
+    // dropped the fragment on ctx.providerType === "unknown" (i.e.
+    // when matchProvider returned null because ANTHROPIC_BASE_URL
+    // didn't match any configured entry). That contradicted the
+    // surrounding architecture: dispatch.ts already routes
+    // provider-AGNOSTIC modules (m_token*, m_session, m_version,
+    // m_branch, …) through renderProviderLine on the unknown path,
+    // and m_windowMemUsage / m_memUsage / m_label render fine on
+    // that path. Dropping only the m_template|<key> chunks broke
+    // the "one statusline slot, agnostic modules still emit on
+    // every provider" promise for users who organize their
+    // template as a top-level statuslineTemplate composed of named
+    // fragments. Now the agnostic gate has no provider-type filter
+    // at all — only explicit `|mode:…` does strict-match.
     const wantExplicit =
       (params.type as "plan" | "balance" | undefined) ??
       (params.mode as "plan" | "balance" | undefined);
     if (wantExplicit != null && ctx.providerType !== wantExplicit) return null;
-    if (wantExplicit == null && ctx.providerType === "unknown") return null;
     // v0.8.7+ — passthrough: build a passThrough view from every
     // param except the THREE intrinsics (`key` is the lookup target;
     // `type` + `mode` are the providerType filter, both names of the

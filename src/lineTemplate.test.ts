@@ -2097,7 +2097,13 @@ describe("m_template — provider-agnostic fragment (no |mode arg, v0.8.37)", ()
     assert.ok(strip(line).length > 0, `got: ${line}`);
   });
 
-  it("drops on unknown provider — preserves v0.8.36 unknown-drop behavior", () => {
+  it("renders on unknown provider — true agnostic (v0.8.47+)", () => {
+    // The user wrote the agnostic fragment assuming "renders on
+    // every tick regardless of provider", including unknown
+    // (matchProvider returned null because ANTHROPIC_BASE_URL
+    // doesn't match a configured entry). v0.8.37 kept the old
+    // v0.8.36 unknown-drop behavior — v0.8.47+ removes the special
+    // case so the agnostic contract is honored end-to-end.
     const line = renderProviderLine("some-unsupported-provider", {
       mode: "used",
       nowMs: Date.now(),
@@ -2105,7 +2111,57 @@ describe("m_template — provider-agnostic fragment (no |mode arg, v0.8.37)", ()
       stale: false,
       version: "",
     });
-    assert.equal(strip(line), "", `got: ${line}`);
+    assert.ok(strip(line).includes("Usage:"), `got: ${line}`);
+  });
+});
+
+// User-reported regression (v0.8.47): when ANTHROPIC_BASE_URL doesn't
+// match any configured provider, matchProvider returns null,
+// ctx.providerType === "unknown", and the dispatch path runs
+// renderProviderLine. A user who organizes their template as named
+// fragments like `m_template|tokens_acc|scope:session` expected those
+// fragments to render — they don't reference provider-specific data
+// (m_acc* reads from per-project state, not provider fields). Pre-fix
+// the m_template gate dropped them on unknown; post-fix they recurse.
+describe("m_template agnostic — end-to-end on unknown provider (v0.8.47+)", () => {
+  beforeEach(() => {
+    __resetForTest({
+      lineTemplates: {
+        // Bare m_accTokenIn with no inline args — relies on the outer
+        // m_template passthrough to thread scope=session through.
+        tokens_acc: ["m_accTokenIn"],
+      },
+      // Mirror the user's actual config shape: a label prefix +
+        // m_template|<key>|scope:… + no mode/type arg.
+        statuslineTemplate: [
+          "m_label|Tokens: ",
+          "m_template|tokens_acc|scope:session",
+        ],
+    });
+  });
+  afterEach(() => __resetForTest());
+
+  it("renders the fragment (label + m_template) — not just the label", () => {
+    const line = renderProviderLine("some-unsupported-provider", {
+      mode: "used",
+      nowMs: Date.now(),
+      ageMs: null,
+      stale: false,
+      version: "",
+    });
+    // Label MUST still render.
+    assert.ok(strip(line).includes("Tokens:"), `got: ${line}`);
+    // m_template must NOT have been dropped at the gate. The inner
+    // m_accTokenIn with no per-project state renders an n/a
+    // placeholder, but that's fine — the bug was the m_template
+    // chunk itself disappearing, which we now verify by checking
+    // that the rendered line is wider than just "Tokens: " (i.e.
+    // the m_template inner produced SOMETHING, even if n/a).
+    const stripped = strip(line);
+    assert.ok(
+      stripped.length > "Tokens: ".length,
+      `expected m_template inner to render SOMETHING beyond the label; got: ${line}`,
+    );
   });
 });
 // Demonstrates the user's motivating use case: one shared
