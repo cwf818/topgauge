@@ -39,6 +39,12 @@ export type PluginContext = {
   signal?: AbortSignal;
 };
 
+// v0.8.47+ — single-method ABI. The plugin returns whatever shape
+// it decided to project from the raw response (a Partial<Quota> /
+// Partial<Balance>, or any opaque object the plugin wants). The
+// host then runs ensureQuota / ensureBalance on the result. Plugins
+// never see the canonical Quota / Balance types — only their fill
+// contract + the ctx argument (signal / currencies / intervals).
 export type AccountCreditPlugin = {
   fetchAccountCredit: (
     authenticationKey: string,

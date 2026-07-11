@@ -270,60 +270,29 @@ export function parseQuota(
 }
 
 // ============================================================================
-//  BALANCE parser (v0.x — ported verbatim from api.balance.ts)
+//  BALANCE ensure (host-only)
 // ============================================================================
 
-// Resolve one entry from the currenciesConfig block (vX.X.X+).
-// Walks `currenciesConfig[key]`, runs the configured
-// `totalBalance` path expression against `root`, and returns a
-// BalanceEntry — or `null` if the slot is missing / unparseable /
-// resolves to a non-number. `key` is the literal currency code
-// declared in the config; `label` falls back to `key` when the
-// configured label is absent (preserves the v0.5.0–v0.8.x
-// "unknown currency → bare code" behaviour for the label too).
-function resolveCurrenciesEntry(
-  root: unknown,
-  key: string,
-  slot: { label?: string; totalBalance?: string } | undefined,
-): BalanceEntry | null {
-  if (!slot || !slot.totalBalance) return null;
-  const totalBalance = asNumber(resolveSlot(root, slot.totalBalance, "number"));
-  if (totalBalance == null) return null;
-  const label = slot.label ?? key;
-  return { currency: key, totalBalance, label };
-}
-
-export function parseBalance(
-  raw: unknown,
-  currenciesConfig: CurrenciesConfig,
-): Balance | null {
-  if (!raw || typeof raw !== "object") return null;
-  const root = raw as Record<string, unknown>;
-
-  // is_available contract: explicit false (or string "false") →
-  // false; otherwise → true (optimistic render).
-  const availRaw = root.is_available;
-  const explicitlyFalse =
-    availRaw === false ||
-    (typeof availRaw === "string" && availRaw.toLowerCase() === "false");
-  const isAvailable = !explicitlyFalse;
-
-  // vX.X.X+ — currenciesConfig-driven path. Each declared currency
-  // key in the resolved map is projected out of `root` via its
-  // configured `totalBalance` path. When the map is empty (no
-  // built-in defaults matched the active provider id AND the user
-  // didn't supply a top-level / per-provider block) the response
-  // carries no entries — the plugin author / user is expected to
-  // ship currenciesConfig.
-  const entries = Object.keys(currenciesConfig)
-    .map((k) => resolveCurrenciesEntry(root, k, currenciesConfig[k]))
-    .filter((e): e is BalanceEntry => e !== null);
+// Apply the is_available fallback contract (missing → optimistic
+// true), derive `minValue` over the surviving entries, and guard the
+// final shape. The plugin layer is responsible for projecting
+// `raw → Partial<Balance>`; this function is the host's normaliser
+// and is the ONLY place the canonical `Balance` shape is produced.
+//
+// Returns null when `value` is not a record.
+export function ensureBalance(value: unknown): Balance | null {
+  if (!value || typeof value !== "object") return null;
+  const partial = value as { isAvailable?: boolean; entries?: BalanceEntry[] };
+  const entries = Array.isArray(partial.entries) ? partial.entries : [];
+  const isAvailable = partial.isAvailable ?? true;
 
   if (!isAvailable) {
     return {
       isAvailable: false,
       entries,
-      minValue: entries.length === 0 ? null : Math.min(...entries.map((e) => e.totalBalance)),
+      minValue: entries.length === 0
+        ? null
+        : Math.min(...entries.map((e) => e.totalBalance)),
     };
   }
 
@@ -336,5 +305,43 @@ export function parseBalance(
   }
 
   return { isAvailable: true, entries, minValue };
+}
+
+// parseBalance: kept as a host-side helper for non-plugin code paths
+// (e.g. direct calls in tests). Mirrors the old shape — walks
+// `currenciesConfig` to project entries + applies the ensure step.
+function resolveCurrenciesEntry(
+  root: unknown,
+  key: string,
+  slot: { label?: string; totalBalance?: string } | undefined,
+): BalanceEntry | null {
+  if (!slot || !slot.totalBalance) return null;
+  const totalBalance = asNumber(resolveSlot(root, slot.totalBalance, "number"));
+  if (totalBalance == null) return null;
+  const label = slot.label ?? key;
+  return { currency: key, totalBalance, label };
+}
+
+function projectBalancePartial(raw: unknown, currenciesConfig: CurrenciesConfig): unknown {
+  if (!raw || typeof raw !== "object") return null;
+  const root = raw as Record<string, unknown>;
+  const availRaw = root.is_available;
+  let isAvailable;
+  if (typeof availRaw === "boolean") {
+    isAvailable = availRaw;
+  } else if (typeof availRaw === "string" && availRaw.toLowerCase() === "false") {
+    isAvailable = false;
+  }
+  const entries = Object.keys(currenciesConfig)
+    .map((k) => resolveCurrenciesEntry(root, k, currenciesConfig[k]))
+    .filter((e): e is BalanceEntry => e !== null);
+  return { isAvailable, entries };
+}
+
+export function parseBalance(
+  raw: unknown,
+  currenciesConfig: CurrenciesConfig,
+): Balance | null {
+  return ensureBalance(projectBalancePartial(raw, currenciesConfig));
 }
 

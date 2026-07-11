@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseBalance, pluginTransport, isDeepSeekBaseUrl } from "./api.ts";
+import {
+  parseBalance,
+  isDeepSeekBaseUrl,
+} from "./api.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = (name: string): unknown =>
@@ -36,26 +39,5 @@ describe("parseBalance", () => {
     const result = parseBalance({ is_available: false }, currencies);
     assert.equal(result?.isAvailable, false);
     assert.deepEqual(result?.entries, []);
-  });
-});
-
-describe("DeepSeek built-in plugin", () => {
-  it("uses the supplied authentication key and returns Balance", async () => {
-    const oldFetch = globalThis.fetch;
-    globalThis.fetch = async (_input, init) => {
-      assert.equal((init?.headers as Record<string, string>).Authorization, "Bearer configured");
-      return new Response(JSON.stringify(fixture("balance.real.json")), { status: 200 });
-    };
-    try {
-      const result = await pluginTransport("deepseek", "configured", {
-        providerId: "deepseek",
-        type: "BALANCE",
-        intervals: {},
-        currencies,
-      });
-      assert.equal((result as { isAvailable: boolean }).isAvailable, true);
-    } finally {
-      globalThis.fetch = oldFetch;
-    }
   });
 });

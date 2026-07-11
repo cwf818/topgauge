@@ -6,7 +6,7 @@
 
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolveEffectiveCurrencies, resolveEffectiveIntervals } from "./config.ts";
 import * as diagnostics from "./diagnostics.ts";
@@ -23,9 +23,23 @@ import type {
   PluginContext,
   Quota,
 } from "./plugins/data.ts";
+import { ensureBalance, ensureQuota } from "./plugins/parsers.ts";
 
-export type { AccountCreditPlugin, Balance, BalanceEntry, Interval, PluginContext, Quota };
-export { ensureInterval, ensureQuota, parseBalance, parseQuota } from "./plugins/parsers.ts";
+export type {
+  AccountCreditPlugin,
+  Balance,
+  BalanceEntry,
+  Interval,
+  PluginContext,
+  Quota,
+};
+export {
+  ensureInterval,
+  ensureQuota,
+  ensureBalance,
+  parseBalance,
+  parseQuota,
+} from "./plugins/parsers.ts";
 
 const PLUGIN_TIMEOUT_MS = 5_000;
 const BUILTIN_PLUGIN_IDS = new Set(["minimax", "deepseek"]);
@@ -46,17 +60,23 @@ export function queryPluginPath(providerId: string): string {
   return join(queryPluginsDir(), providerId, "index.js");
 }
 
-function builtInPluginPath(providerId: string, extension: "js" | "ts"): string {
+function builtInPluginPath(providerId: string, root: "dist" | "src"): string {
   assertSafeProviderId(providerId);
-  return join(dirname(fileURLToPath(import.meta.url)), "plugins", providerId, `index.${extension}`);
+  // root=dist → dist/plugins/<id>/index.js (emitted by
+  // scripts/copy-builtin-plugins.mjs); root=src →
+  // src/plugins/<id>/index.js (used by node --import tsx unit
+  // tests before a build, where the dist copy may be stale).
+  const base = root === "dist"
+    ? dirname(fileURLToPath(import.meta.url))
+    : resolve(dirname(fileURLToPath(import.meta.url)), "..", "src");
+  return join(base, "plugins", providerId, "index.js");
 }
 
 export function resolveBuiltInPluginOnDisk(providerId: string): string {
-  if (!BUILTIN_PLUGIN_IDS.has(providerId)) return builtInPluginPath(providerId, "js");
-  const emitted = builtInPluginPath(providerId, "js");
+  if (!BUILTIN_PLUGIN_IDS.has(providerId)) return builtInPluginPath(providerId, "dist");
+  const emitted = builtInPluginPath(providerId, "dist");
   if (existsSync(emitted)) return emitted;
-  // Source fallback is useful for node --import tsx unit tests before a build.
-  const source = builtInPluginPath(providerId, "ts");
+  const source = builtInPluginPath(providerId, "src");
   if (existsSync(source)) return source;
   return emitted;
 }
@@ -85,26 +105,6 @@ async function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<
   }
 }
 
-function isPlainObject(x: unknown): x is Record<string, unknown> {
-  return typeof x === "object" && x !== null && !Array.isArray(x);
-}
-
-function looksLikeQuota(x: unknown): x is Quota {
-  if (!isPlainObject(x)) return false;
-  let anyInterval = false;
-  for (const key of ["shortInterval", "midInterval", "longInterval"] as const) {
-    const value = x[key];
-    if (value == null) continue;
-    if (!isPlainObject(value)) return false;
-    anyInterval = true;
-  }
-  return anyInterval;
-}
-
-function looksLikeBalance(x: unknown): x is Balance {
-  return isPlainObject(x) && typeof x.isAvailable === "boolean" && Array.isArray(x.entries);
-}
-
 function resolveAuthenticationKey(entry: ProviderEntry, token: string): string {
   return entry.AUTHENTICATION_KEY ?? token ?? "";
 }
@@ -125,7 +125,8 @@ export async function pluginTransport(
   }
 
   const plugin = module.default;
-  if (!plugin || typeof plugin !== "object" || typeof plugin.fetchAccountCredit !== "function") {
+  if (!plugin || typeof plugin !== "object" ||
+      typeof plugin.fetchAccountCredit !== "function") {
     const message = `plugin ${pluginPath}: default export must be { fetchAccountCredit(authenticationKey, context?) }`;
     diagnostics.append("warning", "fetch", message, Date.now());
     throw new Error(message);
@@ -158,13 +159,17 @@ export async function fetchForProviderById(
     currencies: resolveEffectiveCurrencies(providerName, entry),
     ...(signal ? { signal } : {}),
   };
-  const body = await pluginTransport(
+  const partial = await pluginTransport(
     providerName,
     resolveAuthenticationKey(entry, token),
     context,
   );
-  if (entry.TYPE === "Quota") return looksLikeQuota(body) ? body : null;
-  if (entry.TYPE === "BALANCE") return looksLikeBalance(body) ? body : null;
+  // Host-side ensure. The plugin returned whatever shape its `fill`
+  // decided to project; we run the canonical normaliser here so the
+  // plugin author never has to know about ensureQuota /
+  // ensureBalance / Quota / Balance types.
+  if (entry.TYPE === "Quota") return ensureQuota(partial);
+  if (entry.TYPE === "BALANCE") return ensureBalance(partial);
   const exhaustive: never = entry.TYPE;
   throw new Error(`unsupported provider TYPE: ${exhaustive}`);
 }
@@ -180,13 +185,13 @@ export async function fetchQuota(
     BASE_URL_COMPARED_TO: "https://api.minimaxi.com/anthropic",
     COMPARE_METHOD: "EXACT" as const,
   };
-  const body = await pluginTransport("minimax", resolveAuthenticationKey(entry, token), {
+  const partial = await pluginTransport("minimax", resolveAuthenticationKey(entry, token), {
     providerId: "minimax",
     type: "Quota",
     intervals: resolveEffectiveIntervals("minimax", entry),
     currencies: resolveEffectiveCurrencies("minimax", entry),
   });
-  return looksLikeQuota(body) ? body : null;
+  return ensureQuota(partial);
 }
 
 export async function fetchBalance(
@@ -200,13 +205,13 @@ export async function fetchBalance(
     BASE_URL_COMPARED_TO: "https://api.deepseek.com/anthropic",
     COMPARE_METHOD: "EXACT" as const,
   };
-  const body = await pluginTransport("deepseek", resolveAuthenticationKey(entry, token), {
+  const partial = await pluginTransport("deepseek", resolveAuthenticationKey(entry, token), {
     providerId: "deepseek",
     type: "BALANCE",
     intervals: resolveEffectiveIntervals("deepseek", entry),
     currencies: resolveEffectiveCurrencies("deepseek", entry),
   });
-  return looksLikeBalance(body) ? body : null;
+  return ensureBalance(partial);
 }
 
 const DEEPSEEK_PREFIX = "https://api.deepseek.com";

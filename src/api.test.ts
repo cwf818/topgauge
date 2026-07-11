@@ -13,7 +13,6 @@ import {
   resolvePluginOnDisk,
 } from "./api.ts";
 import type { IntervalConfig } from "./types.ts";
-import { fillQuota } from "./plugins/minimax/index.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = (name: string): unknown =>
@@ -127,8 +126,14 @@ describe("ensure quota", () => {
   });
 });
 
-describe("MiniMax direct quota mapping", () => {
-  it("selects the general model instead of relying on array order", () => {
+// MiniMax built-in plugin — exercises the full
+// fetchAccountCredit → fill → ensureQuota pipeline by mocking the
+// HTTP layer. v0.8.47+: the fill helper is no longer exported; the
+// plugin inlines raw→Partial inside its fetchAccountCredit. Tests
+// here mock fetch and assert the canonical Quota that flows out of
+// fetchForProviderById.
+describe("MiniMax built-in plugin (end-to-end)", () => {
+  it("selects the general model regardless of array order", async () => {
     const raw = fixture("quota.real.minimax.json") as {
       model_remains: Array<Record<string, unknown>>;
     };
@@ -136,33 +141,115 @@ describe("MiniMax direct quota mapping", () => {
       ...raw,
       model_remains: [...raw.model_remains].reverse(),
     };
-    const result = ensureQuota(fillQuota(reordered));
-    assert.equal(result?.shortInterval?.remainingPercent, 66);
-    assert.equal(result?.shortInterval?.usedPercent, 34);
-    assert.equal(result?.midInterval?.remainingPercent, 61);
-    assert.equal(result?.midInterval?.intervalMs, 604_800_000);
-    assert.equal(result?.longInterval, null);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response(JSON.stringify(reordered), { status: 200 });
+    try {
+      const result = await fetchForProviderById(
+        "minimax",
+        {
+          TYPE: "Quota",
+          BASE_URL_COMPARED_TO: "https://api.minimaxi.com/anthropic",
+          COMPARE_METHOD: "EXACT",
+        },
+        "secret",
+        undefined,
+      );
+      const quota = result as {
+        shortInterval: { remainingPercent: number; usedPercent: number; intervalMs: number };
+        midInterval: { remainingPercent: number; usedPercent: number; intervalMs: number };
+        longInterval: unknown;
+      };
+      assert.equal(quota.shortInterval.remainingPercent, 66);
+      assert.equal(quota.shortInterval.usedPercent, 34);
+      assert.equal(quota.midInterval.remainingPercent, 61);
+      assert.equal(quota.midInterval.intervalMs, 604_800_000);
+      assert.equal(quota.longInterval, null);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
-  it("returns null when the general model is absent", () => {
-    assert.equal(fillQuota({
-      model_remains: [{ model_name: "video" }],
-      base_resp: { status_code: 0 },
-    }), null);
+  it("returns null when the general model is absent", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response(JSON.stringify({
+        model_remains: [{ model_name: "video" }],
+        base_resp: { status_code: 0 },
+      }), { status: 200 });
+    try {
+      const result = await fetchForProviderById(
+        "minimax",
+        {
+          TYPE: "Quota",
+          BASE_URL_COMPARED_TO: "https://api.minimaxi.com/anthropic",
+          COMPARE_METHOD: "EXACT",
+        },
+        "secret",
+        undefined,
+      );
+      assert.equal(result, null);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
-  it("completes missing MiniMax fields without using configured paths", () => {
-    const result = ensureQuota(fillQuota({
-      model_remains: [{
-        model_name: "general",
-        current_interval_remaining_percent: 0,
-      }],
-      base_resp: { status_code: 0 },
-    }));
-    assert.equal(result?.shortInterval?.remainingPercent, 0);
-    assert.equal(result?.shortInterval?.usedPercent, 100);
-    assert.equal(result?.shortInterval?.startAt, null);
-    assert.equal(result?.midInterval?.remainingPercent, null);
+  it("returns null on base_resp.status_code != 0", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response(JSON.stringify({
+        model_remains: [{ model_name: "general" }],
+        base_resp: { status_code: 401 },
+      }), { status: 200 });
+    try {
+      const result = await fetchForProviderById(
+        "minimax",
+        {
+          TYPE: "Quota",
+          BASE_URL_COMPARED_TO: "https://api.minimaxi.com/anthropic",
+          COMPARE_METHOD: "EXACT",
+        },
+        "secret",
+        undefined,
+      );
+      assert.equal(result, null);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("completes missing MiniMax fields via the host's ensureQuota", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response(JSON.stringify({
+        model_remains: [{
+          model_name: "general",
+          current_interval_remaining_percent: 0,
+        }],
+        base_resp: { status_code: 0 },
+      }), { status: 200 });
+    try {
+      const result = await fetchForProviderById(
+        "minimax",
+        {
+          TYPE: "Quota",
+          BASE_URL_COMPARED_TO: "https://api.minimaxi.com/anthropic",
+          COMPARE_METHOD: "EXACT",
+        },
+        "secret",
+        undefined,
+      );
+      const quota = result as {
+        shortInterval: { remainingPercent: number; usedPercent: number; startAt: number | null };
+        midInterval: { remainingPercent: number | null };
+      };
+      assert.equal(quota.shortInterval.remainingPercent, 0);
+      assert.equal(quota.shortInterval.usedPercent, 100);
+      assert.equal(quota.shortInterval.startAt, null);
+      assert.equal(quota.midInterval.remainingPercent, null);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 
@@ -174,15 +261,21 @@ describe("dynamic plugin loader", () => {
       return new Response(JSON.stringify(fixture("quota.real.minimax.json")), { status: 200 });
     };
     try {
-      const result = await pluginTransport("minimax", "secret", {
-        providerId: "minimax",
-        type: "Quota",
-        intervals: {
-          shortInterval: { remainingPercent: "missing.path" },
-          midInterval: { remainingPercent: "missing.path" },
+      // v0.8.47+: plugins return a partial shape via `fill`; the host
+      // runs `ensureQuota` to produce the canonical Quota. Going
+      // through `fetchForProviderById` is the end-to-end path; bare
+      // `pluginTransport` returns the plugin's partial output
+      // without normalization.
+      const result = await fetchForProviderById(
+        "minimax",
+        {
+          TYPE: "Quota",
+          BASE_URL_COMPARED_TO: "https://api.minimaxi.com/anthropic",
+          COMPARE_METHOD: "EXACT",
         },
-        currencies: {},
-      });
+        "secret",
+        undefined,
+      );
       const quota = result as {
         shortInterval: { remainingPercent: number; usedPercent: number; intervalMs: number };
         midInterval: { remainingPercent: number; usedPercent: number; intervalMs: number };
@@ -201,9 +294,14 @@ describe("dynamic plugin loader", () => {
   it("passes AUTHENTICATION_KEY-selected values to user plugins", async () => {
     const pluginDir = resolve(tempHome, ".claude", "plugins", "topgauge-cc", "query_plugins", "custom");
     mkdirSync(pluginDir, { recursive: true });
-    writeFileSync(resolve(pluginDir, "index.mjs"), `export default { fetchAccountCredit(token) {
-      return { shortInterval: { windowId: token, label: token, startAt: null, endAt: null, intervalMs: null, remainingPercent: 50, usedPercent: 50, remainingQuota: null, usedQuota: null, limitQuota: null } };
-    } };`);
+    // v0.8.47+: plugin ABI is a single `fetchAccountCredit` method
+    // returning whatever shape the plugin chose to project (the host
+    // runs ensureQuota / ensureBalance on the result).
+    writeFileSync(resolve(pluginDir, "index.mjs"), `export default {
+      fetchAccountCredit(token) {
+        return { shortInterval: { remainingPercent: 50, usedPercent: 50, windowId: token, label: token, startAt: null, endAt: null, intervalMs: null, remainingQuota: null, usedQuota: null, limitQuota: null } };
+      }
+    };`);
     const path = resolvePluginOnDisk("custom");
     assert.ok(path.endsWith("index.mjs"));
     const result = await fetchForProviderById(
@@ -220,17 +318,25 @@ describe("dynamic plugin loader", () => {
     assert.equal((result as { shortInterval: { windowId: string } }).shortInterval.windowId, "configured-key");
   });
 
-  it("rejects the removed fetchAccountQuota ABI", async () => {
+  it("rejects plugins missing fetchAccountCredit", async () => {
     const pluginDir = resolve(tempHome, ".claude", "plugins", "topgauge-cc", "query_plugins", "old");
     mkdirSync(pluginDir, { recursive: true });
-    writeFileSync(resolve(pluginDir, "index.mjs"), "export default { fetchAccountQuota() { return {}; } };");
-    await assert.rejects(() => pluginTransport("old", "token"), /fetchAccountCredit/);
+    writeFileSync(resolve(pluginDir, "index.mjs"), "export default { fetch() { return {}; } };");
+    await assert.rejects(() => pluginTransport("old", "token"), /default export must be \{ fetchAccountCredit\(authenticationKey, context\?\) \}/);
   });
 
-  it("rejects malformed canonical output", async () => {
+  it("passes partial output through pluginTransport unchanged", async () => {
+    // pluginTransport returns whatever the plugin's fetchAccountCredit
+    // produced — no canonical shape enforcement at this layer. The
+    // host's ensureQuota / ensureBalance is responsible for the final
+    // shape (see `fetchForProviderById`). Plugins can return any
+    // projection they want; each ensure function decides what it can
+    // normalise (or returns null if the projection isn't recognisable).
     const pluginDir = resolve(tempHome, ".claude", "plugins", "topgauge-cc", "query_plugins", "bad");
     mkdirSync(pluginDir, { recursive: true });
-    writeFileSync(resolve(pluginDir, "index.mjs"), "export default { fetchAccountCredit() { return 'bad'; } };");
+    writeFileSync(resolve(pluginDir, "index.mjs"), `export default {
+      fetchAccountCredit() { return "bad"; },
+    };`);
     const result = await pluginTransport("bad", "token");
     assert.equal(result, "bad");
   });
