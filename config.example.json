@@ -42,9 +42,9 @@
   "lineTemplate": {
     "plan": [
       "m_modeLabel", "s_0",
-      "m_window|term|short", "s_0", "m_countdown|term|short",
+      "m_windowQuota|term|short", "s_0", "m_countdown|term|short",
       "s_0", "s_1", "s_0",
-      "m_window|term|mid", "s_0", "m_countdown|term|mid"
+      "m_windowQuota|term|mid", "s_0", "m_countdown|term|mid"
     ],
     "balance": ["m_modeLabel", "s_0", "m_balance"]
   },

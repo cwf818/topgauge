@@ -33,7 +33,7 @@ const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 // legacy { pct, resetAt, resetStartAt?, resetDurationMs? } shape (used
 // pervasively below) and project to an Interval. Defaults windowId/
 // label to "5h" since the bulk of these tests target the 5-hour window
-// (m_window|term|short). The 7d case uses the same helper with an
+// (m_windowQuota|term|short). The 7d case uses the same helper with an
 // override.
 type LegacyWindow = {
   pct: number;
@@ -859,7 +859,7 @@ describe("m_window5h/7d — stale coloring (v0.6.0+)", () => {
     // making the line read as authoritative even though the number is
     // from a stale cache.
     __resetForTest({
-      statuslineTemplate:["m_window|term:short"],
+      statuslineTemplate:["m_windowQuota|term:short"],
       timeFormat: { minUnit: "s", maxUnitCount: 4 },
     });
     try {
@@ -907,7 +907,7 @@ describe("m_window5h/7d — stale coloring (v0.6.0+)", () => {
     // Documented v0.3.3+ behavior — explicit :color: always wins.
     // v0.6.0+: stale does NOT silently override the user's color.
     __resetForTest({
-      statuslineTemplate:["m_window|term:short|color:" + ORANGE],
+      statuslineTemplate:["m_windowQuota|term:short|color:" + ORANGE],
       timeFormat: { minUnit: "s", maxUnitCount: 4 },
     });
     try {
@@ -934,7 +934,7 @@ describe("m_window5h/7d — stale coloring (v0.6.0+)", () => {
     // ▓ run — and the leading ░ run should stay plain. v0.6.0+
     // post-bar-blocks extension.
     __resetForTest({
-      statuslineTemplate:["m_window|term:short"],
+      statuslineTemplate:["m_windowQuota|term:short"],
       timeFormat: { minUnit: "s", maxUnitCount: 4 },
     });
     try {
@@ -1139,7 +1139,7 @@ describe("m_countdown5h/7d — stale AND past-due renders '(n/a🕒 5h)' in STAL
   });
 
   it("inline :color:red wins over the stale+past-due STALE_COLOR override", () => {
-    // Same precedence rule as m_window*: an explicit :color:
+    // Same precedence rule as m_windowQuota*: an explicit :color:
     // always wins. But the BODY swap to n/a still happens — only
     // the color is overridden.
     const nowMs = Date.parse("2026-06-24T12:00:00Z");
@@ -1173,14 +1173,14 @@ describe("m_countdown5h/7d — stale AND past-due renders '(n/a🕒 5h)' in STAL
   });
 
   it("other modules are unaffected by the stale+past-due branch", () => {
-    // The m_window|term:short / m_window|term:mid stale coloring
+    // The m_windowQuota|term:short / m_windowQuota|term:mid stale coloring
     // path (v0.6.0+) is a separate concern — gated on ctx.stale
     // alone, NOT on past-due. Make sure the new branch in
     // m_countdown|term|short doesn't accidentally leak STALE_COLOR
     // into the window module.
     const nowMs = Date.parse("2026-06-24T12:00:00Z");
     __resetForTest({
-      statuslineTemplate: ["m_window|term:short", "m_countdown|term:short"],
+      statuslineTemplate: ["m_windowQuota|term:short", "m_countdown|term:short"],
       timeFormat: { minUnit: "m", maxUnitCount: 2 },
     });
     try {

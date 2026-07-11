@@ -2758,18 +2758,18 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
     assert.equal(strip(out), "░░░░░░░░ 0%");
   });
 
-  it("m_window|term:short|nulldrop:false renders gray '░░░░░░░░ 0%' when shortInterval is null", () => {
+  it("m_windowQuota|term:short|nulldrop:false renders gray '░░░░░░░░ 0%' when shortInterval is null", () => {
     // shortInterval is null → placeholder fires.
     const out = renderTemplate(
-      ["m_window|term:short|nulldrop:false"],
+      ["m_windowQuota|term:short|nulldrop:false"],
       ctxFor(null, null, null),
     ).join("\n");
     assert.equal(strip(out), "░░░░░░░░ 0%");
   });
 
-  it("m_window|term|mid|nulldrop|false renders gray '░░░░░░░░ 0%' when midInterval is null", () => {
+  it("m_windowQuota|term|mid|nulldrop|false renders gray '░░░░░░░░ 0%' when midInterval is null", () => {
     const out = renderTemplate(
-      ["m_window|term:mid|nulldrop:false"],
+      ["m_windowQuota|term:mid|nulldrop:false"],
       ctxFor(null, null, null),
     ).join("\n");
     assert.equal(strip(out), "░░░░░░░░ 0%");
@@ -3415,17 +3415,17 @@ describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
 
   it("m_template|foo with ctx.providerType='plan' expands the registered fragment", () => {
     __resetForTest({
-      lineTemplates: { foo: ["m_window|term:short"] },
+      lineTemplates: { foo: ["m_windowQuota|term:short"] },
     });
     const out = renderTemplate(["m_template|foo"], ctxFor(null, legacyToIv({ pct: 42 })));
-    // m_window|term:short at 42% should land in band 1 (orange) per the
+    // m_windowQuota|term:short at 42% should land in band 1 (orange) per the
     // default band thresholds. Strip ANSI for stability.
     assert.match(out.map(strip).join("\n"), /42%/);
   });
 
   it("m_template|foo with ctx.providerType='balance' wants type|plan → drops", () => {
     __resetForTest({
-      lineTemplates: { foo: ["m_window|term:short"] },
+      lineTemplates: { foo: ["m_windowQuota|term:short"] },
     });
     const out = renderTemplate(
       ["m_template|foo|type:plan"],
@@ -3439,7 +3439,7 @@ describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
 
   it("m_template|foo with ctx.providerType='plan' wants type|plan → renders", () => {
     __resetForTest({
-      lineTemplates: { foo: ["m_window|term:short"] },
+      lineTemplates: { foo: ["m_windowQuota|term:short"] },
     });
     const out = renderTemplate(
       ["m_template|foo|type:plan"],
@@ -3453,7 +3453,7 @@ describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
     // same semantics). Pre-v0.8.15 configs that wrote
     // `m_template|<key>|mode|plan` keep rendering byte-for-byte.
     __resetForTest({
-      lineTemplates: { foo: ["m_window|term:short"] },
+      lineTemplates: { foo: ["m_windowQuota|term:short"] },
     });
     const outLegacy = renderTemplate(
       ["m_template|foo|mode:plan"],
@@ -3477,9 +3477,9 @@ describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
     // who accidentally writes both has a typo in one of them;
     // preferring the newer name keeps the renderer consistent.
     __resetForTest({
-      lineTemplates: { foo: ["m_window|term:short"] },
+      lineTemplates: { foo: ["m_windowQuota|term:short"] },
     });
-    // type=plan, mode=balance → plan wins (m_window|term:short renders
+    // type=plan, mode=balance → plan wins (m_windowQuota|term:short renders
     // because the inner ctx.providerType is "plan" which matches).
     const outPlanWins = renderTemplate(
       ["m_template|foo|type:plan|mode:balance"],
@@ -3501,7 +3501,7 @@ describe("renderTemplate — m_template inline-args (v0.4.0+)", () => {
     // BALANCE ctx drops silently, same behavior as the legacy
     // bare-key path.
     __resetForTest({
-      lineTemplates: { foo: ["m_window|term:short"] },
+      lineTemplates: { foo: ["m_windowQuota|term:short"] },
     });
     const outPlan = renderTemplate(
       ["m_template|foo"],
@@ -3717,7 +3717,7 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
     // effect on a m_accTokenIn that has data, so just confirm the
     // token doesn't badarg-warn and the inner module renders.
     __resetForTest({
-      lineTemplates: { foo: ["m_window|term:short"] },
+      lineTemplates: { foo: ["m_windowQuota|term:short"] },
     });
     let captured = "";
     const err = process.stderr as unknown as { write: (chunk: string) => boolean };
@@ -3791,7 +3791,7 @@ describe("renderTemplate — m_template passthrough (v0.8.7+)", () => {
     // The pre-v0.8.7 shape `m_template|<key>` (no other args) must
     // keep expanding the fragment with no passThrough.
     __resetForTest({
-      lineTemplates: { foo: ["m_window|term:short"] },
+      lineTemplates: { foo: ["m_windowQuota|term:short"] },
     });
     const out = renderTemplate(["m_template|foo"], ctxFor(null, legacyToIv({ pct: 10 }))).join("\n");
     assert.match(strip(out), /10%/);

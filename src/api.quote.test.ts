@@ -113,7 +113,7 @@ describe("api.quote — scanTokens v0.8.34 pair grammar", () => {
   it("non-m_quote tokens are skipped (scanner finds nothing)", () => {
     const got = __scanTokensForTest([
       "m_tokenIn|color:red",
-      "m_window|term:short",
+      "m_windowQuota|term:short",
       "m_balance|color:green",
     ]);
     assert.equal(got, null);

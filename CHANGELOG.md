@@ -189,7 +189,7 @@
   Examples (v0.8.33+):
   - `m_label|hello|color:red`
   - `m_label|GPU: A100|color:brightGreen`
-  - `m_window|term:short|color:red`
+  - `m_windowQuota|term:short|color:red`
   - `m_tokenIn|color=red` (equivalent to `:`, choose freely)
   - `m_sumTokenIn|window:7d|model:active|align:true`
   - `m_quote|address:https://v1.hitokoto.cn/|quote:hitokoto`

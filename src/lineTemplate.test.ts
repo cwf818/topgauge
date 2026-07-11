@@ -71,7 +71,7 @@ beforeEach(() => {
 describe("lineTemplate — custom template (drop the 7d window)", () => {
   beforeEach(() => {
     __resetForTest({
-      statuslineTemplate:["m_modeLabel", "s_space", "m_window|term:short", "s_space", "m_countdown|term:short"],
+      statuslineTemplate:["m_modeLabel", "s_space", "m_windowQuota|term:short", "s_space", "m_countdown|term:short"],
     });
   });
   afterEach(() => __resetForTest());
@@ -104,7 +104,7 @@ describe("lineTemplate — unknown module token (vX.X.X+: literal pass-through)"
     // warning. m_foo becomes "m_foo" in the rendered output.
     __resetUnknownModuleWarnForTest();
     __resetForTest({
-      statuslineTemplate:["m_modeLabel", "s_space", "m_window|term:short", "s_space", "m_foo"],
+      statuslineTemplate:["m_modeLabel", "s_space", "m_windowQuota|term:short", "s_space", "m_foo"],
     });
     // Capture stderr.
     const err = process.stderr as unknown as { write: (c: string) => boolean };
@@ -175,9 +175,9 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
     __resetForTest({
       statuslineTemplate:[
         "m_modeLabel", " ago",
-        "m_window|term:short", " ago", "m_countdown|term:short",
+        "m_windowQuota|term:short", " ago", "m_countdown|term:short",
         " ago", " ago", " ago",
-        "m_window|term:mid", " ago", "m_countdown|term:mid",
+        "m_windowQuota|term:mid", " ago", "m_countdown|term:mid",
       ],
     });
     try {
@@ -204,9 +204,9 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
     __resetForTest({
       statuslineTemplate:[
         "m_modeLabel", "s_space",
-        "m_window|term:short", "s_space", "m_countdown|term:short",
+        "m_windowQuota|term:short", "s_space", "m_countdown|term:short",
         "s_space", "s_dot", "s_space",
-        "m_window|term:mid", "s_space", "m_countdown|term:mid",
+        "m_windowQuota|term:mid", "s_space", "m_countdown|term:mid",
         "s_space", "m_age",
       ],
     });
@@ -249,7 +249,7 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
     __resetForTest({
       statuslineTemplate:[
         "m_modeLabel", "s_space",
-        "m_window|term:short", "s_space", "m_countdown|term:short",
+        "m_windowQuota|term:short", "s_space", "m_countdown|term:short",
         "s_space", "m_age",
       ],
     });
@@ -318,7 +318,7 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
     __resetForTest({
       statuslineTemplate:["m_template|outer|mode:plan", "m_age"],
       lineTemplates:{
-        outer: ["s_space", "m_window|term:short", "s_space", "m_age"],
+        outer: ["s_space", "m_windowQuota|term:short", "s_space", "m_age"],
         balance: [],
       } as any,
       timeFormat: { minUnit: "s", maxUnitCount: 4 },
@@ -348,7 +348,7 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
 describe("lineTemplate — m_version module", () => {
   it("renders 'v' + ctx.version when m_version is in the template", () => {
     __resetForTest({
-      statuslineTemplate:["m_modeLabel", "s_space", "m_window|term:short", "s_space", "m_version"],
+      statuslineTemplate:["m_modeLabel", "s_space", "m_windowQuota|term:short", "s_space", "m_version"],
     });
     try {
       const line = renderProviderLine("minimax", {
@@ -368,7 +368,7 @@ describe("lineTemplate — m_version module", () => {
 
   it("renders nothing when version is empty (m_version module returns null)", () => {
     __resetForTest({
-      statuslineTemplate:["m_modeLabel", "s_space", "m_window|term:short", "s_space", "m_version"],
+      statuslineTemplate:["m_modeLabel", "s_space", "m_windowQuota|term:short", "s_space", "m_version"],
     });
     try {
       const line = renderProviderLine("minimax", {
@@ -1064,18 +1064,18 @@ describe("lineTemplate — m_modeLabel|display inline-args tokens", () => {
 // override. These tests cover both:
 //   - plain-text modules (m_version, m_tokenIn, …) — the override
 //     wraps the bare body in `<c>body<RESET>`.
-//   - already-colored modules (m_window|term:short|mid, m_balance, m_age,
+//   - already-colored modules (m_windowQuota|term:short|mid, m_balance, m_age,
 //     m_tokenHitRate, m_cacheRead, m_tokenInSpeed, m_tokenOutSpeed) —
 //     the override REPLACES the natural color (user always wins).
 //   - invalid :color: → hard noop (drop + warn), same as m_label.
 //   - bare `<module>` form is byte-for-byte identical to pre-v0.3.3.
-describe("lineTemplate — m_window|term:short / m_window|term:mid :color override", () => {
+describe("lineTemplate — m_windowQuota|term:short / m_windowQuota|term:mid :color override", () => {
   beforeEach(() => __resetUnknownModuleWarnForTest());
   afterEach(() => __resetForTest());
 
-  it("m_window|term:short|color:red replaces the band-based color with red", () => {
+  it("m_windowQuota|term:short|color:red replaces the band-based color with red", () => {
     __resetForTest({
-      statuslineTemplate:["m_window|term:short|color:red"],
+      statuslineTemplate:["m_windowQuota|term:short|color:red"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -1089,9 +1089,9 @@ describe("lineTemplate — m_window|term:short / m_window|term:mid :color overri
     assert.ok(line.includes("\x1b[38;5;196m38%"), `got: ${JSON.stringify(line)}`);
   });
 
-  it("m_window|term:mid|color:darkGreen replaces the band-based color with darkGreen", () => {
+  it("m_windowQuota|term:mid|color:darkGreen replaces the band-based color with darkGreen", () => {
     __resetForTest({
-      statuslineTemplate:["m_window|term:mid|color:darkGreen"],
+      statuslineTemplate:["m_windowQuota|term:mid|color:darkGreen"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -1104,9 +1104,9 @@ describe("lineTemplate — m_window|term:short / m_window|term:mid :color overri
     assert.ok(line.includes("\x1b[38;5;29m60%"), `got: ${JSON.stringify(line)}`);
   });
 
-  it("bare m_window|term:short is byte-for-byte unchanged when no :color: is supplied", () => {
+  it("bare m_windowQuota|term:short is byte-for-byte unchanged when no :color: is supplied", () => {
     __resetForTest({
-      statuslineTemplate:["m_window|term:short"],
+      statuslineTemplate:["m_windowQuota|term:short"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -1119,9 +1119,9 @@ describe("lineTemplate — m_window|term:short / m_window|term:mid :color overri
     assert.ok(line.includes("\x1b[38;5;41m38%"), `got: ${JSON.stringify(line)}`);
   });
 
-  it("m_window|term:short|color:garbage is a hard noop (drops and warns)", () => {
+  it("m_windowQuota|term:short|color:garbage is a hard noop (drops and warns)", () => {
     __resetForTest({
-      statuslineTemplate:["m_window|term:short|color:garbage"],
+      statuslineTemplate:["m_windowQuota|term:short|color:garbage"],
     });
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
@@ -1139,16 +1139,16 @@ describe("lineTemplate — m_window|term:short / m_window|term:mid :color overri
 // v0.4.0+ — inline :display: override for window modules. Scoped to
 // that module's bar computation only (does NOT mutate the global
 // `display` config field). Accepts "used" or "remaining" verbatim;
-// anything else is a hard noop. The bare `m_window|term:short` form is
+// anything else is a hard noop. The bare `m_windowQuota|term:short` form is
 // byte-for-byte unchanged — bare still reads `ctx.mode` (which
 // defaults to "used" when no config override).
-describe("lineTemplate — m_window|term:short / m_window|term:mid / m_windowContext :display override", () => {
+describe("lineTemplate — m_windowQuota|term:short / m_windowQuota|term:mid / m_windowContext :display override", () => {
   beforeEach(() => __resetUnknownModuleWarnForTest());
   afterEach(() => __resetForTest());
 
-  it("bare m_window|term:short honors the global config (default 'used') — renders 38% at brightGreen", () => {
+  it("bare m_windowQuota|term:short honors the global config (default 'used') — renders 38% at brightGreen", () => {
     __resetForTest({
-      statuslineTemplate:["m_window|term:short"],
+      statuslineTemplate:["m_windowQuota|term:short"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -1160,9 +1160,9 @@ describe("lineTemplate — m_window|term:short / m_window|term:mid / m_windowCon
     assert.ok(line.includes("\x1b[38;5;41m38%"), `got: ${JSON.stringify(line)}`);
   });
 
-  it("m_window|term:short|display:remaining inverts 38% used → renders 62% at band 0 (bright green)", () => {
+  it("m_windowQuota|term:short|display:remaining inverts 38% used → renders 62% at band 0 (bright green)", () => {
     __resetForTest({
-      statuslineTemplate:["m_window|term:short|display:remaining"],
+      statuslineTemplate:["m_windowQuota|term:short|display:remaining"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -1179,9 +1179,9 @@ describe("lineTemplate — m_window|term:short / m_window|term:mid / m_windowCon
     assert.ok(!line.includes("38%"), `got: ${JSON.stringify(line)}`);
   });
 
-  it("m_window|term:short|display:used is byte-identical to bare when ctx.mode is 'used'", () => {
+  it("m_windowQuota|term:short|display:used is byte-identical to bare when ctx.mode is 'used'", () => {
     __resetForTest({
-      statuslineTemplate:["m_window|term:short|display:used"],
+      statuslineTemplate:["m_windowQuota|term:short|display:used"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -1193,11 +1193,11 @@ describe("lineTemplate — m_window|term:short / m_window|term:mid / m_windowCon
     assert.ok(line.includes("\x1b[38;5;41m38%"), `got: ${JSON.stringify(line)}`);
   });
 
-  it("m_window|term:short|display:remaining|color:yellow — both params combine, 62% in yellow", () => {
+  it("m_windowQuota|term:short|display:remaining|color:yellow — both params combine, 62% in yellow", () => {
     // Tests that color and display compose: override color REPLACES the
     // band color (yellow, NOT orange); display inverts the percentage.
     __resetForTest({
-      statuslineTemplate:["m_window|term:short|display:remaining|color:yellow"],
+      statuslineTemplate:["m_windowQuota|term:short|display:remaining|color:yellow"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -1210,9 +1210,9 @@ describe("lineTemplate — m_window|term:short / m_window|term:mid / m_windowCon
     assert.ok(!line.includes("38%"), `got: ${JSON.stringify(line)}`);
   });
 
-  it("m_window|term:mid|display:remaining inverts 60% used → renders 40% at band 1 (dark green)", () => {
+  it("m_windowQuota|term:mid|display:remaining inverts 60% used → renders 40% at band 1 (dark green)", () => {
     __resetForTest({
-      statuslineTemplate:["m_window|term:mid|display:remaining"],
+      statuslineTemplate:["m_windowQuota|term:mid|display:remaining"],
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -1275,9 +1275,9 @@ describe("lineTemplate — m_window|term:short / m_window|term:mid / m_windowCon
     assert.ok(line.includes("\x1b[38;5;29m63%"), `got: ${JSON.stringify(line)}`);
   });
 
-  it("m_window|term:short|display:garbage is a hard noop (drops and warns)", () => {
+  it("m_windowQuota|term:short|display:garbage is a hard noop (drops and warns)", () => {
     __resetForTest({
-      statuslineTemplate:["m_window|term:short|display:garbage"],
+      statuslineTemplate:["m_windowQuota|term:short|display:garbage"],
     });
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
@@ -1291,14 +1291,14 @@ describe("lineTemplate — m_window|term:short / m_window|term:mid / m_windowCon
     assert.equal(warns.filter((w) => w.includes("unknown lineTemplate module")).length, 1);
   });
 
-  it("m_window|term:short|display:USED (case-sensitive) is a hard noop (drops and warns)", () => {
+  it("m_windowQuota|term:short|display:USED (case-sensitive) is a hard noop (drops and warns)", () => {
     // The resolver does NOT lower-case. Anything that isn't an exact
     // match for "used" or "remaining" (including "USED", "Used",
     // "remaining " with trailing space) is a parse-fail. This is
     // intentional — silent normalization would mask user typos and
     // leave "Remaining" rendering as a different mode than expected.
     __resetForTest({
-      statuslineTemplate:["m_window|term:short|display:USED"],
+      statuslineTemplate:["m_windowQuota|term:short|display:USED"],
     });
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
@@ -1312,10 +1312,10 @@ describe("lineTemplate — m_window|term:short / m_window|term:mid / m_windowCon
     assert.equal(warns.filter((w) => w.includes("unknown lineTemplate module")).length, 1);
   });
 
-  it("m_window|term:short|display: (empty value) is a hard noop (drops and warns)", () => {
+  it("m_windowQuota|term:short|display: (empty value) is a hard noop (drops and warns)", () => {
     // Empty value → resolver sees "" → null → badarg.
     __resetForTest({
-      statuslineTemplate:["m_window|term:short|display:"],
+      statuslineTemplate:["m_windowQuota|term:short|display:"],
     });
     const { value: line, warns } = withCapturedStderr(() =>
       renderProviderLine("minimax", {
@@ -1943,7 +1943,7 @@ describe("m_template — legacy lineTemplate warns once and is ignored (v0.4.0 h
         path.join(tmpDir, "config.json"),
         JSON.stringify({
           lineTemplate: {
-            plan: ["m_modeLabel", "s_space", "m_window|term:short"],
+            plan: ["m_modeLabel", "s_space", "m_windowQuota|term:short"],
             balance: ["m_modeLabel", "s_space", "m_balance"],
           },
         }),
@@ -1956,8 +1956,8 @@ describe("m_template — legacy lineTemplate warns once and is ignored (v0.4.0 h
       // NOT to the legacy arrays.
       assert.deepEqual(cfg.statuslineTemplate, ["m_template|_1line"]);
       // Render through the minimax path — output should reflect the
-      // default preset shape (m_window|term:short + m_window|term:mid, NOT just
-      // m_window|term:short as the legacy plan array would suggest).
+      // default preset shape (m_windowQuota|term:short + m_windowQuota|term:mid, NOT just
+      // m_windowQuota|term:short as the legacy plan array would suggest).
       const line = renderProviderLine("minimax", {
         mode: "used",
         nowMs: Date.now(),
@@ -1980,7 +1980,7 @@ describe("m_template — end-to-end expansion on minimax (plan mode)", () => {
   beforeEach(() => {
     __resetForTest({
       lineTemplates: {
-        shared: ["m_modeLabel", "s_space", "m_window|term:short", "s_space", "m_countdown|term:short"],
+        shared: ["m_modeLabel", "s_space", "m_windowQuota|term:short", "s_space", "m_countdown|term:short"],
       },
       statuslineTemplate: ["m_template|shared|mode:plan"],
     });
@@ -2008,7 +2008,7 @@ describe("m_template — mode filter drops on mismatch (deepseek vs plan)", () =
   beforeEach(() => {
     __resetForTest({
       lineTemplates: {
-        shared: ["m_modeLabel", "s_space", "m_window|term:short"],
+        shared: ["m_modeLabel", "s_space", "m_windowQuota|term:short"],
       },
       // Combine m_template:shared:mode:plan (will drop on deepseek)
       // with an unconditional m_balance chunk. The m_balance chunk

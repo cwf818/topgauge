@@ -161,7 +161,7 @@ function renderDataLine(
     // v0.9.0+ — three independent Intervals. No partial-window
     // fallback synthesis (the v0.5.0–v0.8.x `zero = { pct: 0 }`
     // trick): each interval is independent now, and the renderer
-    // (m_window / m_countdown / m_quota) handles a null interval
+    // (m_windowQuota / m_countdown / m_quota) handles a null interval
     // via its own per-term placeholder. We only return null when
     // ALL three intervals are null — i.e. the parser found no
     // recognizable data for any term.

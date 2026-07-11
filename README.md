@@ -33,7 +33,7 @@ For the per-version detail, see [CHANGELOG.md](CHANGELOG.md). Recent highlights:
 - **v0.8.32** — `m_sum*|align|true|false` is a meaningful arg again (was no-op in v0.8.31). Bare `m_sum*` defaults to `window=all` (was `5h`). `interval.windowId` accepts any string.
 - **v0.8.30 / v0.8.30.1** — `m_tokenIn` / `m_tokenOut` gain default tints (green in / red out); idle-tick renders cached value under `STALE_COLOR` (value stays live; only the hue marks stale).
 - **v0.8.29** — `m_acc*` cold-slot JSONL replay — when `state.json` is missing for a slot (fresh install, after `:clean --purge-runtime`, accidental delete), the first valid tick reconstructs the cumulative from the JSONL sample stream before merging the current delta. `ccsession` is excluded (process-lifetime semantics).
-- **v0.8.28** — `intervals` namespace refactor: `shortInterval` / `midInterval` / `longInterval` (was keyed by `5h`/`7d`/`30d` literal). `m_window` / `m_countdown` / `m_quota` gain `|term|short|mid|long` selector.
+- **v0.8.28** — `intervals` namespace refactor: `shortInterval` / `midInterval` / `longInterval` (was keyed by `5h`/`7d`/`30d` literal). `m_windowQuota` / `m_countdown` / `m_quota` gain `|term|short|mid|long` selector.
 - **v0.8.27** — `m_sumStartTime` / `m_sumEndTime` honor `|align|true`: render the plan's `resetStartAt` / `resetAt` instead of empirical min/max when the window matches a declared `interval.windowId`.
 - **v0.8.25** — `|abs|true` widens the time modules (`m_accStartTime` / `m_sumStartTime` / `m_sumEndTime`) from `HH:MM:SS` to `YYYY-MM-DD HH:MM:SS` (sv-SE, 24h).
 - **v0.8.24** — `startAt` / `lastAt` fields + `m_accStartTime` / `m_sumStartTime` / `m_sumEndTime` modules + `labels.labelStartTime` / `labelEndTime`. `MAX_SAMPLE_API_MS` sanity ceiling on per-tick `apiMs` (300_000 ms) so a single pathological stdin reading can't pollute the JSONL.
@@ -315,7 +315,7 @@ A reference with every field is at [config.example.json](./config.example.json).
     // `separator` field — the stale annotation is now appended
     // directly after the template output. If a custom separator
     // is needed before the annotation, place it explicitly in the
-    // lineTemplate (e.g. add an `s_0` token after `m_window|term:mid`).
+    // lineTemplate (e.g. add an `s_0` token after `m_windowQuota|term:mid`).
     "ageEmoji": { "healthy": "🔗", "broken": "⛓️‍💥" },
   },
   "labels": {
@@ -440,7 +440,7 @@ A reference with every field is at [config.example.json](./config.example.json).
     "header": ["m_modeLabel", "s_space"]
   },
   "statuslineTemplate": ["m_template|_1line"],  // or a raw token array, e.g.:
-  // ["m_template|_standard", "m_window|term:short", "s_0", "m_window|term:mid"],
+  // ["m_template|_standard", "m_windowQuota|term:short", "s_0", "m_windowQuota|term:mid"],
 
   // v0.4.0+ replaces the v0.3.x `lineTemplate: { plan, balance }`
   // shape with the two fields above. See the "Upgrading to v0.4.0"
@@ -573,7 +573,7 @@ Anything not mapped resolves to `null`, and the renderer treats `null` as "no da
 | ----------------------------- | ------------------- | -------------------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `intervals.<term>.windowId`   | optional            | `"5h"` \| `"7d"` \| `"30d"` | label / id discriminator                                                              | Defaults to `{ shortInterval: "5h", midInterval: "7d", longInterval: "30d" }` when omitted.                            |
 | `intervals.<term>.label`      | optional            | string                     | `<label>--` placeholder, `m_quota(<label>):…` body                                     | Defaults to `windowId`.                                                                                                |
-| `intervals.<term>.usedPercent`      | one of (percent group) | number 0..100         | `m_window` bar                                                                         | The **used** percentage. Provide this OR `remainingPercent`, not both. The plugin derives the missing one via `100 - x`. |
+| `intervals.<term>.usedPercent`      | one of (percent group) | number 0..100         | `m_windowQuota` bar                                                                         | The **used** percentage. Provide this OR `remainingPercent`, not both. The plugin derives the missing one via `100 - x`. |
 | `intervals.<term>.remainingPercent` | one of (percent group) | number 0..100        | (derived → `usedPercent`)                                                              | The **remaining** percentage. Same derive rule.                                                                        |
 | `intervals.<term>.startAt`          | one of (time group)    | number (epoch ms)    | `m_countdown` body, `pickResetArrow` fill-state glyph                                  | When the current interval started. Pairs with `endAt` to compute the duration. ISO-8601 strings accepted.              |
 | `intervals.<term>.endAt`            | one of (time group)    | number (epoch ms)    | `m_countdown` body                                                                     | When the interval resets. Same ISO-8601 coercion.                                                                      |
@@ -749,7 +749,7 @@ Recognized modules:
 | Token | Renders | Notes |
 | ----- | ------- | ----- |
 | `m_modeLabel` | The leading prefix: `modeLabels.used` / `modeLabels.remaining` (plan) or `modeLabels.balance` (DeepSeek). | |
-| `m_window\|term:short\|mid\|long` | Interval bar + colored percentage, e.g. `▓▓▓░░░ 38%`. v0.8.28+ unifies the 5h/7d/30d windows under one module family keyed on `intervals.<term>`. | |
+| `m_windowQuota\|term:short\|mid\|long` | Interval bar + colored percentage, e.g. `▓▓▓░░░ 38%`. v0.8.28+ unifies the 5h/7d/30d windows under one module family keyed on `intervals.<term>`. | |
 | `m_countdown\|term:short\|mid\|long` | Interval reset suffix: `(2h3m🕛 5h)` when reset time known, or `<label>:--` placeholder otherwise. | |
 | `m_quota\|term:short\|mid\|long` | Quota display, e.g. `quota(5h):100/500`. Reads `intervals.<term>.usedQuota` + `.limitQuota`. v0.8.28+ new. | |
 | `m_balance` | The DeepSeek balance chunk (e.g. `$25 · ￥110`), single SGR-wrapped block. | |
@@ -826,7 +826,7 @@ Rules:
 
 `<color>` accepts a shortcut name (`brightGreen`, `darkGreen`, `yellow`, `orange`, `red`, `stale`, `brightBlack`) or a raw SGR string (`\x1b[36m`). `m_quote` additionally accepts `rainbow` / `rand-rainbow` / `hue`.
 
-The bare forms (`m_modeLabel`, `s_0`, `m_window|term:short`, `m_tokenIn`, …) keep working exactly as before — the inline-args path only fires when the token contains `|`. So upgrading to v0.8.33 does NOT change the default `statuslineTemplate` output unless you explicitly opt in.
+The bare forms (`m_modeLabel`, `s_0`, `m_windowQuota|term:short`, `m_tokenIn`, …) keep working exactly as before — the inline-args path only fires when the token contains `|`. So upgrading to v0.8.33 does NOT change the default `statuslineTemplate` output unless you explicitly opt in.
 
 Examples:
 
@@ -835,11 +835,11 @@ Examples:
   "statuslineTemplate": [
     "m_modeLabel|color:brightGreen",  // tint the leading Usage: prefix
     "s_space",                         // plain space (no color)
-    "m_window|term:short", "s_space",
+    "m_windowQuota|term:short", "s_space",
     "m_countdown|term:short",
     "s_dot",
     "s_space",
-    "m_window|term:mid", "s_space",
+    "m_windowQuota|term:mid", "s_space",
     "m_countdown|term:mid",
     "s_newline",
     "m_accStartTime|abs:true",         // v0.8.24+, v0.8.25+
@@ -852,10 +852,10 @@ Examples:
 
 ### Per-module `:color:` override
 
-Every existing module — `m_window|term:short`, `m_window|term:mid`, `m_countdown|term:short`, `m_countdown|term:mid`, `m_windowContext`, `m_windowMemUsage`, `m_balance`, `m_age`, `m_version`, `m_tokenIn`, `m_tokenOut`, `m_tokenHitRate`, `m_tokenCachedIn`, `m_tokenInSpeed`, `m_tokenOutSpeed`, plus the session-info modules (`m_session`, `m_model`, `m_effort`, `m_repo`, `m_ccVersion`, `m_sessionDuration`, `m_sessionApiDuration`, `m_linesAdded`, `m_linesRemoved`, `m_tokenInTotal`, `m_tokenTotalOut`, `m_contextSize`, `m_contextUsedPercent`, `m_contextRemainingPercent`, `m_contextWindowsSize`), plus the v0.8.0+ three-tuple families (`m_acc*` / `m_sum*`) — also accepts an optional `|color|<c>` segment. Two cases:
+Every existing module — `m_windowQuota|term:short`, `m_windowQuota|term:mid`, `m_countdown|term:short`, `m_countdown|term:mid`, `m_windowContext`, `m_windowMemUsage`, `m_balance`, `m_age`, `m_version`, `m_tokenIn`, `m_tokenOut`, `m_tokenHitRate`, `m_tokenCachedIn`, `m_tokenInSpeed`, `m_tokenOutSpeed`, plus the session-info modules (`m_session`, `m_model`, `m_effort`, `m_repo`, `m_ccVersion`, `m_sessionDuration`, `m_sessionApiDuration`, `m_linesAdded`, `m_linesRemoved`, `m_tokenInTotal`, `m_tokenTotalOut`, `m_contextSize`, `m_contextUsedPercent`, `m_contextRemainingPercent`, `m_contextWindowsSize`), plus the v0.8.0+ three-tuple families (`m_acc*` / `m_sum*`) — also accepts an optional `|color|<c>` segment. Two cases:
 
 - **Plain-text modules** (e.g. `m_version`, `m_tokenIn`, `m_countdown|term:short`): the override simply wraps the natural output in `<color>…<RESET>` SGR. The module's own body is unchanged.
-- **Already-colored modules** (e.g. `m_window|term:short`, `m_balance`, `m_tokenHitRate`, `m_tokenCachedIn`, `m_age`, `m_tokenInSpeed`, `m_tokenOutSpeed`): the override **replaces** the natural color choice — band-based, cache-hit-band, or fixed `stale` color — with your `<color>`. The user's color always wins; if you didn't say `|color:`, the module keeps its existing coloring and the default `statuslineTemplate` output is byte-for-byte identical.
+- **Already-colored modules** (e.g. `m_windowQuota|term:short`, `m_balance`, `m_tokenHitRate`, `m_tokenCachedIn`, `m_age`, `m_tokenInSpeed`, `m_tokenOutSpeed`): the override **replaces** the natural color choice — band-based, cache-hit-band, or fixed `stale` color — with your `<color>`. The user's color always wins; if you didn't say `|color:`, the module keeps its existing coloring and the default `statuslineTemplate` output is byte-for-byte identical.
 
 Conflict rule: **if a `|color:` is supplied, the natural color is ignored** (per your spec — "如果与现有颜色方案冲突，则无视该参数" — the override always wins when present).
 
@@ -866,10 +866,10 @@ Examples:
   "statuslineTemplate": [
     "m_modeLabel|color:brightGreen",
     "s_space",
-    "m_window|term:short|color:red",
+    "m_windowQuota|term:short|color:red",
     "s_space", "m_countdown|term:short",
     "s_space", "s_dot", "s_space",
-    "m_window|term:mid",
+    "m_windowQuota|term:mid",
     "s_space", "m_countdown|term:mid",
     "s_space", "m_age|color:yellow",
     "s_space", "m_tokenIn|color:darkGreen"
@@ -877,19 +877,19 @@ Examples:
 }
 ```
 
-The bare forms (`m_window|term:short`, `m_age`, `m_tokenIn`, …) still go through the original `MODULES` path, so users on the default template see no diff on upgrade.
+The bare forms (`m_windowQuota|term:short`, `m_age`, `m_tokenIn`, …) still go through the original `MODULES` path, so users on the default template see no diff on upgrade.
 
 **Extension point:** future parameterized modules (`m_model:…`, …) plug in by adding an entry to `INLINE_SCHEMAS` and `INLINE_RENDERERS` in `src/render.ts`. No new top-level config keys needed.
 
 ### Per-module `display` override (window modules only)
 
-The three window modules — `m_window|term:short`, `m_window|term:mid`, `m_windowContext`, `m_windowMemUsage` — accept an optional `|display|used` or `|display|remaining` segment. This is the **per-module** counterpart to the top-level `display` config field: it overrides which side of the bar gets colored and which percentage is shown, but only for the one module that uses it. The global config is untouched.
+The three window modules — `m_windowQuota|term:short`, `m_windowQuota|term:mid`, `m_windowContext`, `m_windowMemUsage` — accept an optional `|display|used` or `|display|remaining` segment. This is the **per-module** counterpart to the top-level `display` config field: it overrides which side of the bar gets colored and which percentage is shown, but only for the one module that uses it. The global config is untouched.
 
 | Token | What it does |
 | ----- | ------------ |
-| `m_window\|term:short\|display:used` | 5h bar in `used` mode (same as bare when `display=used` in config). |
-| `m_window\|term:short\|display:remaining` | 5h bar in `remaining` mode (inverts percentage; uses the remaining-mode palette). |
-| `m_window\|term:mid\|display:used` / `display:remaining` | Same, for the 7d window. |
+| `m_windowQuota\|term:short\|display:used` | 5h bar in `used` mode (same as bare when `display=used` in config). |
+| `m_windowQuota\|term:short\|display:remaining` | 5h bar in `remaining` mode (inverts percentage; uses the remaining-mode palette). |
+| `m_windowQuota\|term:mid\|display:used` / `display:remaining` | Same, for the 7d window. |
 | `m_windowContext\|display:used` / `display:remaining` | Same, for the context window. |
 | `m_windowMemUsage\|display:used` / `display:remaining` | Same, for the system RAM used bar. |
 
@@ -899,10 +899,10 @@ The bare forms are byte-for-byte unchanged — the global `display` config (defa
 {
   "statuslineTemplate": [
     "m_modeLabel", "s_space",
-    "m_window|term:short|display:remaining|color:yellow",
+    "m_windowQuota|term:short|display:remaining|color:yellow",
     "s_space", "m_countdown|term:short",
     "s_space", "s_dot", "s_space",
-    "m_window|term:mid|display:remaining|color:yellow",
+    "m_windowQuota|term:mid|display:remaining|color:yellow",
     "s_space", "m_countdown|term:mid"
   ]
 }
@@ -910,7 +910,7 @@ The bare forms are byte-for-byte unchanged — the global `display` config (defa
 
 Valid values are exactly `used` or `remaining` (case-sensitive). `display:USED`, `display:` (empty), or any other value is a parse-fail — the token is dropped and the standard one-shot "unknown lineTemplate module" warn fires.
 
-**Note:** the remaining-mode palette is the *reverse* of the used-mode palette: high remaining = healthy = brightGreen, low remaining = red. So `m_window|term:short|display:remaining` at 38% used renders 62% in the band-3 remaining color (darkGreen) — not the band-3 used color (orange). See `formatOneChunk` / `splitBar` in `src/render.ts` for the exact mapping.
+**Note:** the remaining-mode palette is the *reverse* of the used-mode palette: high remaining = healthy = brightGreen, low remaining = red. So `m_windowQuota|term:short|display:remaining` at 38% used renders 62% in the band-3 remaining color (darkGreen) — not the band-3 used color (orange). See `formatOneChunk` / `splitBar` in `src/render.ts` for the exact mapping.
 
 ### `m_template|<key>[|type|<plan|balance>]` (v0.4.0+)
 
@@ -942,7 +942,7 @@ Pulls a registered fragment from `lineTemplates` into the rendered template. Use
   },
   "statuslineTemplate": [
     "m_template|header|type:plan",  // visible only on plan providers (TOKEN_PLAN)
-    "m_window|term:short", "s_space", "m_countdown|term:short",
+    "m_windowQuota|term:short", "s_space", "m_countdown|term:short",
     "s_dot",
     "s_space",
     "m_tokenIn"
@@ -1015,7 +1015,7 @@ To migrate a customized `lineTemplate`:
 
 ```diff
 - "lineTemplate": {
--   "plan":   ["m_modeLabel", "s_0", "m_window|term:short", "s_0", "m_countdown|term:mid"],
+-   "plan":   ["m_modeLabel", "s_0", "m_windowQuota|term:short", "s_0", "m_countdown|term:mid"],
 -   "balance": ["m_modeLabel", "s_0", "m_balance"]
 - }
 + "lineTemplates": {
@@ -1026,7 +1026,7 @@ To migrate a customized `lineTemplate`:
 + },
 + "statuslineTemplate": [
 +   "m_modeLabel", "s_space",
-+   "m_window|term:short", "s_space", "m_window|term:mid"
++   "m_windowQuota|term:short", "s_space", "m_windowQuota|term:mid"
 + ]
 ```
 
@@ -1087,9 +1087,9 @@ Rainbow / rand-rainbow / hue colors are also stable within a `freq` window — s
 {
   "statuslineTemplate": [
     "m_modeLabel", "s_space",
-    "m_window|term:short", "s_space", "m_countdown|term:short",
+    "m_windowQuota|term:short", "s_space", "m_countdown|term:short",
     "s_space", "s_dot", "s_space",
-    "m_window|term:mid", "s_space", "m_countdown|term:mid",
+    "m_windowQuota|term:mid", "s_space", "m_countdown|term:mid",
     "s_newline",
     "m_quote|freq:12h|color:rainbow"
   ]
@@ -1101,7 +1101,7 @@ Local pool, twice-daily rotating rainbow quote.
 ```jsonc
 {
   "statuslineTemplate": [
-    "m_modeLabel", "s_space", "m_window|term:short",
+    "m_modeLabel", "s_space", "m_windowQuota|term:short",
     "s_newline",
     "m_quote|address:https://v1.hitokoto.cn/|quote:hitokoto|author:from_who|color:hue"
   ]
@@ -1155,7 +1155,7 @@ Remote endpoint (hitokoto), daily-bucketed rainbow wrap.
     "m_template|balance"
   ],
   "lineTemplates": {
-    "usage":  ["m_modeLabel", "s_space", "m_window|term:short", "s_space", "m_age"],
+    "usage":  ["m_modeLabel", "s_space", "m_windowQuota|term:short", "s_space", "m_age"],
     "balance":["m_modeLabel", "s_space", "m_balance",         "s_space", "m_age"]
   }
 }
@@ -1184,9 +1184,9 @@ In addition to the tokenplan 5h/7d window percentages, the plugin reads Claude C
 {
   "statuslineTemplate": [
     "m_modeLabel", "s_space",
-    "m_window|term:short", "s_space", "m_countdown|term:short",
+    "m_windowQuota|term:short", "s_space", "m_countdown|term:short",
     "s_space", "s_dot", "s_space",
-    "m_window|term:mid", "s_space", "m_countdown|term:mid",
+    "m_windowQuota|term:mid", "s_space", "m_countdown|term:mid",
     "s_space", "s_dot", "s_space",
     "m_tokenIn", "s_space",
     "m_tokenOut", "s_space",
@@ -1234,7 +1234,7 @@ Note: `m_tokenHitRate` now renders as `hit:N%` (v0.8.x R8 — prefix unified wit
 {
   "statuslineTemplate": [
     "m_modeLabel", "s_space",
-    "m_window|term:short", "s_space",
+    "m_windowQuota|term:short", "s_space",
     "m_countdown|term:short"
   ]
 }
@@ -1246,9 +1246,9 @@ Note: `m_tokenHitRate` now renders as `hit:N%` (v0.8.x R8 — prefix unified wit
 {
   "statuslineTemplate": [
     "m_modeLabel", "s_space",
-    "m_window|term:short", "s_space", "m_countdown|term:short",
+    "m_windowQuota|term:short", "s_space", "m_countdown|term:short",
     "s_space", "s_dot", "s_space",
-    "m_window|term:mid", "s_space", "m_countdown|term:mid"
+    "m_windowQuota|term:mid", "s_space", "m_countdown|term:mid"
   ]
 }
 ```
@@ -1259,9 +1259,9 @@ Note: `m_tokenHitRate` now renders as `hit:N%` (v0.8.x R8 — prefix unified wit
 {
   "statuslineTemplate": [
     "m_modeLabel", "s_space",
-    "m_window|term:short", "s_space", "m_countdown|term:short",
+    "m_windowQuota|term:short", "s_space", "m_countdown|term:short",
     "s_space", "s_dot", "s_space",
-    "m_window|term:mid", "s_space", "m_countdown|term:mid",
+    "m_windowQuota|term:mid", "s_space", "m_countdown|term:mid",
     "s_space", "m_version"
   ]
 }

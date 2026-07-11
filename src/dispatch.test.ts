@@ -112,7 +112,7 @@ describe("buildProviderLine — fresh (no age suffix; data just arrived)", () =>
     __resetForTest({
       statuslineTemplate: [
         "m_modeLabel", "s_space",
-        "m_window|term|short", "s_space", "m_countdown|term|short",
+        "m_windowQuota|term|short", "s_space", "m_countdown|term|short",
         "s_space", "m_age",
       ],
     });
@@ -249,7 +249,7 @@ describe("buildProviderLine — null provider (no ANTHROPIC_BASE_URL match)", ()
   // v0.4.x — when ANTHROPIC_BASE_URL doesn't match any configured
   // provider entry, the user still gets a statusline so long as
   // provider-AGNOSTIC modules have something to render. Plan-only
-  // modules (m_window*, m_countdown*) and m_balance silently drop
+  // modules (m_windowQuota*, m_countdown*) and m_balance silently drop
   // via the per-module `mode` filter; everything else (m_token*,
   // m_version, m_session, …) renders normally because their data
   // sources (stdin snapshot) have nothing to do with provider
@@ -322,7 +322,7 @@ describe("buildProviderLine — null provider (no ANTHROPIC_BASE_URL match)", ()
     // provider the plan-only ones must drop, the agnostic ones fire.
     __resetForTest({
       statuslineTemplate: [
-        "m_session", "s_space", "m_window|term|short", "s_space", "m_window|term|mid",
+        "m_session", "s_space", "m_windowQuota|term|short", "s_space", "m_windowQuota|term|mid",
         "s_space", "m_balance", "s_space", "m_tokenInTotal",
       ],
     });
@@ -337,7 +337,7 @@ describe("buildProviderLine — null provider (no ANTHROPIC_BASE_URL match)", ()
       const text = strip(line!);
       assert.ok(text.includes("strip-diagnostics-display"), `got: ${text}`);
       assert.ok(text.includes("in:163.5k"), `got: ${text}`);
-      // m_window|term|short / m_window|term|mid / m_balance must NOT have rendered:
+      // m_windowQuota|term|short / m_windowQuota|term|mid / m_balance must NOT have rendered:
       assert.ok(!text.includes("38%"), `got: ${text}`);
       assert.ok(!text.includes("39%"), `got: ${text}`);
       assert.ok(!text.includes("$"), `got: ${text}`);

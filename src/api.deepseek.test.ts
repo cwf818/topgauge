@@ -50,7 +50,7 @@ describe("isDeepSeekBaseUrl", () => {
 // matching the deepseek built-in default.
 
 const DEEPSEEK_CNY_CONFIG = {
-  CNY: { label: "￥", totalBalance: "currencies.CNY.total_balance" },
+  CNY: { label: "￥", totalBalance: "balance_infos.0.total_balance" },
 } as const;
 
 describe("parseBalance — single-currency real shape", () => {
@@ -69,8 +69,8 @@ describe("parseBalance — single-currency real shape", () => {
 describe("parseBalance — multi-currency", () => {
   it("keeps all entries and picks the minimum for color", () => {
     const config = {
-      CNY: { label: "￥", totalBalance: "currencies.CNY.total_balance" },
-      USD: { label: "$", totalBalance: "currencies.USD.total_balance" },
+      CNY: { label: "￥", totalBalance: "balance_infos.0.total_balance" },
+      USD: { label: "$", totalBalance: "balance_infos.1.total_balance" },
     };
     const b = parseBalance(fixture("balance.multi.json"), config);
     assert.ok(b);
@@ -90,7 +90,7 @@ describe("parseBalance — unavailable / missing fields", () => {
     const b = parseBalance({ is_available: false }, DEEPSEEK_CNY_CONFIG);
     assert.ok(b);
     assert.equal(b!.isAvailable, false);
-    // config has CNY but the response doesn't carry currencies.CNY.total_balance,
+    // config has CNY but the response doesn't carry balance_infos.0.total_balance,
     // so the entry is dropped (path resolution returns null).
     assert.equal(b!.entries.length, 0);
     assert.equal(b!.minValue, null);
@@ -104,7 +104,7 @@ describe("parseBalance — unavailable / missing fields", () => {
   });
   it("missing is_available → optimistic true (renders entries)", () => {
     const body = {
-      currencies: { CNY: { total_balance: 110 } },
+      balance_infos: [{ currency: "CNY", total_balance: 110 }],
     };
     const b = parseBalance(body, DEEPSEEK_CNY_CONFIG);
     assert.ok(b);
@@ -114,15 +114,15 @@ describe("parseBalance — unavailable / missing fields", () => {
   });
   it("entries with non-numeric total_balance are dropped", () => {
     const config = {
-      CNY: { label: "￥", totalBalance: "currencies.CNY.total_balance" },
-      USD: { label: "$", totalBalance: "currencies.USD.total_balance" },
+      CNY: { label: "￥", totalBalance: "balance_infos.0.total_balance" },
+      USD: { label: "$", totalBalance: "balance_infos.1.total_balance" },
     };
     const body = {
       is_available: true,
-      currencies: {
-        CNY: { total_balance: "abc" },
-        USD: { total_balance: "5" },
-      },
+      balance_infos: [
+        { currency: "CNY", total_balance: "abc" },
+        { currency: "USD", total_balance: "5" },
+      ],
     };
     const b = parseBalance(body, config);
     assert.ok(b);
@@ -133,7 +133,7 @@ describe("parseBalance — unavailable / missing fields", () => {
   it("accepts numeric total_balance (not just string)", () => {
     const body = {
       is_available: true,
-      currencies: { CNY: { total_balance: 42.5 } },
+      balance_infos: [{ currency: "CNY", total_balance: 42.5 }],
     };
     const b = parseBalance(body, DEEPSEEK_CNY_CONFIG);
     assert.ok(b);
@@ -159,7 +159,7 @@ describe("parseBalance — unavailable / missing fields", () => {
   it("is_available: null → optimistic true, renders entries", () => {
     const body = {
       is_available: null,
-      currencies: { CNY: { total_balance: 50 } },
+      balance_infos: [{ currency: "CNY", total_balance: 50 }],
     };
     const b = parseBalance(body, DEEPSEEK_CNY_CONFIG);
     assert.ok(b);
@@ -173,7 +173,7 @@ describe("parseBalance — unavailable / missing fields", () => {
     // flag, not the entries list — renderer's call.
     const body = {
       is_available: false,
-      currencies: { CNY: { total_balance: 110 } },
+      balance_infos: [{ currency: "CNY", total_balance: 110 }],
     };
     const b = parseBalance(body, DEEPSEEK_CNY_CONFIG);
     assert.ok(b);

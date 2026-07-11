@@ -5,7 +5,7 @@
 // providers).
 //
 // The filter gates rendering on ctx.providerType:
-//   m_window|term:short|mid|long, m_countdown|term:*, m_quota|term:* → "plan"
+//   m_windowQuota|term:short|mid|long, m_countdown|term:*, m_quota|term:* → "plan"
 //   m_balance                                                        → "balance"
 //   everything else (m_modeLabel, m_token*, m_age, …)                → agnostic
 //
@@ -56,17 +56,17 @@ const ctxFor = (providerType: "plan" | "balance" | "unknown") => ({
 beforeEach(() => __resetForTest());
 
 describe("MODULES path: per-provider type filter", () => {
-  it("m_window|term:short renders on plan ctx; drops on balance ctx", () => {
-    const planLines = renderTemplate(["m_window|term:short"], ctxFor("plan"));
+  it("m_windowQuota|term:short renders on plan ctx; drops on balance ctx", () => {
+    const planLines = renderTemplate(["m_windowQuota|term:short"], ctxFor("plan"));
     assert.equal(planLines.length, 1);
     assert.ok(planLines[0]!.length > 0, "plan ctx must render the bar chunk");
 
-    const balanceLines = renderTemplate(["m_window|term:short"], ctxFor("balance"));
-    assert.deepEqual(balanceLines, [], "m_window|term:short must drop on balance");
+    const balanceLines = renderTemplate(["m_windowQuota|term:short"], ctxFor("balance"));
+    assert.deepEqual(balanceLines, [], "m_windowQuota|term:short must drop on balance");
   });
 
-  it("m_window|term:mid / m_countdown|term:short / m_countdown|term:mid all plan-only", () => {
-    for (const mod of ["m_window|term:mid", "m_countdown|term:short", "m_countdown|term:mid"]) {
+  it("m_windowQuota|term:mid / m_countdown|term:short / m_countdown|term:mid all plan-only", () => {
+    for (const mod of ["m_windowQuota|term:mid", "m_countdown|term:short", "m_countdown|term:mid"]) {
       const planLines = renderTemplate([mod], ctxFor("plan"));
       assert.ok(planLines.length === 1, `${mod}: plan ctx rendered`);
       assert.ok(planLines[0]!.length > 0, `${mod}: plan ctx non-empty`);
@@ -132,8 +132,8 @@ describe("MODULES path: per-provider type filter", () => {
     // doesn't match). Same for balance-only. The empty-output guard
     // downstream translates this into a null return at the dispatcher
     // level when no agnostic modules emit either.
-    const windowOnUnknown = renderTemplate(["m_window|term:short"], ctxFor("unknown"));
-    assert.deepEqual(windowOnUnknown, [], "m_window|term:short must drop on unknown");
+    const windowOnUnknown = renderTemplate(["m_windowQuota|term:short"], ctxFor("unknown"));
+    assert.deepEqual(windowOnUnknown, [], "m_windowQuota|term:short must drop on unknown");
 
     const balanceOnUnknown = renderTemplate(["m_balance"], ctxFor("unknown"));
     assert.deepEqual(balanceOnUnknown, [], "m_balance must drop on unknown");
@@ -150,7 +150,7 @@ describe("MODULES path: per-provider type filter", () => {
     // "out-of-range", so this test now asserts the literal
     // emission.
     const balanceLines = renderTemplate(
-      ["m_window|term:short", "s_space", "m_window|term:mid"],
+      ["m_windowQuota|term:short", "s_space", "m_windowQuota|term:mid"],
       ctxFor("balance"),
     );
     assert.deepEqual(balanceLines, [" "]);
@@ -158,15 +158,15 @@ describe("MODULES path: per-provider type filter", () => {
 });
 
 describe("inline-args path: per-provider type filter", () => {
-  it("m_window|term:short|color:red drops on balance ctx", () => {
+  it("m_windowQuota|term:short|color:red drops on balance ctx", () => {
     const planLines = renderTemplate(
-      ["m_window|term:short|color:red"],
+      ["m_windowQuota|term:short|color:red"],
       ctxFor("plan"),
     );
     assert.equal(planLines.length, 1);
     assert.ok(planLines[0]!.includes("30%"));
     const balanceLines = renderTemplate(
-      ["m_window|term:short|color:red"],
+      ["m_windowQuota|term:short|color:red"],
       ctxFor("balance"),
     );
     assert.deepEqual(balanceLines, []);
@@ -215,7 +215,7 @@ describe("composition: a balance ctx with mixed-type template", () => {
     // the balance one must render, and the s_0 separators between
     // them must collapse cleanly (no orphan "·").
     const balance = renderTemplate(
-      ["m_modeLabel", "s_space", "m_window|term:short", "s_space", "m_window|term:mid",
+      ["m_modeLabel", "s_space", "m_windowQuota|term:short", "s_space", "m_windowQuota|term:mid",
         "s_space", "m_balance"],
       ctxFor("balance"),
     );
@@ -230,7 +230,7 @@ describe("composition: a balance ctx with mixed-type template", () => {
 
   it("renders plan modules; skips m_balance", () => {
     const plan = renderTemplate(
-      ["m_modeLabel", "s_space", "m_window|term:short", "s_space", "m_window|term:mid",
+      ["m_modeLabel", "s_space", "m_windowQuota|term:short", "s_space", "m_windowQuota|term:mid",
         "s_space", "m_balance"],
       ctxFor("plan"),
     );
@@ -242,21 +242,21 @@ describe("composition: a balance ctx with mixed-type template", () => {
   });
 
   it("renders neither plan nor balance on unknown ctx; m_modeLabel only", () => {
-    // On "unknown" ctx, m_window* and m_balance drop via the
+    // On "unknown" ctx, m_windowQuota* and m_balance drop via the
     // per-module type filter. m_modeLabel still emits because it's
     // provider-agnostic (its body routes on providerType and uses
     // the display-mode label). This is the new third providerType
     // value that didn't exist in Phase 1.
     const unknown = renderTemplate(
-      ["m_modeLabel", "s_space", "m_window|term:short", "s_space", "m_window|term:mid",
+      ["m_modeLabel", "s_space", "m_windowQuota|term:short", "s_space", "m_windowQuota|term:mid",
         "s_space", "m_balance"],
       ctxFor("unknown"),
     );
     assert.equal(unknown.length, 1);
     const text = strip(unknown[0]!);
     assert.ok(text.startsWith("Usage:"), `got: ${text}`);
-    assert.ok(!text.includes("30%"), `got: ${text} (m_window|term:short leaked)`);
-    assert.ok(!text.includes("50%"), `got: ${text} (m_window|term:mid leaked)`);
+    assert.ok(!text.includes("30%"), `got: ${text} (m_windowQuota|term:short leaked)`);
+    assert.ok(!text.includes("50%"), `got: ${text} (m_windowQuota|term:mid leaked)`);
     assert.ok(!text.includes("$25"), `got: ${text} (m_balance leaked)`);
   });
 });

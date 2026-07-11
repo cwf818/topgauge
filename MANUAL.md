@@ -13,8 +13,8 @@ A template is a JSON array of tokens. Two kinds exist:
 | `m_*` | Display module — colored chunk.  | See the per-module table below.                      |
 | `s_*` | Separator reference — literal.   | See the separator table below.                       |
 
-Tokens can be written in **bare form** (`"m_window|term:short"`) or **inline-arg
-form** (`"m_window|term:short|color:red|display:remaining"`). Inline args
+Tokens can be written in **bare form** (`"m_windowQuota|term:short"`) or **inline-arg
+form** (`"m_windowQuota|term:short|color:red|display:remaining"`). Inline args
 override per-token; bare form falls back to global config.
 
 > **Inline-arg grammar is two-class since v0.8.33.** The first
@@ -23,7 +23,7 @@ override per-token; bare form falls back to global config.
 > value; everything after that is part of the value. The implicit-value
 > slot (`m_label|<text>|…`, `m_template|<name>|…`, `s_<n>`)
 > is `|`-bounded and may contain `:` or `=` freely. The **bare**
-> `|name|value|` form for pair boundaries (`"m_window|term|short"`) is **removed** —
+> `|name|value|` form for pair boundaries (`"m_windowQuota|term|short"`) is **removed** —
 > the dispatcher will warn and drop the token. This is a hard breaking
 > change: rewrite any legacy config by replacing `|name|value|` with
 > `|name:value|` or `|name=value|`.
@@ -58,8 +58,8 @@ exceptions are called out in §3.
 | ----------- | ------------------------------------------------------------------------------ | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `color`     | SGR string OR shortcut (`red`, `green`, `yellow`, `blue`, `cyan`, `magenta`, `white`, `gray`, `orange`, `purple`, plus `rainbow`/`rand-rainbow`/`hue` for `m_quote`) | module's natural palette | Replaces the module's band color. WINS over stale-color / placeholder-color.                                                       |
 | `nulldrop`  | `true` \| `false`                                                              | `false`            | `false` → keep placeholder slot when data is missing (`STALE_COLOR`-wrapped `n/a` / `-- <unit>` / empty gauge). `true` → drop the chunk (adjacent separators trimmed). |
-| `display`   | `used` \| `remaining`                                                          | global `display`   | **Window modules only** (`m_window|term:short|mid|long` + `m_windowContext` + `m_windowMemUsage`). Flip between "show used %" and "show remaining %". Inline wins over config. |
-| `term`      | `short` \| `mid` \| `long`                                                     | `short`            | **`m_window` / `m_countdown` / `m_quota` only (v0.8.28+).** Selects which `intervals.<term>` slot to read. `short` → 5h, `mid` → 7d, `long` → 30d (or whatever the provider's `intervals` config binds). |
+| `display`   | `used` \| `remaining`                                                          | global `display`   | **Window modules only** (`m_windowQuota|term:short|mid|long` + `m_windowContext` + `m_windowMemUsage`). Flip between "show used %" and "show remaining %". Inline wins over config. |
+| `term`      | `short` \| `mid` \| `long`                                                     | `short`            | **`m_windowQuota` / `m_countdown` / `m_quota` only (v0.8.28+).** Selects which `intervals.<term>` slot to read. `short` → 5h, `mid` → 7d, `long` → 30d (or whatever the provider's `intervals` config binds). |
 | `type`      | `plan` \| `balance`                                                            | `plan`             | **`m_template` only.** Filter sub-template by provider `TYPE`. **Recommended name (v0.8.15+).** The legacy alias `mode` is still accepted; when both are present on the same token, `type` wins. Neither arg is forwarded via `passThrough` (§1.2). |
 | `scope`     | `session` \| `project` \| `model`                                              | `session`          | **`m_acc*` only (v0.8.35+).** Pick which slot of the three-layer accumulator to read. `ccsession` is reserved (process-lifetime); the renderer will badarg-reject it. See §3. |
 | `model`     | `active` \| `all` \| `<name>`                                                  | `active`           | **`m_sum*` only.** Narrow the JSONL scan to one model identity or every row.                                                                       |
@@ -153,7 +153,7 @@ inline-args support. Useful for dropping a static label like
 escaping.
 
 ```
-["m_modeLabel", "PROMPT:", "s_space", "m_window|term:short"]
+["m_modeLabel", "PROMPT:", "s_space", "m_windowQuota|term:short"]
 // → "Usage: PROMPT: ▓░░░░ 38% (5h)"
 ```
 
@@ -189,7 +189,7 @@ provider-less ticks via the `unknown` TYPE fallback).
 | Module | Renders (shape example) | Source field | Type filter | Inline args | Notes |
 | ------ | ----------------------- | ------------ | ----------- | ----------- | ----- |
 | `m_modeLabel` | `Usage:` (plan) / `Remain:` (plan-display="remaining") / `Balance:` (balance). | derived from `providerType` + global `display` | (always emits) | `color`, `nulldrop` | First item in default line templates. |
-| `m_window\|term:short\|mid\|long` (default `term=short`) | Bar + colored % of the chosen interval, e.g. `▓░░░░░░░ 9%`. | `intervals.<term>.usedPercent` / `.remainingPercent` + `.startAt` / `.endAt` (projected through `intervalToWindow`) | plan | `color`, `display`, `term`, `nulldrop` | v0.8.28+. `term=short` reads `intervals.shortInterval` (default 5h), `term=mid` reads `intervals.midInterval` (default 7d), `term=long` reads `intervals.longInterval` (default 30d). `stale=true` dims bar + tail to `STALE_COLOR`. `display:remaining` flips the % sign. Value color driven by `thresholds.percentBands` (default `[60, 70, 80, 90]` since v0.8.36.1). |
+| `m_windowQuota\|term:short\|mid\|long` (default `term=short`) | Bar + colored % of the chosen interval, e.g. `▓░░░░░░░ 9%`. | `intervals.<term>.usedPercent` / `.remainingPercent` + `.startAt` / `.endAt` (projected through `intervalToWindow`) | plan | `color`, `display`, `term`, `nulldrop` | v0.8.28+. `term=short` reads `intervals.shortInterval` (default 5h), `term=mid` reads `intervals.midInterval` (default 7d), `term=long` reads `intervals.longInterval` (default 30d). `stale=true` dims bar + tail to `STALE_COLOR`. `display:remaining` flips the % sign. Value color driven by `thresholds.percentBands` (default `[60, 70, 80, 90]` since v0.8.36.1). |
 | `m_countdown\|term:short\|mid\|long` (default `term=short`) | `(4h47m🕔 5h)` reset countdown with fill-state arrow. | `intervals.<term>.startAt` / `.endAt` / `.intervalMs` | plan | `color`, `term`, `nulldrop` | v0.8.28+. Arrow from `resetArrows` indexed by `remainingMs / resetDurationMs`. Drops if no `startAt`/`endAt`/`intervalMs`. Renders `<label>:--` placeholder when data is missing and `nulldrop` is false. |
 | `m_quota\|term:short\|mid\|long` (default `term=short`) | Quota display, e.g. `quota(5h):100/500` / `quota(5h):0/500` / `quota(5h):100/--`. | `intervals.<term>.usedQuota` / `.limitQuota` | plan | `color`, `term`, `nulldrop` | v0.8.28+. Body rules: `used+limit` → `used/limit`; `limit only` → `0/limit`; `used only` → `used/--`. All three null → drop. |
 | `m_balance` | `CNY 110.00 · USD 5.00`. | `balance.entries[]` | balance | `color`, `nulldrop` | Color band driven by the LOWEST `totalBalance`. |
@@ -379,7 +379,7 @@ Placeholder shapes per module class:
 | bare string                   | `n/a`                                     |
 | ratio (hit-rate family)       | `<prefix>n/a%` (e.g. `hit:n/a%`)          |
 
-`m_window|term|short|mid|long` (any term) always render the gauge
+`m_windowQuota|term|short|mid|long` (any term) always render the gauge
 shape with the `STALE_COLOR` band when stale, regardless of `display`
 mode.
 
@@ -473,16 +473,16 @@ The `_` prefix marks a built-in preset — user-defined
 
 ```jsonc
 // Minimal: just the mode label and 5h window.
-"statuslineTemplate": ["m_modeLabel", "s_space", "m_window|term:short"]
+"statuslineTemplate": ["m_modeLabel", "s_space", "m_windowQuota|term:short"]
 
 // Default-style (with named separators between modules).
 "statuslineTemplate": [
   "m_modeLabel|color:yellow",
   "s_space",
-  "m_window|term:short",
+  "m_windowQuota|term:short",
   "s_dot",
   "s_space",
-  "m_window|term:mid",
+  "m_windowQuota|term:mid",
   "s_space",
   "m_age|color:gray"
 ]
@@ -500,12 +500,12 @@ The `_` prefix marks a built-in preset — user-defined
 ],
 "lineTemplates": {
   "plan": [
-    "m_window|term:short|color:red|display:remaining",
+    "m_windowQuota|term:short|color:red|display:remaining",
     "s_space",
     "m_countdown|term:short",
     "s_dot",
     "s_space",
-    "m_window|term:mid",
+    "m_windowQuota|term:mid",
     "s_space",
     "m_countdown|term:mid",
     "s_newline",
@@ -537,7 +537,7 @@ The `_` prefix marks a built-in preset — user-defined
   "m_template|balance"
 ],
 "lineTemplates": {
-  "usage":  ["m_modeLabel", "s_space", "m_window|term:short", "s_space", "m_age"],
+  "usage":  ["m_modeLabel", "s_space", "m_windowQuota|term:short", "s_space", "m_age"],
   "balance":["m_modeLabel", "s_space", "m_balance", "s_space", "m_age"]
 }
 ```

@@ -75,7 +75,7 @@ export type Window = {
 // src/api.plan.ts for the resolution rules (percent / time / quota group
 // derivation + 3-step intervalMs fallback chain).
 //
-// The renderer (m_window / m_countdown / m_quota) reads these fields
+// The renderer (m_windowQuota / m_countdown / m_quota) reads these fields
 // directly. `Window` (above) is still the shape `formatOneChunk` and
 // `formatOneResetSuffix` consume; `intervalToWindow` (below) projects
 // an `Interval` → `Window` when the gauge / countdown rendering path
@@ -122,7 +122,7 @@ export type Interval = {
 
 export type DisplayMode = "remaining" | "used";
 
-// v0.9.0+ — interval-term selector used by m_window / m_countdown /
+// v0.9.0+ — interval-term selector used by m_windowQuota / m_countdown /
 // m_quota. Each term maps to one of the three `Interval` fields on
 // `RenderContext`. The `Term` type lives here (next to `Interval`)
 // because the inline-renderer branch uses it as a narrow string
@@ -479,7 +479,7 @@ export function pctBar(usedPctValue: number, width = configStore.get().bar.width
 // gauge / countdown modules. Time-only intervals (no percent data)
 // still return a Window here so `m_countdown` can render the
 // `<label>--` placeholder against `iv.label` (no percent means
-// `m_window` falls back to its own placeholder).
+// `m_windowQuota` falls back to its own placeholder).
 function intervalToWindow(i: Interval): Window | null {
   // Pick the used%. Mirrors the v0.8.x rule: used wins when both
   // are populated; if only remainingPercent is non-null, derive
@@ -1022,7 +1022,7 @@ type RenderContext = {
   nowMs: number;
   // v0.9.0+ — three independent intervals. Replaces v0.5.0–v0.8.x
   // `fiveHour` + `weekly` (a fixed pair of Windows). Each is the
-  // `Interval` shape produced by the parser; `m_window` /
+  // `Interval` shape produced by the parser; `m_windowQuota` /
   // `m_countdown` / `m_quota` project the active one through
   // `intervalToWindow` to feed the gauge / countdown renderers.
   // Old code paths (m_sum* align-aware scans) read these directly.
@@ -1770,19 +1770,19 @@ const MODULES: Record<string, Module> = {
       ? cfg().modeLabels.balance
       : cfg().modeLabels[c.mode],
     undefined),
-  // v0.9.0+ — unified m_window module (replaces v0.5.0–v0.8.x
+  // v0.9.0+ — unified m_windowQuota module (replaces v0.5.0–v0.8.x
 // `m_window5h` + `m_window7d`). Reads `c.shortInterval` (the
 // 5-hour default term) and projects it through `intervalToWindow`
 // for the gauge render. Inline form accepts `|term|short|mid|long`
 // to pick a different interval. The hard-coded "5h" / "7d" labels
 // from the v0.8.x renderers are gone — the gauge is data-driven,
 // driven entirely by the Interval's `pct` field.
-m_window: Object.assign(
+m_windowQuota: Object.assign(
   ((c: RenderContext) => {
     const iv = c.shortInterval;
-    if (!iv) return placeholderBare("m_window", c);
+    if (!iv) return placeholderBare("m_windowQuota", c);
     const w = intervalToWindow(iv);
-    if (!w) return placeholderBare("m_window", c);
+    if (!w) return placeholderBare("m_windowQuota", c);
     return formatOneChunk(w, c.mode, cfg().bar.width, c.stale);
   }),
   { type: "plan" as const },
@@ -3855,7 +3855,7 @@ const ALIGN_PARAM = {
   },
 } as const;
 
-// v0.9.0+ — interval-term selector for m_window / m_countdown /
+// v0.9.0+ — interval-term selector for m_windowQuota / m_countdown /
 // m_quota. Resolves to "short" | "mid" | "long"; the bare form
 // defaults to "short". Invalid values drop the inline token
 // (same shape as ALIGN_PARAM's true/false parse). The renderer
@@ -4166,7 +4166,7 @@ const PLACEHOLDERS: Record<string, PlaceholderBody> = {
   // sum/avg siblings.
   m_tokenTotalIn: placeholderLabelOr("totalIn"),
   // gauge (placeholder shape is the gray 0% / 100% bar)
-  m_window: placeholderGauge,
+  m_windowQuota: placeholderGauge,
   m_windowContext: placeholderGauge,
   // v0.8.16 — TTL gauge placeholders. Custom shape: single ▆ char
   // (NOT "ttl:n/a"). Returns PLAIN text (no SGR); the STALE_COLOR
@@ -4693,7 +4693,7 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   // v0.3.3+ — every existing module also accepts an optional :color|
   // override. Schema is empty (`{}`) when the module takes no implicit
   // param; the renderer just reads params.color and applies it.
-  m_window: { named: { ...COLOR_PARAM.named, ...DISPLAY_PARAM.named, ...TERM_PARAM.named, ...NULDROP_PARAM.named } },
+  m_windowQuota: { named: { ...COLOR_PARAM.named, ...DISPLAY_PARAM.named, ...TERM_PARAM.named, ...NULDROP_PARAM.named } },
   m_countdown: { named: { ...COLOR_PARAM.named, ...TERM_PARAM.named, ...NULDROP_PARAM.named } },
   m_quota: { named: { ...COLOR_PARAM.named, ...TERM_PARAM.named, ...NULDROP_PARAM.named } },
   m_balance: { named: { ...COLOR_PARAM.named, ...NULDROP_PARAM.named } },
@@ -5042,10 +5042,10 @@ function passThroughScope(
 
 // v0.4.x — parallel to MODULES' per-module `type` tag. Each entry
 // here mirrors its INLINE_RENDERERS counterpart's provider scope:
-// the inline form `m_window|color|…` is also plan-only; `m_balance|…`
+// the inline form `m_windowQuota|color|…` is also plan-only; `m_balance|…`
 // is balance-only. The bare-module dispatcher at line ~3220 enforces
 // the same filter via `MODULES[name].type`; this map keeps the
-// inline path symmetric so a `m_window|color|red` in a balance
+// inline path symmetric so a `m_windowQuota|color|red` in a balance
 // provider's template drops the same way the bare form does.
 //
 // Untagged entries (key absent from this map) are provider-agnostic;
@@ -5056,7 +5056,7 @@ function passThroughScope(
 // to avoid collision with the display-mode field (`used` /
 // `remaining` / `balance`).
 const INLINE_TYPE_FILTERS: Partial<Record<string, "plan" | "balance" | "unknown">> = {
-  m_window: "plan",
+  m_windowQuota: "plan",
   m_countdown: "plan",
   m_quota: "plan",
   m_balance: "balance",
@@ -5144,7 +5144,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
       : cfg().modeLabels[mode];
     return wrapPlainDefault("m_modeLabel", s, params.color as string | undefined);
   },
-  m_window: (params, ctx) => {
+  m_windowQuota: (params, ctx) => {
     // v0.9.0+ — replaces v0.5.0–v0.8.x `m_window5h` + `m_window7d`.
     // The `term` inline arg picks which interval to read:
     //   |term|short → c.shortInterval (default)
@@ -5157,9 +5157,9 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const iv = term === "short" ? ctx.shortInterval
              : term === "mid"   ? ctx.midInterval
                                 : ctx.longInterval;
-    if (!iv) return placeholderWithColor("m_window", params, ctx);
+    if (!iv) return placeholderWithColor("m_windowQuota", params, ctx);
     const w = intervalToWindow(iv);
-    if (!w) return placeholderWithColor("m_window", params, ctx);
+    if (!w) return placeholderWithColor("m_windowQuota", params, ctx);
     const mode = (params.display as DisplayMode | undefined) ?? ctx.mode;
     const color = params.color as string | undefined;
     if (color) return formatOneChunkColored(w, mode, color);
@@ -5167,7 +5167,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   },
   m_countdown: (params, ctx) => {
     // v0.9.0+ — replaces v0.5.0–v0.8.x `m_countdown5h` +
-    // `m_countdown7d`. Same `term` arg as `m_window`. The label
+    // `m_countdown7d`. Same `term` arg as `m_windowQuota`. The label
     // printed in `(n/a<arrow> <label>)` and `(4h47m🕔 <label>)` is
     // read from the live `Interval.label` (no more hard-coded
     // "5h" / "7d" strings).
@@ -5192,7 +5192,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // v0.9.0+ — NEW module. Renders the quota group as
     // `<labelQuota>(<interval.label>):used/limit` (or `0/limit`
     // or `used/--` depending on what's mapped). `term` arg same
-    // shape as `m_window` / `m_countdown`.
+    // shape as `m_windowQuota` / `m_countdown`.
     const term = (params.term as Term | undefined) ?? "short";
     const iv = term === "short" ? ctx.shortInterval
              : term === "mid"   ? ctx.midInterval
@@ -6377,20 +6377,20 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
       } else if (tok.startsWith("m_modeLabel|")) {
         // m_modeLabel|<args> → skip "m_|" (length 12).
         inline = expandInlineToken(tok, "m_modeLabel", 12, ctx);
-      } else if (tok.startsWith("m_window|")) {
-        // v0.9.0+ — unified window module. `m_window|term|short`
+      } else if (tok.startsWith("m_windowQuota|")) {
+        // v0.9.0+ — unified window module. `m_windowQuota|term|short`
         // (default) → shortInterval; `|term|mid` → midInterval;
         // `|term|long` → longInterval. Inline args: color, display,
-        // term, nulldrop. Skip "m_window|" (length 9).
-        inline = expandInlineToken(tok, "m_window", 9, ctx);
+        // term, nulldrop. Skip "m_windowQuota|" (length 14).
+        inline = expandInlineToken(tok, "m_windowQuota", 14, ctx);
       } else if (tok.startsWith("m_countdown|")) {
         // v0.9.0+ — unified countdown module. Same `term` arg as
-        // m_window. Skip "m_countdown|" (length 12).
+        // m_windowQuota. Skip "m_countdown|" (length 12).
         inline = expandInlineToken(tok, "m_countdown", 12, ctx);
       } else if (tok.startsWith("m_quota|")) {
         // v0.9.0+ — new quota module. Renders the quota group as
         // `${labelQuota}(<interval.label>):used/limit`. Same `term`
-        // arg as m_window / m_countdown. Skip "m_quota|" (length 8).
+        // arg as m_windowQuota / m_countdown. Skip "m_quota|" (length 8).
         inline = expandInlineToken(tok, "m_quota", 8, ctx);
       } else if (tok.startsWith("m_balance|")) {
         inline = expandInlineToken(tok, "m_balance", 10, ctx);
@@ -6672,7 +6672,7 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         piece = tok;
       } else {
         // v0.4.x — provider-type filter. Modules tagged with a type
-        // (`m_window: "plan"`, `m_balance: "balance"`, …) silently
+        // (`m_windowQuota: "plan"`, `m_balance: "balance"`, …) silently
         // drop on a non-matching provider type. Untagged modules
         // (m_token*, m_age, m_version, …) skip the check and emit
         // on every ctx — those are provider-agnostic by design.
