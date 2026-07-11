@@ -78,6 +78,6 @@ describe("config facade", () => {
 
   it("exposes the split template constants through config.ts", () => {
     assert.ok(__testing.DEFAULT_CONFIG.statuslineTemplate.length > 0);
-    assert.ok(__testing.DEFAULT_CONFIG.lineTemplates._1line.length > 0);
+    assert.ok(__testing.DEFAULT_CONFIG.lineTemplates.tokens_stat.length > 0);
   });
 });

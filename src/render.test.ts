@@ -288,7 +288,10 @@ describe("resolveDisplayMode", () => {
 describe("formatLine — mode='used' (default)", () => {
   it("prefixes with 'Usage:' label by default", () => {
     const line = formatLine(legacyToIv({ pct: 38 }), legacyToIv({ pct: 60 }, "7d"));
-    assert.ok(line.startsWith("Usage: "), `got: ${line}`);
+    // m_modeLabel may carry an ANSI color (default `|color:yellow` is
+    // injected into DEFAULT_LINE_TEMPLATE.quota), so strip SGRs
+    // before checking the literal prefix.
+    assert.ok(strip(line).startsWith("Usage: "), `got: ${line}`);
     assert.ok(line.includes(" · "));
   });
 
@@ -330,7 +333,10 @@ describe("formatLine — mode='used' (default)", () => {
 describe("formatLine — mode='used'", () => {
   it("prefixes with 'Usage:' label", () => {
     const line = formatLine(legacyToIv({ pct: 70 }), legacyToIv({ pct: 90 }, "7d"), null, "used");
-    assert.ok(line.startsWith("Usage: "), `got: ${line}`);
+    // m_modeLabel may carry an ANSI color (default `|color:yellow` is
+    // injected into DEFAULT_LINE_TEMPLATE.quota), so strip SGRs
+    // before checking the literal prefix.
+    assert.ok(strip(line).startsWith("Usage: "), `got: ${line}`);
   });
 
   it("displayed value = used", () => {
@@ -732,13 +738,14 @@ describe("colorForBalance — 5-band thresholds (5/10/20/50)", () => {
 });
 
 describe("formatBalanceLine — single-currency", () => {
-  // v0.8.14 — `formatBalanceLine` delegates to `renderProviderLine`
-  // with the "deepseek" provider. The default `statuslineTemplate`
-  // is `["m_template|_1line"]` (quota-mode), which silently drops on
-  // a balance provider. Tests pin the balance preset explicitly.
+  // vX.X.X+ — `formatBalanceLine` delegates to `renderProviderLine`
+  // with the "deepseek" provider. Tests pin a raw balance token
+  // list (no `m_modeLabel|color:yellow`, so the rendered line
+  // starts with bare "Balance: " — the bare-prefix asserts below
+  // don't strip SGRs).
   beforeEach(() => {
     __resetForTest({
-      statuslineTemplate: ["m_template|_balance_simple|type:balance"],
+      statuslineTemplate: ["m_modeLabel", "s_space", "m_balance"],
     });
   });
   afterEach(() => __resetForTest());
@@ -794,11 +801,11 @@ describe("formatBalanceLine — single-currency", () => {
 });
 
 describe("formatBalanceLine — multi-currency joined by ·", () => {
-  // v0.8.14 — pin the balance preset (same reason as the
+  // vX.X.X+ — pin a raw balance token list (same reason as the
   // single-currency describe above).
   beforeEach(() => {
     __resetForTest({
-      statuslineTemplate: ["m_template|_balance_simple|type:balance"],
+      statuslineTemplate: ["m_modeLabel", "s_space", "m_balance"],
     });
   });
   afterEach(() => __resetForTest());

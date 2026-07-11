@@ -36,19 +36,21 @@ const pinDefaults = () =>
       ageEmoji: { healthy: "🔗", broken: "⛓️‍💥" },
     },
     timeFormat: { minUnit: "m", maxUnitCount: 2 },
-    // v0.8.14 — `statuslineTemplate` is array-only. The default
-    // `["m_template|_1line"]` defaults to `type:quota` and silently
-    // drops on a BALANCE provider (DeepSeek). Tests that exercise
-    // DeepSeek rendering need the balance preset explicitly. We
-    // pin both: the quota default (for minimax tests that don't
-    // override) and the balance default (for deepseek tests that
-    // don't override). Each test that wants a different template
-    // overrides `statuslineTemplate` directly via the second arg
-    // to `__resetForTest`.
+    // vX.X.X+ — `statuslineTemplate` is array-only. Pin a raw
+    // token list (no `m_modeLabel|color:yellow`, no fragment
+    // indirection — the bare-prefix asserts below expect
+    // "Usage: " / "Balance: " without an ANSI SGR prefix).
+    // Tests that exercise DeepSeek rendering get the balance
+    // piece via `m_modeLabel` + `m_balance`. Each test that
+    // wants a different template overrides `statuslineTemplate`
+    // directly via the second arg to `__resetForTest`.
     statuslineTemplate: [
-      "m_template|_balance_simple|type:balance",
+      "m_modeLabel", "s_space", "m_balance",
       "s_newline",
-      "m_template|_1line",
+      "m_modeLabel", "s_space",
+      "m_windowQuota|term:short", "s_space", "m_countdown|term:short",
+      "s_space", "s_dot", "s_space",
+      "m_windowQuota|term:mid", "s_space", "m_countdown|term:mid",
     ],
   });
 
@@ -58,7 +60,11 @@ describe("buildProviderLine — fresh (no age suffix; data just arrived)", () =>
     const result: FetchResult<Quota> = { kind: "fresh", data: MINI_DATA, ageMs: 0 };
     const line = buildProviderLine("minimax", result);
     assert.ok(line);
-    assert.ok(line!.startsWith("Usage: "));
+    // vX.X.X+ — m_modeLabel here is bare (no `|color:yellow`), but
+    // the trailing balance fragment prepends a deepseek-only line
+    // (m_balance). Strip SGRs to be safe across future color
+    // injections.
+    assert.ok(strip(line!).startsWith("Usage: "));
     assert.ok(!line!.includes("ago"));
     assert.ok(!line!.includes(STALE_COLOR));
   });
@@ -68,7 +74,9 @@ describe("buildProviderLine — fresh (no age suffix; data just arrived)", () =>
     const result: FetchResult<Balance> = { kind: "fresh", data: DEEP_DATA, ageMs: 0 };
     const line = buildProviderLine("deepseek", result);
     assert.ok(line);
-    assert.ok(line!.startsWith("Balance: "));
+    // vX.X.X+ — m_modeLabel in DEFAULT_LINE_TEMPLATE.balance carries
+    // `|color:yellow`, so strip SGRs before the literal-prefix check.
+    assert.ok(strip(line!).startsWith("Balance: "));
     assert.ok(strip(line!).startsWith("Balance: $25"));
     assert.ok(!line!.includes("ago"));
   });

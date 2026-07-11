@@ -36,7 +36,6 @@ import {
 import {
   DEFAULT_LINE_TEMPLATES,
   DEFAULT_STATUSLINE_TEMPLATE,
-  LEGACY_PRESET_NAMES,
   type LineTemplates,
   type StatuslineTemplate,
 } from "./config.template.ts";
@@ -44,7 +43,6 @@ import {
 export {
   DEFAULT_LINE_TEMPLATES,
   DEFAULT_STATUSLINE_TEMPLATE,
-  LEGACY_PRESET_NAMES,
 };
 export type { LineTemplates, StatuslineTemplate };
 
@@ -1249,52 +1247,29 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
     }
   }
 
-  // v0.8.14+ — `statuslineTemplate` is array-only. The legacy
-  // string-form value (one of LEGACY_PRESET_NAMES) auto-migrates to
-  // the equivalent `["m_template|_X"]` form with a one-shot stderr
-  // warning. Users should write the array form directly to silence
-  // the warning. PLAN_PRESETS / BALANCE_PRESETS (v0.4.0–v0.8.13) are
-  // gone — presets are now first-class entries in DEFAULT_LINE_TEMPLATES
-  // with `_`-prefixed keys.
-  //
-  // Loader-side migration does NOT do provider-type-aware routing —
-  // `"1line"` always migrates to `["m_template|_1line"]` (which uses
-  // the default `m_template` mode of "plan" and silently drops on a
-  // BALANCE provider). Users on a balance provider must explicitly
-  // set `["m_template|_balance_simple|mode|balance"]`. Rationale:
-  // the project's "user is explicit, framework doesn't guess"
-  // philosophy — mirrors v0.8.13's literal-default labels.
+  // vX.X.X+ — `statuslineTemplate` is array-only. The legacy
+  // string-form value (e.g. `"1line"` from v0.8.x configs) is no
+  // longer auto-migrated: the `_`-prefix preset family was removed,
+  // and the fragment library (DEFAULT_LINE_TEMPLATES) uses bare
+  // keys. A string-form value now falls back to
+  // DEFAULT_STATUSLINE_TEMPLATE with one warn. Users should write
+  // the array form directly.
   if ("statuslineTemplate" in raw) {
     const st = raw.statuslineTemplate;
-    if (typeof st === "string") {
-      // Bare name lookup against LEGACY_PRESET_NAMES. A bare name
-      // is migrated to `["m_template|<_name>"]` (the `_` prefix is
-      // applied here, since user configs wrote the un-prefixed name).
-      // `balance_simple` / `balance_simple-alone` map to the
-      // `_balance_simple` / `_balance_simple-alone` entries which
-      // include the `_balance_` infix in the key.
-      if (LEGACY_PRESET_NAMES.includes(st)) {
-        warn(
-          `statuslineTemplate: "${st}" is a v0.8.x preset name; ` +
-          `auto-migrating to ["m_template|_${st}"]. Write the array ` +
-          `form directly to silence this warning.`,
-        );
-        out.statuslineTemplate = [`m_template|_${st}`];
-      } else {
-        warn(
-          `statuslineTemplate "${st}" is not a known preset ` +
-          `(valid: ${LEGACY_PRESET_NAMES.join(", ")}); ` +
-          `using default ["m_template|_1line"]`,
-        );
-        out.statuslineTemplate = DEFAULT_STATUSLINE_TEMPLATE.slice();
-      }
-    } else if (Array.isArray(st)) {
+    if (Array.isArray(st)) {
       const cleaned: string[] = [];
       for (const item of st) {
         if (typeof item === "string") cleaned.push(item);
       }
       out.statuslineTemplate =
         cleaned.length > 0 ? cleaned : DEFAULT_STATUSLINE_TEMPLATE.slice();
+    } else if (typeof st === "string") {
+      warn(
+        `statuslineTemplate "${st}" is not a valid form; use a string[] ` +
+        `(e.g. ["m_template|quota|type:quota"]). ` +
+        `Using DEFAULT_STATUSLINE_TEMPLATE.`,
+      );
+      out.statuslineTemplate = DEFAULT_STATUSLINE_TEMPLATE.slice();
     } else {
       warn(
         "statuslineTemplate must be a string[]; using default",

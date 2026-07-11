@@ -389,13 +389,13 @@ describe("lineTemplate — m_version module", () => {
 });
 
 describe("lineTemplate — m_modeLabel picks modeLabels.balance for the deepseek path", () => {
-  // v0.8.14 — DeepSeek tests must explicitly opt-in to the balance
-  // preset (the default `["m_template|_1line"]` is plan-mode and
-  // silently drops on a BALANCE provider). Each test sets the
-  // balance-form template via `__resetForTest` below.
+  // vX.X.X+ — DeepSeek tests must explicitly opt-in to the balance
+  // fragment (the default quota fragment is plan-mode and silently
+  // drops on a BALANCE provider). Each test sets the balance-form
+  // template via `__resetForTest` below.
   it("uses 'Balance:' by default (preserves v0.2.16 label)", () => {
     __resetForTest({
-      statuslineTemplate: ["m_template|_balance_simple|type:balance"],
+      statuslineTemplate: ["m_template|balance|type:balance"],
     });
     const line = renderProviderLine("deepseek", {
       mode: "used",
@@ -411,7 +411,7 @@ describe("lineTemplate — m_modeLabel picks modeLabels.balance for the deepseek
   it("uses the configured modeLabels.balance override", () => {
     __resetForTest({
       modeLabels: { used: "Usage:", remaining: "Remain:", balance: "Wallet:" },
-      statuslineTemplate: ["m_template|_balance_simple|type:balance"],
+      statuslineTemplate: ["m_template|balance|type:balance"],
     });
     try {
       const line = renderProviderLine("deepseek", {
@@ -1954,7 +1954,7 @@ describe("m_template — legacy lineTemplate warns once and is ignored (v0.4.0 h
       // `"1line"`), so the renderer resolves to
       // `cfg().lineTemplates._1line` via `m_template` indirection,
       // NOT to the legacy arrays.
-      assert.deepEqual(cfg.statuslineTemplate, ["m_template|_1line"]);
+      assert.deepEqual(cfg.statuslineTemplate, ["m_template|quota|type:quota", "m_template|balance|type:balance"]);
       // Render through the minimax path — output should reflect the
       // default preset shape (m_windowQuota|term:short + m_windowQuota|term:mid, NOT just
       // m_windowQuota|term:short as the legacy plan array would suggest).
