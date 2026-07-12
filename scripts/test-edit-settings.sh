@@ -95,7 +95,7 @@ assert_match "command references new cache dir glob" "topgauge/topgauge/\*/" "$C
 assert_match "command uses sort -t. for version sort" "sort -t\\." "$CMD"
 assert_match "command tails -1 + cut -f2-" "tail -1 \\| cut -f2-" "$CMD"
 assert_match "command guards against missing cache" '\[ -d "\$plugin_dir" \]' "$CMD"
-assert_match "command points upstream at new stable state dir" 'TOPGAUGE_CC_UPSTREAM_CMD="\$\{CLAUDE_CONFIG_DIR:-\$HOME/.claude\}/plugins/topgauge/state/upstream-cmd.sh"' "$CMD"
+assert_match "command points upstream at new stable state dir" 'TOPGAUGE_UPSTREAM_CMD="\$\{CLAUDE_CONFIG_DIR:-\$HOME/.claude\}/plugins/topgauge/state/upstream-cmd.sh"' "$CMD"
 assert_match "command execs wrapper from \$plugin_dir" 'exec bash "\$\{plugin_dir\}scripts/wrapper.sh"' "$CMD"
 assert_eq "refreshInterval preserved" "90" "$(jget "$SETTINGS" statusLine.refreshInterval)"
 assert_eq "managed marker set" "true" "$(jget "$SETTINGS" statusLine._topgauge_managed)"
@@ -107,7 +107,7 @@ assert_eq "status reports managed" "managed" "$STATUS"
 
 echo ""
 echo "=== restore-from-file preserves refreshInterval ==="
-RESTORE_CMD='bash -c '"'"'export TOPGAUGE_CC_UPSTREAM_CMD="/home/test/.claude/upstream.sh"; exec bash "/home/test/.claude/plugins/cache/topgauge/topgauge/0.2.5/scripts/wrapper.sh"'"'"''
+RESTORE_CMD='bash -c '"'"'export TOPGAUGE_UPSTREAM_CMD="/home/test/.claude/upstream.sh"; exec bash "/home/test/.claude/plugins/cache/topgauge/topgauge/0.2.5/scripts/wrapper.sh"'"'"''
 python -c "import json,sys; print(json.dumps({'statusLine':{'type':'command','command':sys.argv[1],'refreshInterval':75,'_topgauge_managed':True}}, indent=2))" "$RESTORE_CMD" > "$SETTINGS"
 echo 'echo restored' > "$TMPDIR/upstream.txt"
 WIN_UPSTREAM_TXT="$(winpath "$TMPDIR/upstream.txt")"

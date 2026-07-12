@@ -5,8 +5,8 @@
 #    and our bundled dist/index.js can read it. Without this, whichever
 #    runs first drains the pipe and the other sees EOF.
 # 2. Optionally runs an arbitrary "upstream" statusline command, captured in
-#    the TOPGAUGE_CC_UPSTREAM env var. The command string is taken from
-#    $TOPGAUGE_CC_UPSTREAM_CMD. If unset, TOPGAUGE_CC_UPSTREAM is empty and
+#    the TOPGAUGE_UPSTREAM env var. The command string is taken from
+#    $TOPGAUGE_UPSTREAM_CMD. If unset, TOPGAUGE_UPSTREAM is empty and
 #    this plugin becomes the sole statusline.
 # 3. Execs our bundled dist/index.js, forwarding the cached stdin.
 #
@@ -49,18 +49,18 @@ TMP_STDIN="$(mktemp 2>/dev/null || echo "${TMPDIR:-/tmp}/topgauge-stdin.$$")"
 trap 'rm -f "$TMP_STDIN"' EXIT INT TERM HUP
 cat > "$TMP_STDIN"
 
-# Run the optional upstream statusline, if the user has set TOPGAUGE_CC_UPSTREAM_CMD.
+# Run the optional upstream statusline, if the user has set TOPGAUGE_UPSTREAM_CMD.
 # install.sh writes this as the absolute path to
 # <claude-root>/plugins/topgauge/state/upstream-cmd.sh
 # (a bash script with a shebang and an `exec bash -c '...'` line for the original
 # statusLine command). The path is STABLE — sibling of config.json, survives
 # cache wipes and version rolls. We run it as a script, NOT pass it to `bash -c` —
 # that would attempt to execute the path as a command line and fail silently.
-# stdout -> TOPGAUGE_CC_UPSTREAM. stdin <- cached tmpfile. Failure / unset /
-# empty -> TOPGAUGE_CC_UPSTREAM="".
+# stdout -> TOPGAUGE_UPSTREAM. stdin <- cached tmpfile. Failure / unset /
+# empty -> TOPGAUGE_UPSTREAM="".
 UPSTREAM_OUT=""
-if [ -n "${TOPGAUGE_CC_UPSTREAM_CMD:-}" ] && [ -f "$TOPGAUGE_CC_UPSTREAM_CMD" ]; then
-  UPSTREAM_OUT=$(bash "$TOPGAUGE_CC_UPSTREAM_CMD" < "$TMP_STDIN" 2>/dev/null || true)
+if [ -n "${TOPGAUGE_UPSTREAM_CMD:-}" ] && [ -f "$TOPGAUGE_UPSTREAM_CMD" ]; then
+  UPSTREAM_OUT=$(bash "$TOPGAUGE_UPSTREAM_CMD" < "$TMP_STDIN" 2>/dev/null || true)
 fi
 
 if [ -z "$SELF_DIR" ] || [ ! -f "${SELF_DIR}dist/index.js" ]; then
@@ -71,4 +71,4 @@ fi
 
 # Forward cached stdin (session JSON) to our entry, with upstream output
 # as env var. Both reads of stdin now see the same content.
-TOPGAUGE_CC_UPSTREAM="$UPSTREAM_OUT" "$NODE_BIN" "${SELF_DIR}dist/index.js" < "$TMP_STDIN"
+TOPGAUGE_UPSTREAM="$UPSTREAM_OUT" "$NODE_BIN" "${SELF_DIR}dist/index.js" < "$TMP_STDIN"

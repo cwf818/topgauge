@@ -8,7 +8,7 @@
 // bad field → one stderr line + DEFAULT_CONFIG. Never crashes.
 //
 // Precedence: config.json > hardcoded defaults. The earlier
-// TOPGAUGE_CC_DISPLAY env var is gone — anyone who used it must migrate
+// TOPGAUGE_DISPLAY env var is gone — anyone who used it must migrate
 // to config.json's `display` field (see README "Configuration").
 
 import { existsSync, readFileSync } from "node:fs";

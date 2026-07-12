@@ -650,7 +650,7 @@ describe("renderTemplate — m_quote fetch-failure diagnostics (v0.8.20+)", () =
   // v0.8.20+ — when fetchQuoteFromAddress returns null (curl exit /
   // non-JSON body / all paths miss), it appends a structured warning
   // to diagnostics.jsonl so a postmortem can grep why the local
-  // QUOTES fallback fired. Gate is TOPGAUGE_CC_DIAGNOSTICS_ENABLE=1;
+  // QUOTES fallback fired. Gate is TOPGAUGE_DIAGNOSTICS_ENABLE=1;
   // these tests enable it for the duration.
   //
   // The diagnostics module reads state root from process.env.HOME /
@@ -666,7 +666,7 @@ describe("renderTemplate — m_quote fetch-failure diagnostics (v0.8.20+)", () =
     diagRoot = join(_tmpDir, "diagnostics-root");
     process.env.HOME = diagRoot;
     process.env.CLAUDE_CONFIG_DIR = diagRoot;
-    process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE = "1";
+    process.env.TOPGAUGE_DIAGNOSTICS_ENABLE = "1";
     diagnostics.setSessionCwd("D:\\test");
     diagnostics.__resetDedupeForTest();
   });
@@ -732,7 +732,7 @@ describe("renderTemplate — m_quote fetch-failure diagnostics (v0.8.20+)", () =
   it("address|gate OFF (env unset) → no JSONL file written", () => {
     // Disable the gate. Reset dedupe so the only thing gating the
     // append is isEnabled().
-    process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE = "";
+    process.env.TOPGAUGE_DIAGNOSTICS_ENABLE = "";
     diagnostics.__resetDedupeForTest();
     const out = renderTemplate(
       ["m_quote|address:http://127.0.0.1:1/|quote:x"],
@@ -746,7 +746,7 @@ describe("renderTemplate — m_quote fetch-failure diagnostics (v0.8.20+)", () =
       "diagnostics.jsonl should not be written when gate is off",
     );
     // Restore gate for downstream tests.
-    process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE = "1";
+    process.env.TOPGAUGE_DIAGNOSTICS_ENABLE = "1";
   });
 });
 

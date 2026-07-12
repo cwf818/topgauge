@@ -233,7 +233,7 @@ function renderDataLine(
 // the bare-tokens-fail "Usage: not available!" branch is preserved
 // verbatim for v0.2.20 byte-for-byte compatibility.
 //
-// Display mode lives in configStore — the old TOPGAUGE_CC_DISPLAY env
+// Display mode lives in configStore — the old TOPGAUGE_DISPLAY env
 // var is gone (see README "Configuration"). For fresh ticks the
 // m_age suffix is suppressed; for stale ticks the renderer appends
 // the broken-chain "X ago" annotation (the m_age module OR the
@@ -348,7 +348,7 @@ export function buildProviderLine(
 // a one-liner. The legacy `mode` argument is ignored — callers
 // that need a non-default display mode should configure
 // `display: "remaining"` in config.json (the v0.2.x migration path
-// from TOPGAUGE_CC_DISPLAY).
+// from TOPGAUGE_DISPLAY).
 export function renderPlanLine(
   data: Quota,
   _mode: ReturnType<typeof resolveDisplayMode>,

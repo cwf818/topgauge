@@ -215,7 +215,7 @@ describe("parseTokenSnapshot — null cases", () => {
 //   total_input_tokens == current.input + current.cacheRead
 // When violated, parseTokenSnapshot appends a `warning` to the
 // per-project diagnostics log. The warning is gated by
-// `TOPGAUGE_CC_DIAGNOSTICS_ENABLE=1`. Tests below exercise both
+// `TOPGAUGE_DIAGNOSTICS_ENABLE=1`. Tests below exercise both
 // the satisfied-invariant and violated-invariant paths against a
 // sandboxed CLAUDE_CONFIG_DIR so the user's real diagnostics log
 // is never touched.
@@ -227,17 +227,17 @@ describe("parseTokenSnapshot — v0.8.0 tokenTotalIn invariant", () => {
   beforeEach(() => {
     sandbox = mkdtempSync(join(tmpdir(), "topgauge-invariant-"));
     prevConfigDir = process.env.CLAUDE_CONFIG_DIR;
-    prevGate = process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE;
+    prevGate = process.env.TOPGAUGE_DIAGNOSTICS_ENABLE;
     process.env.CLAUDE_CONFIG_DIR = sandbox;
-    process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE = "1";
+    process.env.TOPGAUGE_DIAGNOSTICS_ENABLE = "1";
     __resetDedupeForTest();
   });
 
   afterEach(() => {
     if (prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
     else process.env.CLAUDE_CONFIG_DIR = prevConfigDir;
-    if (prevGate === undefined) delete process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE;
-    else process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE = prevGate;
+    if (prevGate === undefined) delete process.env.TOPGAUGE_DIAGNOSTICS_ENABLE;
+    else process.env.TOPGAUGE_DIAGNOSTICS_ENABLE = prevGate;
     rmSync(sandbox, { recursive: true, force: true });
   });
 
@@ -311,7 +311,7 @@ describe("parseTokenSnapshot — v0.8.0 tokenTotalIn invariant", () => {
   });
 
   it("no warn when gate is OFF (opt-in diagnostics)", () => {
-    delete process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE;
+    delete process.env.TOPGAUGE_DIAGNOSTICS_ENABLE;
     const cwd = "D:\\invariant-test-4";
     const raw = JSON.stringify({
       session_id: "sess-4",

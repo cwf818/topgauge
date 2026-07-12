@@ -282,7 +282,7 @@ if [ "$DRY_RUN" = 1 ]; then
     echo "  would write:   ${UPSTREAM_CMD_FILE}"
     echo "  original cmd:  ${ORIGINAL_CMD}"
   fi
-  echo "  new statusLine command will set TOPGAUGE_CC_UPSTREAM_CMD to:"
+  echo "  new statusLine command will set TOPGAUGE_UPSTREAM_CMD to:"
   if [ "$INSTALL_MODE" = "replace" ]; then
     echo "    ${UPSTREAM_CMD_FILE}"
   else

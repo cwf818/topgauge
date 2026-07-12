@@ -66,7 +66,7 @@ exceptions are called out in §3.
 | `window`    | `<dhms>` (e.g. `5h`, `7d`, `1h30m`, `2d12h`) \| `all` \| `<interval.windowId>` | `all`              | **`m_sum*` only (v0.8.32+).** Time window for the JSONL scan. A free-form `<digits><unit>` chain resolves to wall-clock `[now - N, now]`. The literal `all` scans the entire jsonl with no time anchor (also the bare default). A configured `interval.windowId` (e.g. `"monthly"` against `intervals.longInterval.windowId = "monthly"`) resolves to a plan-aligned scan ONLY when `|align|true` is also passed — see `align` row below. |
 | `align`     | `true` \| `false`                                                              | `false`            | **`m_sum*` only (v0.8.32+).** Opt-in flag for declared-windowId resolution. `align=true` causes the resolver to look up `<interval.windowId>` first; on a match the scan runs plan-anchored against that interval's `resetStartAt`. On a miss (or when `align=false`) the resolver falls through to free-form dhms. The literal `all` short-circuits before this lookup regardless of `align`. |
 | `freq`      | `s` \| `m` \| `h` \| `d` \| `<digits><unit>`                                   | `h`                | **`m_quote` only.** Bucket size for quote rotation.                                                                                                 |
-| `address`   | URL string                                                                     | `""` (empty)       | **`m_quote` only (v0.8.18+, v0.8.19 fallback, v0.8.20 diagnostics, v0.8.21 curl).** When non-empty, fetch the URL via `curl -sSf --max-time 5` (with `node:http(s)` core fallback when curl isn't on PATH) and use the body as the quote source instead of the bundled `quotes.json`. The fetched body is JSON-parsed; see `fields` for how the strings are extracted. On any failure (curl exit, non-JSON body, all paths miss), the renderer falls back to the local `quotes.json` list so the user always sees something. Each failure also appends a row to `diagnostics.jsonl` (gated on `TOPGAUGE_CC_DIAGNOSTICS_ENABLE=1`) under `source = "m_quote"` so a postmortem can grep why the local fallback fired. |
+| `address`   | URL string                                                                     | `""` (empty)       | **`m_quote` only (v0.8.18+, v0.8.19 fallback, v0.8.20 diagnostics, v0.8.21 curl).** When non-empty, fetch the URL via `curl -sSf --max-time 5` (with `node:http(s)` core fallback when curl isn't on PATH) and use the body as the quote source instead of the bundled `quotes.json`. The fetched body is JSON-parsed; see `fields` for how the strings are extracted. On any failure (curl exit, non-JSON body, all paths miss), the renderer falls back to the local `quotes.json` list so the user always sees something. Each failure also appends a row to `diagnostics.jsonl` (gated on `TOPGAUGE_DIAGNOSTICS_ENABLE=1`) under `source = "m_quote"` so a postmortem can grep why the local fallback fired. |
 | `fields`    | Comma-separated list of dot-paths (e.g. `hitokoto,from,from_who`)               | `""` (empty)       | **`m_quote` only (v0.8.19+).** Each path is walked independently against the JSON response (object keys / array indices / strings — string terminates the walk, anything after is ignored). The collected strings are rendered as `field1: field2:` (colon-joined, trailing colon). Pairs with `address`. v0.8.18's singular `field` is REMOVED. |
 | `quote`     | dot-path string                                                                | `""` (empty)       | **`m_quote` only (v0.8.21+).** Single-path convenience for the quote body. Walked against the address response; rendered as `~<quote>~` (default; pass `wrap|false` for bare). |
 | `author`    | dot-path string                                                                | `""` (empty)       | **`m_quote` only (v0.8.21+).** Single-path convenience for the author field. Pairs with `quote`. |
@@ -282,7 +282,7 @@ A rotating quote, frequency-bucketed (local) or strings from a remote endpoint.
 - On any fetch / parse / walk failure (curl exit, non-JSON body,
   any path miss), the renderer falls back to the local `quotes.json`
   list **and appends a row to `diagnostics.jsonl`** (gated on
-  `TOPGAUGE_CC_DIAGNOSTICS_ENABLE=1`) with `source = "m_quote"` and a
+  `TOPGAUGE_DIAGNOSTICS_ENABLE=1`) with `source = "m_quote"` and a
   reason-tokenized `msg`. Failure entries are `level=error` since v0.8.34.
 - Inline args: `freq`, `color`, `address`, `fields`, `quote`, `author`,
   `lang`, `max` (CJK-weighted char budget, default 1024), `wrap`,
@@ -412,7 +412,7 @@ Tokens that produce a `\n` (`s_newline`, or any multi-line body) split
 the rendered output into "above the break" and "below the break" chunks:
 
 - Everything ABOVE the first newline is **prepended** to the upstream
-  output (whatever `TOPGAUGE_CC_UPSTREAM` contains).
+  output (whatever `TOPGAUGE_UPSTREAM` contains).
 - Everything BELOW is **appended** after the upstream.
 
 This is how `["m_template|_standard", "s_newline", "m_template|_balance_simple|type:balance"]`

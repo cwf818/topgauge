@@ -309,7 +309,7 @@
   across matching rows. All-null / all-zero / empty JSONL →
   the natural cold-start `Date.now()` stamp from `setAvg`'s
   first-write branch fires instead. Mixed → `min(finite>0)`.
-- Diagnostics: when `TOPGAUGE_CC_DIAGNOSTICS_ENABLE=1`, a
+- Diagnostics: when `TOPGAUGE_DIAGNOSTICS_ENABLE=1`, a
   `replay-acc-init` row is appended to
   `state/<projectHash>/diagnostics.jsonl` per cold-slot
   replay (scope + aggregated counts + startAt). Default off
@@ -571,10 +571,10 @@
     (`.claude-plugin/marketplace.json.name`).
   - Slash command prefix: `/tokenplan-usage-hud:<verb>` →
     `/topgauge-cc:<verb>`.
-  - Env-var namespace: `TOKENPLAN_*` → `TOPGAUGE_CC_*`
-    (`TOKENPLAN_UPSTREAM` → `TOPGAUGE_CC_UPSTREAM`,
-    `TOKENPLAN_UPSTREAM_CMD` → `TOPGAUGE_CC_UPSTREAM_CMD`,
-    `TOKENPLAN_DIAGNOSTICS_ENABLE` → `TOPGAUGE_CC_DIAGNOSTICS_ENABLE`).
+  - Env-var namespace: `TOKENPLAN_*` → `TOPGAUGE_*`
+    (`TOKENPLAN_UPSTREAM` → `TOPGAUGE_UPSTREAM`,
+    `TOKENPLAN_UPSTREAM_CMD` → `TOPGAUGE_UPSTREAM_CMD`,
+    `TOKENPLAN_DIAGNOSTICS_ENABLE` → `TOPGAUGE_DIAGNOSTICS_ENABLE`).
   - `settings.json.statusLine._tokenplan_managed` marker →
     `_topgauge_managed`.
   - Internal state-dir path: `~/.claude/plugins/tokenplan-usage-hud/state/`

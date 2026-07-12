@@ -39,7 +39,7 @@ For the per-version detail, see [CHANGELOG.md](CHANGELOG.md). Recent highlights:
 - **v0.8.24** — `startAt` / `lastAt` fields + `m_accStartTime` / `m_sumStartTime` / `m_sumEndTime` modules + `labels.labelStartTime` / `labelEndTime`. `MAX_SAMPLE_API_MS` sanity ceiling on per-tick `apiMs` (300_000 ms) so a single pathological stdin reading can't pollute the JSONL.
 - **v0.8.23** — context-window modules read `labels.labelContext{Size,WindowsSize,UsedPercent,RemainingPercent}`. `detectRegression` uses `totalDurationMs` (per-tick wall-clock) instead of `totalApiMs`, with a 120_000 ms cold-start guard.
 - **v0.8.22 (rev 2)** — `labels.*` namespace unified under `labelToken*` / `labelApi*` + `labelMemUsage` + `labelTokenHitRate`. Pre-v0.8.22 names (`labelIn`, `labelOut`, `labelCacheIn`, `labelTotalIn`, `labelApi`, `labelInSpeed`, `labelOutSpeed`) hard-rejected.
-- **v0.8.21** — `m_quote` gains `quote` / `author` / `lang` / `max` / `wrap` / `insecureTls` named args. `fetchOne` uses system `curl -sSf --max-time 5` (with `node:http(s)` core fallback when curl isn't on PATH). `TOPGAUGE_CC_QUOTE_INSECURE_TLS` env seed dropped.
+- **v0.8.21** — `m_quote` gains `quote` / `author` / `lang` / `max` / `wrap` / `insecureTls` named args. `fetchOne` uses system `curl -sSf --max-time 5` (with `node:http(s)` core fallback when curl isn't on PATH). `TOPGAUGE_QUOTE_INSECURE_TLS` env seed dropped.
 - **v0.8.20** — `m_quote` address fetch failures append an `error`-level row to `diagnostics.jsonl` (curl exit / non-JSON / all-paths-miss).
 - **v0.8.19** — `m_quote field` (singular) → `fields` (comma-separated dot paths). Local `pickQuote` fallback on fetch fail (instead of dropping).
 - **v0.8.18** — `m_quote` gains `address` + `field` named args (remote quote source).
@@ -77,7 +77,7 @@ This patches the active `settings.json` (user-level by default; pass `--project`
 1. If `statusLine` is already managed by us (`_topgauge_managed: true`), the command is a no-op.
 2. Otherwise, the current `settings.json` is backed up to `settings.json.bak.<ISO-timestamp>`.
 3. The original `statusLine.command` is preserved at `<claude-root>/plugins/topgauge/state/upstream-cmd.sh` and `<claude-root>/plugins/topgauge/state/upstream-cmd.txt` — sibling of `config.json`, **stable** across `/plugin install` rolls and cache wipes.
-4. The `statusLine` is rewritten to invoke our wrapper, which sets `TOPGAUGE_CC_UPSTREAM_CMD=<upstream-cmd.sh>` so the original statusline runs above our line.
+4. The `statusLine` is rewritten to invoke our wrapper, which sets `TOPGAUGE_UPSTREAM_CMD=<upstream-cmd.sh>` so the original statusline runs above our line.
 
 `install.sh` auto-builds `dist/index.js` if it's missing (the marketplace install only copies source, not the bundle). Re-running the slash command is always a no-op once installed.
 
@@ -173,8 +173,8 @@ Every `/plugin install` rolls the cache forward — Claude Code creates a new `<
 
 ## How it composes with other statuslines
 
-- The wrapper script is `scripts/wrapper.sh`. If `TOPGAUGE_CC_UPSTREAM_CMD` is set, it runs that path as a bash script (`bash "$TOPGAUGE_CC_UPSTREAM_CMD"`), captures stdout, and exposes it to the plugin entry as the `TOPGAUGE_CC_UPSTREAM` env var. If unset, the wrapper runs the plugin as the sole statusline.
-- `TOPGAUGE_CC_UPSTREAM_CMD` is an **absolute path** to a bash script — `install.sh` writes one at `${CLAUDE_ROOT}/plugins/topgauge/state/upstream-cmd.sh` whose body is `exec bash -c '<original-command>'`. This path is **stable** (sibling of `config.json`, NOT inside the per-version cache dir), so `/plugin install` rolls don't move it. Older v0.1.10–v0.1.11 used `bash -c` against the path itself, which silently failed — fixed in v0.1.12.
+- The wrapper script is `scripts/wrapper.sh`. If `TOPGAUGE_UPSTREAM_CMD` is set, it runs that path as a bash script (`bash "$TOPGAUGE_UPSTREAM_CMD"`), captures stdout, and exposes it to the plugin entry as the `TOPGAUGE_UPSTREAM` env var. If unset, the wrapper runs the plugin as the sole statusline.
+- `TOPGAUGE_UPSTREAM_CMD` is an **absolute path** to a bash script — `install.sh` writes one at `${CLAUDE_ROOT}/plugins/topgauge/state/upstream-cmd.sh` whose body is `exec bash -c '<original-command>'`. This path is **stable** (sibling of `config.json`, NOT inside the per-version cache dir), so `/plugin install` rolls don't move it. Older v0.1.10–v0.1.11 used `bash -c` against the path itself, which silently failed — fixed in v0.1.12.
 - The plugin preserves interior newlines in upstream output and injects `\x1b[0m` before its own line if upstream ends with an unclosed ANSI SGR — so multi-line, ANSI-colored upstream statuslines render correctly.
 
 ## Activation
@@ -1129,7 +1129,7 @@ Remote endpoint (hitokoto), daily-bucketed rainbow wrap.
 **Behavior notes**
 
 - The local pool has 100+ entries; the renderer is deterministic per `(freq, nowMs)` so the same window always shows the same quote. No `Math.random` / no `Date.now` inside the renderer.
-- Remote fetches use system `curl -sSf --max-time 5` (with `node:http(s)` core fallback when curl isn't on PATH — v0.8.21+). A failure (curl exit / non-JSON body / any path miss) appends an `error`-level row to `diagnostics.jsonl` (gated on `TOPGAUGE_CC_DIAGNOSTICS_ENABLE=1`) and falls back to the local pool. The user always sees something.
+- Remote fetches use system `curl -sSf --max-time 5` (with `node:http(s)` core fallback when curl isn't on PATH — v0.8.21+). A failure (curl exit / non-JSON body / any path miss) appends an `error`-level row to `diagnostics.jsonl` (gated on `TOPGAUGE_DIAGNOSTICS_ENABLE=1`) and falls back to the local pool. The user always sees something.
 - An invalid `freq` value (e.g. `m_quote|freq:yearly`, `m_quote|freq:2h10m`) drops the token with a one-shot stderr warn.
 - An invalid `color` value drops the token with a one-shot stderr warn.
 
@@ -1190,7 +1190,7 @@ In addition to the tokenplan 5h/7d window percentages, the plugin reads Claude C
 - `cost.total_duration_ms` — session wall-clock duration (used by `m_sessionDuration`, `m_sessionApiDuration`, and the speed modules)
 - `cost.{total_lines_added, total_lines_removed}` — `m_linesAdded` / `m_linesRemoved`
 - `session_id`, `cwd`, `transcript_path` — used to scope the state file for `m_acc*` / `m_sum*` modules
-- `m_tokenTotalIn` invariant: `total_input_tokens == current.input_tokens + current.cache_read_input_tokens`. Violations are checked at `src/session-parse.ts` and a `warning` row is appended to `state/<projectHash>/diagnostics.jsonl` (gated on `TOPGAUGE_CC_DIAGNOSTICS_ENABLE=1`, 60s dedupe).
+- `m_tokenTotalIn` invariant: `total_input_tokens == current.input_tokens + current.cache_read_input_tokens`. Violations are checked at `src/session-parse.ts` and a `warning` row is appended to `state/<projectHash>/diagnostics.jsonl` (gated on `TOPGAUGE_DIAGNOSTICS_ENABLE=1`, 60s dedupe).
 
 **Persistent state file** (only for `m_acc*` / `m_sum*`): one JSON line per tick, appended to `~/.claude/plugins/topgauge/state/<projectHash>/<sessionId>.jsonl` (v0.4.x+ Per-Project Layout; was `state/token-samples/<hash>/<sid>.jsonl` in v0.4.0–v0.4.<n-1>). ~120B per row, ~700KB over 7d. Lives in the stable `state/` directory — survives cache rolls and version bumps. Legacy `state/token-samples/<hash>/<sid>.jsonl` files can be preserved across an upgrade with `bash scripts/migrate-state.sh` (preview with `--dry-run`).
 
@@ -1283,10 +1283,10 @@ Note: `m_tokenHitRate` now renders as `hit:N%` (v0.8.x R8 — prefix unified wit
 }
 ```
 
-### Migration from `TOKENPLAN_DISPLAY` / `TOPGAUGE_CC_DISPLAY`
+### Migration from `TOKENPLAN_DISPLAY` / `TOPGAUGE_DISPLAY`
 
 If you previously set `TOKENPLAN_DISPLAY=remaining` (pre-v0.2.0) or
-`TOPGAUGE_CC_DISPLAY=remaining` in your shell, move that value into
+`TOPGAUGE_DISPLAY=remaining` in your shell, move that value into
 `config.json`:
 
 ```bash
@@ -1326,11 +1326,11 @@ structured (timestamp + level + source + message).
 
 ### Opt-in gate
 
-The log is **OFF by default** — set `TOPGAUGE_CC_DIAGNOSTICS_ENABLE=1` (or
+The log is **OFF by default** — set `TOPGAUGE_DIAGNOSTICS_ENABLE=1` (or
 `true` / `yes`, case-insensitive) in your shell to enable file writes:
 
 ```bash
-export TOPGAUGE_CC_DIAGNOSTICS_ENABLE=1
+export TOPGAUGE_DIAGNOSTICS_ENABLE=1
 ```
 
 The rationale: the file lives in your plugins dir and may contain sensitive
@@ -1518,9 +1518,9 @@ src/
   tick-state.ts       # v1.0 per-tick in-memory Store: beginTick / mark / commit
   status-store.ts     # three-layer acc (session/project/model) + cold-slot JSONL replay (v0.8.29) + stat cache
   cache.ts            # 60s TTL + stale-on-error; per-project cache.json shadowing
-  composition.ts      # reads TOPGAUGE_CC_UPSTREAM, prepends (preserving ANSI/multi-line) and appends line
+  composition.ts      # reads TOPGAUGE_UPSTREAM, prepends (preserving ANSI/multi-line) and appends line
   config.ts           # loads ~/.claude/plugins/topgauge/config.json; module-level singleton store
-  diagnostics.ts      # JSONL append logger (opt-in via TOPGAUGE_CC_DIAGNOSTICS_ENABLE); 1000-line cap (v0.8.34+)
+  diagnostics.ts      # JSONL append logger (opt-in via TOPGAUGE_DIAGNOSTICS_ENABLE); 1000-line cap (v0.8.34+)
   dispatch.ts         # providerType → module-set dispatch (provider-aware gating)
   path-expr.ts        # path-expression grammar evaluator (v0.4.x+) for intervals.<term>.* slot mapping
   git-info.ts         # m_branch / m_gitStatus read-side helpers (cwd-based)
@@ -1537,7 +1537,7 @@ commands/
   clean.md            # /topgauge:clean slash command
   clean-cache.md      # /topgauge:clean-cache slash command
 scripts/
-  wrapper.sh          # bash wrapper: TOPGAUGE_CC_UPSTREAM_CMD → TOPGAUGE_CC_UPSTREAM → us
+  wrapper.sh          # bash wrapper: TOPGAUGE_UPSTREAM_CMD → TOPGAUGE_UPSTREAM → us
   install.sh          # settings.json patcher (install + thin shim for --uninstall)
   uninstall.sh        # self-contained uninstaller (used by :uninstall and dev:uninstall)
   clean.sh            # trim old .bak.<ts> files; --purge-runtime also wipes state/<projectHash>/{cache.json,diagnostics.jsonl,*.jsonl} + legacy top-level + token-samples

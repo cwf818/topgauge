@@ -10,7 +10,7 @@
 //       Prints one of: "managed" | "foreign:<command>" | "none"
 //   write-managed <target> <wrapper> <upstream-cmd-file>
 //       Rewrites statusLine to our managed wrapper. If upstream-cmd-file is
-//       empty, leaves TOPGAUGE_CC_UPSTREAM_CMD unset.
+//       empty, leaves TOPGAUGE_UPSTREAM_CMD unset.
 //   restore-from-file <target> <upstream-cmd-file>
 //       Replaces our managed statusLine with the contents of upstream-cmd-file
 //       (the originally-preserved command).
@@ -84,11 +84,11 @@ function buildLatestCacheCommand(_upstreamCmdFileUnused) {
   //   bash -c '
   //     plugin_dir=$(ls -d …/topgauge/*/ | awk -F/ '\''{…}'\'' | sort … | tail -1 | cut -f2-)
   //     [ -d "$plugin_dir" ] || { echo … >&2; exit 1; }
-  //     export TOPGAUGE_CC_UPSTREAM_CMD="<root>/plugins/topgauge/state/upstream-cmd.sh"
+  //     export TOPGAUGE_UPSTREAM_CMD="<root>/plugins/topgauge/state/upstream-cmd.sh"
   //     exec bash "${plugin_dir}scripts/wrapper.sh"
   //   '
   //
-  // TOPGAUGE_CC_UPSTREAM_CMD points at a STABLE location
+  // TOPGAUGE_UPSTREAM_CMD points at a STABLE location
   // (<root>/plugins/topgauge/state/upstream-cmd.sh) — NOT
   // inside the version-specific cache dir. Two reasons:
   //   1. config.json lives at <root>/plugins/topgauge/, so
@@ -110,7 +110,7 @@ function buildLatestCacheCommand(_upstreamCmdFileUnused) {
     "bash -c '",
     "plugin_dir=$(ls -d \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}\"/plugins/cache/topgauge/topgauge/*/ 2>/dev/null | awk -F/ '\"'\"'{ print $(NF-1) \"\\t\" $(0) }'\"'\"' | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n | tail -1 | cut -f2-); ",
     "[ -d \"$plugin_dir\" ] || { echo \"topgauge: no installed version found under cache\" >&2; exit 1; }; ",
-    "export TOPGAUGE_CC_UPSTREAM_CMD=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/topgauge/state/upstream-cmd.sh\"; ",
+    "export TOPGAUGE_UPSTREAM_CMD=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/topgauge/state/upstream-cmd.sh\"; ",
     "exec bash \"${plugin_dir}scripts/wrapper.sh\"",
     "'",
   ].join("");

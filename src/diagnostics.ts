@@ -36,7 +36,7 @@
 // cost of double-write logic. Not worth it.
 //
 // Opt-in gate: writing the log file is OFF by default. Set
-// `TOPGAUGE_CC_DIAGNOSTICS_ENABLE=1` (or `true` / `yes`, case-insensitive)
+// `TOPGAUGE_DIAGNOSTICS_ENABLE=1` (or `true` / `yes`, case-insensitive)
 // to enable. Rationale: the file lives in the user's plugins dir and
 // may contain sensitive fragments (paths, error text from upstream
 // libraries), so we don't write unless the user explicitly asks.
@@ -209,12 +209,12 @@ function localIso(epochMs: number): string {
 
 // ----- Gate -----
 
-// True iff TOPGAUGE_CC_DIAGNOSTICS_ENABLE is set to a truthy value
+// True iff TOPGAUGE_DIAGNOSTICS_ENABLE is set to a truthy value
 // (1 / true / yes, case-insensitive). Anything else — including the
 // variable being unset — is treated as OFF. The user's log file
 // should not silently fill up; the gate is opt-in.
 export function isEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const v = env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE;
+  const v = env.TOPGAUGE_DIAGNOSTICS_ENABLE;
   if (typeof v !== "string") return false;
   const s = v.trim().toLowerCase();
   return s === "1" || s === "true" || s === "yes";
@@ -364,7 +364,7 @@ export function append(
 // Thin wrappers for the per-tick file IO sites (cache.ts,
 // token-store.ts, status-store.ts, config.ts, index.ts) to record
 // their disk activity to the diagnostics log. Reuses the opt-in
-// gate (TOPGAUGE_CC_DIAGNOSTICS_ENABLE) and the per-project JSONL
+// gate (TOPGAUGE_DIAGNOSTICS_ENABLE) and the per-project JSONL
 // layout — the IO site's `path` is the same string the caller
 // passed to fs.*, so the per-project scoping falls out naturally:
 //   - IO under `${CLAUDE_CONFIG_DIR}/plugins/topgauge/state/` —

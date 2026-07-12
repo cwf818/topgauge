@@ -1465,7 +1465,7 @@ function normalizeTick(
   // field computed above so a postmortem can confirm accTokenHitRate /
   // accTokenTotalIn pre-compute math at the source rather than chasing
   // it through the read path.
-  if (process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE === "1") {
+  if (process.env.TOPGAUGE_DIAGNOSTICS_ENABLE === "1") {
     appendDiag(
       "info",
       "smoke-normalizeTick",
@@ -1942,7 +1942,7 @@ export function processTick(
       const replay = replayAccInit(scope, replayArgs);
       if (replay) {
         mark(key, replay);
-        if (process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE === "1") {
+        if (process.env.TOPGAUGE_DIAGNOSTICS_ENABLE === "1") {
           appendDiag(
             "info",
             "replay-acc-init",

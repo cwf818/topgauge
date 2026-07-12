@@ -30,7 +30,7 @@ v0.4.x+ Per-Project Layout: every `<projectHash>/` subdirectory under
 
 - `cache.json` — the on-disk fetch cache (60s TTL)
 - `diagnostics.jsonl` — the persistent diagnostics log (only exists
-  when `TOPGAUGE_CC_DIAGNOSTICS_ENABLE=1` has been set)
+  when `TOPGAUGE_DIAGNOSTICS_ENABLE=1` has been set)
 - `*.jsonl` — the per-session token-sample files backing the
   `m_acc*` / `m_sum*` module family.
 

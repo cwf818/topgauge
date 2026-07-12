@@ -137,17 +137,17 @@ describe("diagnostics — v0.8.34 level + cap", () => {
   beforeEach(() => {
     sandbox = mkdtempSync(join(tmpdir(), "topgauge-q34-"));
     prevConfigDir = process.env.CLAUDE_CONFIG_DIR;
-    prevGate = process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE;
+    prevGate = process.env.TOPGAUGE_DIAGNOSTICS_ENABLE;
     process.env.CLAUDE_CONFIG_DIR = sandbox;
-    process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE = "1";
+    process.env.TOPGAUGE_DIAGNOSTICS_ENABLE = "1";
     __resetDedupeForTest();
   });
 
   afterEach(() => {
     if (prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
     else process.env.CLAUDE_CONFIG_DIR = prevConfigDir;
-    if (prevGate === undefined) delete process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE;
-    else process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE = prevGate;
+    if (prevGate === undefined) delete process.env.TOPGAUGE_DIAGNOSTICS_ENABLE;
+    else process.env.TOPGAUGE_DIAGNOSTICS_ENABLE = prevGate;
     rmSync(sandbox, { recursive: true, force: true });
   });
 

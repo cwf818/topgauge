@@ -986,7 +986,7 @@ export function formatStaleSuffix(
   return `${color}${emoji} ${label}${RESET}`;
 }
 
-// Read the configured display mode. The earlier TOPGAUGE_CC_DISPLAY env
+// Read the configured display mode. The earlier TOPGAUGE_DISPLAY env
 // var is gone (per the v0.2.0 config-file migration); anyone using it
 // must move to config.json's `display` field.
 export function resolveDisplayMode(): DisplayMode {
@@ -4776,7 +4776,7 @@ export function getFieldByPath(value: unknown, path: string): string | null {
 // yielded "" (the renderer treats an empty field as "miss").
 //
 // v0.8.20+ — every failure path appends a structured warning to
-// `diagnostics.jsonl` (gated on TOPGAUGE_CC_DIAGNOSTICS_ENABLE)
+// `diagnostics.jsonl` (gated on TOPGAUGE_DIAGNOSTICS_ENABLE)
 // so a postmortem can grep why the local QUOTES fallback fired.
 // The log row includes the address (truncated to keep the JSONL
 // row ~250B) and the reason token; the `source` field is
@@ -5913,7 +5913,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   m_sumTokenInSpeed: (params, ctx) => {
     const merged = mergePassThrough(params, ctx);
     const filter = parseWindowScope(ctx, merged);
-    if (process.env.TOPGAUGE_CC_DEBUG_SUMSPEED) {
+    if (process.env.TOPGAUGE_DEBUG_SUMSPEED) {
       // eslint-disable-next-line no-console
       console.error("[diag-renderer] m_sumTokenInSpeed params=", JSON.stringify(params), "filter=", filter);
     }

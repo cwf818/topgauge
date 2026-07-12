@@ -61,7 +61,7 @@ beforeEach(() => {
   _tmpDir = mkdtempSync(join(tmpdir(), "topgauge-replay-status-"));
   _stateRootDir = mkdtempSync(join(tmpdir(), "topgauge-replay-state-"));
   _prevConfigDir = process.env.CLAUDE_CONFIG_DIR;
-  _prevDiagEnv = process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE;
+  _prevDiagEnv = process.env.TOPGAUGE_DIAGNOSTICS_ENABLE;
   process.env.CLAUDE_CONFIG_DIR = _tmpDir;
   // Route JSONL sample IO to the test root; per-project subdirs
   // get auto-created via mkdirSync in appendSample.
@@ -76,8 +76,8 @@ beforeEach(() => {
 afterEach(() => {
   if (_prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
   else process.env.CLAUDE_CONFIG_DIR = _prevConfigDir;
-  if (_prevDiagEnv === undefined) delete process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE;
-  else process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE = _prevDiagEnv;
+  if (_prevDiagEnv === undefined) delete process.env.TOPGAUGE_DIAGNOSTICS_ENABLE;
+  else process.env.TOPGAUGE_DIAGNOSTICS_ENABLE = _prevDiagEnv;
   statusStore.resetStateRoot();
   statusStore.resetStatusPathResolver();
   statusStore.resetStatCachePathResolver();
@@ -314,7 +314,7 @@ describe("status-store — v0.8.29 cold-slot JSONL replay", () => {
   });
 
   // ----- 10. Diagnostics env-gate: replay writes row when enabled, silent when disabled -----
-  it("diagnostics: TOPGAUGE_CC_DIAGNOSTICS_ENABLE=1 writes replay-acc-init row; default off writes nothing", () => {
+  it("diagnostics: TOPGAUGE_DIAGNOSTICS_ENABLE=1 writes replay-acc-init row; default off writes nothing", () => {
     // Note: src/diagnostics.ts:53 has its OWN stateRoot() that reads
     // process.env.CLAUDE_CONFIG_DIR directly and appends a hardcoded
     // "plugins/topgauge/state/" segment. The setStateRoot hook in
@@ -337,7 +337,7 @@ describe("status-store — v0.8.29 cold-slot JSONL replay", () => {
     statusStore.resetTickStateForTest();
     statusStore.__resetStatCacheForTest();
 
-    process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE = "0";
+    process.env.TOPGAUGE_DIAGNOSTICS_ENABLE = "0";
     statusStore.appendSample("D:\\test", "sess-test", makeSample({ at: 1_000_001, in: 100, out: 50, apiMs: 1000, startAt: 50_000 }));
     statusStore.appendSample("D:\\test", "sess-test", makeSample({ at: 1_000_002, in: 200, out: 100, apiMs: 2000, startAt: 50_000 }));
     statusStore.processAndSaveTick("D:\\test", validTokens());
@@ -363,7 +363,7 @@ describe("status-store — v0.8.29 cold-slot JSONL replay", () => {
     statusStore.resetTickStateForTest();
     statusStore.__resetStatCacheForTest();
 
-    process.env.TOPGAUGE_CC_DIAGNOSTICS_ENABLE = "1";
+    process.env.TOPGAUGE_DIAGNOSTICS_ENABLE = "1";
     statusStore.appendSample("D:\\test", "sess-test", makeSample({ at: 1_000_001, in: 100, out: 50, apiMs: 1000, startAt: 50_000 }));
     statusStore.appendSample("D:\\test", "sess-test", makeSample({ at: 1_000_002, in: 200, out: 100, apiMs: 2000, startAt: 50_000 }));
     statusStore.processAndSaveTick("D:\\test", validTokens());
