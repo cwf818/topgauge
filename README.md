@@ -547,10 +547,9 @@ The host runs `ensureQuota` / `ensureBalance` on whatever the plugin returns, so
 
 ### Module tokens
 
-The line layout is declared as `statuslineTemplate` (v0.4.0+). **v0.8.14+ — `statuslineTemplate` accepts `string[]` (token list) or a `string` (a preset name from [Built-in presets](#built-in-presets) below).** The default is `["m_template|quota|type:quota", "m_template|balance|type:balance"]` — provider-type dispatch: the `quota` fragment renders on a Quota provider (MiniMax), the `balance` fragment renders on a BALANCE provider (DeepSeek), and the other is silently dropped. Use `m_template|<key>` to reference a [shipped fragment](#shipped-fragments-v0847) from `lineTemplates`, or write a raw token array.
+The line layout is declared as `statuslineTemplate`. It accepts `string[]` (token list) or a `string` (a preset name from [Built-in presets](#built-in-presets) below). The default is `["m_template|quota|type:quota", "m_template|balance|type:balance"]` — provider-type dispatch: the `quota` fragment renders on a Quota provider (MiniMax), the `balance` fragment renders on a BALANCE provider (DeepSeek), and the other is silently dropped. Use `m_template|<key>` to reference a [shipped fragment](#shipped-fragments) from `lineTemplates`, or write a raw token array.
 
-- For shared / reusable fragments, register them under `lineTemplates` and pull them into `statuslineTemplate` with `m_template|<key>[|type|<plan|balance>]`. See [`m_template`](#mtemplatekeytypeplnbalance-v040) below.
-- **v0.8.14+ auto-migration (legacy warning only):** legacy string-form `statuslineTemplate` values (`"1line"`, `"standard"`, etc., from v0.4.0–v0.8.13) are auto-migrated to the equivalent array form with a one-shot stderr warning. **The legacy preset names themselves (`_1line` / `_standard` / `_abundant` / `_balance_simple` / …) are no longer registered** — see [Built-in presets](#built-in-presets) for the current `simple` / `standard` / `abundant` top-level preset keys. To silence the warn, write the array form directly.
+- For shared / reusable fragments, register them under `lineTemplates` and pull them into `statuslineTemplate` with `m_template|<key>[|type|<plan|balance>]`. See [`m_template`](#mtemplatekeytypeplnbalance) below.
 
 The exhaustive module reference (per-module source fields, inline args, default placeholders, edge cases) lives at [MANUAL.md](./MANUAL.md). The summary table below lists every module with its rendered shape and family; cross-reference [MANUAL.md §3](./MANUAL.md#3-module-reference-m_) for full inline-args and behavior contracts.
 
@@ -559,7 +558,7 @@ Recognized modules:
 | Token | Renders | Notes |
 | ----- | ------- | ----- |
 | `m_modeLabel` | The leading prefix: `modeLabels.used` / `modeLabels.remaining` (plan) or `modeLabels.balance` (DeepSeek). | |
-| `m_windowQuota\|term:short\|mid\|long` | Interval bar + colored percentage, e.g. `▓▓▓░░░ 38%`. v0.8.28+ unifies the 5h/7d/30d windows under one module family. | |
+| `m_windowQuota\|term:short\|mid\|long` | Interval bar + colored percentage, e.g. `▓▓▓░░░ 38%`. Unifies the 5h/7d/30d windows under one module family. | |
 | `m_countdown\|term:short\|mid\|long` | Interval reset suffix: `(2h3m🕛 5h)` when reset time known, or `<label>:--` placeholder otherwise. | |
 | `m_quota\|term:short\|mid\|long` | Quota display, e.g. `quota(5h):100/500`. Reads the canonical `Interval.usedQuota` + `.limitQuota` the plugin ships. v0.8.28+ new. | |
 | `m_balance` | The DeepSeek balance chunk (e.g. `$25 · ￥110`), single SGR-wrapped block. | |
@@ -623,20 +622,21 @@ Two-class separator scheme — **first `|` separates parts**, **first `:` or `=`
 | ---------- | -------- | -------- | ----------- |
 | `m_label\|<text>` | `<text>` (literal) | `color`, `nulldrop` | Emit `<text>` verbatim. Escape a literal `\|` in the text with `s_pipe`. |
 | `m_modeLabel\|color:<c>` | — | `color`, `nulldrop` | Same as bare `m_modeLabel`, optionally tinted. |
-| `s_<n>\|color:<c>` | `<n>` (numeric index) | `color`, `repeat`, `wrap` | The separator at index `n`, optionally tinted / repeated / wrapped. |
 | `m_<name>\|...` | (any module-specific axes) | `color`, `nulldrop`, plus the per-module axes from MANUAL.md §1.1 | Tint the natural output of any module; per-module axes as documented. |
+
+Separators are bare names: `s_space`, `s_dot`, `s_newline`, `s_tab`, `s_colon`, `s_pipe`. Use `s_<name>|repeat:N` (1..8) to repeat, `s_<name>|wrap:<c>` to wrap. Numeric `s_<n>` and the legacy `separators` array are gone — use the named forms above.
 
 Rules:
 
-- The implicit-value slot (`<text>` for `m_label`, the template name for `m_template|<key>`, `<n>` for `s_<n>`) is `|`-bounded — the value can contain `:` or `=` freely.
+- The implicit-value slot (`<text>` for `m_label`, the template name for `m_template|<key>`) is `|`-bounded — the value can contain `:` or `=` freely.
 - Each subsequent pair is split on the **first** `:` or `=`; everything to the right is the value. So `color:red:blue` parses as `color = "red:blue"`, and `window:5h|align:true` parses as `window = "5h"` + `align = "true"`.
 - Unknown `name`, malformed pair (no `:`, no `=`, unknown name, resolver-rejected value) → dispatcher warns to stderr and drops the token (no partial render).
 - Order doesn't matter; duplicates keep the last.
-- Badarg values (e.g. `align|yes`, `scope|ccsession` after v0.8.35, `field|yes` after v0.8.18) drop the token with the standard one-shot warn — same discipline as a malformed pair.
+- Badarg values (e.g. `align|yes`, `field|yes`) drop the token with the standard one-shot warn — same discipline as a malformed pair.
 
 `<color>` accepts a shortcut name (`brightGreen`, `darkGreen`, `yellow`, `orange`, `red`, `stale`, `brightBlack`) or a raw SGR string (`\x1b[36m`). `m_quote` additionally accepts `rainbow` / `rand-rainbow` / `hue`.
 
-The bare forms (`m_modeLabel`, `s_0`, `m_windowQuota|term:short`, `m_tokenIn`, …) keep working exactly as before — the inline-args path only fires when the token contains `|`. So upgrading to v0.8.33 does NOT change the default `statuslineTemplate` output unless you explicitly opt in.
+The bare forms (`m_modeLabel`, `s_space`, `m_windowQuota|term:short`, `m_tokenIn`, …) keep working exactly as before — the inline-args path only fires when the token contains `|`.
 
 Examples:
 
@@ -660,37 +660,6 @@ Examples:
 }
 ```
 
-### Per-module `:color:` override
-
-Every existing module — `m_windowQuota|term:short`, `m_windowQuota|term:mid`, `m_countdown|term:short`, `m_countdown|term:mid`, `m_windowContext`, `m_windowMemUsage`, `m_balance`, `m_age`, `m_version`, `m_tokenIn`, `m_tokenOut`, `m_tokenHitRate`, `m_tokenCachedIn`, `m_tokenInSpeed`, `m_tokenOutSpeed`, plus the session-info modules (`m_session`, `m_model`, `m_effort`, `m_repo`, `m_ccVersion`, `m_sessionDuration`, `m_sessionApiDuration`, `m_linesAdded`, `m_linesRemoved`, `m_tokenInTotal`, `m_tokenTotalOut`, `m_contextSize`, `m_contextUsedPercent`, `m_contextRemainingPercent`, `m_contextWindowsSize`), plus the v0.8.0+ three-tuple families (`m_acc*` / `m_sum*`) — also accepts an optional `|color|<c>` segment. Two cases:
-
-- **Plain-text modules** (e.g. `m_version`, `m_tokenIn`, `m_countdown|term:short`): the override simply wraps the natural output in `<color>…<RESET>` SGR. The module's own body is unchanged.
-- **Already-colored modules** (e.g. `m_windowQuota|term:short`, `m_balance`, `m_tokenHitRate`, `m_tokenCachedIn`, `m_age`, `m_tokenInSpeed`, `m_tokenOutSpeed`): the override **replaces** the natural color choice — band-based, cache-hit-band, or fixed `stale` color — with your `<color>`. The user's color always wins; if you didn't say `|color:`, the module keeps its existing coloring and the default `statuslineTemplate` output is byte-for-byte identical.
-
-Conflict rule: **if a `|color:` is supplied, the natural color is ignored** (per your spec — "如果与现有颜色方案冲突，则无视该参数" — the override always wins when present).
-
-Examples:
-
-```jsonc
-{
-  "statuslineTemplate": [
-    "m_modeLabel|color:brightGreen",
-    "s_space",
-    "m_windowQuota|term:short|color:red",
-    "s_space", "m_countdown|term:short",
-    "s_space", "s_dot", "s_space",
-    "m_windowQuota|term:mid",
-    "s_space", "m_countdown|term:mid",
-    "s_space", "m_age|color:yellow",
-    "s_space", "m_tokenIn|color:darkGreen"
-  ]
-}
-```
-
-The bare forms (`m_windowQuota|term:short`, `m_age`, `m_tokenIn`, …) still go through the original `MODULES` path, so users on the default template see no diff on upgrade.
-
-**Extension point:** future parameterized modules (`m_model:…`, …) plug in by adding an entry to `INLINE_SCHEMAS` and `INLINE_RENDERERS` in `src/render.ts`. No new top-level config keys needed.
-
 ### Per-module `display` override (window modules only)
 
 The three window modules — `m_windowQuota|term:short`, `m_windowQuota|term:mid`, `m_windowContext`, `m_windowMemUsage` — accept an optional `|display|used` or `|display|remaining` segment. This is the **per-module** counterpart to the top-level `display` config field: it overrides which side of the bar gets colored and which percentage is shown, but only for the one module that uses it. The global config is untouched.
@@ -703,16 +672,16 @@ The three window modules — `m_windowQuota|term:short`, `m_windowQuota|term:mid
 | `m_windowContext\|display:used` / `display:remaining` | Same, for the context window. |
 | `m_windowMemUsage\|display:used` / `display:remaining` | Same, for the system RAM used bar. |
 
-The bare forms are byte-for-byte unchanged — the global `display` config (default `used`) still drives them. Combine with `|color:` for both axes:
+The bare forms are byte-for-byte unchanged — the global `display` config (default `used`) still drives them.
 
 ```jsonc
 {
   "statuslineTemplate": [
     "m_modeLabel", "s_space",
-    "m_windowQuota|term:short|display:remaining|color:yellow",
+    "m_windowQuota|term:short|display:remaining",
     "s_space", "m_countdown|term:short",
     "s_space", "s_dot", "s_space",
-    "m_windowQuota|term:mid|display:remaining|color:yellow",
+    "m_windowQuota|term:mid|display:remaining",
     "s_space", "m_countdown|term:mid"
   ]
 }
