@@ -151,6 +151,12 @@ describe("lineTemplate — unknown module token (vX.X.X+: literal pass-through)"
 });
 
 describe("lineTemplate — forced visibility of m_age on stale", () => {
+  beforeEach(() => {
+    // Pin minUnit='m' so the assertions like "⛓️‍💥 5m ago" stay
+    // stable — the tests pin exact minute-grain suffixes. The
+    // default minUnit='s' would emit "5m0s ago" instead.
+    __resetForTest({ timeFormat: { minUnit: "m", maxUnitCount: 2 } });
+  });
   it("appends the broken-chain suffix even when m_age is NOT in the template", () => {
     // Default plan template does NOT include m_age.
     const line = renderProviderLine("minimax", {
@@ -179,6 +185,8 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
         " ago", " ago", " ago",
         "m_windowQuota|term:mid", " ago", "m_countdown|term:mid",
       ],
+      // Preserve minute-grain suffix for the "5m ago" regex below.
+      timeFormat: { minUnit: "m", maxUnitCount: 2 },
     });
     try {
       const line = renderProviderLine("minimax", {
@@ -209,6 +217,9 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
         "m_windowQuota|term:mid", "s_space", "m_countdown|term:mid",
         "s_space", "m_age",
       ],
+      // Re-pin minute-grain suffixes — the describe-level beforeEach
+      // pin gets clobbered by this in-test __resetForTest.
+      timeFormat: { minUnit: "m", maxUnitCount: 2 },
     });
     try {
       const line = renderProviderLine("minimax", {
@@ -252,6 +263,8 @@ describe("lineTemplate — forced visibility of m_age on stale", () => {
         "m_windowQuota|term:short", "s_space", "m_countdown|term:short",
         "s_space", "m_age",
       ],
+      // Re-pin minute-grain suffixes for "<1m ago" assertion.
+      timeFormat: { minUnit: "m", maxUnitCount: 2 },
     });
     try {
       const line = renderProviderLine("minimax", {
@@ -1405,7 +1418,13 @@ describe("lineTemplate — plain-text modules :color override", () => {
 });
 
 describe("lineTemplate — colored modules :color override (user wins)", () => {
-  beforeEach(() => __resetUnknownModuleWarnForTest());
+  beforeEach(() => {
+    __resetUnknownModuleWarnForTest();
+    // Pin minUnit='m' for the m_age / m_windowQuota|term assertions
+    // — these tests pin exact minute-grain suffixes that would
+    // otherwise expand under the default minUnit='s'.
+    __resetForTest({ timeFormat: { minUnit: "m", maxUnitCount: 2 } });
+  });
   afterEach(() => __resetForTest());
 
   it("m_balance|color:red replaces the band-based color with red", () => {
@@ -1439,6 +1458,8 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
   it("m_age|color:red replaces STALE_COLOR with red", () => {
     __resetForTest({
       statuslineTemplate:["m_age|color:red"],
+      // Re-pin minute-grain suffix for "5m ago" assertion.
+      timeFormat: { minUnit: "m", maxUnitCount: 2 },
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),
@@ -1458,6 +1479,8 @@ describe("lineTemplate — colored modules :color override (user wins)", () => {
     // STALE_COLOR (\x1b[90m, gray).
     __resetForTest({
       statuslineTemplate:["m_age"],
+      // Re-pin minute-grain suffix for "5m ago" assertion.
+      timeFormat: { minUnit: "m", maxUnitCount: 2 },
     });
     const line = renderProviderLine("minimax", {
       mode: "used", nowMs: Date.now(),

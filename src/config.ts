@@ -173,8 +173,8 @@ type TimeFormat = {
   // are never rendered directly — when all remaining units collapse to
   // zero (or get truncated), the formatter falls back to "<1<minUnit>"
   // (positive remaining) or "0<minUnit>" (past-due).
-  //   "m" (default): sub-minute shows as "<1m".
-  //   "s":           sub-minute shows as actual seconds (e.g. "47s").
+  //   "m":           sub-minute shows as "<1m".
+  //   "s" (default): sub-minute shows as actual seconds (e.g. "47s").
   //   "h":           sub-hour shows as "<1h" (useful for windows where
   //                  minute-precision is noise — e.g. the weekly reset).
   minUnit: "m" | "s" | "h";
@@ -191,7 +191,7 @@ type TimeFormat = {
 };
 
 const DEFAULT_TIME_FORMAT: TimeFormat = {
-  minUnit: "m",
+  minUnit: "s",
   maxUnitCount: 2,
 };
 

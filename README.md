@@ -329,11 +329,11 @@ The `X ago` format uses the **same template as the reset countdown**:
 d/h/m units, `maxUnitCount=2` default, drop leading zeros but keep
 internal/trailing zeros. Sub-minute follows `timeFormat.minUnit`:
 `minUnit="m"` → `<1m ago`; `minUnit="s"` → `${seconds}s ago`. Examples
-(with default `minUnit="m"`):
+(with default `minUnit="s"`):
 
 | Cached age  | Rendered suffix        |
 | ----------- | ---------------------- |
-| 30 s        | `⛓️‍💥 <1m ago`          |
+| 30 s        | `⛓️‍💥 30s ago`          |
 | 5 min       | `⛓️‍💥 5m ago`           |
 | 90 min      | `⛓️‍💥 1h30m ago`         |
 | 24 h        | `⛓️‍💥 1d0h ago`          |

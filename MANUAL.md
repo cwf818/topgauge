@@ -141,9 +141,9 @@ Every key honored by the loader, with its type, default, and validator. Source-o
   // Top-level knobs governing ALL time rendering.
   "timeFormat": {
     // Smallest unit shown on time countdowns.
-    //   "m" (default): sub-minute shows as "<1m"
-    //   "s":           sub-minute shows as actual seconds (e.g. "47s")
-    "minUnit": "m",
+    //   "m":           sub-minute shows as "<1m"
+    //   "s" (default): sub-minute shows as actual seconds (e.g. "47s")
+    "minUnit": "s",
     // How many non-zero units to show. Clamped to [1, 4].
     //   1d2h3m4s → "1d2h"
     //   2h0m     → "2h0m"   (NOT "2h" — internal zeros preserved)

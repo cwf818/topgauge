@@ -286,6 +286,14 @@ describe("resolveDisplayMode", () => {
 });
 
 describe("formatLine — mode='used' (default)", () => {
+  // Pin minUnit='m' for this suite — the tests pin time strings
+  // that depend on minute-grain truncation (e.g. "1h0m" stays
+  // "1h0m" rather than expanding to "1h0m0s" under the default
+  // minUnit='s'). Each test's intent is the time-formatting rule,
+  // not the new default.
+  beforeEach(() => {
+    __resetForTest({ timeFormat: { minUnit: "m", maxUnitCount: 2 } });
+  });
   it("prefixes with 'Usage:' label by default", () => {
     const line = formatLine(legacyToIv({ pct: 38 }), legacyToIv({ pct: 60 }, "7d"));
     // m_modeLabel may carry an ANSI color (default `|color:yellow` is
@@ -331,6 +339,9 @@ describe("formatLine — mode='used' (default)", () => {
 });
 
 describe("formatLine — mode='used'", () => {
+  beforeEach(() => {
+    __resetForTest({ timeFormat: { minUnit: "m", maxUnitCount: 2 } });
+  });
   it("prefixes with 'Usage:' label", () => {
     const line = formatLine(legacyToIv({ pct: 70 }), legacyToIv({ pct: 90 }, "7d"), null, "used");
     // m_modeLabel may carry an ANSI color (default `|color:yellow` is
@@ -396,6 +407,9 @@ describe("formatLine — mode='used'", () => {
 });
 
 describe("formatLine — reset suffix integration", () => {
+  beforeEach(() => {
+    __resetForTest({ timeFormat: { minUnit: "m", maxUnitCount: 2 } });
+  });
   it("appends reset countdown + arrow + label inside parens, no slash", () => {
     const now = Date.parse("2026-06-24T12:00:00Z");
     const line = formatLine(
@@ -437,6 +451,14 @@ describe("formatLine — reset suffix integration", () => {
 });
 
 describe("formatResetSuffix", () => {
+  beforeEach(() => {
+    // Pin minUnit='m' for this suite — the tests pin exact strings
+    // (e.g. "5m" for 5min, "<1m" for sub-minute) that depend on
+    // minute-grain truncation. The default minUnit='s' would
+    // produce "5m0s" / "30s" instead, which is what the inner
+    // describe("minUnit='s' (second granularity)") tests cover.
+    __resetForTest({ timeFormat: { minUnit: "m", maxUnitCount: 2 } });
+  });
   const NOW = Date.parse("2026-06-24T12:00:00Z");
   const at = (offsetMs: number) => new Date(NOW + offsetMs).toISOString();
 
@@ -2008,6 +2030,9 @@ describe("m_quota band color (vX.X.X+)", () => {
 });
 
 describe("formatStaleSuffix", () => {
+  beforeEach(() => {
+    __resetForTest({ timeFormat: { minUnit: "m", maxUnitCount: 2 } });
+  });
   it("returns empty only for non-finite ageMs; ageMs = 0 renders the X-ago label", () => {
     // v0.4.0: formatStaleSuffix no longer short-circuits on ageMs <= 0.
     // It now always falls through to formatRemainingMs so a stale-on-
@@ -2082,6 +2107,9 @@ describe("formatStaleSuffix", () => {
 });
 
 describe("formatLine — stale suffix integration", () => {
+  beforeEach(() => {
+    __resetForTest({ timeFormat: { minUnit: "m", maxUnitCount: 2 } });
+  });
   it("appends the stale suffix with broken emoji when stale=true", () => {
     const line = formatLine(
       legacyToIv({ pct: 38, resetAt: null }),
@@ -2153,6 +2181,9 @@ describe("formatLine — stale suffix integration", () => {
 });
 
 describe("formatBalanceLine — stale suffix integration", () => {
+  beforeEach(() => {
+    __resetForTest({ timeFormat: { minUnit: "m", maxUnitCount: 2 } });
+  });
   it("appends the stale suffix with broken emoji when stale=true", () => {
     const line = formatBalanceLine(
       { isAvailable: true, entries: [{ currency: "CNY", totalBalance: 110, label: "￥" }], minValue: 110 },

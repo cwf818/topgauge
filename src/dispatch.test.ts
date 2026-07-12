@@ -123,6 +123,10 @@ describe("buildProviderLine — fresh (no age suffix; data just arrived)", () =>
         "m_windowQuota|term|short", "s_space", "m_countdown|term|short",
         "s_space", "m_age",
       ],
+      // Preserve minute-grain suffix so "<1m ago" matches under
+      // the default minUnit='s' (which would emit "30s ago"
+      // instead). Same pin as pinDefaults() carries.
+      timeFormat: { minUnit: "m", maxUnitCount: 2 },
     });
     try {
       const result: FetchResult<Quota> = {

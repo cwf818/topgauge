@@ -1493,6 +1493,14 @@ describe("renderTemplate — m_token* modules", () => {
 
 describe("renderTemplate — v0.8.0+ m_apiMs per-turn delta", () => {
   beforeEach(() => {
+    // Pin minUnit='m' for this suite — the tests pin exact 1m/90s
+    // deltas that round to "1m" only when seconds are dropped.
+    // The default minUnit='s' (since v0.9.x) would render these
+    // as "1m30s"; that's a valid render under the new default
+    // but isn't what these specific tests are checking.
+    __resetForTest({
+      timeFormat: { minUnit: "m", maxUnitCount: 2 },
+    });
     __resetPrevTickForTest("any-session");
   });
 
@@ -1891,6 +1899,13 @@ describe("renderTemplate — newline separator (vX.X.X+ multi-line layout)", () 
 
 // ----- v0.4.0+ session-info / metadata modules -----
 describe("renderTemplate — v0.4.0+ session-info modules", () => {
+  beforeEach(() => {
+    // Pin minUnit='m' — the m_sessionDuration / m_sessionApiDuration
+    // assertions pin exact minute-grain strings (e.g. "10m" for
+    // 600_000ms) that the default minUnit='s' would expand to
+    // "10m0s".
+    __resetForTest({ timeFormat: { minUnit: "m", maxUnitCount: 2 } });
+  });
   it("m_session| bare 'strip-diagnostics-display'", () => {
     const out = renderTemplate(["m_session"], ctxFor(fakeSnapshot())).join("\n");
     assert.equal(strip(out), "strip-diagnostics-display");
@@ -3021,6 +3036,14 @@ describe("renderTemplate — :nulldrop inline override (v0.4.0+)", () => {
 //      "this is a stale measurement from a previous API call".
 
 describe("renderTemplate — m_tokenInSpeed / m_tokenOutSpeed cache + scale (v0.4.0+)", () => {
+  beforeEach(() => {
+    // Pin minUnit='m' — the suite's m_apiMs assertions pin exact
+    // minute-grain suffixes (e.g. "1m" for 90s deltas, "<1m" for
+    // sub-minute). The default minUnit='s' would expand these to
+    // "1m30s" / "30s" — separate coverage lives in the
+    // m_apiMs per-turn delta suite's inner describe.
+    __resetForTest({ timeFormat: { minUnit: "m", maxUnitCount: 2 } });
+  });
   // ----- 5-band scale coloring on active ticks -----
 
   it("m_tokenInSpeed| 0.6 t/s → red (slowest band, < 50)", () => {
@@ -4329,6 +4352,9 @@ describe("renderTemplate — v0.8.0+ m_acc* modules (three-scope accumulators)",
     // contract (sedder 60_000 + first-tick fallback = 63_100),
     // because all three surviving scopes DELTA-ACCUMULATE the
     // same scalar under the unified contract.
+    // Pin minute-grain so "api:1m" matches — the default minUnit='s'
+    // would emit "api:1m0s" instead.
+    __resetForTest({ timeFormat: { minUnit: "m", maxUnitCount: 2 } });
     setAvg(
       "sess-acc-api",
       { accTokenIn: 0, accTokenOut: 0, accApiMs: 60_000, accTokenCachedIn: 0, accApiCalls: 1 , accTokenTotalIn: 0, accTokenHitRate: 0 },
@@ -5302,6 +5328,9 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     // but 120s renders as "2m" only if maxUnitCount=2 — actually
     // 120s collapses to "2m" via formatRemainingMs's "single-unit
     // 60+ ms → round up" rule).
+    // Pin minute-grain — under the default minUnit='s', 120s would
+    // emit "api:2m0s" instead.
+    __resetForTest({ timeFormat: { minUnit: "m", maxUnitCount: 2 } });
     const stateRootDir = join(_tmpDir, "sum-fixture-sumapims");
     setStateRoot(() => stateRootDir);
     const projHash = "d--sum-api";

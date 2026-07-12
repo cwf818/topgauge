@@ -267,6 +267,14 @@ if [ "$DRY_RUN" = 1 ]; then
     echo "  would write:   ${UPSTREAM_CMD_FILE}"
     echo "  original cmd:  ${ORIGINAL_CMD}"
   fi
+  if [ "$INSTALL_MODE" = "fresh" ]; then
+    SEED_TARGET="${CLAUDE_ROOT}/plugins/topgauge/config.json"
+    if [ ! -f "$SEED_TARGET" ]; then
+      echo "  would seed:    ${SEED_TARGET} (statuslineTemplate=abundant, providers={}, labels glyph overrides)"
+    else
+      echo "  would keep:    ${SEED_TARGET} (already present)"
+    fi
+  fi
   echo "  new statusLine command will set TOPGAUGE_UPSTREAM_CMD to:"
   if [ "$INSTALL_MODE" = "replace" ]; then
     echo "    ${UPSTREAM_CMD_FILE}"
@@ -295,7 +303,48 @@ if [ "$INSTALL_MODE" = "replace" ]; then
   else
     echo "install.sh: preserved existing upstream command at ${UPSTREAM_CMD_FILE}"
   fi
-  echo "install.sh: backed up ${TARGET} -> ${TARGET}.bak.${TS}"
+  echo "install.sh: backed up ${TARGET} -> ${TARGET}.bak.<TS>"
+fi
+
+# Fresh-install seed: drop a basic config.json so a brand-new user
+# gets the rich `abundant` preset out of the box (instead of having to
+# hand-edit the file before the statusline shows the kitchen-sink
+# layout). Skipped on `replace` so an existing user's config.json is
+# never clobbered by an upgrade — re-running :install is idempotent
+# and only writes the file when it's missing. Idempotent: the seed
+# step is gated on `fresh` mode AND on a missing config.json, so the
+# only path that creates the file is "first-time install on a system
+# that has never had a config.json".
+#
+# The seed pins the 8 labels that match the abundant preset's
+# per-turn / acc / sum token modules. The remaining 14 label axes
+# (context-*, memUsage, startTime, endTime, quota, cost, plugin-*,
+# labelTokenTotalOut, labelApiMs) inherit DEFAULT_CONFIG defaults —
+# callers who add `m_memUsage` / `m_quota` etc. get the canonical
+# `Mem:` / `quota:` prefixes for free.
+if [ "$INSTALL_MODE" = "fresh" ]; then
+  SEED_DIR="${CLAUDE_ROOT}/plugins/topgauge"
+  SEED_FILE="${SEED_DIR}/config.json"
+  if [ ! -f "$SEED_FILE" ]; then
+    mkdir -p "$SEED_DIR"
+    cat > "$SEED_FILE" <<'SEED_EOF'
+{
+  "statuslineTemplate": "abundant",
+  "providers": {},
+  "labels": {
+    "labelTokenIn":        "↓",
+    "labelTokenOut":       "↑",
+    "labelTokenInSpeed":   "↓",
+    "labelTokenOutSpeed":  "↑",
+    "labelTokenCachedIn":  "⧉ ",
+    "labelTokenHitRate":   "⦿ ",
+    "labelApiCalls":       "⎌ ",
+    "labelTokenTotalIn":   "⌬ "
+  }
+}
+SEED_EOF
+    echo "install.sh: seeded basic config at ${SEED_FILE}"
+  fi
 fi
 
 node "$HELPER" "$WIN_TARGET" write-managed "$WIN_WRAPPER" "$WIN_UPSTREAM"
