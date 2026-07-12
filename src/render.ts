@@ -2116,7 +2116,11 @@ m_quota: Object.assign(
   m_tokenHitRate: (c) => {
     // vX.X.X+ — |valueOnly|true drops the "hit:" prefix from
     // every branch (cached fallback, idle-stale, live, zero).
-    const prefix = c.passThrough?.valueOnly === "true" ? "" : "hit:";
+    // v0.9.x — prefix routes through labels.labelTokenHitRate
+    // (was hardcoded literal "hit:" in v0.8.x). placeholderBare
+    // path already goes through labelFor("hitRate") so the
+    // data path catches up here.
+    const prefix = c.passThrough?.valueOnly === "true" ? "" : labelFor("hitRate");
     const t = c.tokens;
     if (!t) return placeholderBare("m_tokenHitRate", c);
     const total = t.totals?.tokenTotalIn;
@@ -2466,13 +2470,17 @@ m_quota: Object.assign(
   // (data-processor pre-computes at setAvg time).
   m_accTokenHitRate: (c) => {
     // vX.X.X+ — |valueOnly|true drops the "hit:" prefix.
+    // v0.9.x — prefix routes through labels.labelTokenHitRate
+    // (was hardcoded literal "hit:" in v0.8.x). placeholderAcc
+    // path already goes through labelFor("hitRate") so the
+    // data path catches up here.
     const stripLabel = c.passThrough?.valueOnly === "true";
     const useScope = passThroughScope(c) ?? "session";
     const v = peekAcc(useScope, c);
     if (!v) return placeholderAcc("hitRate", useScope, stripLabel);
     const pct = v.accTokenHitRate;
     const color = cacheHitColor(pct);
-    const prefix = stripLabel ? "" : "hit:";
+    const prefix = stripLabel ? "" : labelFor("hitRate");
     return `${color}${prefix}${pct.toFixed(cachePctPrecision())}%${RESET}`;
   },
   // v0.8.24+ — start of the tick statistics window. Reads
@@ -2619,7 +2627,9 @@ m_quota: Object.assign(
     if (agg.rows === 0 || denom === 0) return placeholderBare("m_sumTokenHitRate", c);
     const pct = (agg.sumCached / denom) * 100;
     // vX.X.X+ — |valueOnly|true drops the "hit:" prefix.
-    const prefix = c.passThrough?.valueOnly === "true" ? "" : "hit:";
+    // v0.9.x — prefix routes through labels.labelTokenHitRate
+    // (was hardcoded literal "hit:" in v0.8.x).
+    const prefix = c.passThrough?.valueOnly === "true" ? "" : labelFor("hitRate");
     return `${cacheHitColor(pct)}${prefix}${pct.toFixed(cachePctPrecision())}%${RESET}`;
   },
   m_sumTokenInSpeed: (c) => {
@@ -5736,7 +5746,9 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   // m_accTokenHitRate.
   m_tokenHitRate: (params, ctx) => {
     // vX.X.X+ — |valueOnly|true drops the "hit:" prefix.
-    const prefix = params.valueOnly === "true" ? "" : "hit:";
+    // v0.9.x — prefix routes through labels.labelTokenHitRate
+    // (was hardcoded literal "hit:" in v0.8.x).
+    const prefix = params.valueOnly === "true" ? "" : labelFor("hitRate");
     const t = ctx.tokens;
     if (!t) return placeholderWithColor("m_tokenHitRate", params, ctx);
     const total = t.totals?.tokenTotalIn;
@@ -5985,7 +5997,9 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const pct = v.accTokenHitRate;
     const color = passThroughOr<string>(params, ctx, "color") ?? cacheHitColor(pct);
     // vX.X.X+ — |valueOnly|true drops the "hit:" prefix.
-    const prefix = passThroughOr<string>(params, ctx, "valueOnly") === "true" ? "" : "hit:";
+    // v0.9.x — prefix routes through labels.labelTokenHitRate
+    // (was hardcoded literal "hit:" in v0.8.x).
+    const prefix = passThroughOr<string>(params, ctx, "valueOnly") === "true" ? "" : labelFor("hitRate");
     return `${color}${prefix}${pct.toFixed(cachePctPrecision())}%${RESET}`;
   },
   // v0.8.24+ — start of the tick statistics window. Inline form
@@ -6107,7 +6121,9 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     if (agg.rows === 0 || denom === 0) return placeholderWithColor("m_sumTokenHitRate", params, ctx);
     const pct = (agg.sumCached / denom) * 100;
     // vX.X.X+ — |valueOnly|true drops the "hit:" prefix.
-    const prefix = passThroughOr<string>(params, ctx, "valueOnly") === "true" ? "" : "hit:";
+    // v0.9.x — prefix routes through labels.labelTokenHitRate
+    // (was hardcoded literal "hit:" in v0.8.x).
+    const prefix = passThroughOr<string>(params, ctx, "valueOnly") === "true" ? "" : labelFor("hitRate");
     return `${cacheHitColor(pct)}${prefix}${pct.toFixed(cachePctPrecision())}%${RESET}`;
   },
   m_sumTokenInSpeed: (params, ctx) => {

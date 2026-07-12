@@ -5648,6 +5648,64 @@ describe("renderTemplate — v0.8.0+ labels.* config customization", () => {
     assert.match(strip(out), /^Mem:(n\/a|\d.*)$/);
   });
 
+  // v0.9.x — labelTokenHitRate override reaches all three hit-rate
+  // modules (per-turn / acc / sum). v0.8.22 added labelTokenHitRate
+  // and routed the placeholder path through labelFor("hitRate"),
+  // but the three LIVE-DATA paths kept a hardcoded "hit:" literal —
+  // so a `labels.labelTokenHitRate` override surfaced only on
+  // placeholder renders (e.g. before the first hit-rate tick), and
+  // the actual hit-rate number still rendered with the default
+  // prefix. This pins the live-data paths to labelFor("hitRate")
+  // matching the placeholder contract.
+  it("labelTokenHitRate override reaches m_tokenHitRate / m_accTokenHitRate / m_sumTokenHitRate", () => {
+    setStateRoot(() => join(_tmpDir, "labels-labelTokenHitRate"));
+    withLabels({ labelTokenHitRate: "HR:" }, () => {
+      const snap = fakeSnapshot({ sessionId: "label-hitr" });
+      processTick(snap.cwd, snap);
+      statusStore.commit();
+      const perTurn = renderTemplate(
+        ["m_tokenHitRate"],
+        ctxFor(snap),
+      ).join("\n");
+      const acc = renderTemplate(
+        ["m_accTokenHitRate"],
+        ctxFor(snap),
+      ).join("\n");
+      // m_sumTokenHitRate with empty state → placeholder (uses
+      // labelFor("hitRate") already — this asserts the live-data
+      // branch in a different cwd's sum scan).
+      const sumCtx = ctxFor(
+        fakeSnapshot({ sessionId: "label-hitr-sum", cwd: "D:\\label-hitr-sum" }),
+      );
+      const sum = renderTemplate(
+        ["m_sumTokenHitRate|nulldrop:false"],
+        sumCtx,
+      ).join("\n");
+      assert.match(strip(perTurn), /^HR:\d/);
+      assert.match(strip(acc), /^HR:\d/);
+      // Empty-state sum path → "HR:n/a%" placeholder.
+      assert.match(strip(sum), /^HR:n\/a%$/);
+    });
+  });
+
+  it("labelTokenHitRate default is 'hit:' byte-identically", () => {
+    // No override — defaults must reproduce the v0.8.x literal
+    // "hit:" so existing renders stay byte-identical after upgrade.
+    const snap = fakeSnapshot({ sessionId: "label-hitr-default" });
+    processTick(snap.cwd, snap);
+    statusStore.commit();
+    const perTurn = renderTemplate(
+      ["m_tokenHitRate"],
+      ctxFor(snap),
+    ).join("\n");
+    const acc = renderTemplate(
+      ["m_accTokenHitRate"],
+      ctxFor(snap),
+    ).join("\n");
+    assert.match(strip(perTurn), /^hit:\d/);
+    assert.match(strip(acc), /^hit:\d/);
+  });
+
   // v0.8.23+ — context-window prefix axes. Defaults preserve the
   // v0.8.22 hardcoded literals ("size:" / "size:" / "used:" /
   // "remain:") so existing renders stay byte-identical until the
