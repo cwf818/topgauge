@@ -34,19 +34,19 @@ export const VALID_COMPARE_METHODS: ReadonlySet<CompareMethod> = new Set([
   "STARTWITH",
 ]);
 
-const MINIMAX_DEFAULT_INTERVALS: IntervalConfig = {
-  shortInterval: {
-    remainingPercent: "model_remains.0.current_interval_remaining_percent",
-    startAt: "model_remains.0.start_time",
-    endAt: "model_remains.0.end_time",
-  },
-  midInterval: {
-    remainingPercent: "model_remains.0.current_weekly_remaining_percent",
-    startAt: "model_remains.0.weekly_start_time",
-    endAt: "model_remains.0.weekly_end_time",
-  },
-  longInterval: {},
-};
+// v0.9.x — built-in provider path-expression defaults REMOVED.
+// `MINIMAX_DEFAULT_INTERVALS` previously shipped implicit
+// `model_remains.0.current_interval_remaining_percent` paths for
+// the bundled `minimax` provider, on the assumption that the
+// minimax built-in would read raw responses via these paths. The
+// v0.9.0+ plugin contract moved parsing INTO each provider's
+// `fillQuota` (plugins return canonical Quota / Balance objects
+// already populated), so the host's path-expression layer is no
+// longer wired into the built-in flow. Path expressions still
+// resolve (parsers.ts / path-expr.ts are alive for legacy /
+// third-party users who want to drive their own plugin via
+// config), but no default mappings ship out of the box. Add
+// explicit `intervals: { ... }` if your plugin needs them.
 
 const GLOBAL_DEFAULT_INTERVALS: IntervalConfig = {
   shortInterval: {
@@ -72,11 +72,6 @@ const GLOBAL_DEFAULT_INTERVALS: IntervalConfig = {
   },
 };
 
-const BUILTIN_PROVIDER_INTERVALS: Record<string, IntervalConfig> = {
-  minimax: MINIMAX_DEFAULT_INTERVALS,
-  deepseek: {},
-};
-
 const BUILTIN_PROVIDER_CURRENCIES: Record<string, CurrenciesConfig> = {
   deepseek: {
     CNY: { label: "￥", totalBalance: "balance_infos.0.total_balance" },
@@ -91,7 +86,7 @@ function hasAnyField(slot: IntervalSlotConfig | undefined): boolean {
 }
 
 export function resolveEffectiveIntervalsPure(
-  activeProviderId: string,
+  _activeProviderId: string,
   entry: ProviderEntry | null,
   top: IntervalConfig,
 ): IntervalConfig {
@@ -100,12 +95,9 @@ export function resolveEffectiveIntervalsPure(
     midInterval: { ...GLOBAL_DEFAULT_INTERVALS.midInterval },
     longInterval: { ...GLOBAL_DEFAULT_INTERVALS.longInterval },
   };
-  const builtin = BUILTIN_PROVIDER_INTERVALS[activeProviderId];
-  if (builtin) {
-    if (hasAnyField(builtin.shortInterval)) out.shortInterval = { ...builtin.shortInterval };
-    if (hasAnyField(builtin.midInterval)) out.midInterval = { ...builtin.midInterval };
-    if (hasAnyField(builtin.longInterval)) out.longInterval = { ...builtin.longInterval };
-  }
+  // Two layers remain (top-level + per-entry overrides). The
+  // built-in provider layer was removed in v0.9.x (see the block
+  // comment above GLOBAL_DEFAULT_INTERVALS).
   if (top) {
     if (hasAnyField(top.shortInterval)) out.shortInterval = { ...top.shortInterval };
     if (hasAnyField(top.midInterval)) out.midInterval = { ...top.midInterval };

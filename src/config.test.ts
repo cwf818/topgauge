@@ -50,11 +50,26 @@ describe("provider defaults", () => {
 });
 
 describe("provider mapping resolvers", () => {
-  it("keeps built-in MiniMax interval mappings", () => {
+  // v0.9.x — built-in default interval mappings REMOVED. The
+  // minimax built-in plugin owns its own fillQuota() and doesn't
+  // read ctx.intervals, so the host-side path-expression layer is
+  // inert for built-ins. resolveEffectiveIntervals now returns
+  // GLOBAL_DEFAULT_INTERVALS path-only defaults (which still
+  // exist for plugin authors who want to drive their own plugin
+  // via config — see path-expr.ts). Built-in plugins return
+  // canonical Quota objects directly, bypassing this layer.
+  it("ships no built-in default interval mappings for minimax", () => {
     const entry = configStore.get().providers.minimax;
     const intervals = resolveEffectiveIntervals("minimax", entry);
-    assert.equal(intervals.shortInterval?.remainingPercent, "model_remains.0.current_interval_remaining_percent");
-    assert.equal(intervals.midInterval?.remainingPercent, "model_remains.0.current_weekly_remaining_percent");
+    // No path-expr mapping was baked in — only the global label
+    // / windowId keys remain. remainingPercent is the bare
+    // "shortInterval.remainingPercent" (identity, set by the
+    // global defaults) — proving nothing provider-specific was
+    // layered on top.
+    assert.equal(intervals.shortInterval?.remainingPercent, "shortInterval.remainingPercent");
+    assert.equal(intervals.midInterval?.remainingPercent, "midInterval.remainingPercent");
+    assert.equal(intervals.shortInterval?.windowId, "5h");
+    assert.equal(intervals.midInterval?.windowId, "7d");
   });
 
   it("keeps the DeepSeek CNY currency mapping", () => {

@@ -164,8 +164,8 @@ Both endpoints are called with `Authorization: Bearer $ANTHROPIC_AUTH_TOKEN` —
 ### MiniMax token-plan line
 
 <pre>
- Usage: ▓▓▓▓▓░░░ 38% (47m🕖 5h) · ▓▓▓░░░░░ 39% (4d47m🕓 7d)
-Remain: ░░░░░▓▓ 62% (47m🕖 5h) · ░░░▓▓▓▓ 61% (4d47m🕓 7d)
+ Usage: ▓▓▓░░░░░ 38% (47m🕖 5h) · ▓▓▓░░░░░ 39% (4d47m🕓 7d)
+Remain: ░░░▓▓▓▓▓ 62% (47m🕖 5h) · ░░░▓▓▓▓▓ 61% (4d47m🕓 7d)
 </pre>
 
 Two windows (5-hour + weekly), split-bar with colored percentage, reset
@@ -562,15 +562,14 @@ Anything not mapped resolves to `null`, and the renderer treats `null` as "no da
 
 #### Default MiniMax mapping
 
-The shipped `minimax` provider uses this default `intervals` block (you only need to override it if your account exposes differently-named fields, which today is not the case for any user — this is purely a future-proofing hook):
+**v0.9.x change:** the host-side `intervals` defaults for the bundled `minimax` provider were removed. Built-in plugins own their own parsing — `src/plugins/minimax/index.js` does the `model_remains[]` projection to canonical `Quota` numbers directly, and the host's path-expression layer is no longer wired into the built-in flow. Path expressions still **resolve** (the `intervals` config block + `path-expr.ts` resolver are alive for user-plugin authors who DO want to drive their plugin via path strings), but **nothing ships out of the box** — if you write a custom plugin and want path-driven defaults, declare them in your provider's `intervals` block.
+
+If you need the legacy path-expression mapping as a reference (e.g. to seed your own user-plugin's `intervals` block), the old defaults were:
 
 ```jsonc
 {
   "providers": {
     "minimax": {
-      "TYPE": "QUOTA",
-      "BASE_URL_COMPARED_TO": "https://api.minimaxi.com/anthropic",
-      "COMPARE_METHOD": "EXACT",
       "intervals": {
         "shortInterval": {
           "remainingPercent": "model_remains.0.current_interval_remaining_percent",
@@ -589,9 +588,7 @@ The shipped `minimax` provider uses this default `intervals` block (you only nee
 }
 ```
 
-Note the **derivation** at work: only `remainingPercent` is mapped; the plugin derives `usedPercent` via `100 - x`. If your account exposes a `used_percent` field directly, map `usedPercent` instead and skip the derivation.
-
-The parser also picks the **most-active** model from the `model_remains[]` array (lowest `remainingPercent`, or highest `usedPercent` when that's what the user mapped). `model_name` and the per-model `*_total_count` / `*_usage_count` fields from earlier drafts are intentionally NOT in the slot map — they were never used by the renderer.
+Note the **derivation** at work: only `remainingPercent` is mapped; the parser derives `usedPercent` via `100 - x`. If your account exposes a `used_percent` field directly, map `usedPercent` instead and skip the derivation.
 
 #### Path-expression grammar
 
@@ -1449,8 +1446,6 @@ The MiniMax parser reads from the `intervals.<term>.<field>` slot map (see [Well
    1. **Path** — `intervals.<term>.intervalMs` / `intervalS` (seconds are multiplied by 1000).
    2. **Numeric parse** — if the path resolved to a string-shaped number, coerce to finite number.
    3. **Keyword lookup** — if both fail, probe the root response for `hour` / `fiveHour` / `day` / `sevenDay` / `week` / `month` / `year` in that order, multiplying by the canonical ms-per-unit (3600000 / 18000000 / 86400000 / 604800000 / 2592000000 / 31536000000).
-
-The `intervals` config is keyed by **term** (`shortInterval` / `midInterval` / `longInterval`), NOT by window-id (`5h` / `7d` / `30d`). The default MiniMax mapping (see [Default MiniMax mapping](#default-minimax-mapping) above) wires `shortInterval` to `current_interval_remaining_percent` + `start_time` + `end_time`, and `midInterval` to `current_weekly_remaining_percent` + `weekly_start_time` + `weekly_end_time`.
 
 If `base_resp.status_code ≠ 0`, the response is treated as failure and the line is omitted.
 

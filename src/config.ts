@@ -848,11 +848,11 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
   // `shortInterval` / `midInterval` / `longInterval`. Per-interval
   // slot validation mirrors the per-provider `intervals` validator
   // (shared `validateIntervalSlot` helper below). Built-in
-  // provider defaults (minimax / deepseek) are applied at FETCH
-  // TIME in resolveEffectiveIntervals, NOT here — top-level
-  // defaults start empty so the global layer is just a placeholder
-  // today. See the 4-layer merge block above MINIMAX_DEFAULT_INTERVALS
-  // for the full contract.
+  // provider defaults (minimax / deepseek) were REMOVED in
+  // v0.9.x — plugins own their own parsing now, so the host-side
+  // defaults are empty. The remaining 3-layer merge (global +
+  // top-level config + per-entry override) lives in
+  // resolveEffectiveIntervalsPure.
   if ("intervals" in raw) {
     const ivRaw = raw.intervals;
     if (!ivRaw || typeof ivRaw !== "object" || Array.isArray(ivRaw)) {
@@ -876,8 +876,10 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
   // .0.total_balance) are applied at FETCH TIME in
   // resolveEffectiveCurrencies, NOT here — top-level defaults start
   // empty so the global layer is just a placeholder today. See the
-  // 4-layer merge block above MINIMAX_DEFAULT_INTERVALS for the
-  // parallel intervalsConfig contract.
+  // 3-layer merge block above GLOBAL_DEFAULT_INTERVALS for the
+  // parallel intervalsConfig contract (note: v0.9.x dropped the
+  // built-in interval defaults that used to live in the 4-layer
+  // version).
   if ("currencies" in raw) {
     const curRaw = raw.currencies;
     if (!curRaw || typeof curRaw !== "object" || Array.isArray(curRaw)) {

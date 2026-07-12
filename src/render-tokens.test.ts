@@ -4872,9 +4872,13 @@ describe("renderTemplate — v0.8.0+ m_sum*/m_avg* advanced statistics", () => {
     // (free-form dhms) and lands on the wall-clock
     // `ctx.nowMs - 1d1h` sinceMs. The seed row is at
     // `now - 1h` so it falls inside the 25h window and counts.
-    // Configured interval defaults from MINIMAX_DEFAULT_INTERVALS
-    // ("5h" / "7d" / "30d") don't collide with "1d1h" because the
-    // resolver treats them as different strings.
+    // Configured interval defaults ("5h" / "7d" / "30d",
+    // GLOBAL_DEFAULT_INTERVALS in config.providers.ts) don't
+    // collide with "1d1h" because the resolver treats them as
+    // different strings. (v0.9.x — the per-provider
+    // MINIMAX_DEFAULT_INTERVALS layer that used to live here is
+    // gone; the only windowId-bearing defaults are now the
+    // global layer.)
     const stateRootDir = join(_tmpDir, "sum-fixture-window");
     setStateRoot(() => stateRootDir);
     const projHash = "d--sum-w";
