@@ -2164,6 +2164,109 @@ describe("m_template agnostic — end-to-end on unknown provider (v0.8.47+)", ()
     );
   });
 });
+
+// v0.9.0+ — `m_template|<key>|provider:<id>` gates a fragment to ONE
+// specific provider instance (distinct from `type:quota` / `type:balance`
+// which gate by provider CATEGORY). Absent → renders on every
+// provider (provider-agnostic). Present → strict-match against
+// ctx.currentProvider.
+describe("m_template — provider gate: instance-level filter (v0.9.0+)", () => {
+  beforeEach(() => {
+    __resetForTest();
+  });
+  afterEach(() => __resetForTest());
+
+  it("|provider:minimax drops the fragment on a non-minimax provider", () => {
+    // `m_template|gated|provider:minimax` should render the inner
+    // body when ctx.currentProvider === "minimax" and DROP when it
+    // doesn't match.
+    __resetForTest({
+      statuslineTemplate: ["m_template|gated|provider:minimax"],
+      lineTemplates: {
+        gated: ["m_modeLabel", "s_space", "m_label|hello"],
+      },
+    });
+    try {
+      const matching = renderProviderLine("minimax", {
+        mode: "used", nowMs: Date.now(),
+        shortInterval: null, midInterval: null, longInterval: null,
+        balance: null,
+        ageMs: null, stale: false, version: "",
+      });
+      assert.ok(
+        strip(matching).includes("hello"),
+        `provider match should render inner body, got: ${matching}`,
+      );
+
+      const dropping = renderProviderLine("deepseek", {
+        mode: "used", nowMs: Date.now(),
+        shortInterval: null, midInterval: null, longInterval: null,
+        balance: null,
+        ageMs: null, stale: false, version: "",
+      });
+      assert.ok(
+        !strip(dropping).includes("hello"),
+        `provider mismatch should drop inner body, got: ${dropping}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("|provider absent → renders on every provider (provider-agnostic)", () => {
+    // The m_template provider gate must default to "no filter" so a
+    // bare `m_template|info` (no provider arg) keeps rendering on
+    // every provider — same contract as `type`-less fragments.
+    __resetForTest({
+      statuslineTemplate: ["m_template|info"],
+      lineTemplates: {
+        info: ["m_modeLabel", "s_space", "m_label|hello"],
+      },
+    });
+    try {
+      for (const p of ["minimax", "deepseek", "copilot", null] as const) {
+        const line = renderProviderLine(p, {
+          mode: "used", nowMs: Date.now(),
+          shortInterval: null, midInterval: null, longInterval: null,
+          balance: null,
+          ageMs: null, stale: false, version: "",
+        });
+        assert.ok(
+          strip(line).includes("hello"),
+          `provider-agnostic fragment must render on every provider (tested ${String(p)}), got: ${line}`,
+        );
+      }
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("|provider:<id> on a null currentProvider (unknown) drops the fragment", () => {
+    // When ANTHROPIC_BASE_URL doesn't match any configured entry,
+    // ctx.currentProvider === null. A strict-match provider gate
+    // against a non-null id returns false → drop.
+    __resetForTest({
+      statuslineTemplate: ["m_template|gated|provider:minimax"],
+      lineTemplates: {
+        gated: ["m_modeLabel", "s_space", "m_label|hello"],
+      },
+    });
+    try {
+      const line = renderProviderLine(null, {
+        mode: "used", nowMs: Date.now(),
+        shortInterval: null, midInterval: null, longInterval: null,
+        balance: null,
+        ageMs: null, stale: false, version: "",
+      });
+      assert.ok(
+        !strip(line).includes("hello"),
+        `unknown provider must drop |provider:minimax gated fragment, got: ${line}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+});
 // Demonstrates the user's motivating use case: one shared
 // `token_acc` fragment + 2 callers passing different scopes → 2
 // distinct renders. The bare m_accTokenIn inside the fragment

@@ -546,18 +546,21 @@ function renderQuotaParts(
   mode: DisplayMode = "used",
 ): {
   prefix: string;
-  head: string;          // e.g. "quota:(30d):"
+  label: string;
   axisNumber: number;    // the displayed digit
   total: number | null;  // the right side ("1500" or "--")
   axisPct: number | null;// 0..100 of the displayed digit relative to limit
 } | null {
+  // vX.X.X+ — label moved from prefix-head to the tail of the body
+  // (after the `<axis>/<total>` slice), so the shape is now
+  // `quota:<axis>/<total>(<label>)` instead of `quota:(<label>):<axis>/<total>`.
   const prefix = labelFor("quota");
-  const head = `${prefix}(${iv.label}):`;
+  const label = iv.label;
 
   if (mode === "remaining") {
     if (iv.remainingQuota != null && iv.limitQuota != null) {
       return {
-        prefix, head,
+        prefix, label,
         axisNumber: iv.remainingQuota,
         total: iv.limitQuota,
         axisPct: (iv.remainingQuota / iv.limitQuota) * 100,
@@ -567,7 +570,7 @@ function renderQuotaParts(
       const remaining = iv.limitQuota - iv.usedQuota;
       const clamped = Math.max(0, Math.min(iv.limitQuota, remaining));
       return {
-        prefix, head,
+        prefix, label,
         axisNumber: clamped,
         total: iv.limitQuota,
         axisPct: (clamped / iv.limitQuota) * 100,
@@ -575,7 +578,7 @@ function renderQuotaParts(
     }
     if (iv.limitQuota != null) {
       return {
-        prefix, head,
+        prefix, label,
         axisNumber: iv.limitQuota,
         total: iv.limitQuota,
         axisPct: 100, // nothing used ⇒ full remaining
@@ -583,7 +586,7 @@ function renderQuotaParts(
     }
     if (iv.remainingQuota != null) {
       return {
-        prefix, head,
+        prefix, label,
         axisNumber: iv.remainingQuota,
         total: null,
         axisPct: null, // no limit → no ratio possible
@@ -595,7 +598,7 @@ function renderQuotaParts(
   // mode === "used" (default)
   if (iv.usedQuota != null && iv.limitQuota != null) {
     return {
-      prefix, head,
+      prefix, label,
       axisNumber: iv.usedQuota,
       total: iv.limitQuota,
       axisPct: (iv.usedQuota / iv.limitQuota) * 100,
@@ -605,7 +608,7 @@ function renderQuotaParts(
     const used = iv.limitQuota - iv.remainingQuota;
     const clamped = Math.max(0, Math.min(iv.limitQuota, used));
     return {
-      prefix, head,
+      prefix, label,
       axisNumber: clamped,
       total: iv.limitQuota,
       axisPct: (clamped / iv.limitQuota) * 100,
@@ -613,7 +616,7 @@ function renderQuotaParts(
   }
   if (iv.limitQuota != null) {
     return {
-      prefix, head,
+      prefix, label,
       axisNumber: 0,
       total: iv.limitQuota,
       axisPct: 0, // nothing known used ⇒ 0% consumed
@@ -621,7 +624,7 @@ function renderQuotaParts(
   }
   if (iv.usedQuota != null) {
     return {
-      prefix, head,
+      prefix, label,
       axisNumber: iv.usedQuota,
       total: null,
       axisPct: null,
@@ -656,7 +659,10 @@ function wrapQuotaBody(
   } else {
     tint = colorFor(parts.axisPct, mode);
   }
-  return `${parts.head}${tint}${parts.axisNumber}${RESET}/${total}`;
+  // vX.X.X+ — label moved from the prefix slot to the tail;
+  // shape: `${prefix}<axis>/<total>(<label>)` — e.g.
+  // `quota:413.7/1500(30d)`.
+  return `${parts.prefix}${tint}${parts.axisNumber}${RESET}/${total}(${parts.label})`;
 }
 
 // v0.9.0+ — epoch-ms → ISO timestamp. Local to render.ts (same
@@ -1177,6 +1183,15 @@ type RenderContext = {
   // `remaining` / `balance`); the type discriminator is a TYPE, not
   // a mode.
   providerType: "quota" | "balance" | "unknown";
+  // v0.9.0+ — the active provider INSTANCE id (e.g. `"minimax"` /
+  // `"deepseek"` / `"copilot"`). Populated by renderProviderLine
+  // from the `provider` arg; null when ANTHROPIC_BASE_URL didn't
+  // match any configured entry. Distinct from `providerType`
+  // (which is the category discriminator `quota` / `balance` /
+  // `unknown`). Used by `m_template|<key>|provider:<id>` to gate a
+  // fragment to ONE specific provider (where `type:quota` matches
+  // every quota-mode provider).
+  currentProvider?: import("./types.ts").Provider;
   // v0.6.0+ — mutable cross-recursion dedup ref for the m_age module.
   // Initialized to `{ value: false }` by renderProviderLine and
   // propagated by reference through any nested `m_template:`
@@ -4203,7 +4218,7 @@ const PLACEHOLDER_TERM_FALLBACK: Record<Term, string> = {
   short: "5h",
   mid: "7d",
   // vX.X.X+ — long-term fallback is "30d" (label form, so the
-  // call sites can reformat it as "--:30" / "prefix:--:30").
+  // call sites can reformat it as "--:(30d)" / "prefix:n/a(30d)").
   long: "30d",
 };
 
@@ -4211,9 +4226,9 @@ const PLACEHOLDER_TERM_FALLBACK: Record<Term, string> = {
 // m_countdown / m_quota placeholders. `wrap` receives the
 // resolved term-label (e.g. "5h" / "7d" / "30d"); callers shape
 // the body uniformly across terms. The vX.X.X+ convention is
-// dashes-left, label-bracketed-right:
+// dashes-or-n/a-left, label-bracketed-right:
 //   - m_countdown        → "--:(<label>)"
-//   - m_quota            → "${prefix}--:(<label>)"
+//   - m_quota            → "${prefix}n/a(<label>)"
 function placeholderTermLabel(
   params: Record<string, ResolvedValue>,
   ctx: RenderContext,
@@ -4226,10 +4241,12 @@ function placeholderTermLabel(
 }
 
 // v0.9.0+ — quota module placeholder. Per-term, all terms share
-// the same "${labelFor("quota")}--:(<label>)" shape:
-//   - short → "quota:--:(5h)"
-//   - mid   → "quota:--:(7d)"
-//   - long  → "quota:--:(30d)"
+// the same "${labelFor("quota")}n/a(<label>)" shape (vX.X.X+:
+// dashes collapsed to `n/a`, label moved to tail to mirror the
+// live body's `quota:<axis>/<total>(<label>)` shape):
+//   - short → "quota:n/a(5h)"
+//   - mid   → "quota:n/a(7d)"
+//   - long  → "quota:n/a(30d)"
 // Bare-MODULES default term is "short" upstream of this helper,
 // so bare `m_quota` keeps reading `c.shortInterval?.label`.
 function placeholderQuota(
@@ -4238,10 +4255,11 @@ function placeholderQuota(
 ): string {
   const prefix = labelFor("quota");
   return placeholderTermLabel(params, ctx, (label) =>
-    // Per-term shape — uniform dashes-left, label-right:
-    //   short / mid / long → "${prefix}--:(<label>)"
-    //     e.g. "quota:--:(5h)", "quota:--:(7d)", "quota:--:(30d)"
-    `${prefix}--:(${label})`,
+    // vX.X.X+ — shape aligned with the live body: label lives
+    // at the tail, the gap marker is `n/a` (no `--:` pair).
+    //   short / mid / long → "${prefix}n/a(<label>)"
+    //     e.g. "quota:n/a(5h)", "quota:n/a(7d)", "quota:n/a(30d)"
+    `${prefix}n/a(${label})`,
   );
 }
 
@@ -5118,6 +5136,15 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
     },
     named: {
       type: (raw) => (raw === "quota" || raw === "balance" ? raw : null),
+      // v0.9.0+ — `provider:<id>` gates the fragment to ONE specific
+      // provider instance (e.g. `minimax` / `deepseek` / `copilot`).
+      // Resolver accepts any non-empty string; the dispatcher does
+      // strict-match against `ctx.currentProvider`. Absent → no gate
+      // (fragment renders on every provider). Distinct from `type`
+      // which gates by provider CATEGORY (`quota` / `balance`) and
+      // matches every quota-mode provider — `provider` is the
+      // narrower per-instance knob.
+      provider: (raw) => (typeof raw === "string" && raw !== "" ? raw : null),
       // v0.8.7+ — passthrough whitelist. Each of these named
       // params is accepted on `m_template` and forwarded to the
       // inner module list as a fallback when the inner module's
@@ -5432,11 +5459,11 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     return wrapPlainDefault("m_countdown", body, params.color as string | undefined);
   },
   m_quota: (params, ctx) => {
-    // v0.9.0+ — NEW module. Renders the quota group as
-    // `<labelQuota>(<interval.label>):used/limit` (or `0/limit`
-    // or `used/--` depending on what's mapped). `term` arg same
-    // shape as `m_windowQuota` / `m_countdown`. vX.X.X+ —
-    // `display` inline arg swaps the rendered axis:
+    // v0.9.0+ — NEW module. vX.X.X+ — label moved to the tail,
+    // so the shape is now `<labelQuota><axis>/<limit>(<interval.label>)`
+    // (placeholder: `<labelQuota>n/a(<interval.label>)`).
+    // `term` arg same shape as `m_windowQuota` / `m_countdown`.
+    // vX.X.X+ — `display` inline arg swaps the rendered axis:
     //   |display|used      → `<used>/<limit>`      (default)
     //   |display|remaining → `<remaining>/<limit>`
     const term = (params.term as Term | undefined) ?? "short";
@@ -6439,17 +6466,28 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // at all — only explicit `|type:…` does strict-match.
     const wantExplicit = params.type as "quota" | "balance" | undefined;
     if (wantExplicit != null && ctx.providerType !== wantExplicit) return null;
+    // v0.9.0+ — `provider:<id>` strict-match gate against the
+    // active provider instance id. Absent → no gate (renders on
+    // every provider, same as `type`-less). Present → drop unless
+    // `ctx.currentProvider` (the `provider` arg of
+    // renderProviderLine) equals the configured id verbatim.
+    // null ctx.currentProvider means ANTHROPIC_BASE_URL didn't
+    // match any configured entry, so the gate returns false (drop).
+    const wantProvider = params.provider as string | undefined;
+    if (wantProvider != null && ctx.currentProvider !== wantProvider) {
+      return null;
+    }
     // v0.8.7+ — passthrough: build a passThrough view from every
-    // param except the TWO intrinsics (`key` is the lookup target;
-    // `type` is the providerType filter — a m_template-local
-    // concern, NOT a value to push to inner modules). Nested
+    // param except the THREE intrinsics (`key` is the lookup target;
+    // `type` / `provider` are m_template-local provider-gate
+    // concerns — NOT values to push to inner modules). Nested
     // m_template is
     // impossible because config.ts strips them at load time, so we
     // don't need to merge with a pre-existing passThrough on the
     // outer context.
     const passThrough: Record<string, ResolvedValue> = {};
     for (const [k, v] of Object.entries(params)) {
-      if (k === "key" || k === "type") continue;
+      if (k === "key" || k === "type" || k === "provider") continue;
       passThrough[k] = v as ResolvedValue;
     }
     const innerCtx: RenderContext = { ...ctx, passThrough };
@@ -7070,6 +7108,11 @@ export function renderProviderLine(
     tokens: ctx.tokens ?? null,
     contextWindow,
     providerType,
+    // v0.9.0+ — active provider instance id (e.g. `"minimax"`).
+    // Drives `m_template|<key>|provider:<id>` strict-match gates;
+    // null when ANTHROPIC_BASE_URL didn't match a configured entry
+    // so a `|provider:<id>` gate returns false and the fragment drops.
+    currentProvider: provider,
     // v0.6.0+ — single-owner dedup ref. Propagated by reference
     // through any nested m_template: expansions; each m_age instance
     // (bare + inline-args) checks + sets this slot so the WHOLE render

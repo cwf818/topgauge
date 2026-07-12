@@ -163,6 +163,15 @@ export const DEFAULT_LINE_TEMPLATES: LineTemplates = {
   quota: DEFAULT_LINE_TEMPLATE.quota,
   balance: DEFAULT_LINE_TEMPLATE.balance,
 
+  quota_all: [
+    "m_modeLabel|color:yellow", "s_space",
+    "m_windowQuota|term:short", "s_space", "m_countdown|term:short",
+    "s_space", "s_dot", "s_space",
+    "m_windowQuota|term:mid", "s_space", "m_countdown|term:mid",
+    "s_space", "s_dot", "s_space",
+    "m_windowQuota|term:long", "s_space", "m_countdown|term:long",
+  ],
+
   // ----- User-facing fragment library (vX.X.X+) -----
   // Reference via `m_template|<key>` from statuslineTemplate.
   // Tokens render left-to-right; bare literals like "[", "]",
@@ -470,7 +479,7 @@ export const DEFAULT_STATUSLINE_PRESETS: Record<string, StatuslineTemplate> = {
     "m_statTtlStatus",
     "s_newline",
     "m_pluginSource",
-    "m_template|quota|type:quota",
+    "m_template|quota_all|type:quota",
     "m_template|balance|type:balance",
     "s_space",
     "m_quota|term:long|display:remaining|nulldrop:true",

@@ -1,6 +1,6 @@
 <pre>
 [upstream statusline lines]
-Usage: ▓▓▓▓░░░░ 40% (1h27m🕗 5h) · ▓▓░░░░░░ 20% (4d3h🕔 7d)    # Token-plan
+Usage: ▓▓▓▓░░░░ 40% (1h27m🕗 5h) · ▓▓░░░░░░ 20% (4d3h🕔 7d)    # Quota
 Balance: ￥110.00 · $3.5                                        # Balance
 </pre>
 
