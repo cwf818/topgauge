@@ -4,7 +4,7 @@ Usage: ▓▓▓▓░░░░ 40% (1h27m🕗 5h) · ▓▓░░░░░░ 2
 Balance: ￥110.00 · $3.5                                        # Balance
 </pre>
 
-# topgauge
+# ToPGauge
 
 [![License](https://img.shields.io/github/license/cwf818/topgauge)](LICENSE)
 [![Tag](https://img.shields.io/github/tag/cwf818/topgauge)](https://github.com/cwf818/topgauge/tags)
@@ -270,8 +270,6 @@ A reference with every field is at [config.example.json](./config.example.json).
   },
   "thresholds": {
     // band cutoffs (4 ascending numbers each).
-    // v0.8.36.1 — `percentBands` default is [60, 70, 80, 90]; older
-    // [20, 40, 60, 80] still parses and applies as the user override.
     "percentBands": [60, 70, 80, 90],
     "balanceBands": [5, 10, 20, 50],
   },
@@ -282,42 +280,37 @@ A reference with every field is at [config.example.json](./config.example.json).
     "default": "CNY", // assumed currency when API omits one
   },
   "stale": {
-    // stale-on-error annotation. v0.2.17 dropped the legacy
-    // `separator` field — the stale annotation is now appended
-    // directly after the template output. If a custom separator
-    // is needed before the annotation, place it explicitly in the
-    // lineTemplate (e.g. add an `s_0` token after `m_windowQuota|term:mid`).
+    // stale-on-error annotation. Appended directly after the
+    // template output; place a custom separator explicitly in
+    // the lineTemplate (e.g. add an `s_0` token after
+    // `m_windowQuota|term:mid`).
     "ageEmoji": { "healthy": "🔗", "broken": "⛓️‍💥" },
   },
   "labels": {
-    // v0.8.13+ (extended v0.8.17/22/23/24) — per-module label prefix
-    // overrides. Defaults match the v0.8.x literal strings so existing
-    // renders stay byte-identical until the user overrides via config.
-    // Pre-v0.8.22 names (labelIn, labelOut, labelCacheIn, labelTotalIn,
-    // labelApi, labelInSpeed, labelOutSpeed) are HARD-REJECTED in
-    // v0.8.22 rev 2 — one stderr warn per load, then dropped. Use the
-    // canonical names below.
+    // Per-module label prefix overrides. Defaults match the
+    // canonical literal strings so renders stay byte-identical
+    // until the user overrides via config.
     "labelTokenIn":                 "in:",
     "labelTokenOut":                "out:",
     "labelTokenTotalIn":            "in:",
     "labelTokenTotalOut":           "out:",        // shared with m_tokenTotalOut
     "labelTokenCachedIn":           "cache:",
-    "labelTokenHitRate":            "hit:",        // v0.8.22 — extracted from hardcoded
+    "labelTokenHitRate":            "hit:",
     "labelApi":                     "api:",
     "labelApiCalls":                "calls:",
     "labelInSpeed":                 "in:",         // distinct from labelTokenIn
     "labelOutSpeed":                "out:",
-    "labelContextSize":             "size:",       // v0.8.23
+    "labelContextSize":             "size:",
     "labelContextWindowsSize":      "size:",
     "labelContextUsedPercent":      "used:",
     "labelContextRemainingPercent": "remain:",
-    "labelMemUsage":                "Mem:",        // v0.8.17
-    "labelStartTime":               "start:",      // v0.8.24
+    "labelMemUsage":                "Mem:",
+    "labelStartTime":               "start:",
     "labelEndTime":                 "end:",
   },
   "cacheHitColors": {
-    // v0.4.0+ — 3-band palette for the m_tokenHitRate module.
-    // Bands chosen by cacheHitThresholds (in tokenFormat below).
+    // 3-band palette for the m_tokenHitRate module. Bands
+    // chosen by cacheHitThresholds (in tokenFormat below).
     "good": "brightGreen", // ≥ 80%
     "warn": "yellow",      // ≥ 50%
     "bad": "orange",       // < 50%
@@ -380,7 +373,7 @@ A reference with every field is at [config.example.json](./config.example.json).
     ],
   },
   "tokenFormat": {
-    // v0.4.0+ — compact number formatting for the m_token* modules.
+    // compact number formatting for the m_token* modules.
     //   < thresholds[0] → raw integer ("342")
     //   < thresholds[1] → "<x.y>k"   ("12.3k")
     //   ≥ thresholds[1] → "<x.y>M"   ("1.2M")
@@ -396,8 +389,8 @@ A reference with every field is at [config.example.json](./config.example.json).
     "cacheHitThresholds": [50, 80],
   },
   "lineTemplates": {
-    // v0.4.0+ — registry of reusable template fragments. Each value
-    // is a token array. Allowed tokens: any m_* module EXCEPT
+    // Registry of reusable template fragments. Each value is a
+    // token array. Allowed tokens: any m_* module EXCEPT
     // m_template, plus s_* separators. Keys are user-chosen; the
     // renderer reads from this registry when it sees an
     // `m_template|<key>` token inside `statuslineTemplate`. The
@@ -413,16 +406,12 @@ A reference with every field is at [config.example.json](./config.example.json).
     "header": ["m_modeLabel", "s_space"]
   },
   "statuslineTemplate": ["m_template|quota|type:quota", "m_template|balance|type:balance"],
-  // v0.8.47+ — string-form values reference DEFAULT_STATUSLINE_PRESETS
+  // String-form values reference DEFAULT_STATUSLINE_PRESETS
   // (whole-line presets `simple` / `standard` / `abundant`):
   //   "statuslineTemplate": "standard"
 
-  // v0.4.0+ replaces the v0.3.x `lineTemplate: { plan, balance }`
-  // shape with the two fields above. See the "Upgrading to v0.4.0"
-  // section below for the migration notes. The loader warns once
-  // per config load and ignores the legacy field.
   "providers": {
-    // v0.2.21: declarative provider registry. The plugin picks a
+    // Declarative provider registry. The plugin picks a
     // provider by matching ANTHROPIC_BASE_URL against each entry's
     // BASE_URL_COMPARED_TO using the entry's COMPARE_METHOD. The
     // first match wins; iteration order = insertion order. TYPE
@@ -446,7 +435,7 @@ A reference with every field is at [config.example.json](./config.example.json).
   // Plugin version is loaded automatically at startup from
   // .claude-plugin/plugin.json and surfaced via the m_version
   // module. No config field — just add "m_version" to your
-  // lineTemplate to render "v0.8.37"-style annotations.
+  // lineTemplate to render version annotations.
 }
 ```
 
@@ -464,8 +453,8 @@ The `providers` block is a `Record<string, ProviderEntry>`. Each entry declares:
   - `"EXACT"` (default) — `baseUrl === pattern`. Safest; rejects URLs that aren't exactly the configured value.
   - `"INCLUDE"` — `baseUrl.includes(pattern)`. Fuzzy host match; useful when `ANTHROPIC_BASE_URL` adds a path you don't care about.
   - `"STARTWITH"` — `baseUrl.startsWith(pattern)` with a suffix-attack guard: the character right after the prefix must be `undefined`, `/`, `?`, or `#`. This rejects `https://api.deepseek.com.evil.example` even though it `startsWith("https://api.deepseek.com")`. The `deepseek` matcher in earlier versions used this scheme; the v0.2.21 default is `EXACT` (a stricter choice), so users who relied on the old prefix behavior should set `COMPARE_METHOD: "STARTWITH"`.
-- **`AUTHENTICATION_KEY`** *(optional, v0.6.0+)* — Bearer token sent in the `Authorization` header. **Always wins** over `process.env.ANTHROPIC_AUTH_TOKEN` when present — there is no env fallback. Useful for sandboxed / CI deployments that don't carry the env var, or for giving a single proxy provider a different credential from the rest of the session. Bad values (non-string, empty string) drop just the field; the entry still loads and the fetcher falls back to the env token.
-- **`currencies`** *(optional, vX.X.X+)* — per-currency slot map used by `BALANCE` providers (e.g. DeepSeek). Maps currency codes onto `{ label, totalBalance }`. Layer 3 of the resolveEffectiveCurrencies merge — overrides the top-level `currencies` block for the active provider.
+- **`AUTHENTICATION_KEY`** *(optional)* — Alternative credential that overrides `process.env.ANTHROPIC_AUTH_TOKEN` for this provider. The whole point is to keep the plugin source credential-free: the plugin receives the key as the first arg to `fetchAccountCredit` and forwards it on the upstream `Authorization` header — never hardcoded into the plugin file itself. Useful for sandboxed / CI deployments that don't carry the env var, or for giving a single proxy provider a different credential from the rest of the session. When `AUTHENTICATION_KEY` is unset, the env token takes over. Bad values (non-string, empty string) drop just the field; the entry still loads and the fetcher falls back to the env token.
+- **`currencies`** *(optional)* — per-currency slot map used by `BALANCE` providers (e.g. DeepSeek). Maps currency codes onto `{ label, totalBalance }`. Overrides the top-level `currencies` block for the active provider.
 
 A user can override any subset of fields on a known provider; missing fields inherit from the default. To add a new provider, append a new key:
 
