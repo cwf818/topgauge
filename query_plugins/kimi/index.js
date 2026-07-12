@@ -8,6 +8,20 @@
 // same shape as the built-in minimax / deepseek plugins. The host runs
 // ensureQuota on the returned Partial<Quota> to derive the canonical
 // shape. The plugin author never sees canonical Quota / Interval.
+//
+// AUTHENTICATION_KEY: the Kimi dashboard's localStorage `access_token`
+// (the one issued after browser login at https://kimi.com), NOT the
+// API token under Settings. Configure it via providers.kimi.AUTHENTICATION_KEY
+// in ~/.claude/plugins/topgauge/config.json. The plugin sends it as
+// `Authorization: Bearer <key>` against the GetUsages endpoint.
+//
+// Auth note: the GetUsages endpoint is the same gRPC-over-HTTP the
+// browser dashboard hits, so the localStorage access_token is the
+// only credential Kimi accepts. If you log out / refresh from the
+// browser, copy the new access_token out of localStorage and paste
+// it back into config.json — the cache row `kimi:pluginSource` does
+// not gate on credential validity, so a stale token shows up as a
+// silent `Remain: --:…` placeholder until the renderer falls back.
 
 const ENDPOINT =
   "https://www.kimi.com/apiv2/kimi.gateway.billing.v1.BillingService/GetUsages";
