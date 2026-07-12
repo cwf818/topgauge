@@ -327,7 +327,7 @@ echo '{}' \
   | ANTHROPIC_BASE_URL=https://api.kimi.com/coding/ \
     ANTHROPIC_AUTH_TOKEN="$(jq -r '.providers.kimi.AUTHENTICATION_KEY' \
       ~/.claude/plugins/topgauge/config.json)" \
-    node /path/to/cache/topgauge/topgauge/0.9.1/dist/index.js
+    node /path/to/cache/topgauge/topgauge/0.9.2/dist/index.js
 ```
 
 For unit-level testing of the fill function only:
