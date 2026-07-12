@@ -31,28 +31,20 @@
 #      settings.json.enabledPlugins (if present), preserving CRLF.
 #   3. Backs up settings.json to settings.json.bak.<TS> before any
 #      destructive change.
-#   4. Wipes:
+#   4. Wipes (v0.9.x — partial-preserve):
+#        ALWAYS:
 #        - cache/topgauge/
 #        - marketplaces/topgauge/
 #        - marketplaces/cwf818-topgauge/   (alias)
-#        - plugins/topgauge/state/         (our stable state dir;
-#                                              clean slate so a future
-#                                              re-install doesn't see a
-#                                              stale upstream-cmd.txt
-#                                              pointing at a now-foreign
-#                                              command)
-#                                              v0.4.x+ Per-Project
-#                                              Layout: this includes
-#                                              state/<projectHash>/{cache.json,
-#                                              diagnostics.jsonl,
-#                                              <sessionId>.jsonl}.
-#                                              To PRESERVE token-sample
-#                                              history across uninstall
-#                                              (rare; samples decay over
-#                                              time anyway), run
-#                                              `scripts/migrate-state.sh`
-#                                              first, then re-install
-#                                              without uninstalling.
+#        - state/{cache.json, cache.stat.json, upstream-cmd.{sh,txt}}
+#        - state/<projectHash>/state.json (per-project tick status)
+#        UNLESS --keep-state is passed:
+#        - state/<projectHash>/<sessionId>.jsonl (token samples)
+#        PRESERVED (default + --keep-state both keep these):
+#        - topgauge/config.json            (user-owned config)
+#        - topgauge/query_plugins/         (user plugin overrides)
+#        A post-uninstall hint lists the surviving paths so the user
+#        can decide whether to delete them manually.
 #   5. Strips the plugin row from installed_plugins.json and
 #      known_marketplaces.json (with timestamped .bak.<TS> backups),
 #      preserving CRLF.
@@ -64,10 +56,25 @@
 # Idempotency: every step is independently no-op-able. Re-running on
 # a fully clean system prints a "nothing to do" message and exits 0.
 #
+# v0.9.x — partial-preserve semantics:
+#   - DEFAULT: preserve ~/.claude/plugins/topgauge/{config.json,
+#     query_plugins/} (user-owned artifacts the script can't recreate).
+#     A post-uninstall hint lists the surviving paths so the user can
+#     decide whether to delete them.
+#   - --keep-state: additionally preserve
+#     state/<projectHash>/<sessionId>.jsonl (token-sample history).
+#     Without this flag, the .jsonl files are wiped along with the
+#     other state-cache noise.
+#   - ALWAYS wipe: cache/topgauge/, marketplaces/topgauge/,
+#     marketplaces/cwf818-topgauge/, state/{cache.json,
+#     cache.stat.json, upstream-cmd.{sh,txt}},
+#     state/<projectHash>/state.json.
+#
 # Usage:
 #   uninstall.sh                  # user-level (default)
 #   uninstall.sh --project        # project-level (cwd's .claude/settings.json)
 #   uninstall.sh --dry-run        # print actions, change nothing
+#   uninstall.sh --keep-state     # also keep token-sample .jsonl files
 #   uninstall.sh -h | --help
 #
 # Portable: Linux, macOS, Git Bash on Windows.
@@ -76,22 +83,24 @@ set -u
 
 PROJECT_LEVEL=0
 DRY_RUN=0
+KEEP_STATE=0
 
 print_help() {
-  sed -n '2,42p' "$0"
+  sed -n '2,46p' "$0"
 }
 
 for arg in "$@"; do
   case "$arg" in
     --project) PROJECT_LEVEL=1 ;;
     --dry-run) DRY_RUN=1 ;;
+    --keep-state) KEEP_STATE=1 ;;
     -h|--help)
       print_help
       exit 0
       ;;
     *)
       echo "uninstall.sh: unknown argument: $arg" >&2
-      echo "  usage: uninstall.sh [--project] [--dry-run]" >&2
+      echo "  usage: uninstall.sh [--project] [--dry-run] [--keep-state]" >&2
       exit 2
       ;;
   esac
@@ -263,13 +272,20 @@ if [ -n "$EKM_PLAN" ]; then
   ACTIONS+=("extraKnownMarketplaces: strip ${EKM_PLAN}")
 fi
 
-# Action 3: wipe dirs (single name — no legacy strip in v0.9.0+).
+# Action 3: wipe dirs.
+#
+# v0.9.x partial-preserve semantics:
+#   - topgauge/{config.json, query_plugins/}  → ALWAYS preserved
+#     (user-owned; the script can wipe them only on explicit request,
+#     and even then we prefer to surface them as a hint rather than
+#     silently nuke).
+#   - topgauge/state/  → NEVER rm -rf'd. We DO wipe its CONTENTS
+#     selectively below (top-level cache noise + per-project state.json;
+#     .jsonl only if --keep-state is absent).
 WIPE_DIRS=(
   "${PLUGINS_DIR}/cache/topgauge"
   "${PLUGINS_DIR}/marketplaces/topgauge"
   "${PLUGINS_DIR}/marketplaces/cwf818-topgauge"
-  "${PLUGINS_DIR}/topgauge/state"
-  "${PLUGINS_DIR}/topgauge/query_plugins"
 )
 for d in "${WIPE_DIRS[@]}"; do
   if [ -d "$d" ]; then
@@ -277,6 +293,43 @@ for d in "${WIPE_DIRS[@]}"; do
     DRY_NOTHING=0
   fi
 done
+
+# Action 3b: state/ selective wipe.
+#
+# Splits state/ into "always wipe" + "wipe unless --keep-state".
+# Top-level state/{cache.json, cache.stat.json, upstream-cmd.sh,
+# upstream-cmd.txt} are cache noise that would confuse a re-install
+# (stale upstream-cmd.txt points at a now-foreign command), so they
+# go. Per-project state/<projectHash>/state.json is the tickStatus
+# cache — same logic, always wiped. The .jsonl files ARE the
+# token-sample history; we keep them under --keep-state.
+STATE_DIR="${PLUGINS_DIR}/topgauge/state"
+if [ -d "$STATE_DIR" ]; then
+  ALWAYS_STATE_FILES=(
+    "${STATE_DIR}/cache.json"
+    "${STATE_DIR}/cache.stat.json"
+    "${STATE_DIR}/upstream-cmd.sh"
+    "${STATE_DIR}/upstream-cmd.txt"
+  )
+  for f in "${ALWAYS_STATE_FILES[@]}"; do
+    if [ -f "$f" ]; then ACTIONS+=("rm -f ${f}"); DRY_NOTHING=0; fi
+  done
+  # Per-project state.json (always) + .jsonl (conditional on --keep-state)
+  for proj_dir in "${STATE_DIR}"/*/; do
+    [ -d "$proj_dir" ] || continue
+    if [ -f "${proj_dir}state.json" ]; then
+      ACTIONS+=("rm -f ${proj_dir}state.json")
+      DRY_NOTHING=0
+    fi
+    if [ "$KEEP_STATE" != 1 ]; then
+      for jsonl in "${proj_dir}"*.jsonl; do
+        [ -f "$jsonl" ] || continue
+        ACTIONS+=("rm -f ${jsonl}")
+        DRY_NOTHING=0
+      done
+    fi
+  done
+fi
 
 # Action 4: strip JSON rows (single key).
 INSTALLED_JSON="${PLUGINS_DIR}/installed_plugins.json"
@@ -538,6 +591,45 @@ for d in "${WIPE_DIRS[@]}"; do
   fi
 done
 
+# --- Apply: state/ selective wipes (v0.9.x partial-preserve) -----------------
+# Mirrors Action 3b above. We never rm -rf state/ wholesale — query_plugins
+# is sibling to state/ under topgauge/, and config.json is also sibling.
+# Wholesale rm on state/ could bleed into the wrong directory if the path
+# ever changes; selective per-file rm is safe + idempotent.
+if [ -d "$STATE_DIR" ]; then
+  for f in "${ALWAYS_STATE_FILES[@]}"; do
+    if [ -f "$f" ]; then
+      if rm -f "$f"; then
+        echo "uninstall.sh: removed $f"
+      else
+        echo "uninstall.sh: WARNING — failed to remove $f" >&2
+      fi
+    fi
+  done
+  for proj_dir in "$STATE_DIR"/*/; do
+    [ -d "$proj_dir" ] || continue
+    # Wipe per-project state.json (always)
+    if [ -f "${proj_dir}state.json" ]; then
+      if rm -f "${proj_dir}state.json"; then
+        echo "uninstall.sh: removed ${proj_dir}state.json"
+      else
+        echo "uninstall.sh: WARNING — failed to remove ${proj_dir}state.json" >&2
+      fi
+    fi
+    # Wipe token-sample .jsonl UNLESS --keep-state
+    if [ "$KEEP_STATE" != 1 ]; then
+      for jsonl in "${proj_dir}"*.jsonl; do
+        [ -f "$jsonl" ] || continue
+        if rm -f "$jsonl"; then
+          echo "uninstall.sh: removed $jsonl"
+        else
+          echo "uninstall.sh: WARNING — failed to remove $jsonl" >&2
+        fi
+      done
+    fi
+  done
+fi
+
 # --- Apply: strip JSON rows --------------------------------------------------
 strip_plugin_row_from_json() {
   local file="$1"
@@ -623,6 +715,46 @@ fi
 
 echo ""
 echo "uninstall.sh: done. topgauge is fully removed."
+
+# --- Post-uninstall hint (v0.9.x partial-preserve) ---------------------------
+# v0.9.x: do NOT silently nuke user-owned artifacts. Print their
+# surviving paths so the user can decide whether to keep them on
+# disk (re-install is faster) or delete them manually.
+#
+# NOTE: list presence-not-existence. If the path was never created
+# in the first place we still name it — the hint is informational,
+# not a "this directory was just left behind" alert. (Finding out
+# whether the path existed in this session would require a separate
+# `ls` pass; the marginal value isn't worth the per-file fork.)
+HINT_LINES=()
+if [ -f "${PLUGINS_DIR}/topgauge/config.json" ] || [ "$KEEP_STATE" = 1 ]; then
+  HINT_LINES+=("  ${PLUGINS_DIR}/topgauge/config.json")
+fi
+if [ -d "${PLUGINS_DIR}/topgauge/query_plugins" ]; then
+  HINT_LINES+=("  ${PLUGINS_DIR}/topgauge/query_plugins/")
+fi
+if [ "$KEEP_STATE" = 1 ]; then
+  for proj_dir in "${STATE_DIR}"/*/; do
+    [ -d "$proj_dir" ] || continue
+    shopt -s nullglob 2>/dev/null || true
+    for jsonl in "${proj_dir}"*.jsonl; do
+      [ -f "$jsonl" ] || continue
+      HINT_LINES+=("  $jsonl")
+    done
+  done
+fi
+if [ "${#HINT_LINES[@]}" -gt 0 ]; then
+  echo ""
+  if [ "$KEEP_STATE" = 1 ]; then
+    echo "uninstall.sh: --keep-state preserved the following artifacts."
+  else
+    echo "uninstall.sh: the following user-owned artifacts were preserved."
+  fi
+  echo "  Delete them manually if you no longer need them."
+  for line in "${HINT_LINES[@]}"; do
+    echo "$line"
+  done
+fi
 
 # --- Final: trim old backup files (keep only the most recent per file) -------
 # This runs scripts/clean.sh so uninstall leaves a tidy filesystem. It is

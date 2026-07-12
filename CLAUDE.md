@@ -208,7 +208,7 @@ After install, run `/topgauge:install` to wire the wrapper into `settings.json`.
 - Live smoke test (no Claude Code needed): `echo '{}' | ANTHROPIC_BASE_URL=https://api.minimaxi.com/anthropic ANTHROPIC_AUTH_TOKEN=<token> node dist/index.js`.
 - Live install smoke test: `bash scripts/install.sh --dry-run` then `bash scripts/install.sh` then `bash scripts/uninstall.sh` (or `bash scripts/uninstall.sh --dry-run` first).
 - Live uninstall smoke test: `bash scripts/uninstall.sh --dry-run` then `bash scripts/uninstall.sh`. Re-run to confirm idempotency.
-- Shell-script regression tests: `bash scripts/test-install.sh`, `bash scripts/test-edit-settings.sh`, `bash scripts/test-clean-cache.sh` — all use isolated tmpdirs, no real settings.json touched.
+- Shell-script regression tests: `bash scripts/test-install.sh`, `bash scripts/test-uninstall.sh`, `bash scripts/test-edit-settings.sh`, `bash scripts/test-clean-cache.sh` — all use isolated tmpdirs, no real settings.json touched.
 
 ## Build & release
 
