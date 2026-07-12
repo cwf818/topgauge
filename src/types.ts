@@ -17,61 +17,7 @@ export type ProviderType = "QUOTA" | "BALANCE";
 
 export type CompareMethod = "EXACT" | "INCLUDE" | "STARTWITH";
 
-// v0.9.0+ — intervals namespace.
-//
-// Each Quota provider describes up to three independent plan
-// windows (a 5-hour interval, a 7-day interval, and a 30-day monthly
-// interval). Each interval has 11 fields, all of which the user can
-// supply through the `intervals` config block (top-level or per-
-// provider). `windowId` and `label` have built-in defaults
-// (`"5h"` / `"7d"` / `"30d"`); every other field must come from
-// the user's config or from the effective context assembled for the
-// active plugin. `intervalS` and `intervalMs` are unit twins — a path that
-// resolves to a number-of-seconds value goes through `intervalS` and
-// is converted to ms internally; both forms are equivalent.
-//
-// Field groups (parser enforces each independently):
-//
-//   PERCENT  (remainingPercent, usedPercent) — at least 1 required.
-//            If both mapped → used wins. If only one → the other
-//            is derived as `100 - x`. If neither → the interval
-//            has no % data and the renderer falls back to
-//            placeholder.
-//
-//   TIME     (startAt, endAt, intervalMs) — at least 2 of 3
-//            required. If startAt+endAt present → use them
-//            (explicit wins). If startAt+intervalMs → endAt
-//            derived as startAt + intervalMs. If endAt+intervalMs
-//            → startAt derived as endAt - intervalMs. If only 1
-//            present → all three fields return null and the
-//            interval is treated as time-unknown.
-//
-//            `intervalMs` has a 3-step fallback chain (uniform
-//            across all three intervals):
-//              1. path resolution against the API response
-//              2. numeric parse (e.g. "18000000" → 18000000,
-//                 or intervalS * 1000 if intervalS was a path)
-//              3. keyword lookup — probe the response root for
-//                 `hour`, `fiveHour`, `day`, `sevenDay`, `week`,
-//                 `month`, `year` in that order; each match is
-//                 multiplied by the right ms-per-unit
-//                 (3600000 / 18000000 / 86400000 / 604800000 /
-//                 2592000000 / 31536000000).
-//
-//   QUOTA    (remainingQuota, usedQuota, limitQuota) — any 1 is
-//            preserved verbatim. The renderer (`m_quota`) decides
-//            what's enough to render based on what it has:
-//              used + limit → "used/limit"
-//              limit only   → "0/limit"
-//              used only    → "used/--"
-//              none         → placeholder/drop.
-//
-// All path values are dot/bracket expressions (see src/path-expr.ts).
-// Non-string path values drop the field with a stderr warn at
-// config-load time (see validateIntervalSlot in src/config.ts).
-export type IntervalKey = "shortInterval" | "midInterval" | "longInterval";
-
-// vX.X.X+ — currencies namespace. Mirrors the `intervals` shape but
+// vX.X.X+ — currencies namespace. Mirrors the (removed) `intervals` shape but
 // keyed on a free-form currency code (CNY / USD / …) instead of a
 // fixed enum. Each entry declares:
 //
@@ -108,49 +54,6 @@ export type CurrenciesConfig = Record<string, CurrencySlotConfig>;
 // merge in resolveEffectiveCurrencies). Same shape as the top-level
 // `currencies` block.
 export type ProviderCurrenciesConfig = CurrenciesConfig;
-
-export type IntervalSlotConfig = {
-  // Built-in defaults: shortInterval → "5h", midInterval → "7d",
-  // longInterval → "30d". When omitted, the parser fills these in.
-  //
-  // vX.X.X+ — windowId is now an arbitrary opaque label. The
-  // m_sum* `|window|<id>` resolver distinguishes named IDs from
-  // dhms via the `|align|` param (align=true → look up windowId
-  // first, then fall through to dhms; align=false → always dhms,
-  // never windowId), so user-supplied IDs no longer need to be
-  // guarded against parseDhms. The literal `"all"` is reserved as
-  // the no-time-anchor sentinel and CANNOT be used as a windowId
-  // — `parseWindowScope` short-circuits on it before any lookup.
-  windowId?: string;
-  // Built-in default: same as windowId. The renderer reads this
-  // to print the window's display label (e.g. "5h" in
-  // `quota(5h):123/500`).
-  label?: string;
-  // Path expression; numeric value [0, 100].
-  remainingPercent?: string;
-  // Path expression; numeric value [0, 100]. Used wins over
-  // remainingPercent when both are mapped.
-  usedPercent?: string;
-  // Path expression; epoch-ms number.
-  startAt?: string;
-  // Path expression; epoch-ms number.
-  endAt?: string;
-  // Raw seconds value (NOT a path). Converted to intervalMs
-  // internally. Used in step 2 of the intervalMs fallback chain.
-  intervalS?: number;
-  // Raw ms value (NOT a path). Used in step 2 of the intervalMs
-  // fallback chain when the user prefers explicit milliseconds.
-  intervalMs?: number;
-  // Path expression; integer quota (free-form units — no
-  // normalization across providers).
-  remainingQuota?: string;
-  // Path expression; integer quota.
-  usedQuota?: string;
-  // Path expression; integer quota.
-  limitQuota?: string;
-};
-
-export type IntervalConfig = Partial<Record<IntervalKey, IntervalSlotConfig>>;
 
 // ----- v0.4.0+ token-usage module ---------------------------------------
 //
@@ -387,20 +290,13 @@ export type AccSnapshot = {
 // basis (e.g. "minimax needs fetchTimeoutMs=3000 because the API is
 // slow; deepseek uses the default 5000").
 //
-// v0.9.0+ — added optional `intervals` block: a per-provider mapping
-// from the three interval terms (`shortInterval` / `midInterval` /
-// `longInterval`) onto per-interval slot configs. Each slot config
-// declares the path expressions (and optional numeric defaults) the
-// parser uses to project the provider's JSON response into one of
-// three `Interval` objects (see `Interval` in src/render.ts).
-// Replaces the v0.5.0–v0.8.x flat `parameters` block (8 fixed slot
-// names: `remainingPercentInterval`, `usedPercentInterval`,
-// `remainingPercentWeekly`, `usedPercentWeekly`, `startAtInterval`,
-// `endAtInterval`, `startAtWeekly`, `endAtWeekly`). Path expressions
-// follow the grammar in src/path-expr.ts (`a.b[0].c` / `a.0.b.0.c`
-// style with permissive type coercion). The per-provider `intervals`
-// block is deep-merged on top of the top-level `intervals` block at
-// config-load time (see validateProviderEntry in src/config.ts).
+// v0.9.x — the per-provider `intervals` block (path-expression
+// mapping onto raw response fields) was REMOVED. Built-in and
+// user plugins own their own parsing via `fillQuota`/`fillBalance`
+// (they return canonical Quota/Balance objects directly), so
+// there's no host-side path-walker left to configure. Plugins
+// never see `ctx.intervals` — the `PluginContext` only carries
+// `{ providerId, type, currencies, signal? }` now.
 export type ProviderEntry = {
   TYPE: ProviderType;
   BASE_URL_COMPARED_TO: string;
@@ -411,17 +307,6 @@ export type ProviderEntry = {
   // forwarded to the existing per-field validators (same warn
   // behavior as the top-level config).
   config?: Record<string, unknown>;
-  // v0.9.0+ — interval-term → slot-config mapping. Each key is one
-  // of `shortInterval` / `midInterval` / `longInterval`; each value
-  // is an `IntervalSlotConfig` declaring which fields the parser
-  // should populate from the provider response. Missing terms resolve
-  // to a fully-null `Interval` at fetch time; the renderer treats a
-  // null `Interval` as "no data" (drop / placeholder per module
-  // contract). The legacy flat `parameters` field (v0.5.0–v0.8.x) is
-  // REMOVED — old configs with `parameters` are silently ignored (no
-  // stderr warn; top-level provider keys not declared on
-  // `ProviderEntry` are dropped).
-  intervals?: IntervalConfig;
   // vX.X.X+ — per-provider currencies block. Mirrors the
   // top-level `currencies` config: maps currency codes
   // (CNY / USD / …) onto `{ label, totalBalance }` slot configs.

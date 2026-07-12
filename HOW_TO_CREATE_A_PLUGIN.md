@@ -95,8 +95,7 @@ export default {
     ctx: {
       providerId: string,             // your registered id, e.g. "kimi"
       type: "QUOTA" | "BALANCE",      // mirrors your config block's TYPE
-      intervals: IntervalConfig,      // the effective intervals config for this provider
-      currencies: CurrenciesConfig,   // the effective currencies config
+      currencies: CurrenciesConfig,   // the effective currencies config (BALANCE providers)
       signal?: AbortSignal,           // host's per-tick timeout — MUST forward on fetch
     },
   ) => unknown | Promise<unknown>     // Partial<Quota> | Partial<Balance> | null | throws
@@ -232,8 +231,7 @@ config block by the same id. Edit `~/.claude/plugins/topgauge/config.json`:
 Plugin authors sometimes find that the `ENDPOINT` config field is a
 footgun — it lures people into believing the host reads it. The host
 does **not** call your endpoint directly. Your plugin reads the URL
-from its own module-level constant (or from `intervals.*` config keys
-you define under your provider block).
+from its own module-level constant.
 
 ---
 

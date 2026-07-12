@@ -104,12 +104,11 @@ fi
 # marketplace install copies the source tree but does not run npm build, so
 # a fresh install needs all runtime artifacts before statusLine can start.
 DIST_JS="${PLUGIN_DIR%/}/dist/index.js"
-DIST_PATH_EXPR="${PLUGIN_DIR%/}/dist/path-expr.js"
 DIST_MINIMAX="${PLUGIN_DIR%/}/dist/plugins/minimax/index.js"
 DIST_DEEPSEEK="${PLUGIN_DIR%/}/dist/plugins/deepseek/index.js"
-if [ ! -f "$DIST_JS" ] || [ ! -f "$DIST_PATH_EXPR" ] || [ ! -f "$DIST_MINIMAX" ] || [ ! -f "$DIST_DEEPSEEK" ]; then
+if [ ! -f "$DIST_JS" ] || [ ! -f "$DIST_MINIMAX" ] || [ ! -f "$DIST_DEEPSEEK" ]; then
   if [ "$DRY_RUN" = 1 ]; then
-    echo "install.sh: --dry-run: would build runtime artifacts (${DIST_JS}, ${DIST_PATH_EXPR}, ${DIST_MINIMAX}, and ${DIST_DEEPSEEK}) (npm install && npm run build) in ${PLUGIN_DIR%/}"
+    echo "install.sh: --dry-run: would build runtime artifacts (${DIST_JS}, ${DIST_MINIMAX}, and ${DIST_DEEPSEEK}) (npm install && npm run build) in ${PLUGIN_DIR%/}"
   else
     if ! command -v npm >/dev/null 2>&1; then
       echo "install.sh: npm not found on PATH; cannot build runtime artifacts" >&2

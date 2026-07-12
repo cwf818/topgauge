@@ -1,12 +1,18 @@
-// Provider-specific parsers used by built-in dynamic plugins.
+// Pure-validator helpers used by built-in dynamic plugins + the
+// host's post-fetch normalisation step.
+//
+// Plugins return whatever shape their `fillQuota` / `fillBalance`
+// decided to project from the raw response. The host runs the
+// canonical normalisers (`ensureQuota` / `ensureBalance` /
+// `ensureInterval`) here so the plugin author never has to know
+// about the canonical Quota / Balance types — only their fill
+// contract + the ctx argument (signal / currencies).
+//
+// v0.9.x — the path-expression projection layer
+// (`parseQuota` / `parseBalance` / `path-expr.ts`) was REMOVED.
+// Plugin authors do their own parsing and ship canonical objects
+// directly; there's no host-side path-walker left to configure.
 
-import { resolveSlot } from "../path-expr.js";
-import type {
-  CurrenciesConfig,
-  IntervalConfig,
-  IntervalKey,
-  IntervalSlotConfig,
-} from "../types.js";
 import type { Balance, BalanceEntry, Interval, Quota } from "./data.js";
 
 function asNumber(v: unknown): number | null {
@@ -17,151 +23,18 @@ function asNumber(v: unknown): number | null {
   return null;
 }
 
-// ============================================================================
-//  Quota parser (v0.9.0+)
-// ============================================================================
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
-const DEFAULT_WINDOW_IDS: Record<IntervalKey, "5h" | "7d" | "30d"> = {
+// Built-in defaults for `windowId` / `label` when a plugin omits
+// them. Mirrors the historical v0.4.x "5h / 7d / 30d" defaults so
+// existing plugin authors don't have to set these explicitly.
+const DEFAULT_WINDOW_IDS: Record<"shortInterval" | "midInterval" | "longInterval", "5h" | "7d" | "30d"> = {
   shortInterval: "5h",
   midInterval:   "7d",
   longInterval:  "30d",
 };
-
-const INTERVAL_MS_KEYWORD_TABLE: ReadonlyArray<readonly [string, number]> = [
-  ["hour",     3_600_000],
-  ["fiveHour", 18_000_000],
-  ["day",      86_400_000],
-  ["sevenDay", 604_800_000],
-  ["week",     604_800_000],
-  ["month",    2_592_000_000],
-  ["year",     31_536_000_000],
-];
-
-function resolvePercentGroup(
-  root: unknown,
-  slot: IntervalSlotConfig,
-): { remainingPercent: number | null; usedPercent: number | null } {
-  const usedRaw = slot.usedPercent
-    ? asNumber(resolveSlot(root, slot.usedPercent, "number"))
-    : null;
-  const remRaw = slot.remainingPercent
-    ? asNumber(resolveSlot(root, slot.remainingPercent, "number"))
-    : null;
-  if (usedRaw != null) {
-    return { usedPercent: usedRaw, remainingPercent: 100 - usedRaw };
-  }
-  if (remRaw != null) {
-    return { remainingPercent: remRaw, usedPercent: 100 - remRaw };
-  }
-  return { remainingPercent: null, usedPercent: null };
-}
-
-function resolveTimeGroup(
-  root: unknown,
-  slot: IntervalSlotConfig,
-): { startAt: number | null; endAt: number | null; intervalMs: number | null } {
-  const startRaw = slot.startAt
-    ? asNumber(resolveSlot(root, slot.startAt, "epochMs"))
-    : null;
-  const endRaw = slot.endAt
-    ? asNumber(resolveSlot(root, slot.endAt, "epochMs"))
-    : null;
-
-  let intervalMsRaw: number | null = null;
-  if (typeof slot.intervalMs === "number" && Number.isFinite(slot.intervalMs)) {
-    intervalMsRaw = slot.intervalMs;
-  } else if (slot.intervalMs != null) {
-    const v = asNumber(resolveSlot(root, String(slot.intervalMs), "number"));
-    if (v != null) intervalMsRaw = v;
-  } else if (typeof slot.intervalS === "number" && Number.isFinite(slot.intervalS)) {
-    intervalMsRaw = slot.intervalS * 1000;
-  } else if (slot.intervalS != null) {
-    const v = asNumber(resolveSlot(root, String(slot.intervalS), "number"));
-    if (v != null) intervalMsRaw = v * 1000;
-  }
-
-  if (intervalMsRaw == null && root && typeof root === "object") {
-    const r = root as Record<string, unknown>;
-    for (const [key, msPerUnit] of INTERVAL_MS_KEYWORD_TABLE) {
-      const v = asNumber(r[key]);
-      if (v != null) {
-        intervalMsRaw = v * msPerUnit;
-        break;
-      }
-    }
-  }
-
-  const nonNullCount = (startRaw != null ? 1 : 0)
-    + (endRaw != null ? 1 : 0)
-    + (intervalMsRaw != null ? 1 : 0);
-  if (nonNullCount < 2) {
-    return { startAt: null, endAt: null, intervalMs: null };
-  }
-
-  let startAt = startRaw;
-  let endAt = endRaw;
-  if (startAt != null && endAt != null) {
-    return { startAt, endAt, intervalMs: intervalMsRaw ?? (endAt - startAt) };
-  }
-  if (startAt != null && intervalMsRaw != null) {
-    endAt = startAt + intervalMsRaw;
-    return { startAt, endAt, intervalMs: intervalMsRaw };
-  }
-  if (endAt != null && intervalMsRaw != null) {
-    startAt = endAt - intervalMsRaw;
-    return { startAt, endAt, intervalMs: intervalMsRaw };
-  }
-  return { startAt: null, endAt: null, intervalMs: null };
-}
-
-function resolveQuotaGroup(
-  root: unknown,
-  slot: IntervalSlotConfig,
-): { remainingQuota: number | null; usedQuota: number | null; limitQuota: number | null } {
-  return {
-    remainingQuota: slot.remainingQuota
-      ? asNumber(resolveSlot(root, slot.remainingQuota, "number"))
-      : null,
-    usedQuota: slot.usedQuota
-      ? asNumber(resolveSlot(root, slot.usedQuota, "number"))
-      : null,
-    limitQuota: slot.limitQuota
-      ? asNumber(resolveSlot(root, slot.limitQuota, "number"))
-      : null,
-  };
-}
-
-function buildInterval(
-  root: unknown,
-  slot: IntervalSlotConfig,
-  key: IntervalKey,
-): Interval | null {
-  const percent = resolvePercentGroup(root, slot);
-  const time = resolveTimeGroup(root, slot);
-  const quota = resolveQuotaGroup(root, slot);
-
-  const hasPercent = percent.remainingPercent != null || percent.usedPercent != null;
-  const hasQuota = quota.remainingQuota != null || quota.usedQuota != null || quota.limitQuota != null;
-  if (!hasPercent && !hasQuota) return null;
-
-  const windowId = slot.windowId ?? DEFAULT_WINDOW_IDS[key];
-  return {
-    windowId,
-    label: slot.label ?? slot.windowId ?? DEFAULT_WINDOW_IDS[key],
-    startAt: time.startAt,
-    endAt: time.endAt,
-    intervalMs: time.intervalMs,
-    remainingPercent: percent.remainingPercent,
-    usedPercent: percent.usedPercent,
-    remainingQuota: quota.remainingQuota,
-    usedQuota: quota.usedQuota,
-    limitQuota: quota.limitQuota,
-  };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function ensureTimeGroup(value: Record<string, unknown>): {
   startAt: number | null;
@@ -194,7 +67,10 @@ function ensureTimeGroup(value: Record<string, unknown>): {
   return { startAt: null, endAt: null, intervalMs: null };
 }
 
-export function ensureInterval(value: unknown, key: IntervalKey): Interval | null {
+export function ensureInterval(
+  value: unknown,
+  key: "shortInterval" | "midInterval" | "longInterval",
+): Interval | null {
   if (!isRecord(value)) return null;
   const remainingRaw = asNumber(value.remainingPercent);
   const usedRaw = asNumber(value.usedPercent);
@@ -232,47 +108,6 @@ export function ensureQuota(value: unknown): Quota | null {
   };
 }
 
-export function parseQuota(
-  raw: unknown,
-  intervalsOrProvider: IntervalConfig | unknown = {},
-  legacyIntervalsConfig?: IntervalConfig,
-): Quota | null {
-  const intervalsConfig = legacyIntervalsConfig ?? (
-    intervalsOrProvider as IntervalConfig
-  );
-  if (!raw || typeof raw !== "object") return null;
-  const root = raw as Record<string, unknown>;
-
-  const baseResp = root.base_resp;
-  if (baseResp && typeof baseResp === "object") {
-    const code = asNumber((baseResp as Record<string, unknown>).status_code);
-    if (code !== null && code !== 0) return null;
-  }
-
-  // Built-in plugins may use this parser to project a provider response
-  // through the configured interval paths. User plugins normally return
-  // the canonical Quota object directly and do not need this helper.
-
-  const hasAnySlot =
-    intervalsConfig?.shortInterval ||
-    intervalsConfig?.midInterval ||
-    intervalsConfig?.longInterval;
-  if (hasAnySlot) {
-    const short = buildInterval(root, intervalsConfig?.shortInterval ?? {}, "shortInterval");
-    const mid = buildInterval(root, intervalsConfig?.midInterval ?? {}, "midInterval");
-    const long = buildInterval(root, intervalsConfig?.longInterval ?? {}, "longInterval");
-    if (short || mid || long) {
-      return { shortInterval: short, midInterval: mid, longInterval: long };
-    }
-  }
-
-  return null;
-}
-
-// ============================================================================
-//  BALANCE ensure (host-only)
-// ============================================================================
-
 // Apply the is_available fallback contract (missing → optimistic
 // true), derive `minValue` over the surviving entries, and guard the
 // final shape. The plugin layer is responsible for projecting
@@ -306,42 +141,3 @@ export function ensureBalance(value: unknown): Balance | null {
 
   return { isAvailable: true, entries, minValue };
 }
-
-// parseBalance: kept as a host-side helper for non-plugin code paths
-// (e.g. direct calls in tests). Mirrors the old shape — walks
-// `currenciesConfig` to project entries + applies the ensure step.
-function resolveCurrenciesEntry(
-  root: unknown,
-  key: string,
-  slot: { label?: string; totalBalance?: string } | undefined,
-): BalanceEntry | null {
-  if (!slot || !slot.totalBalance) return null;
-  const totalBalance = asNumber(resolveSlot(root, slot.totalBalance, "number"));
-  if (totalBalance == null) return null;
-  const label = slot.label ?? key;
-  return { currency: key, totalBalance, label };
-}
-
-function projectBalancePartial(raw: unknown, currenciesConfig: CurrenciesConfig): unknown {
-  if (!raw || typeof raw !== "object") return null;
-  const root = raw as Record<string, unknown>;
-  const availRaw = root.is_available;
-  let isAvailable;
-  if (typeof availRaw === "boolean") {
-    isAvailable = availRaw;
-  } else if (typeof availRaw === "string" && availRaw.toLowerCase() === "false") {
-    isAvailable = false;
-  }
-  const entries = Object.keys(currenciesConfig)
-    .map((k) => resolveCurrenciesEntry(root, k, currenciesConfig[k]))
-    .filter((e): e is BalanceEntry => e !== null);
-  return { isAvailable, entries };
-}
-
-export function parseBalance(
-  raw: unknown,
-  currenciesConfig: CurrenciesConfig,
-): Balance | null {
-  return ensureBalance(projectBalancePartial(raw, currenciesConfig));
-}
-

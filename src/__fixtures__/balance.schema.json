@@ -1,8 +1,8 @@
 {
-  "_about": "topgauge BALANCE 标准 schema —— 插件(用户脚本)的输出契约。插件读取 provider API 原始响应,把它转换(或裁剪)成本 schema 的形状,运行时再喂给 src/api.balance.ts:parseBalance。设计原则:1) currency 是 ISO-4217 字符串(如 'CNY' / 'USD'),不是符号;2) totalBalance 是已规约的 number(字符串 '110.00' 也可,但 parseBalance 会用 asNumber 兜底;建议插件直接规约成 number);3) isAvailable 显式声明 true / false;字段缺失 / null 时 fallback 为 true(乐观渲染 entries);4) 多 currency 全部塞进 entries[],渲染器按 ' · ' 拼接 + 取最低 totalBalance 驱动颜色。",
+  "_about": "topgauge BALANCE 标准 schema —— 插件(用户脚本)的输出契约。插件读取 provider API 原始响应,把它转换(或裁剪)成本 schema 的形状,host 通过 ensureBalance() 把它规约成 canonical Balance。设计原则:1) currency 是 ISO-4217 字符串(如 'CNY' / 'USD'),不是符号;2) totalBalance 是已规约的 number;3) isAvailable 显式声明 true / false;字段缺失 / null 时 fallback 为 true(乐观渲染 entries);4) 多 currency 全部塞进 entries[],渲染器按 ' · ' 拼接 + 取最低 totalBalance 驱动颜色。",
   "_rendererNotes": [
     "render.ts:formatBalanceLine  按 entries 顺序 ' · ' 拼接,每条渲染成 'currency:totalBalance'(前缀由 labels.labelBalance 控制)。",
-    "parseBalance 入口会算 minValue = min(entries[].totalBalance) 驱动 colorFor 的 5-band 调色板。",
+    "ensureBalance 入口会算 minValue = min(entries[].totalBalance) 驱动 colorFor 的 5-band 调色板。",
     "isAvailable 三态契约:false → 不渲染 entries(账户冻结等异常态);true / 1 / \"true\" → 正常渲染;字段缺失 / null / undefined → fallback 为 true(乐观渲染,显示 entries)。entries=[] + isAvailable=false → 渲染 placeholder;entries=[] + isAvailable=true → 视为 'no data' 走 n/a。"
   ],
   "schemaVersion": "1.0",
@@ -39,7 +39,7 @@
       "properties": {
         "currency": {
           "type": "string",
-          "description": "ISO-4217 货币代码(如 'CNY' / 'USD' / 'EUR')。约定 3 字母大写,但 parseBalance 不强制 —— 用户配置 labels.labelCurrency 后可以直接渲染成 '¥' / '$' 等符号。"
+          "description": "ISO-4217 货币代码(如 'CNY' / 'USD' / 'EUR')。约定 3 字母大写,但 ensureBalance 不强制 —— 用户配置 labels.labelCurrency 后可以直接渲染成 '¥' / '$' 等符号。"
         },
         "totalBalance": {
           "type": "number",

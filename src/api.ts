@@ -8,11 +8,10 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { resolveEffectiveCurrencies, resolveEffectiveIntervals } from "./config.ts";
+import { resolveEffectiveCurrencies } from "./config.ts";
 import * as diagnostics from "./diagnostics.ts";
 import type {
   CurrenciesConfig,
-  IntervalConfig,
   ProviderEntry,
 } from "./types.ts";
 import type {
@@ -37,8 +36,6 @@ export {
   ensureInterval,
   ensureQuota,
   ensureBalance,
-  parseBalance,
-  parseQuota,
 } from "./plugins/parsers.ts";
 
 const PLUGIN_TIMEOUT_MS = 5_000;
@@ -219,7 +216,6 @@ export async function fetchForProviderByIdWithKind(
   const context: PluginContext = {
     providerId: providerName,
     type: entry.TYPE,
-    intervals: resolveEffectiveIntervals(providerName, entry),
     currencies: resolveEffectiveCurrencies(providerName, entry),
     ...(signal ? { signal } : {}),
   };
@@ -244,4 +240,4 @@ export async function fetchForProviderByIdWithKind(
 
 
 // Kept for consumers that need to construct context in tests.
-export type { CurrenciesConfig, IntervalConfig };
+export type { CurrenciesConfig };

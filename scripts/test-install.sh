@@ -135,7 +135,6 @@ EOF
   # Provide stub runtime artifacts so the install script's "build on
   # demand" branch is skipped — tests must not need network access.
   printf '# stub\n' > "${curr}/dist/index.js"
-  printf '# stub\n' > "${curr}/dist/path-expr.js"
   printf '# stub\n' > "${curr}/dist/plugins/minimax/index.js"
   printf '# stub\n' > "${curr}/dist/plugins/deepseek/index.js"
 
@@ -240,7 +239,6 @@ ln -s "${SCRIPT_DIR}/wrapper.sh" "${curr}/scripts/wrapper.sh"
 ln -s "${SCRIPT_DIR}/install.sh" "${curr}/scripts/install.sh"
 ln -s "${SCRIPT_DIR}/lib/edit-settings.mjs" "${curr}/scripts/lib/edit-settings.mjs"
 printf '# stub\n' > "${curr}/dist/index.js"
-printf '# stub\n' > "${curr}/dist/path-expr.js"
 printf '# stub\n' > "${curr}/dist/plugins/minimax/index.js"
 printf '# stub\n' > "${curr}/dist/plugins/deepseek/index.js"
 cat > "${root}/settings.json" <<EOF

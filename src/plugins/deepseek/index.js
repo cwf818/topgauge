@@ -2,10 +2,10 @@
 // user-written plugin at ~/.claude/plugins/topgauge/query_plugins/<id>/.
 //
 // ABI: default export is { fetchAccountCredit(authenticationKey, ctx) },
-// where `ctx` exposes { signal, intervals, currencies }. The returned
-// object is a Partial<Balance> (host will run `ensureBalance` on it
-// to produce the canonical Balance shape). The plugin author never
-// has to know about the canonical Quota / Balance types.
+// where `ctx` exposes { signal, currencies }. The returned object is
+// a Partial<Balance> (host will run `ensureBalance` on it to produce
+// the canonical Balance shape). The plugin author never has to know
+// about the canonical Quota / Balance types.
 
 const ENDPOINT = "https://api.deepseek.com/user/balance";
 
@@ -21,9 +21,8 @@ function asNumber(value) {
   return null;
 }
 
-// Minimal path expression walker (matches path-expr.resolveSlot for
-// the single-segment / two-segment shapes DeepSeek uses). Keeps the
-// plugin dependency-free.
+// Minimal dotted-path walker (single- or two-segment shapes DeepSeek
+// uses for the CNY default). Keeps the plugin dependency-free.
 function readPath(root, path) {
   const parts = path.split(".");
   let cur = root;

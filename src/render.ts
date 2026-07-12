@@ -65,21 +65,16 @@ type Window = {
   resetDurationMs?: number | null;
 };
 
-// v0.9.0+ — unified interval shape. Replaces the v0.5.0–v0.8.x
+// v0.9.x — unified interval shape. Replaces the v0.5.0–v0.8.x
 // pair-of-Windows model (`Quota.fiveHour` / `Quota.weekly`) with
 // three independent intervals (`shortInterval` / `midInterval` /
-// `longInterval`). All fields are derived from the user's `intervals`
-// config block (top-level or per-provider override) plus the
-// built-in defaults. See `IntervalKey` / `IntervalSlotConfig` in
-// src/types.ts for the user-facing schema; see `parseQuota` in
-// src/plugins/parsers.ts for the resolution rules (percent / time / quota group
-// derivation + 3-step intervalMs fallback chain).
-//
-// The renderer (m_windowQuota / m_countdown / m_quota) reads these fields
-// directly. `Window` (above) is still the shape `formatOneChunk` and
-// `formatOneResetSuffix` consume; `intervalToWindow` (below) projects
-// an `Interval` → `Window` when the gauge / countdown rendering path
-// needs to fire.
+// `longInterval`). The fields are populated by the plugin's
+// `fillQuota` and normalised by `ensureInterval` in
+// src/plugins/parsers.ts. The renderer (m_windowQuota / m_countdown /
+// m_quota) reads these fields directly. `Window` (above) is still the
+// shape `formatOneChunk` and `formatOneResetSuffix` consume;
+// `intervalToWindow` (below) projects an `Interval` → `Window` when
+// the gauge / countdown rendering path needs to fire.
 export type Interval = {
   // Built-in defaults: shortInterval → "5h", midInterval → "7d",
   // longInterval → "30d". Configurable via `intervals.<key>.windowId`.
@@ -108,7 +103,7 @@ export type Interval = {
   // startAt nor endAt nor intervalMs is available.
   intervalMs: number | null;
   // [0, 100] — at least one of {remainingPercent, usedPercent}
-  // is always non-null after parseQuota. The two are
+  // is always non-null after ensureInterval. The two are
   // mirror-derived when only one is mapped.
   remainingPercent: number | null;
   usedPercent: number | null;
@@ -539,9 +534,9 @@ function intervalToWindow(i: Interval): Window | null {
 //   used only     → "quota(5h):123/--"
 //   none          → null
 // The label in `(5h)` is read from the live `Interval.label` (so a
-// user who set `intervals.shortInterval.label = "5h🕐"` sees that
-// label in the body). The leading `quota:` prefix is read from
-// `labels.labelQuota` via `labelFor("quota")`.
+// user who set the plugin's `Interval.shortInterval.label = "5h🕐"`
+// sees that label in the body). The leading `quota:` prefix is
+// read from `labels.labelQuota` via `labelFor("quota")`.
 // v0.9.0+ — splits an Interval's quota axis into the structural
 // parts so the renderer can color just the digit (the "metric of
 // concern"), not the prefix / limit tail. Mirrors the
@@ -1080,9 +1075,10 @@ function formatBalanceValue(v: number): string {
   return v.toFixed(2).replace(/\.?0+$/, "");
 }
 
-// Display prefix for one balance entry. vX.X.X+ — the parser
-// stores the resolved `label` on each BalanceEntry (see
-// api.ts:parseBalance), and the renderer reads it directly.
+// Display prefix for one balance entry. vX.X.X+ — each
+// BalanceEntry carries the resolved `label` (populated by the
+// plugin or `ensureBalance`), and the renderer reads it
+// directly.
 // When the label is empty (the user omitted `label` from
 // currenciesConfig), the renderer falls back to the bare
 // currency code (e.g. "EUR10.50") — never blanks, so a new
@@ -1094,10 +1090,10 @@ function formatBalanceChunk(currency: string, label: string, v: number): string 
 
 type BalanceLike = {
   isAvailable: boolean;
-  // vX.X.X+ — entries always carry a `label` (populated by
-  // parseBalance from currenciesConfig). Plugin transports that
-  // return a pre-built Balance object must ship the label field
-  // on each entry; the type marks it required so a missing label
+  // vX.X.X+ — entries always carry a `label` (populated by the
+  // plugin or by `ensureBalance`). Plugins that return a
+  // pre-built Balance object must ship the label field on each
+  // entry; the type marks it required so a missing label
   // surfaces as a compile error rather than a silent blank.
   entries: ReadonlyArray<{ currency: string; totalBalance: number; label: string }>;
   minValue: number | null;

@@ -18,9 +18,6 @@ import type {
   CompareMethod,
   CurrenciesConfig,
   CurrencySlotConfig,
-  IntervalConfig,
-  IntervalKey,
-  IntervalSlotConfig,
   ProviderEntry,
   ProviderType,
 } from "./types.ts";
@@ -30,7 +27,6 @@ import {
   VALID_COMPARE_METHODS,
   VALID_PROVIDER_TYPES,
   resolveEffectiveCurrenciesPure,
-  resolveEffectiveIntervalsPure,
 } from "./config.providers.ts";
 
 import {
@@ -381,15 +377,14 @@ const DEFAULT_CONFIG: {
   // v0.2.21: declarative provider registry. See DEFAULT_PROVIDERS
   // above and src/providers.ts for the matcher / dispatcher.
   providers: Record<string, ProviderEntry>;
-  // v0.9.0+ — top-level default intervals config. Each key is one
-  // of `shortInterval` / `midInterval` / `longInterval`. This is
-  // layer 2 of the 4-layer merge in resolveEffectiveIntervals
-  // (above). Per-provider `intervals` blocks (layer 3) deep-merge
-  // on top of these. The top-level defaults start empty — global
-  // defaults (layer 0) and built-in per-provider defaults
-  // (layer 1, e.g. minimax model_remains[0].* paths) are layered
-  // in at fetch time, gated on the active provider id.
-  intervals: IntervalConfig;
+  // v0.9.x — the top-level `intervals` config block was REMOVED.
+  // Plugin authors do their own parsing in `fillQuota`/`fillBalance`
+  // (returning canonical Quota/Balance objects directly), so the
+  // host no longer ships a path-expression resolver to configure.
+  // If you need path-driven parsing in a custom plugin, write it
+  // inline in the plugin — the host has no surface for it.
+  // (legacy field retained in JSON for now would warn-and-drop;
+  // see applyOverrides below)
   // vX.X.X+ — top-level currencies config. Maps currency codes
   // (CNY / USD / …) onto `{ label, totalBalance }` slot configs.
   // Layer 2 of the 4-layer merge in resolveEffectiveCurrencies
@@ -490,7 +485,6 @@ const DEFAULT_CONFIG: {
   tokenPrices: {},
   version: "",
   providers: DEFAULT_PROVIDERS,
-  intervals: {},
   // vX.X.X+ — top-level currencies config. Maps currency codes
   // (CNY / USD / …) onto `{ label, totalBalance }` slot configs.
   // Layer 2 of the 4-layer merge in resolveEffectiveCurrencies
@@ -844,28 +838,13 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
     }
   }
 
-  // v0.9.0+ — `intervals` top-level block. Each key is one of
-  // `shortInterval` / `midInterval` / `longInterval`. Per-interval
-  // slot validation mirrors the per-provider `intervals` validator
-  // (shared `validateIntervalSlot` helper below). Built-in
-  // provider defaults (minimax / deepseek) were REMOVED in
-  // v0.9.x — plugins own their own parsing now, so the host-side
-  // defaults are empty. The remaining 3-layer merge (global +
-  // top-level config + per-entry override) lives in
-  // resolveEffectiveIntervalsPure.
-  if ("intervals" in raw) {
-    const ivRaw = raw.intervals;
-    if (!ivRaw || typeof ivRaw !== "object" || Array.isArray(ivRaw)) {
-      warn("intervals must be an object; using default");
-    } else {
-      const ivm = ivRaw as Record<string, unknown>;
-      const keys: IntervalKey[] = ["shortInterval", "midInterval", "longInterval"];
-      for (const k of keys) {
-        if (!(k in ivm)) continue;
-        out.intervals[k] = validateIntervalSlot(k, ivm[k], out.intervals[k] ?? {});
-      }
-    }
-  }
+  // v0.9.x — top-level `intervals` config block REMOVED. The
+  // `intervals` key is silently dropped if present in the user's
+  // config.json (no warn, no migration path). Plugin authors do
+  // their own parsing in `fillQuota`/`fillBalance` — the host
+  // doesn't expose a path-expression surface anymore. Custom
+  // plugins that need it inline a tiny local walker (see
+  // src/plugins/deepseek/index.js:readPath for the shape).
 
   // vX.X.X+ — `currencies` top-level block. Maps currency codes
   // (CNY / USD / …) onto `{ label, totalBalance }` slots. Layer 2
@@ -1448,67 +1427,9 @@ function mergeConfig(raw: Record<string, unknown>): Config {
 // top-level `intervals` validator (applyOverrides above) and the
 // per-provider `intervals` validator (validateProviderEntry
 // below). Returns the merged-and-validated slot config (deep-
-// merged over the supplied `base`). Drops bad fields with a
-// stderr warn; never throws — the caller decides whether to
-// proceed with the partially-validated slot.
-//
-// Field rules:
-//   windowId, label, the 7 path fields → string-only
-//   intervalS, intervalMs              → positive finite number
-//
-// The 7 path fields are stored as raw strings here; runtime
-// resolution (against the provider response) happens in
-// src/api.plan.ts:parseQuota via the path-expr.ts grammar. We don't
-// pre-validate paths at config-load time (the response shape
-// isn't known yet) — only the SHAPE of each path field
-// (string-only).
-function validateIntervalSlot(
-  key: IntervalKey,
-  raw: unknown,
-  base: IntervalSlotConfig,
-): IntervalSlotConfig {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    warn(`intervals.${key} must be an object; using default`);
-    return base;
-  }
-  const sm = raw as Record<string, unknown>;
-  const next: IntervalSlotConfig = { ...base };
-  // String fields — windowId / label / the 7 path expressions.
-  const stringFields = [
-    "windowId", "label",
-    "remainingPercent", "usedPercent",
-    "startAt", "endAt",
-    "remainingQuota", "usedQuota", "limitQuota",
-  ] as const;
-  for (const f of stringFields) {
-    if (typeof sm[f] === "string") {
-      (next as Record<string, unknown>)[f] = sm[f];
-    } else if (f in sm) {
-      warn(`intervals.${key}.${f} must be a string; using default`);
-    }
-  }
-  // Numeric fields — intervalS / intervalMs.
-  const numericFields = ["intervalS", "intervalMs"] as const;
-  for (const f of numericFields) {
-    if (typeof sm[f] === "number" && Number.isFinite(sm[f]) && (sm[f] as number) > 0) {
-      (next as Record<string, unknown>)[f] = sm[f];
-    } else if (f in sm) {
-      warn(`intervals.${key}.${f} must be a positive number; using default`);
-    }
-  }
-  return next;
-}
-
-// Provider-specific defaults and four-layer resolution live in
+// Provider-specific defaults and (currencies-only) resolution live in
 // config.providers.ts. These wrappers preserve the public config.ts API
 // while reading the live singleton snapshot.
-export function resolveEffectiveIntervals(
-  activeProviderId: string,
-  entry: ProviderEntry | null,
-): IntervalConfig {
-  return resolveEffectiveIntervalsPure(activeProviderId, entry, _current.intervals);
-}
-
 export function resolveEffectiveCurrencies(
   activeProviderId: string,
   entry: ProviderEntry | null,
@@ -1516,16 +1437,15 @@ export function resolveEffectiveCurrencies(
   return resolveEffectiveCurrenciesPure(activeProviderId, entry, _current.currencies);
 }
 
-// Validate one CurrencySlotConfig (vX.X.X+). Mirrors
-// `validateIntervalSlot`'s shape rules: `label` must be a string,
-// `totalBalance` must be a string (path expression — runtime
-// resolution happens in parseBalance). Bad fields drop with a
-// stderr warn; the rest of the slot survives. The caller decides
-// whether to proceed with a partially-validated slot.
-//
-// Unlike validateIntervalSlot, there's no `base` argument —
-// CurrencySlotConfig has only 2 fields, so per-key shallow assign
-// at the resolver level is the same as "fresh slot per layer".
+// Validate one CurrencySlotConfig (vX.X.X+). `label` must be a
+// string, `totalBalance` must be a string (path expression —
+// runtime resolution happens in the plugin's local walker).
+// Bad fields drop with a stderr warn; the rest of the slot
+// survives. The caller decides whether to proceed with a
+// partially-validated slot. There's no `base` argument —
+// CurrencySlotConfig has only 2 fields, so per-key shallow
+// assign at the resolver level is the same as "fresh slot per
+// layer".
 function validateCurrencySlot(
   key: string,
   raw: unknown,
@@ -1646,51 +1566,21 @@ function validateProviderEntry(_name: string, v: unknown): ProviderEntry | null 
     !Array.isArray(e.config)
       ? (e.config as Record<string, unknown>)
       : undefined;
-  // v0.9.0+ — forward the user-supplied `intervals` block (the
-  // data-driven per-interval slot mapping). Replaces the v0.5.0–
-//  v0.8.x flat `parameters` block. Built-in provider defaults
-  // (the minimax model_remains[0].* paths) are NOT layered in here
-  // — they fire at FETCH TIME in resolveEffectiveIntervals (above),
-  // gated on the active provider id. So a kimi active provider
-  // never inherits minimax-style defaults even if the user's
-  // providers.minimax entry still exists with the URL pointing at
-  // minimaxi.com.
-  //
-  // Per-key validation reuses `validateIntervalSlot` (defined
-  // above) — same shape rules as the top-level `intervals`
-  // validator. Lenient: bad fields drop with a stderr warn; the
-  // entry itself stays loaded.
-  let validatedIntervals: IntervalConfig = {};
-  if ("intervals" in e && e.intervals !== undefined) {
-    const rawIntervals = e.intervals;
-    if (
-      !rawIntervals ||
-      typeof rawIntervals !== "object" ||
-      Array.isArray(rawIntervals)
-    ) {
-      warn("provider.intervals must be an object; dropping the block");
-    } else {
-      const rIm = rawIntervals as Record<string, unknown>;
-      for (const k of ["shortInterval", "midInterval", "longInterval"] as IntervalKey[]) {
-        if (k in rIm) {
-          validatedIntervals[k] = validateIntervalSlot(
-            k,
-            rIm[k],
-            validatedIntervals[k] ?? {},
-          );
-        }
-      }
-    }
-  }
+  // v0.9.x — per-provider `intervals` block REMOVED. Plugins
+  // own their own parsing, so the host doesn't expose this field
+  // anymore. (User config.json that still carries
+  // `providers.<id>.intervals` is silently ignored at the type
+  // level — the field isn't part of ProviderEntry, so the JSON
+  // loader drops it via the validateProviderEntry shallow
+  // assign. No warn, no migration path.)
   // vX.X.X+ — forward the user-supplied `currencies` block. Layer 3
   // of the 4-layer merge in resolveEffectiveCurrencies. Built-in
   // per-provider defaults (deepseek's CNY → balance_infos.0.total
   // _balance) are NOT layered in here — they fire at FETCH TIME in
   // resolveEffectiveCurrencies, gated on the active provider id.
-  // Same gate pattern as the per-provider `intervals` block above:
-  // a kimi active provider never inherits deepseek-style defaults
-  // even if the user's providers.deepseek entry still exists with
-  // the URL pointing at api.deepseek.com.
+  // So a kimi active provider never inherits deepseek-style
+  // defaults even if the user's providers.deepseek entry still
+  // exists with the URL pointing at api.deepseek.com.
   //
   // Per-key validation reuses `validateCurrenciesBlock` (defined
   // above) — same shape rules as the top-level `currencies`
@@ -1708,7 +1598,6 @@ function validateProviderEntry(_name: string, v: unknown): ProviderEntry | null 
     BASE_URL_COMPARED_TO: base,
     COMPARE_METHOD: cm as CompareMethod,
     ...(validatedConfig ? { config: validatedConfig } : {}),
-    ...(validatedIntervals ? { intervals: validatedIntervals } : {}),
     ...(validatedCurrencies && Object.keys(validatedCurrencies).length > 0
       ? { currencies: validatedCurrencies }
       : {}),

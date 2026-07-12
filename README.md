@@ -435,26 +435,12 @@ A reference with every field is at [config.example.json](./config.example.json).
     "minimax": {
       "TYPE": "QUOTA",
       "BASE_URL_COMPARED_TO": "https://api.minimaxi.com/anthropic",
-      "COMPARE_METHOD": "EXACT",
-      "intervals": {
-        "shortInterval": {
-          "remainingPercent": "model_remains.0.current_interval_remaining_percent",
-          "startAt":          "model_remains.0.start_time",
-          "endAt":            "model_remains.0.end_time"
-        },
-        "midInterval": {
-          "remainingPercent": "model_remains.0.current_weekly_remaining_percent",
-          "startAt":          "model_remains.0.weekly_start_time",
-          "endAt":            "model_remains.0.weekly_end_time"
-        },
-        "longInterval": {}
-      }
+      "COMPARE_METHOD": "EXACT"
     },
     "deepseek": {
       "TYPE": "BALANCE",
       "BASE_URL_COMPARED_TO": "https://api.deepseek.com/anthropic",
-      "COMPARE_METHOD": "EXACT",
-      "intervals": {}
+      "COMPARE_METHOD": "EXACT"
     },
   },
   // Plugin version is loaded automatically at startup from
@@ -479,7 +465,7 @@ The `providers` block is a `Record<string, ProviderEntry>`. Each entry declares:
   - `"INCLUDE"` — `baseUrl.includes(pattern)`. Fuzzy host match; useful when `ANTHROPIC_BASE_URL` adds a path you don't care about.
   - `"STARTWITH"` — `baseUrl.startsWith(pattern)` with a suffix-attack guard: the character right after the prefix must be `undefined`, `/`, `?`, or `#`. This rejects `https://api.deepseek.com.evil.example` even though it `startsWith("https://api.deepseek.com")`. The `deepseek` matcher in earlier versions used this scheme; the v0.2.21 default is `EXACT` (a stricter choice), so users who relied on the old prefix behavior should set `COMPARE_METHOD: "STARTWITH"`.
 - **`AUTHENTICATION_KEY`** *(optional, v0.6.0+)* — Bearer token sent in the `Authorization` header. **Always wins** over `process.env.ANTHROPIC_AUTH_TOKEN` when present — there is no env fallback. Useful for sandboxed / CI deployments that don't carry the env var, or for giving a single proxy provider a different credential from the rest of the session. Bad values (non-string, empty string) drop just the field; the entry still loads and the fetcher falls back to the env token.
-- **`intervals`** *(optional, v0.8.28+)* — keyed by `shortInterval` / `midInterval` / `longInterval` (NOT by window-id literal). Each interval has up to 11 well-known slots the renderer reads; see [Well-known slots](#well-known-slots-per-providertype) below.
+- **`currencies`** *(optional, vX.X.X+)* — per-currency slot map used by `BALANCE` providers (e.g. DeepSeek). Maps currency codes onto `{ label, totalBalance }`. Layer 3 of the resolveEffectiveCurrencies merge — overrides the top-level `currencies` block for the active provider.
 
 A user can override any subset of fields on a known provider; missing fields inherit from the default. To add a new provider, append a new key:
 
@@ -527,175 +513,48 @@ A user-defined provider only needs its URL matcher, type, optional rendering ove
 }
 ```
 
-### Data fields the plugin reads (field-mapping via `intervals.<term>.*`)
+### Plugin output contract
 
-Built-in plugins may use the `intervals` block to map provider response fields into the canonical quota windows. User plugins own their API parsing and may ignore this block; adding a new user plugin means adding its module under `query_plugins`.
+Each plugin returns a canonical `Quota` / `Balance` object directly (see [`HOW_TO_CREATE_A_PLUGIN.md`](./HOW_TO_CREATE_A_PLUGIN.md) for the full ABI). The host doesn't ship a path-expression resolver — every plugin owns its own parsing and ships the canonical numbers itself.
 
-Anything not mapped resolves to `null`, and the renderer treats `null` as "no data for this window" (drops the chunk and skips its adjacent separators, same as today). A misconfigured path never throws — the parser logs a one-time stderr warning and the slot resolves to `null` (graceful degradation).
+**`Quota` plugins** return:
 
-#### Well-known slots per `ProviderType`
-
-**`Quota` providers** (e.g. MiniMax). The renderer reads up to **three parallel intervals** — `shortInterval` (default 5h), `midInterval` (default 7d), and `longInterval` (default 30d). Each interval has the same 11-slot shape; only the configured fields need to be present, and each interval is independent. The shape is keyed by term:
-
-| Slot                          | Required            | Type                       | Used by                                                                                | Notes                                                                                                                  |
-| ----------------------------- | ------------------- | -------------------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `intervals.<term>.windowId`   | optional            | `"5h"` \| `"7d"` \| `"30d"` | label / id discriminator                                                              | Defaults to `{ shortInterval: "5h", midInterval: "7d", longInterval: "30d" }` when omitted.                            |
-| `intervals.<term>.label`      | optional            | string                     | `<label>--` placeholder, `m_quota(<label>):…` body                                     | Defaults to `windowId`.                                                                                                |
-| `intervals.<term>.usedPercent`      | one of (percent group) | number 0..100         | `m_windowQuota` bar                                                                         | The **used** percentage. Provide this OR `remainingPercent`, not both. The plugin derives the missing one via `100 - x`. |
-| `intervals.<term>.remainingPercent` | one of (percent group) | number 0..100        | (derived → `usedPercent`)                                                              | The **remaining** percentage. Same derive rule.                                                                        |
-| `intervals.<term>.startAt`          | one of (time group)    | number (epoch ms)    | `m_countdown` body, `pickResetArrow` fill-state glyph                                  | When the current interval started. Pairs with `endAt` to compute the duration. ISO-8601 strings accepted.              |
-| `intervals.<term>.endAt`            | one of (time group)    | number (epoch ms)    | `m_countdown` body                                                                     | When the interval resets. Same ISO-8601 coercion.                                                                      |
-| `intervals.<term>.intervalMs` / `intervalS` | one of (time group) | number             | duration signal when `startAt`/`endAt` are missing                                     | Either milliseconds (`intervalMs`) or seconds (`intervalS`, multiplied by 1000). When `startAt`+`endAt` are also set, they win (explicit > derived). |
-| `intervals.<term>.usedQuota`        | optional (quota group) | number              | `m_quota` body                                                                         | Used portion (integer).                                                                                                |
-| `intervals.<term>.limitQuota`       | optional (quota group) | number              | `m_quota` body                                                                         | Total cap (integer).                                                                                                   |
-| `intervals.<term>.remainingQuota`   | optional (quota group) | number              | informational only                                                                      | Remaining portion. Independent of `usedQuota` / `limitQuota`.                                                           |
-| `isAvailable`              | optional            | boolean                    | the fail line ("not available!")                                                       | When `false`, the renderer replaces the line with `<modeLabel> <RED>not available!<RESET>`. Defaults to `true` if absent. |
-
-**`BALANCE` providers** (e.g. DeepSeek). Renders an absolute monetary amount, possibly in multiple currencies. All entries in the array are rendered, joined by ` · `, with the **lowest** entry driving the color band. The `BALANCE` slot map is on the next-minor roadmap (DeepSeek still uses its v0.4.x hardcoded `parseBalance`); the slot names below are the planned contract.
-
-| Slot              | Required | Type                | Used by                          | Notes                                                                                                                  |
-| ----------------- | -------- | ------------------- | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `isAvailable`     | optional | boolean             | the fail line                    | `false` → render "not available!" instead of the chunks.                                                              |
-| `balances`        | required | array of objects    | `m_balance`                      | The list of currency entries. Each entry is parsed via the `balanceEntry` slot map below.                              |
-| `balanceEntry.currency` | required per entry | string | `formatBalanceChunk` prefix     | The currency code (e.g. `"CNY"`, `"USD"`). Looked up against `currency.prefixes`; falls back to the raw code or `currency.fallback`. |
-| `balanceEntry.totalBalance` | required per entry | number | `formatBalanceChunk` value      | The numeric balance for that currency. Numeric strings (`"110.00"`) are accepted and coerced.                          |
-
-#### Default MiniMax mapping
-
-**v0.9.x change:** the host-side `intervals` defaults for the bundled `minimax` provider were removed. Built-in plugins own their own parsing — `src/plugins/minimax/index.js` does the `model_remains[]` projection to canonical `Quota` numbers directly, and the host's path-expression layer is no longer wired into the built-in flow. Path expressions still **resolve** (the `intervals` config block + `path-expr.ts` resolver are alive for user-plugin authors who DO want to drive their plugin via path strings), but **nothing ships out of the box** — if you write a custom plugin and want path-driven defaults, declare them in your provider's `intervals` block.
-
-If you need the legacy path-expression mapping as a reference (e.g. to seed your own user-plugin's `intervals` block), the old defaults were:
-
-```jsonc
+```ts
 {
-  "providers": {
-    "minimax": {
-      "intervals": {
-        "shortInterval": {
-          "remainingPercent": "model_remains.0.current_interval_remaining_percent",
-          "startAt":          "model_remains.0.start_time",
-          "endAt":            "model_remains.0.end_time"
-        },
-        "midInterval": {
-          "remainingPercent": "model_remains.0.current_weekly_remaining_percent",
-          "startAt":          "model_remains.0.weekly_start_time",
-          "endAt":            "model_remains.0.weekly_end_time"
-        },
-        "longInterval": {}
-      }
-    }
-  }
+  shortInterval: Interval | null,
+  midInterval:   Interval | null,
+  longInterval:  Interval | null,
+}
+
+type Interval = {
+  windowId: string;             // default "5h" / "7d" / "30d"
+  label: string;                // default = windowId
+  startAt: number | null;       // epoch ms
+  endAt: number | null;         // epoch ms
+  intervalMs: number | null;
+  remainingPercent: number | null;
+  usedPercent: number | null;   // null when not derivable
+  remainingQuota: number | null;
+  usedQuota: number | null;
+  limitQuota: number | null;
 }
 ```
 
-Note the **derivation** at work: only `remainingPercent` is mapped; the parser derives `usedPercent` via `100 - x`. If your account exposes a `used_percent` field directly, map `usedPercent` instead and skip the derivation.
+**`Balance` plugins** return:
 
-#### Path-expression grammar
-
-The path is a dotted/bracketed string evaluated against the parsed JSON response. The grammar:
-
-```
-path     := segment (('.' segment) | ('[' index ']'))*
-segment  := [A-Za-z_][A-Za-z0-9_]*      // object key, OR a pure-digit token
-index    := [0-9]+                       // array index
-```
-
-A pure-digit segment is parsed as an array index, so `usages.0.limits.0.detail.used` and `usages[0].limits[0].detail.used` are equivalent. Mixed alphanumerics (e.g. `m3`, `a1b`) are rejected as invalid keys.
-
-**Type coercion rules** (the parser is permissive on input, strict on output):
-
-- **Numbers** — accept JS numbers, numeric strings (`"42"`, `"3.14"`); reject non-numeric strings, `null`, booleans, objects. Trailing-unit strings (`"42%"`) are rejected.
-- **Epoch ms** — same as numbers, but ISO-8601 strings (`"2026-07-07T11:32:40.140865Z"`) are coerced via `Date.parse`.
-- **Booleans** — accept `true`/`false`, the numbers `0`/`1`, and the strings `"true"`/`"false"` (case-insensitive). Other inputs reject.
-- **Arrays** — the slot is array-typed; the parser returns the whole array and iterates per-entry.
-- **Missing / null** — the slot resolves to `null`; the renderer treats this as "no data" (drop / `n/a` placeholder per module contract).
-- **Type mismatch** — the slot rejects; the parser logs a one-time stderr warning and the slot resolves to `null`. The plugin never throws on a bad path; a malformed config degrades to missing data, not a crash.
-
-#### Path-resolution edge cases
-
-- **First-wins on duplicate keys** — if an object has both `used` and `usedAt` as keys, the path `used` matches `used`, not a prefix-match on `usedAt`. The parser does exact-match on object keys.
-- **Array out-of-bounds** — `usages[5].detail.used` on a 2-element array resolves to `null` (silent; the slot is just empty). No stderr warning — the user can't tell at config time how many entries the API will return.
-- **Heterogeneous arrays** — if `usages[0]` is an object but `usages[1]` is a string, the parser walks the path against whichever type is at each step and rejects on mismatch.
-- **Stringly-typed numbers** — `total_balance: "110.00"` is accepted and parsed as `110.00` (Number-coerced). Same for `"42"`, `"-3.14"`. Non-numeric strings reject.
-
-#### Worked example — generic 5h/7d API
-
-Given the example payload in the design spec:
-
-```json
+```ts
 {
-  "usages": [
-    {
-      "scope": "FEATURE_CODING",
-      "detail": { "limit": "100", "used": "42", "remaining": "58",
-                  "resetTime": "2026-07-07T11:32:40.140865Z" },
-      "limits": [
-        { "window": { "duration": 300, "timeUnit": "TIME_UNIT_MINUTE" },
-          "detail": { "limit": "100", "used": "100",
-                      "resetTime": "2026-06-30T21:32:40.140865Z" } }
-      ]
-    }
-  ],
-  "totalQuota": { "limit": "100", "used": "8", "remaining": "92" }
+  isAvailable: boolean;          // default true
+  entries: Array<{
+    currency: string;
+    totalBalance: number;
+    label: string;               // e.g. "￥" for CNY
+  }>;
+  minValue: number | null;       // host-computed
 }
 ```
 
-A `Quota` provider mapping for it (note the 5h window comes from the nested `usages[0].limits[0].detail.used`, and the 7d window from the top-level `usages[0].detail.used`):
-
-```jsonc
-{
-  "providers": {
-    "myProvider": {
-      "TYPE": "QUOTA",
-      "BASE_URL_COMPARED_TO": "https://api.example.com/anthropic",
-      "COMPARE_METHOD": "EXACT",
-      "intervals": {
-        "shortInterval": {
-          "usedPercent": "usages[0].limits[0].detail.used",
-          "endAt":       "usages[0].limits[0].detail.resetTime"
-        },
-        "midInterval": {
-          "usedPercent": "usages[0].detail.used",
-          "endAt":       "usages[0].detail.resetTime"
-        },
-        "longInterval": {}
-      }
-    }
-  }
-}
-```
-
-The same mapping using the **bracket-less** form (digits after a dot are still parsed as array indices, per the grammar above):
-
-```jsonc
-"usedPercent": "usages.0.limits.0.detail.used",
-"endAt":       "usages.0.limits.0.detail.resetTime"
-```
-
-#### Worked example — `BALANCE` provider with multiple currencies
-
-For DeepSeek's `/user/balance` shape, the planned `BALANCE` mapping is:
-
-```jsonc
-{
-  "providers": {
-    "deepseek": {
-      "TYPE": "BALANCE",
-      "BASE_URL_COMPARED_TO": "https://api.deepseek.com/anthropic",
-      "COMPARE_METHOD": "EXACT",
-      "config": {
-        "isAvailable": "is_available",
-        "balances":    "balance_infos",
-        "balanceEntry.currency":     "currency",
-        "balanceEntry.totalBalance": "total_balance"
-      },
-      "intervals": {}
-    }
-  }
-}
-```
-
-The `balances` slot is array-typed; the parser iterates `balance_infos[]` and applies `balanceEntry.*` paths to each element. (DeepSeek's v0.4.x parser still uses the hardcoded `parseBalance`; the slot-based form above is the contract for the v0.5.0 wiring.)
+The host runs `ensureQuota` / `ensureBalance` on whatever the plugin returns, so a plugin can ship a `Partial<Quota>` / `Partial<Balance>` and let the host fill canonical defaults (windowId, label, derived percentages, `minValue`).
 
 ### Module tokens
 
@@ -711,9 +570,9 @@ Recognized modules:
 | Token | Renders | Notes |
 | ----- | ------- | ----- |
 | `m_modeLabel` | The leading prefix: `modeLabels.used` / `modeLabels.remaining` (plan) or `modeLabels.balance` (DeepSeek). | |
-| `m_windowQuota\|term:short\|mid\|long` | Interval bar + colored percentage, e.g. `▓▓▓░░░ 38%`. v0.8.28+ unifies the 5h/7d/30d windows under one module family keyed on `intervals.<term>`. | |
+| `m_windowQuota\|term:short\|mid\|long` | Interval bar + colored percentage, e.g. `▓▓▓░░░ 38%`. v0.8.28+ unifies the 5h/7d/30d windows under one module family. | |
 | `m_countdown\|term:short\|mid\|long` | Interval reset suffix: `(2h3m🕛 5h)` when reset time known, or `<label>:--` placeholder otherwise. | |
-| `m_quota\|term:short\|mid\|long` | Quota display, e.g. `quota(5h):100/500`. Reads `intervals.<term>.usedQuota` + `.limitQuota`. v0.8.28+ new. | |
+| `m_quota\|term:short\|mid\|long` | Quota display, e.g. `quota(5h):100/500`. Reads the canonical `Interval.usedQuota` + `.limitQuota` the plugin ships. v0.8.28+ new. | |
 | `m_balance` | The DeepSeek balance chunk (e.g. `$25 · ￥110`), single SGR-wrapped block. | |
 | `m_age` | The age annotation: `🔗 5m ago` (fresh, in-template) or `⛓️‍💥 5m ago` (stale, in-template or forced fallback). Emits unconditionally when listed in the lineTemplate; returns `null` only when `ageMs` is missing. | |
 | `m_version` | The plugin version: `v0.8.37` (auto-loaded from `.claude-plugin/plugin.json`). | |
@@ -1435,17 +1294,7 @@ placeholder / cached values.
 
 ### Response shape
 
-The MiniMax parser reads from the `intervals.<term>.<field>` slot map (see [Well-known slots](#well-known-slots-per-providertype) above). For each of the three term slots (`shortInterval` / `midInterval` / `longInterval`), the parser:
-
-1. **Resolves the path** at `intervals.<term>.<field>` against the parsed JSON (the same path-expression grammar as the v0.4.x parser, with array-index and dot-notation support).
-2. **Derives missing values** per group:
-   - **Percent group** (`usedPercent` / `remainingPercent`): at least one required; if both provided, `usedPercent` wins; if only one is given, the other is derived as `100 - x`.
-   - **Time group** (`startAt` / `endAt` / `intervalMs` + `intervalS`): at least two of the three required. If `startAt` + `endAt` are present, they win (explicit > derived); otherwise, missing third field is derived from the other two. If only one is provided, the time group collapses to all-null.
-   - **Quota group** (`usedQuota` / `limitQuota` / `remainingQuota`): each is independent — render rules are per-field (see `m_quota` in MANUAL §3.1).
-3. **Falls back** the `intervalMs` field through a 3-step chain:
-   1. **Path** — `intervals.<term>.intervalMs` / `intervalS` (seconds are multiplied by 1000).
-   2. **Numeric parse** — if the path resolved to a string-shaped number, coerce to finite number.
-   3. **Keyword lookup** — if both fail, probe the root response for `hour` / `fiveHour` / `day` / `sevenDay` / `week` / `month` / `year` in that order, multiplying by the canonical ms-per-unit (3600000 / 18000000 / 86400000 / 604800000 / 2592000000 / 31536000000).
+The MiniMax plugin (`src/plugins/minimax/index.js`) projects the raw response into canonical `Quota` directly — there's no host-side parser layer to describe here. See [HOW_TO_CREATE_A_PLUGIN.md](./HOW_TO_CREATE_A_PLUGIN.md) for the plugin ABI and `src/plugins/minimax/index.js` for the worked example.
 
 If `base_resp.status_code ≠ 0`, the response is treated as failure and the line is omitted.
 
@@ -1520,12 +1369,11 @@ src/
   config.ts           # loads ~/.claude/plugins/topgauge/config.json; module-level singleton store
   diagnostics.ts      # JSONL append logger (opt-in via TOPGAUGE_DIAGNOSTICS_ENABLE); 1000-line cap (v0.8.34+)
   dispatch.ts         # providerType → module-set dispatch (provider-aware gating)
-  path-expr.ts        # path-expression grammar evaluator (v0.4.x+) for intervals.<term>.* slot mapping
   git-info.ts         # m_branch / m_gitStatus read-side helpers (cwd-based)
   session-parse.ts    # parseTokenSnapshot — stdin JSON → TokenSnapshot; m_tokenTotalIn invariant check
   token-store.ts      # append-only JSONL state file at state/<projectHash>/<sessionId>.jsonl for m_acc* / m_sum*
   __fixtures__/       # remains.real.json, balance.real.json, balance.multi.json, …
-  *.test.ts           # node:test unit tests (render / api / cache / composition / lineTemplate / path-expr / status-store replay / token-store / quotes / index-parse / config)
+  *.test.ts           # node:test unit tests (render / api / cache / composition / lineTemplate / status-store replay / token-store / quotes / index-parse / config)
 .claude-plugin/
   plugin.json         # plugin manifest (declares commands, version, keywords)
   marketplace.json    # single-plugin marketplace wiring

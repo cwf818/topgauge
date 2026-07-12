@@ -8,30 +8,13 @@ import {
   ensureInterval,
   ensureQuota,
   fetchForProviderByIdWithKind,
-  parseBalance,
-  parseQuota,
   pluginTransportWithKind,
   resolvePluginOnDiskWithKind,
 } from "./api.ts";
-import type { CurrenciesConfig, IntervalConfig } from "./types.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = (name: string): unknown =>
   JSON.parse(readFileSync(resolve(here, "__fixtures__", name), "utf8"));
-
-const minimaxIntervals: IntervalConfig = {
-  shortInterval: {
-    remainingPercent: "model_remains.0.current_interval_remaining_percent",
-    startAt: "model_remains.0.start_time",
-    endAt: "model_remains.0.end_time",
-  },
-  midInterval: {
-    remainingPercent: "model_remains.0.current_weekly_remaining_percent",
-    startAt: "model_remains.0.weekly_start_time",
-    endAt: "model_remains.0.weekly_end_time",
-  },
-  longInterval: {},
-};
 
 let oldHome: string | undefined;
 let oldUserProfile: string | undefined;
@@ -53,65 +36,11 @@ afterEach(() => {
   rmSync(tempHome, { recursive: true, force: true });
 });
 
-describe("parseQuota", () => {
-  it("projects the MiniMax model_remains response into three intervals", () => {
-    const result = parseQuota(fixture("quota.real.minimax.json"), minimaxIntervals);
-    assert.ok(result);
-    assert.equal(result.shortInterval?.remainingPercent, 66);
-    assert.equal(result.midInterval?.remainingPercent, 61);
-    assert.equal(result.longInterval, null);
-  });
-
-  it("derives used percentage and interval endpoints", () => {
-    const result = parseQuota({
-      short: { remaining: 25, start: 1_000, end: 2_000 },
-    }, {
-      shortInterval: {
-        remainingPercent: "short.remaining",
-        startAt: "short.start",
-        endAt: "short.end",
-      },
-    });
-    assert.equal(result?.shortInterval?.usedPercent, 75);
-    assert.equal(result?.shortInterval?.intervalMs, 1_000);
-  });
-
-  it("returns null for invalid input or non-zero base response", () => {
-    assert.equal(parseQuota(null, minimaxIntervals), null);
-    assert.equal(parseQuota({ base_resp: { status_code: 1 } }, minimaxIntervals), null);
-  });
-});
-
-// DeepSeek built-in plugin — exercises parseBalance end-to-end on
-// the real balance fixture + the min-tracker behavior. Mirrors the
-// parseQuota block above in shape. (Was originally in
-// src/api.deepseek.test.ts; merged here so all api.ts surface-area
-// tests live in one file.)
-describe("parseBalance", () => {
-  const currencies: CurrenciesConfig = {
-    CNY: { label: "￥", totalBalance: "balance_infos.0.total_balance" },
-  };
-
-  it("parses the real balance fixture", () => {
-    const result = parseBalance(fixture("balance.real.json"), currencies);
-    assert.equal(result?.isAvailable, true);
-    assert.equal(result?.entries[0]?.label, "￥");
-  });
-
-  it("keeps all configured currencies and computes the minimum", () => {
-    const result = parseBalance({
-      is_available: true,
-      balance_infos: [{ currency: "CNY", total_balance: "20" }],
-    }, currencies);
-    assert.equal(result?.minValue, 20);
-  });
-
-  it("marks explicit unavailable responses without throwing", () => {
-    const result = parseBalance({ is_available: false }, currencies);
-    assert.equal(result?.isAvailable, false);
-    assert.deepEqual(result?.entries, []);
-  });
-});
+// v0.9.x — parseQuota + parseBalance were REMOVED. The host
+// no longer ships a path-expression projection layer — plugins
+// do their own parsing in `fillQuota` / `fillBalance` and ship
+// canonical Quota/Balance objects directly. The `ensure*`
+// validators below still cover the canonical-shape contract.
 
 describe("ensure quota", () => {
   it("fills a partial interval with canonical nullable fields and derives values", () => {

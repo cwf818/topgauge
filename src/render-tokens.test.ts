@@ -349,11 +349,12 @@ describe("cacheHitColor — 3-band picker", () => {
 });
 
 describe("getFieldByPath (v0.8.18+ m_quote field resolver)", () => {
-  // Walks a JSON value along a dot-separated path, mirroring the
-  // shape inspection in src/api.plan.ts:parseQuota. Each segment is
-  // either an object key or an array index; a string value is
-  // terminal regardless of remaining path (per the user's
-  // "如果拿到的已经是字符串, 则忽略 field 参数" contract).
+  // Walks a JSON value along a dot-separated path (m_quote's own
+  // local walker, NOT the deleted path-expr.ts — that host-side
+  // resolver was removed in v0.9.x). Each segment is either an
+  // object key or an array index; a string value is terminal
+  // regardless of remaining path (per the user's "如果拿到的已
+  // 经是字符串, 则忽略 field 参数" contract).
 
   it("object key path", () => {
     assert.equal(

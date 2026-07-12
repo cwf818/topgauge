@@ -2,10 +2,10 @@
 // user-written plugin at ~/.claude/plugins/topgauge/query_plugins/<id>/.
 //
 // ABI: default export is { fetchAccountCredit(authenticationKey, ctx) },
-// where `ctx` exposes { signal, intervals, currencies }. The returned
-// object is a Partial<Quota> (host will run `ensureQuota` on it to
-// produce the canonical Quota shape). The plugin author never has to
-// know about the canonical Quota / Balance types.
+// where `ctx` exposes { signal, currencies }. The returned object is
+// a Partial<Quota> (host will run `ensureQuota` on it to produce
+// the canonical Quota shape). The plugin author never has to know
+// about the canonical Quota / Balance types.
 
 const ENDPOINT = "https://www.minimaxi.com/v1/token_plan/remains";
 
