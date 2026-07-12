@@ -463,7 +463,7 @@ export function pickQuoteEntryFiltered(
 // bucket → same color output (consistent with the quote's stability
 // window). The renderer wires these up — see src/render.ts.
 
-export const RESET = "\x1b[0m";
+const RESET = "\x1b[0m";
 
 // 256-color rainbow palette: 16 hues × N brightness steps. Sampling
 // 6 evenly-spaced hue indices from the 6×6×6 color cube (xterm's

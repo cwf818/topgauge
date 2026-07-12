@@ -15,13 +15,11 @@ import assert from "node:assert/strict";
 import { __resetForTest } from "./config.ts";
 import {
   compareUrl,
-  fetchForProvider,
+  fetchForProviderWithKind,
   getProviderEntry,
   matchProvider,
   failLabelForProvider,
-  templateKeyForProvider,
   providerTypeFor,
-  providerTypeOf,
 } from "./providers.ts";
 
 beforeEach(() => {
@@ -347,38 +345,19 @@ describe("providerTypeFor (formerly templateKeyForProvider)", () => {
     assert.equal(providerTypeFor(null), "unknown");
     assert.equal(providerTypeFor("nope"), "unknown");
   });
-
-  // Back-compat: the old function name is kept as a deprecated alias.
-  it("templateKeyForProvider alias still works", () => {
-    assert.equal(templateKeyForProvider("minimax"), "quota");
-    assert.equal(templateKeyForProvider("deepseek"), "balance");
-    assert.equal(templateKeyForProvider(null), "unknown");
-  });
 });
 
-describe("providerTypeOf", () => {
-  it("returns the TYPE field for known providers", () => {
-    assert.equal(providerTypeOf("minimax"), "QUOTA");
-    assert.equal(providerTypeOf("deepseek"), "BALANCE");
-  });
-
-  it("returns null for unknown / null providers", () => {
-    assert.equal(providerTypeOf("nope"), null);
-    assert.equal(providerTypeOf(null), null);
-  });
-});
-
-describe("fetchForProvider — error paths (no network)", () => {
+describe("fetchForProviderWithKind — error paths (no network)", () => {
   it("throws when the provider has no registered entry", async () => {
     await assert.rejects(
-      () => fetchForProvider("nope", "tok", AbortSignal.timeout(1000)),
+      () => fetchForProviderWithKind("nope", "tok", AbortSignal.timeout(1000)),
       /unknown provider: nope/,
     );
   });
 
   it("throws when the provider is null", async () => {
     await assert.rejects(
-      () => fetchForProvider(null, "tok", AbortSignal.timeout(1000)),
+      () => fetchForProviderWithKind(null, "tok", AbortSignal.timeout(1000)),
       /unknown provider/,
     );
   });

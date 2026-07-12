@@ -7,11 +7,10 @@ import { fileURLToPath } from "node:url";
 import {
   ensureInterval,
   ensureQuota,
-  fetchForProviderById,
+  fetchForProviderByIdWithKind,
   parseBalance,
   parseQuota,
-  pluginTransport,
-  resolvePluginOnDisk,
+  pluginTransportWithKind,
   resolvePluginOnDiskWithKind,
 } from "./api.ts";
 import type { CurrenciesConfig, IntervalConfig } from "./types.ts";
@@ -164,7 +163,7 @@ describe("ensure quota", () => {
 // HTTP layer. v0.8.47+: the fill helper is no longer exported; the
 // plugin inlines raw→Partial inside its fetchAccountCredit. Tests
 // here mock fetch and assert the canonical Quota that flows out of
-// fetchForProviderById.
+// fetchForProviderByIdWithKind.
 describe("MiniMax built-in plugin (end-to-end)", () => {
   it("selects the general model regardless of array order", async () => {
     const raw = fixture("quota.real.minimax.json") as {
@@ -178,7 +177,7 @@ describe("MiniMax built-in plugin (end-to-end)", () => {
     globalThis.fetch = async () =>
       new Response(JSON.stringify(reordered), { status: 200 });
     try {
-      const result = await fetchForProviderById(
+      const result = await fetchForProviderByIdWithKind(
         "minimax",
         {
           TYPE: "QUOTA",
@@ -188,7 +187,7 @@ describe("MiniMax built-in plugin (end-to-end)", () => {
         "secret",
         undefined,
       );
-      const quota = result as {
+      const quota = result.data as {
         shortInterval: { remainingPercent: number; usedPercent: number; intervalMs: number };
         midInterval: { remainingPercent: number; usedPercent: number; intervalMs: number };
         longInterval: unknown;
@@ -211,7 +210,7 @@ describe("MiniMax built-in plugin (end-to-end)", () => {
         base_resp: { status_code: 0 },
       }), { status: 200 });
     try {
-      const result = await fetchForProviderById(
+      const result = await fetchForProviderByIdWithKind(
         "minimax",
         {
           TYPE: "QUOTA",
@@ -221,7 +220,7 @@ describe("MiniMax built-in plugin (end-to-end)", () => {
         "secret",
         undefined,
       );
-      assert.equal(result, null);
+      assert.equal(result.data, null);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -235,7 +234,7 @@ describe("MiniMax built-in plugin (end-to-end)", () => {
         base_resp: { status_code: 401 },
       }), { status: 200 });
     try {
-      const result = await fetchForProviderById(
+      const result = await fetchForProviderByIdWithKind(
         "minimax",
         {
           TYPE: "QUOTA",
@@ -245,7 +244,7 @@ describe("MiniMax built-in plugin (end-to-end)", () => {
         "secret",
         undefined,
       );
-      assert.equal(result, null);
+      assert.equal(result.data, null);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -262,7 +261,7 @@ describe("MiniMax built-in plugin (end-to-end)", () => {
         base_resp: { status_code: 0 },
       }), { status: 200 });
     try {
-      const result = await fetchForProviderById(
+      const result = await fetchForProviderByIdWithKind(
         "minimax",
         {
           TYPE: "QUOTA",
@@ -272,7 +271,7 @@ describe("MiniMax built-in plugin (end-to-end)", () => {
         "secret",
         undefined,
       );
-      const quota = result as {
+      const quota = result.data as {
         shortInterval: { remainingPercent: number; usedPercent: number; startAt: number | null };
         midInterval: { remainingPercent: number | null };
       };
@@ -299,7 +298,7 @@ describe("dynamic plugin loader", () => {
       // through `fetchForProviderById` is the end-to-end path; bare
       // `pluginTransport` returns the plugin's partial output
       // without normalization.
-      const result = await fetchForProviderById(
+      const result = await fetchForProviderByIdWithKind(
         "minimax",
         {
           TYPE: "QUOTA",
@@ -309,7 +308,7 @@ describe("dynamic plugin loader", () => {
         "secret",
         undefined,
       );
-      const quota = result as {
+      const quota = result.data as {
         shortInterval: { remainingPercent: number; usedPercent: number; intervalMs: number };
         midInterval: { remainingPercent: number; usedPercent: number; intervalMs: number };
       };
@@ -335,9 +334,9 @@ describe("dynamic plugin loader", () => {
         return { shortInterval: { remainingPercent: 50, usedPercent: 50, windowId: token, label: token, startAt: null, endAt: null, intervalMs: null, remainingQuota: null, usedQuota: null, limitQuota: null } };
       }
     };`);
-    const path = resolvePluginOnDisk("custom");
-    assert.ok(path.endsWith("index.mjs"));
-    const result = await fetchForProviderById(
+    const path = resolvePluginOnDiskWithKind("custom");
+    assert.ok(path.path.endsWith("index.mjs"));
+    const result = await fetchForProviderByIdWithKind(
       "custom",
       {
         TYPE: "QUOTA",
@@ -348,14 +347,18 @@ describe("dynamic plugin loader", () => {
       "environment-key",
       undefined,
     );
-    assert.equal((result as { shortInterval: { windowId: string } }).shortInterval.windowId, "configured-key");
+    assert.equal(
+      (result.data as { shortInterval: { windowId: string } }).shortInterval
+        .windowId,
+      "configured-key",
+    );
   });
 
   it("rejects plugins missing fetchAccountCredit", async () => {
     const pluginDir = resolve(tempHome, ".claude", "plugins", "topgauge", "query_plugins", "old");
     mkdirSync(pluginDir, { recursive: true });
     writeFileSync(resolve(pluginDir, "index.mjs"), "export default { fetch() { return {}; } };");
-    await assert.rejects(() => pluginTransport("old", "token"), /default export must be \{ fetchAccountCredit\(authenticationKey, context\?\) \}/);
+    await assert.rejects(() => pluginTransportWithKind("old", "token"), /default export must be \{ fetchAccountCredit\(authenticationKey, context\?\) \}/);
   });
 
   it("passes partial output through pluginTransport unchanged", async () => {
@@ -370,8 +373,8 @@ describe("dynamic plugin loader", () => {
     writeFileSync(resolve(pluginDir, "index.mjs"), `export default {
       fetchAccountCredit() { return "bad"; },
     };`);
-    const result = await pluginTransport("bad", "token");
-    assert.equal(result, "bad");
+    const result = await pluginTransportWithKind("bad", "token");
+    assert.equal(result.result, "bad");
   });
 });
 
@@ -489,12 +492,11 @@ describe("resolvePluginOnDiskWithKind (v0.9.0+ override)", () => {
     assert.throws(() => resolvePluginOnDiskWithKind("with space"),     /invalid provider id/);
   });
 
-  it("resolvePluginOnDisk (no-kind) still returns the same chosen path", () => {
+  it("resolvePluginOnDiskWithKind reports the user-side override", () => {
     mkdirSync(userDir("custom"), { recursive: true });
     writeFileSync(resolve(userDir("custom"), "index.js"), "export default {};");
     const withKind = resolvePluginOnDiskWithKind("custom");
-    const bare = resolvePluginOnDisk("custom");
-    assert.equal(bare, withKind.path);
+    assert.ok(withKind.path.endsWith("index.js"));
     assert.equal(withKind.kind, "user");
   });
 });
@@ -528,9 +530,10 @@ describe("pluginTransport override end-to-end (v0.9.0+)", () => {
       throw new Error("built-in should be overridden — fetch must NOT run");
     };
     try {
-      const partial = await pluginTransport("minimax", "ignored");
+      const partial = await pluginTransportWithKind("minimax", "ignored");
+      assert.equal(partial.kind, "user");
       assert.equal(fetchCalled, false, "globalThis.fetch must not be invoked by the user plugin");
-      const shape = partial as { shortInterval: { remainingPercent: number; windowId: string } };
+      const shape = partial.result as { shortInterval: { remainingPercent: number; windowId: string } };
       assert.equal(shape.shortInterval.remainingPercent, 42);
       assert.equal(shape.shortInterval.windowId, "user");
     } finally {
@@ -557,9 +560,10 @@ describe("pluginTransport override end-to-end (v0.9.0+)", () => {
       }), { status: 200 });
     };
     try {
-      const partial = await pluginTransport("minimax", "ignored");
-      assert.ok(partial, "bundled built-in should return a non-null partial");
-      const shape = partial as { shortInterval: { remainingPercent: number } | null };
+      const partial = await pluginTransportWithKind("minimax", "ignored");
+      assert.equal(partial.kind, "builtin");
+      assert.ok(partial.result, "bundled built-in should return a non-null partial");
+      const shape = partial.result as { shortInterval: { remainingPercent: number } | null };
       assert.equal(shape.shortInterval?.remainingPercent, 50);
     } finally {
       globalThis.fetch = originalFetch;

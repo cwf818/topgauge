@@ -2097,10 +2097,6 @@ export function processAndSaveTick(
   };
 }
 
-export function resetDataProcessorForTest(): void {
-  // no-op compatibility stub; write-side state is entirely module-local now
-}
-
 // ----- Test-only resets --------------------------------------------------------
 
 export function __resetForTest(): void {

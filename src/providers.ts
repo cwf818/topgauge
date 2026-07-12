@@ -11,7 +11,6 @@ import type {
   CompareMethod,
   Provider,
   ProviderEntry,
-  ProviderType,
 } from "./types.ts";
 import { fetchForProviderByIdWithKind } from "./api.ts";
 
@@ -86,23 +85,11 @@ export function getProviderEntry(provider: Provider): ProviderEntry | null {
 // The `unknown` return type is intentional: callers narrow at the
 // call site based on `entry.TYPE`. This keeps providers.ts ignorant
 // of the concrete data shapes.
-export async function fetchForProvider(
-  provider: Provider,
-  token: string,
-  signal: AbortSignal,
-): Promise<unknown> {
-  const r = await fetchForProviderWithKind(provider, token, signal);
-  return r.data;
-}
-
-// v0.9.0+ — kind-returning sibling. Same dispatch path as
-// `fetchForProvider` but also returns the resolution side
+// v0.9.0+ — kind-returning sibling of the legacy
+// `fetchForProvider` (deleted in v0.9.x dead-export cleanup).
+// Same dispatch path but also returns the resolution side
 // (`"user" | "builtin" | "missing"`), so the host can persist the
-// side into cache.json for the m_pluginSource renderer. Adding
-// the kind to the legacy return type would have been an API
-// break for direct callers (tests use the data-only variant);
-// the side sibling keeps the existing `fetchForProvider` shape
-// stable.
+// side into cache.json for the m_pluginSource renderer.
 export async function fetchForProviderWithKind(
   provider: Provider,
   token: string,
@@ -156,15 +143,4 @@ export function providerTypeFor(
   if (!entry) return "unknown";
   if (entry.TYPE === "QUOTA") return "quota";
   return "balance";
-}
-
-// Back-compat alias — older callers referenced `templateKeyForProvider`.
-// Kept as a deprecated re-export for one release cycle; remove after
-// callers migrate. Body is identical to providerTypeFor.
-export const templateKeyForProvider = providerTypeFor;
-
-// TYPE-only accessor — for code paths that have the entry in hand
-// already and just want the discriminator.
-export function providerTypeOf(provider: Provider): ProviderType | null {
-  return getProviderEntry(provider)?.TYPE ?? null;
 }

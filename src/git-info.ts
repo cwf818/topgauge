@@ -37,7 +37,7 @@
 
 import { execFileSync } from "node:child_process";
 
-export type GitInfo = {
+type GitInfo = {
   branch: string;
   dirty: boolean;
 };

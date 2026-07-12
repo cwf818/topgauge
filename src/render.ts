@@ -47,7 +47,7 @@ import * as os from "node:os";
 import { execSync } from "node:child_process";
 export type { PrevTickSnapshot, AvgSnapshot };
 
-export type Window = {
+type Window = {
   // Percentage USED in [0, 100]. May be fractional; we'll round.
   pct: number;
   // ISO timestamp string when the window resets, if known.
@@ -120,7 +120,7 @@ export type Interval = {
   limitQuota: number | null;
 };
 
-export type DisplayMode = "remaining" | "used";
+type DisplayMode = "remaining" | "used";
 
 // v0.9.0+ — interval-term selector used by m_windowQuota / m_countdown /
 // m_quota. Each term maps to one of the three `Interval` fields on
@@ -128,7 +128,7 @@ export type DisplayMode = "remaining" | "used";
 // because the inline-renderer branch uses it as a narrow string
 // union — the dispatcher also uses it for the `term` resolver in
 // `TERM_PARAM` (see below).
-export type Term = "short" | "mid" | "long";
+type Term = "short" | "mid" | "long";
 
 // Shorthand for the active config snapshot. Reading configStore.get()
 // on every call would be wasteful for hot paths (every formatLine call
@@ -421,7 +421,7 @@ export function colorFor(displayedPct: number, mode: DisplayMode): string {
 //   remaining mode → color the RIGHT (remaining cells) — colored by remaining%
 // This is the unified rule "left = used, right = remaining; the metric the
 // user is thinking about as 'danger' is the one that gets the color".
-export type SplitBar = {
+type SplitBar = {
   leftChunk: string; // LEFT half of bar — colored if mode==='used', plain otherwise
   rightChunk: string; // RIGHT half of bar — colored if mode==='remaining', plain otherwise
   color: string;
@@ -1092,7 +1092,7 @@ function formatBalanceChunk(currency: string, label: string, v: number): string 
   return `${prefix}${formatBalanceValue(v)}`;
 }
 
-export type BalanceLike = {
+type BalanceLike = {
   isAvailable: boolean;
   // vX.X.X+ — entries always carry a `label` (populated by
   // parseBalance from currenciesConfig). Plugin transports that
@@ -1375,28 +1375,11 @@ export {
 //
 // v1.0 — read side (peekLastSpeed / peekLastApiMs /
 // peekLastTokenHitRate) re-exported from -processor.
-export type LastSpeedSnapshot = {
-  direction: "in" | "out";
-  tps: number;
-};
 export {
   peekLastSpeed,
   peekLastApiMs,
   peekLastTokenHitRate,
 } from "./status-store.ts";
-
-// Test-only: clear the last-active entry for a direction. v0.4.x:
-// the entry lives in status.json under the project dir; tests
-// that need a clean slot should use a tmp-dir path resolver.
-// Kept as a no-op stub so existing test imports compile.
-export function __resetLastSpeedForTest(
-  _sessionId: string,
-  _direction: "in" | "out",
-  _cwd?: string | null,
-): void {
-  // No explicit clear API on status-store for lastActive (TTL is
-  // 60s anyway); tests rely on the path resolver + tmp dir.
-}
 
 // Test-only: clear the in-memory + disk tickStatus:<sid> entry.
 // Production code never calls this. No-op stub: same rationale as
@@ -1462,13 +1445,6 @@ function peekAcc(
 export { setAvg } from "./status-store.ts";
 // AvgSnapshot / peekAvg re-exports sit at the top of the file.
 
-export function __resetAvgForTest(
-  _sessionId: string,
-  _cwd?: string | null,
-): void {
-  // No-op: see __resetPrevTickForTest above.
-}
-
 // v1.0 — _tickDeltaMemo / _tickAvgWriteMemo / _tickCacheWriteMemo
 // are GONE. The -processor (src/status-store.ts) calls
 // computeAndCacheTickDeltaPure once per tick and stashes the result
@@ -1500,15 +1476,6 @@ export function __resetAvgForTest(
 //   - Gating is deltaApi > 0 ONLY. In/out/cache_read don't need
 //     to all move together.
 //   - First tick assumes prev=0 so the first turn still contributes.
-
-// Test-only stub (preserved for back-compat with test fixtures
-// that import this name). The per-render memos (_tickDeltaMemo /
-// _tickAvgWriteMemo / _tickCacheWriteMemo) are GONE in v1.0 — the
-// -processor produces the TickDeltaResult once per tick and
-// stashes it on tickState.delta; render reads via getDeltaForRender.
-export function __resetTickDeltaMemoForTest(_ctx: RenderContext): void {
-  // no-op
-}
 
 // Compute the per-API-call throughput for one of {in, out}. v0.4.0+
 // — always returns a non-null value. The module occupies a stable
@@ -3774,7 +3741,7 @@ const LABEL_COLOR_SHORTCUTS: Record<string, string> = (() => {
 // resolving it to the literal string means a bug in the
 // caller that swallows it just renders uncolored (the SGR
 // would be invalid, but the chunk would still display).
-export const SCALE_COLOR_SENTINEL = "__SCALE__";
+const SCALE_COLOR_SENTINEL = "__SCALE__";
 
 function resolveColor(value: string): string | null {
   if (value === "scale") return SCALE_COLOR_SENTINEL;
@@ -3790,7 +3757,7 @@ function resolveColor(value: string): string | null {
 // i.e. string | number | null) — the m_quote schema's `color`
 // resolver does a string-tag instead, and the renderer recognizes
 // the 3 magic strings as "apply buildRainbow / buildHue".
-export type ColorParam =
+type ColorParam =
   | { kind: "sgr"; value: string } // wrap text with `<sgr>…<RESET>`
   | { kind: "rainbow"; salt: number } // per-char SGR; salt offsets the rotation
   | { kind: "hue" } // single-hue wrap from buildHue

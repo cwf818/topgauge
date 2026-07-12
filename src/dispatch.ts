@@ -344,37 +344,3 @@ export function buildProviderLine(
   if (isEffectivelyEmpty(line)) return null;
   return line;
 }
-
-// v0.4.x — back-compat shim. Tests outside this file may call
-// renderPlanLine directly; no external callers exist since v0.2.21
-// (the only public surface in production is buildProviderLine).
-// Kept as a thin delegation so future test cleanups are decoupled
-// from this refactor. The previous body had a partial-window
-// fallback that hard-filled the missing window with {pct:0}; that
-// behavior moved into renderDataLine above, so this shim is now
-// a one-liner. The legacy `mode` argument is ignored — callers
-// that need a non-default display mode should configure
-// `display: "remaining"` in config.json (the v0.2.x migration path
-// from TOPGAUGE_DISPLAY).
-export function renderPlanLine(
-  data: Quota,
-  _mode: ReturnType<typeof resolveDisplayMode>,
-  ageMs?: number,
-  stale: boolean = false,
-  tokens?: TokenSnapshot | null,
-): string | null {
-  void _mode;
-  // v0.9.0+ — three-interval gate. Return null when the parser
-  // found no data for any of the three terms (matches the
-  // pre-existing "nothing to draw" contract; the v0.5.0–v0.8.x
-  // code only checked fiveHour + weekly here, and the
-  // dispatch.ts path checked them again).
-  if (!data.shortInterval && !data.midInterval && !data.longInterval) return null;
-  return renderDataLine(
-    "minimax",
-    data,
-    ageMs ?? 0,
-    stale,
-    tokens ?? null,
-  );
-}

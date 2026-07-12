@@ -105,15 +105,15 @@ export function resolveBuiltInPluginOnDisk(providerId: string): string {
 // it will load instead of the bundled one. Override is silent
 // (no stderr warn, no diagnostics append) — per the user's
 // "静默覆盖" decision (2026-07-11).
-export function resolvePluginOnDisk(providerId: string): string {
-  const r = resolvePluginOnDiskWithKind(providerId);
-  return r.path;
-}
 
-// v0.9.0+ — same as resolvePluginOnDisk, but also reports which
-// side resolved. The caller (pluginTransport) folds `kind` into
-// the diagnostics message so a load failure points at the file
-// that actually got loaded, not the would-be built-in.
+// v0.9.0+ — reports which side of the user-vs-builtin fence
+// resolved the provider (so the host can surface the side to the
+// renderer without re-doing the file lookup). `kind` is `"user"`
+// when query_plugins/<id>/ hit, `"builtin"` when the bundled
+// dist|src/plugins/<id>/index.js fell through, and `"missing"`
+// when neither produced a file (the import call will throw a 404
+// before this point in practice; the value surfaces here only if
+// the loader is changed to lazy-import).
 export function resolvePluginOnDiskWithKind(
   providerId: string,
 ): { path: string; kind: PluginResolution } {
@@ -150,24 +150,16 @@ function resolveAuthenticationKey(entry: ProviderEntry, token: string): string {
   return entry.AUTHENTICATION_KEY ?? token ?? "";
 }
 
-export async function pluginTransport(
-  providerId: string,
-  token: string,
-  context?: PluginContext,
-): Promise<unknown> {
-  const r = await pluginTransportWithKind(providerId, token, context);
-  return r.result;
-}
-
-// v0.9.x — kind-returning sibling of pluginTransport. Same load +
-// dispatch pipeline, but also reports which side of the user-vs-
-// builtin fence resolved the provider (so the host can surface
-// the side to the renderer without re-doing the file lookup).
-// `kind` is `"user"` when query_plugins/<id>/ hit, `"builtin"`
-// when the bundled dist|src/plugins/<id>/index.js fell through,
-// and `"missing"` when neither produced a file (the import call
-// will throw a 404 before this point in practice; the value
-// surfaces here only if the loader is changed to lazy-import).
+// v0.9.x — kind-returning sibling of the legacy `pluginTransport`
+// (deleted in v0.9.x dead-export cleanup). Same load + dispatch
+// pipeline, but also reports which side of the user-vs-builtin
+// fence resolved the provider (so the host can surface the side
+// to the renderer without re-doing the file lookup). `kind` is
+// `"user"` when query_plugins/<id>/ hit, `"builtin"` when the
+// bundled dist|src/plugins/<id>/index.js fell through, and
+// `"missing"` when neither produced a file (the import call will
+// throw a 404 before this point in practice; the value surfaces
+// here only if the loader is changed to lazy-import).
 export async function pluginTransportWithKind(
   providerId: string,
   token: string,
@@ -211,22 +203,12 @@ export async function pluginTransportWithKind(
   }
 }
 
-export async function fetchForProviderById(
-  providerName: string | null,
-  entry: ProviderEntry | null,
-  token: string,
-  signal: AbortSignal | undefined,
-): Promise<Quota | Balance | null> {
-  const r = await fetchForProviderByIdWithKind(providerName, entry, token, signal);
-  return r.data;
-}
-
-// v0.9.x — kind-returning sibling of fetchForProviderById. Same
-// dispatch + ensure pipeline but reports the override side
+// v0.9.x — kind-returning sibling of the legacy
+// `fetchForProviderById` (deleted in v0.9.x dead-export cleanup).
+// Same dispatch + ensure pipeline but reports the override side
 // (`"user" | "builtin" | "missing"`) so the host can persist it
 // alongside the data in cache.json (m_pluginSource renderer reads
-// it back). The legacy `fetchForProviderById` shape is preserved
-// for direct callers and tests.
+// it back).
 export async function fetchForProviderByIdWithKind(
   providerName: string | null,
   entry: ProviderEntry | null,
@@ -260,45 +242,6 @@ export async function fetchForProviderByIdWithKind(
   return { data, pluginSource: kind };
 }
 
-export async function fetchQuota(
-  token: string,
-  _endpoint = "",
-  _signal?: AbortSignal,
-  provider: ProviderEntry | null = null,
-): Promise<Quota | null> {
-  const entry = provider ?? {
-    TYPE: "QUOTA" as const,
-    BASE_URL_COMPARED_TO: "https://api.minimaxi.com/anthropic",
-    COMPARE_METHOD: "EXACT" as const,
-  };
-  const partial = await pluginTransport("minimax", resolveAuthenticationKey(entry, token), {
-    providerId: "minimax",
-    type: "QUOTA",
-    intervals: resolveEffectiveIntervals("minimax", entry),
-    currencies: resolveEffectiveCurrencies("minimax", entry),
-  });
-  return ensureQuota(partial);
-}
-
-export async function fetchBalance(
-  token: string,
-  _endpoint = "",
-  _signal?: AbortSignal,
-  provider: ProviderEntry | null = null,
-): Promise<Balance | null> {
-  const entry = provider ?? {
-    TYPE: "BALANCE" as const,
-    BASE_URL_COMPARED_TO: "https://api.deepseek.com/anthropic",
-    COMPARE_METHOD: "EXACT" as const,
-  };
-  const partial = await pluginTransport("deepseek", resolveAuthenticationKey(entry, token), {
-    providerId: "deepseek",
-    type: "BALANCE",
-    intervals: resolveEffectiveIntervals("deepseek", entry),
-    currencies: resolveEffectiveCurrencies("deepseek", entry),
-  });
-  return ensureBalance(partial);
-}
 
 // Kept for consumers that need to construct context in tests.
 export type { CurrenciesConfig, IntervalConfig };

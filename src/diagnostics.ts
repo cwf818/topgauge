@@ -155,12 +155,6 @@ export function setSessionCwd(cwd: string | null | undefined): void {
   _sessionCwd = cwd;
 }
 
-// Test hook — clear the global cwd so a test that appends from
-// multiple "sessions" (sandboxed cwd) starts clean.
-export function __resetSessionCwdForTest(): void {
-  _sessionCwd = undefined;
-}
-
 // Read the current session cwd, normalized to undefined when
 // empty/null. Module-private — callers always go through `append`
 // or the `logFs*` helpers, which apply this resolution.
@@ -582,16 +576,4 @@ export function formatEntry(e: Entry): string {
 
 function levelGlyph(level: Level): string {
   return level === "error" ? "✖" : "⚠";
-}
-
-// ----- Test hooks -----
-
-// Clear the in-process diagnostics path. Tests use this between cases
-// so append/readLatest don't leak across fixtures. Also a no-op
-// safety for production — if the user manually deletes the file
-// between ticks, the next read returns null cleanly.
-export function __resetForTest(): void {
-  // No module-level mutable state today; left as a hook for future
-  // state (e.g. an in-memory cache that should be cleared on test
-  // isolation). Kept here so test imports don't churn.
 }
