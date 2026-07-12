@@ -295,9 +295,8 @@ export const DEFAULT_LINE_TEMPLATES: LineTemplates = {
     "m_tokenCachedIn",
     "s_space",
     "m_tokenTotalIn",
-    "s_move|pos:74",
-    "s_pipe|wrap:true",
-    "m_quote|freq:120s|color:rainbow",
+    "s_space",
+    "m_quote|freq:120s|color:rainbow|lang:en|wrap:~",
   ],
   acc_eval: [
     "m_label|🟢Session: |color:orange",

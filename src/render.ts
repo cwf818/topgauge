@@ -3918,19 +3918,44 @@ const COLOR_PARAM = {
 //                                "░░░░░░░░ 0%" (parallel to the
 //                                natural 0-value render)
 //   bare-string modules        → STALE_COLOR wrap on "n/a"
-// v0.8.21+ — m_quote `wrap` param. Default true. When true, the
-// walked value (and only the walked value, never the local
-// QUOTES fallback) is bracketed with `~` characters on both
-// ends. `~<value>~` is the visual signature of an address-mode
-// quote — users can tell at a glance whether the line came from
-// a remote endpoint or from the local in-memory list. Set
-// `wrap|false` to opt out (e.g. when the remote value will be
-// embedded into a larger structured output where the tildes
-// would be visually noisy).
-const QUOTE_WRAP_PARAM = {
+// v0.8.21+ — m_quote `wrap` param. v0.9.x redesign: char-pair
+// instead of bool. Empty/missing value is a no-op (raw text
+// rendered as-is); one printable char duplicates to a 2-char
+// pair (e.g. `wrap=~` → `~~`, applied as `<text>`); two-or-more
+// printable chars take the first two (e.g. `wrap=ab…` → `ab`).
+// Left wrap = pair[0], right wrap = pair[1]. Non-printable
+// (control / non-ASCII / 0x7F DEL) is badarg. Applies to BOTH
+// local and address-mode (was address-only in v0.8.21+ — the
+// asymmetry is the reason for the redesign). The pair rides
+// through `applyColor` so wrap chars inherit the same tint as
+// the body (mirror the v0.8.44 `|wrap:<chars>|` bucket-D
+// convention).
+const QUOTE_WRAP_CHARS_PARAM = {
   named: {
-    wrap: (raw: string): ResolvedValue | null =>
-      raw === "true" || raw === "false" ? raw : null,
+    wrap: (raw: string): ResolvedValue | null => {
+      // Empty = no-op sentinel (returned so params.wrap is
+      // defined-but-empty, which the renderer reads as "skip
+      // wrapping"). Caller must distinguish empty (no-op) from
+      // missing (also no-op) by checking the raw value's length.
+      if (raw === "") return raw;
+      // Take first two characters; if only one is supplied,
+      // duplicate it (so `wrap=~` ≡ `wrap=~~`).
+      let pair: string;
+      if (raw.length === 1) {
+        pair = raw + raw;
+      } else if (raw.length >= 2) {
+        pair = raw.slice(0, 2);
+      } else {
+        return null;
+      }
+      // Both must be printable ASCII (0x21..0x7E). Anything else
+      // — control chars, whitespace, DEL, non-ASCII — is badarg.
+      for (let i = 0; i < 2; i++) {
+        const code = pair.charCodeAt(i);
+        if (code < 0x21 || code > 0x7e) return null;
+      }
+      return pair;
+    },
   },
 } as const;
 
@@ -5167,7 +5192,7 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
       ...QUOTE_LANG_PARAM.named,
       ...QUOTE_MAX_PARAM.named,
       ...QUOTE_INSECURE_TLS_PARAM.named,
-      ...QUOTE_WRAP_PARAM.named,
+      ...QUOTE_WRAP_CHARS_PARAM.named,
       ...NULDROP_PARAM.named,
     },
   },
@@ -6227,11 +6252,15 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // Pass |nulldrop|true (default) to drop the chunk on
     // local-quote miss instead of surfacing the placeholder.
     //
-    // Output format:
-    //   - remote: `~<quote>~` (no author) or `~<quote>--<author>~`
-    //     — opt out with |wrap|false
-    //   - local fallback: `<quote>` plus `--<author>` only when
-    //     the picked entry has one — no `~` brackets
+    // Output format (v0.9.x — `wrap` redesign):
+    //   - `wrap` missing or empty → raw `<quote>--<author>` text
+    //   - `wrap=<chars>` → `<pair[0]><quote>--<author><pair[1]>`
+    //     where `pair` is 1-char-duped / 2+-sliced from `wrap`
+    //   - applies to BOTH address-mode and local-mode (was
+    //     address-only with hard-coded `~` in v0.8.21+).
+    //   - bare-body short-circuit (no `quote:` path → raw body
+    //     verbatim) is un-wrapped so the user sees the exact body
+    //     they fetched.
     //
     // The fetch path IGNORES `freq` / `lang` for rotation
     // (remote payloads are not window-bucketed — the user picks
@@ -6244,11 +6273,20 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     // `quote` arg present (even if empty) → user opted into the
     // address-mode branch. Missing arg → local QUOTES.
     const hasQuote = (params.quote as string | undefined) !== undefined;
-    // wrap defaults to "true"; passThroughOr lets an outer
-    // m_template|<key>|wrap|<bool> set it for nested m_quote
-    // instances that don't supply their own wrap arg.
-    const wrap =
-      passThroughOr<string>(params, ctx, "wrap") !== "false";
+    // `wrap` is a 2-char string when supplied (the schema's
+    // char-pair resolver has already normalized 1-char duplicate
+    // and 2+-slice). Empty string OR undefined both mean
+    // "no-op, render raw text". passThroughOr keeps the
+    // m_template|<key>|wrap|<chars> passthrough working.
+    const wrapPair = passThroughOr<string>(params, ctx, "wrap");
+    const applyWrap = (body: string, walkedJson: boolean): string => {
+      // Bare-body short-circuit (v0.8.18) — user opted out of
+      // walking by not setting `quote:`, return verbatim with
+      // no brackets. Otherwise wrap if a 2-char pair was supplied.
+      if (!walkedJson) return body;
+      if (!wrapPair || wrapPair.length !== 2) return body;
+      return `${wrapPair[0]}${body}${wrapPair[1]}`;
+    };
     let text: string;
     let seed: number;
     if (address && address.length > 0 && hasQuote) {
@@ -6261,21 +6299,21 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
         const authorSuffix = tAuthor ? `--${tAuthor}` : "";
         const inner = `${tQuote}${authorSuffix}`;
         const walkedJson = quoteRaw.length > 0;
-        // Wrap brackets only when the user walked JSON; the
-        // v0.8.18 bare-body short-circuit returns raw text (the
-        // user opted out of walking) and is un-wrapped so the
-        // exact body appears verbatim.
-        text = wrap && walkedJson ? `~${inner}~` : inner;
+        text = applyWrap(inner, walkedJson);
         // Seed for the color shortcut helpers (rainbow / hue).
-        // Hash the body INSIDE the wrap brackets so distinct
+        // Hash the body (NOT the wrapped text) so distinct
         // truncations of the same remote source still get
-        // distinct color bands.
+        // distinct color bands — wrapping chars don't shift the
+        // band selection.
         seed = stringHash(tQuote);
       } else {
         // Fetch / parse / quote-miss → fall back to local QUOTES.
         const local = pickLocalQuote(params, langRaw, ctx);
         if (local === null) return INLINE_BADARG;
-        text = local;
+        // Local-mode always wraps (no bare-body short-circuit —
+        // the local picker always emits a well-formed
+        // `<quote>--<author>` body, so wrapping it is meaningful).
+        text = applyWrap(local, true);
         seed = quoteLocalSeed(params, langRaw, ctx);
       }
     } else {
@@ -6288,7 +6326,7 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
       // parseFreq rejects the same set the resolver.
       const local = pickLocalQuote(params, langRaw, ctx);
       if (local === null) return INLINE_BADARG;
-      text = local;
+      text = applyWrap(local, true);
       seed = quoteLocalSeed(params, langRaw, ctx);
     }
     const color = decodeColorParam(params.color as string | undefined);

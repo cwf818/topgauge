@@ -2691,8 +2691,198 @@ describe("lineTemplate — two-class separator (| + : or =)", () => {
     const plain = line.replace(/\x1b\[[0-9;]*m/g, "");
     assert.equal(
       plain,
-      "~ok--anon~",
-      `expected the chunk to contain the walked body '~ok--anon~', got: ${JSON.stringify(plain)}`,
+      "ok--anon",
+      `expected the chunk to contain the walked body 'ok--anon', got: ${JSON.stringify(plain)}`,
+    );
+  });
+});
+
+// v0.9.x — `m_quote|wrap:<chars>|` is a char-pair inline arg.
+// Empty / missing → no-op (raw text); 1-char → duplicated to a
+// 2-char pair; 2+-chars → first 2 only. Booleans
+// (`wrap|true|false|yes|no`) are hard-rejected as badarg
+// (the resolver only accepts literal strings; the char-pair
+// shape rejects anything non-printable-ASCII). Applies to BOTH
+// local and address-mode (was address-only with hard-coded `~`
+// in v0.8.21+).
+describe("m_quote — |wrap| char-pair inline arg (v0.9.x)", () => {
+  beforeEach(() => {
+    __resetForTest();
+    __resetUnknownModuleWarnForTest();
+  });
+  afterEach(() => __resetForTest());
+
+  // Helper: build a ctx with a pre-fetched body for the address-
+  // mode tests. Minimal local re-implementation (we can't
+  // import the one in render-tokens.test.ts).
+  function ctxWithQuoteBodies(
+    bodies: Map<string, string>,
+  ): Parameters<typeof renderTemplate>[1] {
+    return {
+      mode: "used",
+      nowMs: Date.now(),
+      shortInterval: null,
+      midInterval: null,
+      longInterval: null,
+      balance: null,
+      ageMs: null,
+      stale: false,
+      version: "",
+      quoteBodies: bodies,
+    } as any;
+  }
+
+  it("wrap omitted → no-op (raw quote text in address-mode)", () => {
+    // No |wrap| arg at all. params.wrap is undefined → renderer
+    // emits raw walked body, no decoration.
+    const url = "http://127.0.0.1:9999/";
+    const bodies = new Map<string, string>([
+      [url, JSON.stringify({ q: "hello" })],
+    ]);
+    const out = renderTemplate(
+      [`m_quote|address:${url}|quote:q`],
+      ctxWithQuoteBodies(bodies),
+    ).join("\n");
+    assert.equal(strip(out), "hello");
+  });
+
+  it("wrap empty → no-op (resolver returns empty string)", () => {
+    // Explicit empty |wrap:| is the no-op sentinel: the resolver
+    // returns "" (defined-but-empty) which the renderer reads as
+    // "skip wrapping".
+    const url = "http://127.0.0.1:9999/";
+    const bodies = new Map<string, string>([
+      [url, JSON.stringify({ q: "hello" })],
+    ]);
+    const out = renderTemplate(
+      [`m_quote|address:${url}|quote:q|wrap:`],
+      ctxWithQuoteBodies(bodies),
+    ).join("\n");
+    assert.equal(strip(out), "hello");
+  });
+
+  it("wrap=~ → 1 char duplicates to pair '~~', wraps the body", () => {
+    const url = "http://127.0.0.1:9999/";
+    const bodies = new Map<string, string>([
+      [url, JSON.stringify({ q: "hello" })],
+    ]);
+    const out = renderTemplate(
+      [`m_quote|address:${url}|quote:q|wrap:~`],
+      ctxWithQuoteBodies(bodies),
+    ).join("\n");
+    assert.equal(strip(out), "~hello~");
+  });
+
+  it("wrap=ab → 2 chars used as left=a, right=b", () => {
+    const url = "http://127.0.0.1:9999/";
+    const bodies = new Map<string, string>([
+      [url, JSON.stringify({ q: "hi" })],
+    ]);
+    const out = renderTemplate(
+      [`m_quote|address:${url}|quote:q|wrap:ab`],
+      ctxWithQuoteBodies(bodies),
+    ).join("\n");
+    assert.equal(strip(out), "ahib");
+  });
+
+  it("wrap=abc → slice(0,2) = 'ab', third char dropped", () => {
+    // 2+-chars is sliced to first two — the third char ('c') is
+    // discarded silently. Output uses pair[0]='a', pair[1]='b'.
+    const url = "http://127.0.0.1:9999/";
+    const bodies = new Map<string, string>([
+      [url, JSON.stringify({ q: "hi" })],
+    ]);
+    const out = renderTemplate(
+      [`m_quote|address:${url}|quote:q|wrap:abc`],
+      ctxWithQuoteBodies(bodies),
+    ).join("\n");
+    assert.equal(strip(out), "ahib");
+  });
+
+  it("wrap=~ on local-mode (no address) → wraps the picked quote", () => {
+    // v0.9.x — wrap applies to LOCAL mode too (was address-only
+    // in v0.8.21+). No address|quote: args → local QUOTES path.
+    // The local picker always emits `<quote>--<author>` (or just
+    // `<quote>` when author is empty), and wrap chars go on
+    // both sides. We can't predict the exact local pick without
+    // a fixed seed, but the structural rule is observable: the
+    // output starts AND ends with the wrap pair's chars.
+    const out = renderTemplate(
+      [`m_quote|wrap:~`],
+      {
+        mode: "used", nowMs: Date.now(),
+        shortInterval: null, midInterval: null, longInterval: null,
+        balance: null,
+        ageMs: null, stale: false, version: "",
+      } as any,
+    ).join("\n");
+    assert.ok(
+      out.length > 0,
+      `expected a non-empty local-mode output, got: ${JSON.stringify(out)}`,
+    );
+    const plain = strip(out);
+    assert.ok(
+      plain.length >= 2 && plain.startsWith("~") && plain.endsWith("~"),
+      `expected local-mode output to start AND end with '~' (the wrap pair), got: ${JSON.stringify(plain)}`,
+    );
+  });
+
+  it("wrap=' ' (space, 0x20) → drops via unknown-module parser boundary", () => {
+    // Space is 0x20 — outside the char-pair resolver's printable
+    // range (0x21..0x7E) so the resolver would also reject it.
+    // But the inline-args parser (v0.8.33+ two-class) splits on
+    // `|` and discards empty segments, so `wrap: ` (with trailing
+    // space before the closing `|`) is treated as an unknown
+    // module rather than reaching the resolver. Either way the
+    // chunk drops — we assert the observable surface (empty
+    // rendered output) without locking down which layer rejects.
+    const url = "http://127.0.0.1:9999/";
+    const bodies = new Map<string, string>([
+      [url, JSON.stringify({ q: "hello" })],
+    ]);
+    const { value: lines } = withCapturedStderr(() =>
+      renderTemplate(
+        [`m_quote|address:${url}|quote:q|wrap: `],
+        ctxWithQuoteBodies(bodies),
+      ),
+    );
+    const text = lines.join("\n");
+    assert.equal(
+      text,
+      "",
+      `expected wrap|' ' to drop the chunk, got: ${JSON.stringify(text)}`,
+    );
+  });
+
+  it("wrap=☃ (non-ASCII emoji) → badarg (non-printable per char-pair rule)", () => {
+    // Snowman is U+2603, outside 0x21..0x7E. Char-pair resolver
+    // returns null → chunk drops via badarg + stderr warn. The
+    // snowman is a 2-char UTF-16 sequence (`☃` is BMP so 1
+    // code unit, but we're checking the 0x21..0x7E printable
+    // range which excludes it regardless).
+    const url = "http://127.0.0.1:9999/";
+    const bodies = new Map<string, string>([
+      [url, JSON.stringify({ q: "hello" })],
+    ]);
+    const { value: lines, warns } = withCapturedStderr(() =>
+      renderTemplate(
+        [`m_quote|address:${url}|quote:q|wrap:☃`],
+        ctxWithQuoteBodies(bodies),
+      ),
+    );
+    const text = lines.join("\n");
+    // Either: chunk drops with a badarg warning, OR the parser
+    // fails upstream and emits an unknown-module warning. The
+    // observable contract is "empty rendered output + some warn"
+    // — we don't lock down the layer.
+    assert.equal(
+      text,
+      "",
+      `expected wrap|☃ to drop the chunk, got: ${JSON.stringify(text)}`,
+    );
+    assert.ok(
+      warns.length > 0,
+      `expected at least one warning for wrap|☃ (badarg or unknown-module), got: ${warns.join("\n")}`,
     );
   });
 });

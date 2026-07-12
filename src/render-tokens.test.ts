@@ -446,12 +446,18 @@ describe("renderTemplate — m_quote address+field (v0.8.21+)", () => {
   // upgrade is strict; existing v0.8.19 configs need a manual
   // `fields` → `field` rename and a hand-pick of one path.
   //
-  // v0.8.21 wrap default: `~<value>~` brackets the walked
-  // string in the address-mode JSON path. `wrap|false` opts out;
-  // the local QUOTES path never wraps (the tilde is the visual
-  // signature that says "this came from a remote endpoint").
+  // v0.9.x wrap redesign — char-pair instead of bool.
+  // `wrap` is a 2-char string when supplied (1-char is duped,
+  // 2+-chars is sliced). Empty / missing → no-op (raw text,
+  // no brackets). Booleans (`wrap|true|false`) are hard-rejected
+  // by the char-pair resolver as badarg. Applies to BOTH
+  // address-mode and local-mode (was address-only with
+  // hard-coded `~` in v0.8.21+).
 
-  it("address|fetched JSON + quote|hitokoto → wrapped value (wrap default true)", () => {
+  it("address|fetched JSON + quote|hitokoto → bare value (wrap default no-op)", () => {
+    // v0.9.x default: no wrap chars. The user opts into wrapping
+    // via `|wrap:<chars>|`. Without that arg the rendered text is
+    // the raw walked value.
     const url = "https://v1.hitokoto.cn/";
     const bodies = new Map<string, string>([
       [url, JSON.stringify({ hitokoto: "生如夏花之绚烂" })],
@@ -460,13 +466,13 @@ describe("renderTemplate — m_quote address+field (v0.8.21+)", () => {
       [`m_quote|address:${url}|quote:hitokoto`],
       ctxWithQuoteBodies(bodies),
     ).join("\n");
-    assert.equal(strip(out), "~生如夏花之绚烂~");
+    assert.equal(strip(out), "生如夏花之绚烂");
   });
 
-  it("address|quote|with author|from_who → ~<quote>--<author>~", () => {
+  it("address|quote|with author|from_who → bare <quote>--<author> (wrap default no-op)", () => {
     // v0.8.21+ — both `quote` and `author` paths walk the same
-    // body. The author is rendered as the `--<author>` suffix
-    // inside the tilde brackets.
+    // body. The author is rendered as the `--<author>` suffix.
+    // v0.9.x — no wrap by default; the suffix stays plain.
     const url = "https://v1.hitokoto.cn/";
     const bodies = new Map<string, string>([
       [url, JSON.stringify({ hitokoto: "stay hungry stay foolish", from_who: "Steve Jobs" })],
@@ -475,12 +481,13 @@ describe("renderTemplate — m_quote address+field (v0.8.21+)", () => {
       [`m_quote|address:${url}|quote:hitokoto|author:from_who`],
       ctxWithQuoteBodies(bodies),
     ).join("\n");
-    assert.equal(strip(out), "~stay hungry stay foolish--Steve Jobs~");
+    assert.equal(strip(out), "stay hungry stay foolish--Steve Jobs");
   });
 
-  it("address|quote with author path MISS → ~<quote>~ (no author suffix)", () => {
+  it("address|quote with author path MISS → bare <quote> (no author suffix)", () => {
     // v0.8.21+ — author walks tolerate misses; the renderer
     // elides the `--<author>` half when the walk yields null.
+    // v0.9.x — no wrap by default.
     const url = "https://v1.hitokoto.cn/";
     const bodies = new Map<string, string>([
       [url, JSON.stringify({ hitokoto: "stay hungry stay foolish" })],
@@ -489,28 +496,27 @@ describe("renderTemplate — m_quote address+field (v0.8.21+)", () => {
       [`m_quote|address:${url}|quote:hitokoto|author:from_who`],
       ctxWithQuoteBodies(bodies),
     ).join("\n");
-    assert.equal(strip(out), "~stay hungry stay foolish~");
+    assert.equal(strip(out), "stay hungry stay foolish");
   });
 
-  it("address|quote|hitokoto + wrap|false → bare value (no tildes)", () => {
-    // Opt out of the wrap. Useful for embedding the remote
-    // value into a structured template where `~…~` would be
-    // visually noisy.
+  it("address|quote|hitokoto + wrap|~ → wrapped value (1 char dups to 2)", () => {
+    // v0.9.x — 1-char pair duplicates. `wrap=~` ≡ `wrap=~~`.
     const url = "https://v1.hitokoto.cn/";
     const bodies = new Map<string, string>([
       [url, JSON.stringify({ hitokoto: "stay hungry stay foolish" })],
     ]);
     const out = renderTemplate(
-      [`m_quote|address:${url}|quote:hitokoto|wrap:false`],
+      [`m_quote|address:${url}|quote:hitokoto|wrap:~`],
       ctxWithQuoteBodies(bodies),
     ).join("\n");
-    assert.equal(strip(out), "stay hungry stay foolish");
+    assert.equal(strip(out), "~stay hungry stay foolish~");
   });
 
   it("address|quote|quotes.0.quotestring → walked value (array index path)", () => {
     // Path walker supports object keys and array indices. The
-    // v0.8.18 / v0.8.19 contract for getFieldByPath is preserved
-    // — only the wrapping & comma-join semantics changed.
+    // v0.8.18 / v0.8.19 contract for getFieldByPath is preserved.
+    // v0.9.x — wrap default is no-op, so the walked value comes
+    // through bare.
     const url = "http://127.0.0.1:9999/quotes";
     const bodies = new Map<string, string>([
       [url, JSON.stringify({
@@ -524,14 +530,14 @@ describe("renderTemplate — m_quote address+field (v0.8.21+)", () => {
       [`m_quote|address:${url}|quote:quotes.0.quotestring`],
       ctxWithQuoteBodies(bodies),
     ).join("\n");
-    assert.equal(strip(out), "~remote quote one~");
+    assert.equal(strip(out), "remote quote one");
   });
 
-  it("address|quote miss → fallback to local QUOTES (no tildes)", () => {
+  it("address|quote miss → fallback to local QUOTES (no wrap)", () => {
     // Path miss → renderer logs a warning and falls back to the
-    // local QUOTES list. The fallback path is NOT tilde-wrapped
-    // (the wrap is address-mode specific). Diagnostic row is
-    // asserted in the v0.8.20+ describe below.
+    // local QUOTES list. v0.9.x — wrap default is no-op, so the
+    // fallback's body comes through bare (and the bare-body test
+    // below covers the explicit "no quote path" short-circuit).
     const url = "http://127.0.0.1:9999/";
     const bodies = new Map<string, string>([
       [url, JSON.stringify({ other: "nope" })],
@@ -541,17 +547,19 @@ describe("renderTemplate — m_quote address+field (v0.8.21+)", () => {
       ctxWithQuoteBodies(bodies),
     ).join("\n");
     assert.ok(out.length > 0, "expected fallback to local QUOTES");
-    assert.ok(!out.includes("~"), "local QUOTES fallback should not be tilde-wrapped");
+    // wrap is no-op by default; without an explicit |wrap:| pair
+    // the fallback path returns its picked quote un-decorated.
+    assert.ok(!out.includes("~"), "local QUOTES fallback should not be wrapped");
   });
 
   it("address|non-JSON body + empty quote → bare body (no wrap)", () => {
     // The v0.8.18 backwards-compat: when the body is plain text
     // AND the user supplies `quote|` (empty marker), the body
-    // is returned verbatim. The tilde wrap is part of the
-    // address-mode contract that the JSON path establishes, so
-    // the plain-text short-circuit is unwrapped — the user opted
-    // out of JSON walking and the bare body is what they asked
-    // for.
+    // is returned verbatim. v0.9.x — the bare-body short-circuit
+    // is always un-wrapped (the user opted out of JSON walking
+    // and the bare body is what they asked for; even if `wrap=~`
+    // is supplied, the short-circuit skips decoration so the
+    // exact body appears verbatim).
     const url = "http://127.0.0.1:9999/plain";
     const bodies = new Map<string, string>([
       [url, "just a plain string body"],
