@@ -123,7 +123,7 @@ export function failLabelForProvider(provider: Provider): string {
   const entry = getProviderEntry(provider);
   const modeLabels = configStore.get().modeLabels;
   if (!entry) return modeLabels.used;
-  if (entry.TYPE === "Quota") return modeLabels.used;
+  if (entry.TYPE === "QUOTA") return modeLabels.used;
   return modeLabels.balance;
 }
 
@@ -154,7 +154,7 @@ export function providerTypeFor(
 ): "quota" | "balance" | "unknown" {
   const entry = getProviderEntry(provider);
   if (!entry) return "unknown";
-  if (entry.TYPE === "Quota") return "quota";
+  if (entry.TYPE === "QUOTA") return "quota";
   return "balance";
 }
 

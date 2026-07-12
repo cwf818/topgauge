@@ -26,6 +26,7 @@ ANSI colors are 5-band (256-color SGR): bright green / dark green / yellow / ora
 For the per-version detail, see [CHANGELOG.md](CHANGELOG.md). Recent highlights:
 
 - **v0.8.37** — `m_template` with **no** `type` / `mode` arg now renders on **both** plan and balance providers (no more silent drop on a mismatch). Default `thresholds.percentBands` nudged to `[60, 70, 80, 90]` (v0.8.36.1).
+- **v0.9.0** — `provider.TYPE` is now `"QUOTA"` (was `"Quota"`). Pure break, no compat shim — pre-v0.9.0 `config.json` entries with `"TYPE": "Quota"` fail validation and the provider is dropped. See [Upgrading to v0.9.0 from v0.8.x](#upgrading-to-v090-from-v08x--breaking--user-rewrite-required) below for the one-line sed migration.
 - **v0.8.36** — `m_windowMemUsage` (system RAM bar+percent, parallel of `m_windowContext`); `m_memUsage` (absolute bytes, `Mem:X.XG/Y.YG`) keeps the `Mem:` label. Files `src/api.ts` / `src/api.deepseek.ts` renamed to `src/api.plan.ts` / `src/api.balance.ts`.
 - **v0.8.35** — `m_acc*` `ccsession` scope removed (process-lifetime semantics; user can't choose it); default scope `session` (was `ccsession`).
 - **v0.8.34** — `m_quote|address:<URL>` no longer silently falls back to local QUOTES on a fetch failure (two-class `|name:value|` grammar now reaches `scanTokens` too). Fetch-failure diagnostics raised to `error` level.
@@ -454,14 +455,14 @@ A reference with every field is at [config.example.json](./config.example.json).
     // provider by matching ANTHROPIC_BASE_URL against each entry's
     // BASE_URL_COMPARED_TO using the entry's COMPARE_METHOD. The
     // first match wins; iteration order = insertion order. TYPE
-    // ("Quota" | "BALANCE") selects the plugin output shape and
+    // ("QUOTA" | "BALANCE") selects the plugin output shape and
     // renderer fail-line label.
     //
     // Defaults reproduce the built-in plugin behavior. Partial overrides
     // inherit missing fields from the default; a new provider also needs
     // a plugin module under query_plugins/<id>/.
     "minimax": {
-      "TYPE": "Quota",
+      "TYPE": "QUOTA",
       "BASE_URL_COMPARED_TO": "https://api.minimaxi.com/anthropic",
       "COMPARE_METHOD": "EXACT",
       "intervals": {
@@ -500,7 +501,7 @@ Each `colors.*` value is either a **symbolic shortcut** (`brightGreen`, `darkGre
 
 The `providers` block is a `Record<string, ProviderEntry>`. Each entry declares:
 
-- **`TYPE`** — `"Quota"` (5h + 7d two-window line) or `"BALANCE"` (account-balance line). Selects the plugin output shape and the renderer fail-line label.
+- **`TYPE`** — `"QUOTA"` (5h + 7d two-window line) or `"BALANCE"` (account-balance line). Selects the plugin output shape and the renderer fail-line label.
 - **`BASE_URL_COMPARED_TO`** — the URL pattern to match `ANTHROPIC_BASE_URL` against.
 - **`COMPARE_METHOD`** — one of three modes, all case-insensitive:
   - `"EXACT"` (default) — `baseUrl === pattern`. Safest; rejects URLs that aren't exactly the configured value.
@@ -596,7 +597,7 @@ The shipped `minimax` provider uses this default `intervals` block (you only nee
 {
   "providers": {
     "minimax": {
-      "TYPE": "Quota",
+      "TYPE": "QUOTA",
       "BASE_URL_COMPARED_TO": "https://api.minimaxi.com/anthropic",
       "COMPARE_METHOD": "EXACT",
       "intervals": {
@@ -677,7 +678,7 @@ A `Quota` provider mapping for it (note the 5h window comes from the nested `usa
 {
   "providers": {
     "myProvider": {
-      "TYPE": "Quota",
+      "TYPE": "QUOTA",
       "BASE_URL_COMPARED_TO": "https://api.example.com/anthropic",
       "COMPARE_METHOD": "EXACT",
       "intervals": {
@@ -914,7 +915,7 @@ Pulls a registered fragment from `lineTemplates` into the rendered template. Use
 | Token form | Required params | Optional params | Description |
 | ---------- | --------------- | --------------- | ----------- |
 | `m_template\|<key>` | `key` (the `lineTemplates` entry to expand) | `type` (default `plan`; v0.8.37+ omitting `type` renders universally), `nulldrop` (accepted, no-op for this module) | Expand the registered fragment into the current render. |
-| `m_template\|<key>\|type:plan` | `key` | `nulldrop` | Same, but the chunk only renders when the provider's TYPE is `Quota`. |
+| `m_template\|<key>\|type:plan` | `key` | `nulldrop` | Same, but the chunk only renders when the provider's TYPE is `QUOTA`. |
 | `m_template\|<key>\|type:balance` | `key` | `nulldrop` | Same, but only renders when the provider's TYPE is `BALANCE`. |
 | `m_template\|<key>\|<scope>:<...>` | `key` | any non-`type`/`mode` axis | Pass-through: pushes the axis down to inner `m_acc*` / `m_sum*` modules as the outer default. Inner-explicit wins. |
 
@@ -984,6 +985,36 @@ Set `"statuslineTemplate": "standard"` (or `"abundant"`) in your `config.json`. 
 
 - **`m_template` no-type form is universal.** `m_template|<key>` with no `type:` / `mode:` arg now renders on plan, balance, AND unknown providers — the no-mode silent-drop on a type mismatch is gone. If your `statuslineTemplate` was relying on the silent drop to gate between providers, add `|type:plan` or `|type:balance` explicitly.
 - **`thresholds.percentBands` default changed.** Was `[20, 40, 60, 80]`; now `[60, 70, 80, 90]` (v0.8.36.1). User overrides in `config.json` are unaffected. Reset to the new defaults by deleting the field.
+
+### Upgrading to v0.9.0 from v0.8.x (BREAKING — user rewrite required)
+
+`provider.TYPE` is renamed `"Quota"` → `"QUOTA"` (uppercase, aligned with `COMPARE_METHOD` enum and the v0.8.x convention). The default `DEFAULT_PROVIDERS.minimax.TYPE` is updated in source; no behavior change for users who never customized `providers`. But any user-supplied `providers.<id>.TYPE` value in `~/.claude/plugins/topgauge/config.json` must be updated — otherwise validation drops the entry and the provider silently stops matching.
+
+```diff
+  "providers": {
+    "minimax": {
+-     "TYPE": "Quota",
++     "TYPE": "QUOTA",
+      "BASE_URL_COMPARED_TO": "https://api.minimaxi.com/anthropic",
+      "COMPARE_METHOD": "EXACT"
+    }
+  }
+```
+
+```bash
+# sed one-liner for a single config file (run on a copy first)
+sed -i.bak -E 's/"TYPE":[[:space:]]*"Quota"/"TYPE": "QUOTA"/g' config.json
+```
+
+(For Windows, use PowerShell `Get-Content … | ForEach-Object { $_ -replace '"TYPE":\s*"Quota"','"TYPE": "QUOTA"' } | Set-Content …`.)
+
+After migrating, run `npm test` (or `bash scripts/test-install.sh`) to spot-check that the providers still register. The validation error from a stale `"Quota"` value reads:
+
+```
+provider TYPE must be "QUOTA" or "BALANCE" (got "Quota"); dropping
+```
+
+— so the failure mode is loud, not silent.
 
 ### Upgrading to v0.8.33 from v0.8.32 (BREAKING — user rewrite required)
 

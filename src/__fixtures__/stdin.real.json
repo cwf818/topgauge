@@ -1,14 +1,14 @@
 {
   "_comment": "Real Claude Code statusline stdin payload captured 2026-06-29. Schema verified against live claude-code v2.1.191. Used by src/index-parse.test.ts (happy-path) and as a reference for the TokenSnapshot shape.",
   "session_id": "b2bee628-bc4f-4c79-a198-cb39b098b547",
-  "transcript_path": "C:\\Users\\chen\\.claude\\projects\\D--WorkSpace-topgauge-cc\\b2bee628-bc4f-4c79-a198-cb39b098b547.jsonl",
-  "cwd": "D:\\WorkSpace\\topgauge-cc",
+  "transcript_path": "C:\\Users\\chen\\.claude\\projects\\D--WorkSpace-topgauge\\b2bee628-bc4f-4c79-a198-cb39b098b547.jsonl",
+  "cwd": "D:\\WorkSpace\\topgauge",
   "effort": { "level": "high" },
   "session_name": "strip-diagnostics-display",
   "model": { "id": "MiniMax-M3", "display_name": "MiniMax-M3" },
   "workspace": {
-    "current_dir": "D:\\WorkSpace\\topgauge-cc",
-    "project_dir": "D:\\WorkSpace\\topgauge-cc",
+    "current_dir": "D:\\WorkSpace\\topgauge",
+    "project_dir": "D:\\WorkSpace\\topgauge",
     "added_dirs": [],
     "repo": {
       "host": "github.com",

@@ -1565,7 +1565,7 @@ function validateProviderEntry(_name: string, v: unknown): ProviderEntry | null 
   // TYPE
   const t = e.TYPE;
   if (typeof t !== "string" || !VALID_PROVIDER_TYPES.has(t as ProviderType)) {
-    warn(`provider TYPE must be "Quota" or "BALANCE" (got ${JSON.stringify(t)}); dropping`);
+    warn(`provider TYPE must be "QUOTA" or "BALANCE" (got ${JSON.stringify(t)}); dropping`);
     return null;
   }
   // BASE_URL_COMPARED_TO

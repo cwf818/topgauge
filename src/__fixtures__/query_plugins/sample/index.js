@@ -10,7 +10,7 @@
 //
 //   "providers": {
 //     "sample": {
-//       "TYPE": "Quota",
+//       "TYPE": "QUOTA",
 //       "BASE_URL_COMPARED_TO": "https://example.com",
 //       "COMPARE_METHOD": "EXACT",
 //       "AUTHENTICATION_KEY": "optional-plugin-key"

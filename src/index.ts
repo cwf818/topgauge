@@ -135,7 +135,7 @@ async function fetchProviderData(
     return hit ? { value: hit.value, ageMs: hit.ageMs } : null;
   };
 
-  if (entry.TYPE === "Quota") {
+  if (entry.TYPE === "QUOTA") {
     const cached = readCache<Quota>();
     if (cached)
       return { kind: "fresh", data: cached.value, ageMs: cached.ageMs };
@@ -176,7 +176,7 @@ async function fetchProviderData(
     // Fetcher returned null (e.g. base_resp.status_code != 0). Treat
     // as a hard fail, but still try the stale cache.
     const stale =
-      entry.TYPE === "Quota" ? peekCache<Quota>() : peekCache<Balance>();
+      entry.TYPE === "QUOTA" ? peekCache<Quota>() : peekCache<Balance>();
     if (stale) return { kind: "stale", data: stale.value, ageMs: stale.ageMs };
     return { kind: "fail" };
   } catch {
@@ -184,7 +184,7 @@ async function fetchProviderData(
     // value. The dynamic plugin loader records the underlying error; this
     // layer translates the throw to a FetchResult.
     const stale =
-      entry.TYPE === "Quota" ? peekCache<Quota>() : peekCache<Balance>();
+      entry.TYPE === "QUOTA" ? peekCache<Quota>() : peekCache<Balance>();
     if (stale) return { kind: "stale", data: stale.value, ageMs: stale.ageMs };
     return { kind: "fail" };
   }

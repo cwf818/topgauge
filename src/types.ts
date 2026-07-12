@@ -13,7 +13,7 @@ export type Provider = string | null;
 // Closed enum for now. If a new TYPE is added, the fetcher / renderer /
 // template selection logic grows a new branch — data shape changes
 // cannot be made data-driven (they need code to interpret them).
-export type ProviderType = "Quota" | "BALANCE";
+export type ProviderType = "QUOTA" | "BALANCE";
 
 export type CompareMethod = "EXACT" | "INCLUDE" | "STARTWITH";
 

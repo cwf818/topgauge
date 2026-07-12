@@ -33,7 +33,7 @@ export type Balance = {
 
 export type PluginContext = {
   providerId: string;
-  type: "Quota" | "BALANCE";
+  type: "QUOTA" | "BALANCE";
   intervals: IntervalConfig;
   currencies: CurrenciesConfig;
   signal?: AbortSignal;

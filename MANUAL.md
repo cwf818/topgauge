@@ -349,7 +349,7 @@ skipped when the active provider's TYPE doesn't match.
 
 | TYPE value | Active when                                       |
 | ---------- | ------------------------------------------------- |
-| `plan`     | Provider has `TYPE: "Quota"`.                |
+| `plan`     | Provider has `TYPE: "QUOTA"`.                |
 | `balance`  | Provider has `TYPE: "BALANCE"`.                   |
 | `unknown`  | No provider entry matched `ANTHROPIC_BASE_URL`.   |
 

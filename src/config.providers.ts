@@ -10,7 +10,7 @@ import type {
 
 export const DEFAULT_PROVIDERS: Record<string, ProviderEntry> = {
   minimax: {
-    TYPE: "Quota",
+    TYPE: "QUOTA",
     BASE_URL_COMPARED_TO: "https://api.minimaxi.com/anthropic",
     COMPARE_METHOD: "EXACT",
     config: {},
@@ -20,12 +20,11 @@ export const DEFAULT_PROVIDERS: Record<string, ProviderEntry> = {
     BASE_URL_COMPARED_TO: "https://api.deepseek.com/anthropic",
     COMPARE_METHOD: "EXACT",
     config: {},
-    intervals: {},
   },
 };
 
 export const VALID_PROVIDER_TYPES: ReadonlySet<ProviderType> = new Set([
-  "Quota",
+  "QUOTA",
   "BALANCE",
 ]);
 

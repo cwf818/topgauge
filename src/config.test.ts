@@ -27,7 +27,7 @@ afterEach(() => {
 describe("provider defaults", () => {
   it("registers MiniMax as Quota and DeepSeek as BALANCE", () => {
     const providers = configStore.get().providers;
-    assert.equal(providers.minimax.TYPE, "Quota");
+    assert.equal(providers.minimax.TYPE, "QUOTA");
     assert.equal(providers.deepseek.TYPE, "BALANCE");
     assert.equal("ENDPOINT" in providers.minimax, false);
   });
@@ -73,7 +73,7 @@ describe("config facade", () => {
     await loadConfig();
     assert.equal(configStore.get().display, "remaining");
     assert.equal(configStore.get().modeLabels.remaining, "Left:");
-    assert.equal(configStore.get().providers.minimax.TYPE, "Quota");
+    assert.equal(configStore.get().providers.minimax.TYPE, "QUOTA");
   });
 
   it("exposes the split template constants through config.ts", () => {

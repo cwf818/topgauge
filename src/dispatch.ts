@@ -180,7 +180,7 @@ function renderDataLine(
       pluginSource: pluginSource ?? null,
     });
   }
-  if (entry.TYPE === "Quota") {
+  if (entry.TYPE === "QUOTA") {
     const r = data as Quota;
     // v0.9.0+ — three independent Intervals. No partial-window
     // fallback synthesis (the v0.5.0–v0.8.x `zero = { pct: 0 }`

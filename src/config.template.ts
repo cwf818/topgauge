@@ -265,6 +265,12 @@ export const DEFAULT_LINE_TEMPLATES: LineTemplates = {
     "s_space",
     "m_memUsage|valueOnly:true"
   ],
+  mem_info: [
+    "m_label|Memory: |color:yellow",
+    "m_windowMemUsage|display:used",
+    "s_space",
+    "m_memUsage|valueOnly:true"
+  ],
   git_info: [
     "m_label|Git: |color:yellow",
     "m_branch",
@@ -421,6 +427,23 @@ export const DEFAULT_STATUSLINE_PRESETS: Record<string, StatuslineTemplate> = {
     "m_age",
   ],
   // multi-line: context-info / tick-eval / stat-eval stacked.
+  compact: [
+    "m_template|tick_eval",
+    "s_newline",
+    "m_template|acc_eval",
+    "s_newline",
+    "m_template|stat_eval",
+    "s_newline",
+    "m_pluginSource",
+    "m_template|quota|type:quota",
+    "m_template|balance|type:balance",
+    "s_space",
+    "m_age",
+    "s_dot|wrap:true",
+    "m_template|mem_info",
+    "s_dot|wrap:true",
+    "m_version|color:yellow",
+  ],
   standard: [
     "m_template|information",
     "s_pipe|wrap:true",
