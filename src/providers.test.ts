@@ -1,7 +1,9 @@
 // v0.2.21: tests for the providers registry. The previous
 // `isMiniMaxBaseUrl` / `isDeepSeekBaseUrl` cases moved into api.test.ts
-// / api.balance.test.ts (and exercise the deprecated shims); this
-// file covers the new config-driven matching + dispatch surface.
+// as `parseQuota` / `parseBalance` describe blocks (the URL
+// matchers themselves were removed in v0.9.0 — replaced by
+// `compareUrl("EXACT", ...)` driving `matchProvider`). This file
+// covers the config-driven matching + dispatch surface.
 //
 // All tests pin the config to the built-in defaults via
 // `__resetForTest()` — providers.ts reads `configStore.get().providers`
@@ -222,7 +224,7 @@ describe("matchProvider — custom config", () => {
     __resetForTest({
       providers: {
         minimax: {
-          TYPE: "Quota",
+          TYPE: "QUOTA",
           BASE_URL_COMPARED_TO: "minimaxi.com",
           COMPARE_METHOD: "INCLUDE",
           ENDPOINT: "https://www.minimaxi.com/v1/token_plan/remains",
@@ -288,7 +290,7 @@ describe("getProviderEntry", () => {
   it("returns the full entry for a known provider", () => {
     const entry = getProviderEntry("minimax");
     assert.ok(entry);
-    assert.equal(entry!.TYPE, "Quota");
+    assert.equal(entry!.TYPE, "QUOTA");
     assert.equal(entry!.COMPARE_METHOD, "EXACT");
     assert.equal("ENDPOINT" in entry!, false);
   });
@@ -356,7 +358,7 @@ describe("providerTypeFor (formerly templateKeyForProvider)", () => {
 
 describe("providerTypeOf", () => {
   it("returns the TYPE field for known providers", () => {
-    assert.equal(providerTypeOf("minimax"), "Quota");
+    assert.equal(providerTypeOf("minimax"), "QUOTA");
     assert.equal(providerTypeOf("deepseek"), "BALANCE");
   });
 
@@ -398,7 +400,7 @@ describe("integration: configStore.get().providers reaches providers.ts", () => 
     __resetForTest({
       providers: {
         minimax: {
-          TYPE: "Quota",
+          TYPE: "QUOTA",
           BASE_URL_COMPARED_TO: "https://totally.different.host/anthropic",
           COMPARE_METHOD: "EXACT",
           ENDPOINT: "https://www.minimaxi.com/v1/token_plan/remains",

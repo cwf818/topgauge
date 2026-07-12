@@ -8,12 +8,13 @@ import {
   ensureInterval,
   ensureQuota,
   fetchForProviderById,
+  parseBalance,
   parseQuota,
   pluginTransport,
   resolvePluginOnDisk,
   resolvePluginOnDiskWithKind,
 } from "./api.ts";
-import type { IntervalConfig } from "./types.ts";
+import type { CurrenciesConfig, IntervalConfig } from "./types.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixture = (name: string): unknown =>
@@ -79,6 +80,37 @@ describe("parseQuota", () => {
   it("returns null for invalid input or non-zero base response", () => {
     assert.equal(parseQuota(null, minimaxIntervals), null);
     assert.equal(parseQuota({ base_resp: { status_code: 1 } }, minimaxIntervals), null);
+  });
+});
+
+// DeepSeek built-in plugin — exercises parseBalance end-to-end on
+// the real balance fixture + the min-tracker behavior. Mirrors the
+// parseQuota block above in shape. (Was originally in
+// src/api.deepseek.test.ts; merged here so all api.ts surface-area
+// tests live in one file.)
+describe("parseBalance", () => {
+  const currencies: CurrenciesConfig = {
+    CNY: { label: "￥", totalBalance: "balance_infos.0.total_balance" },
+  };
+
+  it("parses the real balance fixture", () => {
+    const result = parseBalance(fixture("balance.real.json"), currencies);
+    assert.equal(result?.isAvailable, true);
+    assert.equal(result?.entries[0]?.label, "￥");
+  });
+
+  it("keeps all configured currencies and computes the minimum", () => {
+    const result = parseBalance({
+      is_available: true,
+      balance_infos: [{ currency: "CNY", total_balance: "20" }],
+    }, currencies);
+    assert.equal(result?.minValue, 20);
+  });
+
+  it("marks explicit unavailable responses without throwing", () => {
+    const result = parseBalance({ is_available: false }, currencies);
+    assert.equal(result?.isAvailable, false);
+    assert.deepEqual(result?.entries, []);
   });
 });
 
@@ -149,7 +181,7 @@ describe("MiniMax built-in plugin (end-to-end)", () => {
       const result = await fetchForProviderById(
         "minimax",
         {
-          TYPE: "Quota",
+          TYPE: "QUOTA",
           BASE_URL_COMPARED_TO: "https://api.minimaxi.com/anthropic",
           COMPARE_METHOD: "EXACT",
         },
@@ -182,7 +214,7 @@ describe("MiniMax built-in plugin (end-to-end)", () => {
       const result = await fetchForProviderById(
         "minimax",
         {
-          TYPE: "Quota",
+          TYPE: "QUOTA",
           BASE_URL_COMPARED_TO: "https://api.minimaxi.com/anthropic",
           COMPARE_METHOD: "EXACT",
         },
@@ -206,7 +238,7 @@ describe("MiniMax built-in plugin (end-to-end)", () => {
       const result = await fetchForProviderById(
         "minimax",
         {
-          TYPE: "Quota",
+          TYPE: "QUOTA",
           BASE_URL_COMPARED_TO: "https://api.minimaxi.com/anthropic",
           COMPARE_METHOD: "EXACT",
         },
@@ -233,7 +265,7 @@ describe("MiniMax built-in plugin (end-to-end)", () => {
       const result = await fetchForProviderById(
         "minimax",
         {
-          TYPE: "Quota",
+          TYPE: "QUOTA",
           BASE_URL_COMPARED_TO: "https://api.minimaxi.com/anthropic",
           COMPARE_METHOD: "EXACT",
         },
@@ -270,7 +302,7 @@ describe("dynamic plugin loader", () => {
       const result = await fetchForProviderById(
         "minimax",
         {
-          TYPE: "Quota",
+          TYPE: "QUOTA",
           BASE_URL_COMPARED_TO: "https://api.minimaxi.com/anthropic",
           COMPARE_METHOD: "EXACT",
         },
@@ -308,7 +340,7 @@ describe("dynamic plugin loader", () => {
     const result = await fetchForProviderById(
       "custom",
       {
-        TYPE: "Quota",
+        TYPE: "QUOTA",
         BASE_URL_COMPARED_TO: "https://custom.example/anthropic",
         COMPARE_METHOD: "EXACT",
         AUTHENTICATION_KEY: "configured-key",

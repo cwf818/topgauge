@@ -247,7 +247,7 @@ export async function fetchForProviderByIdWithKind(
   // plugin author never has to know about ensureQuota /
   // ensureBalance / Quota / Balance types.
   let data: Quota | Balance | null;
-  if (entry.TYPE === "Quota")      data = ensureQuota(partial);
+  if (entry.TYPE === "QUOTA")      data = ensureQuota(partial);
   else if (entry.TYPE === "BALANCE") data = ensureBalance(partial);
   else {
     const exhaustive: never = entry.TYPE;
@@ -263,13 +263,13 @@ export async function fetchQuota(
   provider: ProviderEntry | null = null,
 ): Promise<Quota | null> {
   const entry = provider ?? {
-    TYPE: "Quota" as const,
+    TYPE: "QUOTA" as const,
     BASE_URL_COMPARED_TO: "https://api.minimaxi.com/anthropic",
     COMPARE_METHOD: "EXACT" as const,
   };
   const partial = await pluginTransport("minimax", resolveAuthenticationKey(entry, token), {
     providerId: "minimax",
-    type: "Quota",
+    type: "QUOTA",
     intervals: resolveEffectiveIntervals("minimax", entry),
     currencies: resolveEffectiveCurrencies("minimax", entry),
   });
@@ -294,16 +294,6 @@ export async function fetchBalance(
     currencies: resolveEffectiveCurrencies("deepseek", entry),
   });
   return ensureBalance(partial);
-}
-
-const DEEPSEEK_PREFIX = "https://api.deepseek.com";
-
-export function isDeepSeekBaseUrl(baseUrl: string | undefined | null): boolean {
-  if (!baseUrl) return false;
-  const lower = baseUrl.toLowerCase();
-  if (!lower.startsWith(DEEPSEEK_PREFIX)) return false;
-  const tail = baseUrl[DEEPSEEK_PREFIX.length];
-  return tail === undefined || tail === "/" || tail === "?" || tail === "#";
 }
 
 // Kept for consumers that need to construct context in tests.
