@@ -114,6 +114,39 @@ describe("statuslineTemplate — string-form preset lookup (vX.X.X+)", () => {
     assert.ok(cfg.statuslineTemplate.includes("m_quota|term:long|display:remaining|nulldrop:true"));
   });
 
+  it('"compact" resolves to the compact preset body', async () => {
+    // Lock the v0.9.0+ compact body shape: 4 lines, no information /
+    // git_info header (that's `standard`), no quote / per-scope tokens
+    // (that's `abundant`). If a future refactor re-points `compact`
+    // at a different fragment, this test breaks loudly so we don't
+    // silently swap a 1-line `simple` body into a 4-line slot or
+    // vice-versa.
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ statuslineTemplate: "compact" }));
+    const cfg = await loadConfig();
+    // Line 0: tick_eval; line 1: acc_eval; line 2: stat_eval (each
+    // followed by s_newline, so the array starts with the three
+    // fragments interleaved with newlines).
+    assert.equal(cfg.statuslineTemplate[0], "m_template|tick_eval");
+    assert.ok(cfg.statuslineTemplate.includes("m_template|acc_eval"));
+    assert.ok(cfg.statuslineTemplate.includes("m_template|stat_eval"));
+    // Final line: provider-type dispatch + m_age + mem_info + version.
+    assert.ok(cfg.statuslineTemplate.includes("m_pluginSource"));
+    assert.ok(cfg.statuslineTemplate.includes("m_template|quota|type:quota"));
+    assert.ok(cfg.statuslineTemplate.includes("m_template|balance|type:balance"));
+    assert.ok(cfg.statuslineTemplate.includes("m_template|mem_info"));
+    assert.ok(cfg.statuslineTemplate.includes("m_version|color:yellow"));
+    // 4 logical lines = 3 newlines in the array.
+    const newlines = cfg.statuslineTemplate.filter((t) => t === "s_newline").length;
+    assert.equal(newlines, 3, `expected 3 s_newline (4-line layout), got ${newlines}`);
+    // No header fragments (those belong to `standard` / `abundant`).
+    assert.ok(!cfg.statuslineTemplate.some((t) => t.startsWith("m_template|information")));
+    assert.ok(!cfg.statuslineTemplate.some((t) => t.startsWith("m_template|git_info")));
+    // No quote / per-scope / per-window stat tokens (those belong to `abundant`).
+    assert.ok(!cfg.statuslineTemplate.some((t) => t.startsWith("m_quote")));
+    assert.ok(!cfg.statuslineTemplate.some((t) => t.startsWith("m_template|tokens_acc|scope:")));
+    assert.ok(!cfg.statuslineTemplate.some((t) => t.startsWith("m_template|tokens_stat|")));
+  });
+
   it("unknown string falls back to DEFAULT_STATUSLINE_TEMPLATE with one warn", async () => {
     writeFileSync(join(dir, "config.json"), JSON.stringify({ statuslineTemplate: "bogus" }));
     const cfg = await loadConfig();

@@ -953,6 +953,7 @@ Top-level `statuslineTemplate` accepts a `string` (preset name) or a `string[]` 
 | Key         | Lines | Body summary                                                                                            |
 | ----------- | ----- | ------------------------------------------------------------------------------------------------------- |
 | `simple`    | 1     | `m_pluginSource` + provider-type dispatch (`m_template|quota|type:quota` / `m_template|balance|type:balance`) + `m_age`. Single line. |
+| `compact`   | 4     | `tick_eval` / `acc_eval` / `stat_eval` stacked on lines 0–2; provider-type dispatch + `m_age` + `mem_info` + `m_version` on line 3. No `information` / `git_info` header (that's `standard`); no `m_quote` / per-scope `tokens_acc` / per-window `tokens_stat` (that's `abundant`). Mid-density multi-line. |
 | `standard`  | 5     | `information` + `git_info` on line 0; `tick_eval` / `acc_eval` / `stat_eval` on lines 1–3; provider-type dispatch + `m_age` + `m_version` on line 4. |
 | `abundant`  | 9     | `information` + `git_info_all` + address-mode `m_quote` on line 0; `tokens_tick` / per-scope `tokens_acc` (session/model/project) on lines 1–4; per-window `tokens_stat` (2h / 5h-align / 7d-align) + `m_statTtlStatus` on lines 5–7; provider-type dispatch + `m_quota|term:long|display:remaining|nulldrop:true` + `m_age` + `m_version` on line 8. Kitchen-sink; verbose. |
 
@@ -1077,7 +1078,7 @@ To migrate a customized `lineTemplate`:
 + ]
 ```
 
-The default `statuslineTemplate` is `["m_template|quota|type:quota", "m_template|balance|type:balance"]` — provider-type dispatch: the `quota` fragment renders on a Quota provider (MiniMax), the `balance` fragment renders on a BALANCE provider (DeepSeek), the other is silently dropped. To switch to a whole-line preset, set `"statuslineTemplate": "simple"` / `"standard"` / `"abundant"` (the top-level presets live in `DEFAULT_STATUSLINE_PRESETS` in `src/config.template.ts`; see [Built-in presets](#built-in-presets)).
+The default `statuslineTemplate` is `["m_template|quota|type:quota", "m_template|balance|type:balance"]` — provider-type dispatch: the `quota` fragment renders on a Quota provider (MiniMax), the `balance` fragment renders on a BALANCE provider (DeepSeek), the other is silently dropped. To switch to a whole-line preset, set `"statuslineTemplate": "simple"` / `"compact"` / `"standard"` / `"abundant"` (the top-level presets live in `DEFAULT_STATUSLINE_PRESETS` in `src/config.template.ts`; see [Built-in presets](#built-in-presets)).
 
 ### `m_quote` (v0.8.21+)
 

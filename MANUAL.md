@@ -421,51 +421,44 @@ sandwiched around the upstream statusline.
 
 ---
 
-## 8. Built-in presets (v0.8.14+)
+## 8. Built-in presets (v0.8.14+, rewritten v0.8.47+)
 
-The seven plan + two balance presets are first-class entries in
-`cfg().lineTemplates` with `_`-prefixed keys. Reference them from your
-`statuslineTemplate` array via `m_template|_X`. The optional
-`|type|plan|balance` second arg constrains dispatch to one provider
-TYPE — default is `type|plan`, so a `_balance_*` preset silently
-drops on a Quota provider unless overridden. (The legacy
-`|mode|…` form is still accepted.) As of v0.8.37, omitting both
-`type` and `mode` makes the reference universal — the same preset
-renders on plan, balance, AND unknown providers.
+Top-level `statuslineTemplate` accepts a `string` (preset name) or a
+`string[]` (raw token list). String-form resolves against
+`DEFAULT_STATUSLINE_PRESETS` in `src/config.template.ts`; the body is
+cloned into your config so subsequent user mutations don't leak back.
+The full body summary lives at [README.md § Built-in presets](./README.md#built-in-presets-v0847)
+— MANUAL.md keeps the load / dispatch contract only.
 
-| Key                       | Lines | Description                                                                          | Default `type` |
-| ------------------------- | ----- | ------------------------------------------------------------------------------------ | -------------- |
-| `_1line` / `_simple`      | 1     | Token-plan only, single line (byte-identical aliases).                               | `plan`         |
-| `_simple-alone`           | 1     | Single line with explicit `"Usage:"` label prefix (for solo use, no upstream).       | `plan`         |
-| `_standard`               | 2     | Line 0 = token-plan, line 1 = context + tokens (no session line).                    | `plan`         |
-| `_standard-alone`         | 3     | Adds session info on line 0 (for solo use, no upstream chain).                       | `plan`         |
-| `_abundant`               | 4     | Line 0 = session + git (deep git workflow).                                          | `plan`         |
-| `_complete`               | 5     | Adds totals on line 3 (verbose — not recommended; see Note below).                  | `plan`         |
-| `_balance_simple`         | 1     | Default balance render (`"Balance: <balance>"`).                                     | `balance`      |
-| `_balance_simple-alone`   | 1     | Balance render with explicit `"Balance:"` label prefix (for solo use).               | `balance`      |
+| Key         | Lines | Use it when                                                                                       |
+| ----------- | ----- | ------------------------------------------------------------------------------------------------- |
+| `simple`    | 1     | One-line minimal: provider-type dispatch + `m_age`. Default for users chaining `ccstatusline` / `claude-hud`. |
+| `compact`   | 4     | Multi-line eval stack (`tick_eval` / `acc_eval` / `stat_eval`) + a single-line dispatch footer. No `information` / `git_info` header; no per-scope `tokens_acc`. Mid-density. |
+| `standard`  | 5     | Adds an `information` + `git_info` header row above the `compact` eval stack.                      |
+| `abundant`  | 9     | Per-scope `tokens_acc` (session/model/project) + per-window `tokens_stat` (2h / 5h-align / 7d-align) + `m_quote`. Kitchen-sink; verbose. |
 
 Usage:
 
 ```jsonc
 {
-  "statuslineTemplate": ["m_template|_standard"],
-  // Or, for a DeepSeek (BALANCE) provider, the explicit form:
-  // "statuslineTemplate": ["m_template|_balance_simple|type:balance"]
-  // Or, for a renderer that works on both provider types:
-  // "statuslineTemplate": ["m_template|_balance_simple"]  // universal as of v0.8.37
+  "statuslineTemplate": "compact",
+  // Or, for a renderer that works on both provider types without
+  // preset indirection:
+  // "statuslineTemplate": ["m_template|quota|type:quota", "m_template|balance|type:balance"]
 }
 ```
 
-The `_` prefix marks a built-in preset — user-defined
-`lineTemplates.<_*>` entries that collide with a built-in key are
-**rejected** (warn + skip). Use a different key for your own presets.
+To customize a preset, copy the body from `src/config.template.ts:DEFAULT_STATUSLINE_PRESETS[<key>]` into `lineTemplates.<your_key>` and reference it via `m_template|<your_key>`.
 
-> **Note on `_complete`:** the built-in body still references a few
-> modules removed in v0.8.0 (`m_totalTokenIn`, `m_totalTokenOut`,
-> `m_totalTokenWithCacheIn`). Treat `_complete` as **deprecated** and
-> either pick `_abundant` or hand-roll a 5-line variant that uses
-> `m_accTokenIn|scope|session`, `m_accTokenOut|scope|session`,
-> `m_accTokenCachedIn|scope|session`.
+> **Removed in v0.8.47+:** the v0.4.0–v0.8.46 `_1line` / `_simple` /
+> `_simple-alone` / `_standard` / `_standard-alone` / `_abundant` /
+> `_complete` / `_balance_simple` / `_balance_simple-alone` family
+> (referenced via `m_template|_X`) is no longer registered. Old
+> configs that referenced these strings get a one-shot stderr
+> warning and the closest-matching preset body is loaded instead.
+> User-defined `lineTemplates.<_*>` entries with a colliding key
+> are no longer rejected either — the `_`-prefix collision check is
+> gone (any name is fine now).
 
 ---
 
