@@ -1,8 +1,8 @@
 // Kimi user plugin for topgauge. POST {scope:["FEATURE_CODING"]}
-// → usages[] entry with resetTime + limits[]. Projects the
-// usages.detail (top-level cycle) onto shortInterval and
-// usages.limits[0].detail (the rolling window) onto midInterval.
-// longInterval stays null.
+// → usages[] entry with resetTime + limits[] + totalQuota. Maps:
+//   shortInterval ← usages.limits[0].detail  (intervalMs = window.duration MINUTES × 60s × 1000)
+//   midInterval   ← usages.detail            (intervalMs = 7d, fixed — primary weekly cycle)
+//   longInterval  ← totalQuota.remaining     (percent only — no startAt/endAt/intervalMs available)
 //
 // ABI: default export is { fetchAccountCredit(authenticationKey, ctx) },
 // same shape as the built-in minimax / deepseek plugins. The host runs
@@ -25,6 +25,10 @@
 
 const ENDPOINT =
   "https://www.kimi.com/apiv2/kimi.gateway.billing.v1.BillingService/GetUsages";
+// Fixed 1-week interval for the primary cycle (midInterval). Kimi's
+// `usages.detail` only ships resetTime, not the cycle length — the
+// spec says it covers a 7-day rolling window.
+const MID_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 
 function isRecord(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -50,36 +54,13 @@ function findCodingUsage(raw) {
   return usages.find((u) => isRecord(u) && u.scope === "FEATURE_CODING") ?? null;
 }
 
-// Top-level detail (the primary cycle the dashboard shows).
-function topLevelInterval(usage) {
-  const detail = usage?.detail;
-  if (!isRecord(detail)) return null;
-  const remainingPct = asNumber(detail.remaining);
-  const resetAt = epochMs(detail.resetTime);
-  if (remainingPct == null || resetAt == null) return null;
-  // Kimi returns only resetTime — back-derive startAt as
-  // resetAt - 5h so the renderer's window-fill-aware reset arrow
-  // still gets a direction. (Absolute startAt is an estimate, but
-  // the arrow direction is what the user actually reads.)
-  const intervalMs = 5 * 60 * 60 * 1000;
-  return {
-    windowId: "5h",
-    label: "5h",
-    startAt: resetAt - intervalMs,
-    endAt: resetAt,
-    intervalMs,
-    remainingPercent: remainingPct,
-    usedPercent: 100 - remainingPct,
-    remainingQuota: asNumber(detail.remaining),
-    usedQuota: asNumber(detail.used),
-    limitQuota: asNumber(detail.limit),
-  };
-}
-
-// limits[0] — the rolling sub-window inside the primary cycle.
-// duration is in minutes; the fixture shows 300 (5h) but can be
-// other values for other scopes.
-function rollingInterval(usage) {
+// shortInterval ← usages.limits[0].detail. The rolling sub-window's
+// length is `window.duration` expressed in MINUTES (`timeUnit`
+// "TIME_UNIT_MINUTE"); multiply by 60×1000 to land on intervalMs.
+// resetTime is the only time anchor Kimi ships — back-derive
+// startAt = resetAt - intervalMs so the window-fill-aware reset
+// arrow gets a direction.
+function shortInterval(usage) {
   const limits = Array.isArray(usage?.limits) ? usage.limits : [];
   const first = limits[0];
   if (!isRecord(first)) return null;
@@ -89,11 +70,12 @@ function rollingInterval(usage) {
   const remainingPct = asNumber(detail.remaining);
   const resetAt = epochMs(detail.resetTime);
   if (remainingPct == null || resetAt == null) return null;
-  const minutes = asNumber(window.duration) ?? 300;
+  const minutes = asNumber(window.duration);
+  if (minutes == null) return null;
   const intervalMs = minutes * 60 * 1000;
   return {
     windowId: "5h",
-    label: `${minutes}m`,
+    label: "5h",
     startAt: resetAt - intervalMs,
     endAt: resetAt,
     intervalMs,
@@ -105,13 +87,62 @@ function rollingInterval(usage) {
   };
 }
 
+// midInterval ← usages.detail. The primary 7-day cycle — Kimi only
+// ships resetTime (not startTime), so we back-derive startAt
+// against a fixed 7-day window. The intervalMs is not derivable
+// from the payload; the spec treats it as a known 1-week constant.
+function midInterval(usage) {
+  const detail = usage?.detail;
+  if (!isRecord(detail)) return null;
+  const remainingPct = asNumber(detail.remaining);
+  const resetAt = epochMs(detail.resetTime);
+  if (remainingPct == null || resetAt == null) return null;
+  return {
+    windowId: "7d",
+    label: "7d",
+    startAt: resetAt - MID_INTERVAL_MS,
+    endAt: resetAt,
+    intervalMs: MID_INTERVAL_MS,
+    remainingPercent: remainingPct,
+    usedPercent: 100 - remainingPct,
+    remainingQuota: asNumber(detail.remaining),
+    usedQuota: asNumber(detail.used),
+    limitQuota: asNumber(detail.limit),
+  };
+}
+
+// longInterval ← totalQuota.remaining. Only the percentage is
+// derivable — Kimi doesn't ship a resetTime / cycle anchor for the
+// total quota, so startAt / endAt / intervalMs are all null.
+// ensureInterval's "fewer than 2 non-null time fields" rule then
+// collapses the time group to nulls, and the renderer falls back
+// to its interval-less placeholder path.
+function longInterval(raw) {
+  const tq = raw?.totalQuota;
+  if (!isRecord(tq)) return null;
+  const remainingPct = asNumber(tq.remaining);
+  if (remainingPct == null) return null;
+  return {
+    windowId: "30d",
+    label: "30d",
+    startAt: null,
+    endAt: null,
+    intervalMs: null,
+    remainingPercent: remainingPct,
+    usedPercent: asNumber(tq.used) != null ? 100 - asNumber(tq.used) : null,
+    remainingQuota: remainingPct,
+    usedQuota: asNumber(tq.used),
+    limitQuota: asNumber(tq.limit),
+  };
+}
+
 function fillQuota(raw) {
   const usage = findCodingUsage(raw);
   if (!usage) return null;
   return {
-    shortInterval: topLevelInterval(usage),
-    midInterval: rollingInterval(usage),
-    longInterval: null,
+    shortInterval: shortInterval(usage),
+    midInterval: midInterval(usage),
+    longInterval: longInterval(raw),
   };
 }
 
@@ -137,4 +168,12 @@ export default {
 
 // Named exports for unit tests. The host loader only ever consumes
 // `default`; these let kimi.test.ts pin the fill contract.
-export { ENDPOINT, fillQuota, topLevelInterval, rollingInterval, findCodingUsage };
+export {
+  ENDPOINT,
+  MID_INTERVAL_MS,
+  fillQuota,
+  shortInterval,
+  midInterval,
+  longInterval,
+  findCodingUsage,
+};
