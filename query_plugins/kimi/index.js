@@ -120,6 +120,10 @@ function midInterval(usage) {
 function longInterval(raw) {
   const tq = raw?.totalQuota;
   if (!isRecord(tq)) return null;
+  // totalQuota fields are percentages (used: "8", remaining: "92",
+  // limit: "100" → 8% used, 92% remaining). They aren't complements
+  // of each other — Kimi ships used and remaining as independent
+  // percentages of the same denominator.
   const remainingPct = asNumber(tq.remaining);
   if (remainingPct == null) return null;
   return {
@@ -129,7 +133,7 @@ function longInterval(raw) {
     endAt: null,
     intervalMs: null,
     remainingPercent: remainingPct,
-    usedPercent: asNumber(tq.used) != null ? 100 - asNumber(tq.used) : null,
+    usedPercent: asNumber(tq.used),
     remainingQuota: remainingPct,
     usedQuota: asNumber(tq.used),
     limitQuota: asNumber(tq.limit),

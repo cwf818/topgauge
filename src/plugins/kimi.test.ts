@@ -79,12 +79,17 @@ describe("kimi plugin — fillQuota against quota.real.kimi.json", () => {
     });
   });
 
-  // longInterval ← totalQuota.remaining. Only the percentage —
+  // longInterval ← totalQuota.remaining. Kimi's totalQuota fields
+  // are independent percentages on the same denominator (used:8,
+  // remaining:92 of limit:100). Only the percentage is derivable —
   // Kimi ships no resetTime / cycle anchor for this field, so
-  // startAt / endAt / intervalMs are all null.
+  // startAt / endAt / intervalMs stay null.
   describe("longInterval", () => {
-    it("reads remaining from totalQuota.remaining", () => {
+    it("reads remaining from totalQuota.remaining (NOT 100−used)", () => {
       assert.equal(quota!.longInterval!.remainingPercent, 92);
+    });
+    it("reads used directly from totalQuota.used (already a percentage)", () => {
+      assert.equal(quota!.longInterval!.usedPercent, 8);
     });
     it("leaves startAt / endAt / intervalMs null (no anchor available)", () => {
       assert.equal(quota!.longInterval!.startAt, null);
