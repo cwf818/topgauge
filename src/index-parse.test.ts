@@ -27,7 +27,7 @@ describe("parseTokenSnapshot — happy path", () => {
     assert.ok(snap);
     // Existing fields (unchanged from v0.4.0 dev work)
     assert.equal(snap!.sessionId, "b2bee628-bc4f-4c79-a198-cb39b098b547");
-    assert.equal(snap!.cwd, "D:\\WorkSpace\\topgauge-cc");
+    assert.equal(snap!.cwd, "D:\\WorkSpace\\topgauge");
     assert.equal(snap!.totals.tokenTotalIn, 126860);
     assert.equal(snap!.totals.tokenTotalOut, 265);
     assert.equal(snap!.current.tokenIn, 140);
