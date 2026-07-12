@@ -765,61 +765,6 @@ Set `"statuslineTemplate": "standard"` (or `"abundant"`) in your `config.json`. 
 
 **Provider-aware dispatch (v0.8.15+):** `m_template` takes an optional `|type|<quota|balance>` named arg. `m_template|<key>|type:quota` matches a Quota provider and silently drops on a BALANCE provider (and vice versa). **Omit `type` for universal fragments** (context/git/tokens_acc/tokens_stat) — they render on every tick regardless of provider.
 
-### Upgrading to v0.8.37 from v0.8.36
-
-- **`m_template` no-type form is universal.** `m_template|<key>` with no `type:` / `mode:` arg now renders on plan, balance, AND unknown providers — the no-mode silent-drop on a type mismatch is gone. If your `statuslineTemplate` was relying on the silent drop to gate between providers, add `|type:plan` or `|type:balance` explicitly.
-- **`thresholds.percentBands` default changed.** Was `[20, 40, 60, 80]`; now `[60, 70, 80, 90]` (v0.8.36.1). User overrides in `config.json` are unaffected. Reset to the new defaults by deleting the field.
-
-### Upgrading to v0.9.0 from v0.8.x (BREAKING — user rewrite required)
-
-`provider.TYPE` is renamed `"Quota"` → `"QUOTA"` (uppercase, aligned with `COMPARE_METHOD` enum and the v0.8.x convention). The default `DEFAULT_PROVIDERS.minimax.TYPE` is updated in source; no behavior change for users who never customized `providers`. But any user-supplied `providers.<id>.TYPE` value in `~/.claude/plugins/topgauge/config.json` must be updated — otherwise validation drops the entry and the provider silently stops matching.
-
-```diff
-  "providers": {
-    "minimax": {
--     "TYPE": "Quota",
-+     "TYPE": "QUOTA",
-      "BASE_URL_COMPARED_TO": "https://api.minimaxi.com/anthropic",
-      "COMPARE_METHOD": "EXACT"
-    }
-  }
-```
-
-```bash
-# sed one-liner for a single config file (run on a copy first)
-sed -i.bak -E 's/"TYPE":[[:space:]]*"Quota"/"TYPE": "QUOTA"/g' config.json
-```
-
-(For Windows, use PowerShell `Get-Content … | ForEach-Object { $_ -replace '"TYPE":\s*"Quota"','"TYPE": "QUOTA"' } | Set-Content …`.)
-
-After migrating, run `npm test` (or `bash scripts/test-install.sh`) to spot-check that the providers still register. The validation error from a stale `"Quota"` value reads:
-
-```
-provider TYPE must be "QUOTA" or "BALANCE" (got "Quota"); dropping
-```
-
-— so the failure mode is loud, not silent.
-
-### Upgrading to v0.8.33 from v0.8.32 (BREAKING — user rewrite required)
-
-The inline-args grammar changed to two-class. Every `lineTemplates.<key>` entry in your `~/.claude/plugins/topgauge/config.json` must be rewritten.
-
-```diff
-- "m_sumTokenIn|window|5h"            // pre-v0.8.33 — pair boundary on |
-+ "m_sumTokenIn|window:5h"            // v0.8.33+ — pair boundary on :
-```
-
-The bare `|name|value|` form is REMOVED. The dispatcher treats unparseable segments (no `:`, no `=` boundary) as "unknown lineTemplate module" and drops them with a one-shot stderr warning. The migration is mechanical — for each pair, replace the inner `|` with `:` (or `=`):
-
-```bash
-# sed one-liner for a single config file (run on a copy first)
-sed -i.bak -E 's/\|([A-Za-z_][A-Za-z0-9_]*)\|/|\1:|/g' config.json
-```
-
-(For Windows, use PowerShell `Get-Content … | ForEach-Object { $_ -replace '\|([A-Za-z_][A-Za-z0-9_]*)\|','|$1:|' } | Set-Content …`.)
-
-After migrating, run `npm test` (or `bash scripts/test-install.sh`) to spot-check that the templates still parse.
-
 ### Upgrading to v0.8.14 from v0.8.13
 
 `statuslineTemplate` is now a `string[]` (token list) or a `string` (preset name). Pre-v0.8.14 string-form preset-name values (`"1line"`, `"standard"`, etc.) auto-migrate to the equivalent `["m_template|_X"]` array with a one-shot stderr warning — but those `_`-prefixed preset keys are themselves removed in v0.8.47+. The current registry is `DEFAULT_STATUSLINE_PRESETS` with unprefixed keys (`simple` / `standard` / `abundant`), and the fragment library in `DEFAULT_LINE_TEMPLATES` uses bare keys (`quota` / `balance` / `tokens_*` / `information` / `git_info*` / `tick_eval` / `acc_eval` / `stat_eval` / `context_all`). To silence the warning and pin the new shape:
@@ -1097,19 +1042,6 @@ Note: `m_tokenHitRate` now renders as `hit:N%` (v0.8.x R8 — prefix unified wit
   ]
 }
 ```
-
-### Migration from `TOKENPLAN_DISPLAY` / `TOPGAUGE_DISPLAY`
-
-If you previously set `TOKENPLAN_DISPLAY=remaining` (pre-v0.2.0) or
-`TOPGAUGE_DISPLAY=remaining` in your shell, move that value into
-`config.json`:
-
-```bash
-mkdir -p ~/.claude/plugins/topgauge
-echo '{ "display": "remaining" }' > ~/.claude/plugins/topgauge/config.json
-```
-
-Restart Claude Code (or run `/reload-plugins`) for the change to take effect.
 
 ## Diagnostics log
 
