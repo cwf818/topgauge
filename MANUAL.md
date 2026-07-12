@@ -1,4 +1,4 @@
-# ToPGauge — Display Modules Manual (v0.9.0)
+# ToPGauge — Display Modules Manual (v0.9.1)
 
 This file documents every token you can write inside `statuslineTemplate`
 and inside entries of `lineTemplates.<key>` (consumed via
