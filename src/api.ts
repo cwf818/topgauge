@@ -42,7 +42,11 @@ export {
 } from "./plugins/parsers.ts";
 
 const PLUGIN_TIMEOUT_MS = 5_000;
-const BUILTIN_PLUGIN_IDS = new Set(["minimax", "deepseek", "copilot"]);
+// v0.9.x — copilot is no longer a built-in (moved to a user plugin
+// shipped under query_plugins/copilot/). Only minimax + deepseek
+// remain bundled. Unknown IDs still resolve to a missing-plugin
+// hint via the user-side fallback path.
+const BUILTIN_PLUGIN_IDS = new Set(["minimax", "deepseek"]);
 const PROVIDER_ID_RE = /^[A-Za-z0-9_-]+$/;
 
 export function queryPluginsDir(): string {
@@ -118,10 +122,10 @@ export function resolvePluginOnDiskWithKind(
   if (existsSync(js)) return { path: js, kind: "user" };
   const mjs = queryPluginPathMjs(providerId);
   if (existsSync(mjs)) return { path: mjs, kind: "user" };
-  // Built-in only resolves for the canonical 3 IDs (minimax,
-  // deepseek, copilot). For unknown ids there's no fallback —
-  // return the user-side path so the import-time 404 surfaces
-  // the right hint ("check query_plugins/").
+  // Built-in only resolves for the canonical 2 IDs (minimax,
+  // deepseek). For unknown ids there's no fallback — return the
+  // user-side path so the import-time 404 surfaces the right hint
+  // ("check query_plugins/").
   if (BUILTIN_PLUGIN_IDS.has(providerId)) {
     return { path: resolveBuiltInPluginOnDisk(providerId), kind: "builtin" };
   }

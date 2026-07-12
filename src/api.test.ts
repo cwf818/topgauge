@@ -376,11 +376,13 @@ describe("dynamic plugin loader", () => {
 });
 
 // v0.9.0+ — user plugins at ~/.claude/plugins/topgauge/query_plugins/<id>/
-// override built-ins. Built-in IDs (minimax / deepseek / copilot) are no
+// override built-ins. Built-in IDs (minimax / deepseek) are no
 // longer a closed set; anyone can ship a same-id user plugin to replace
-// the bundled one. Override is silent (no stderr, no diagnostics). These
-// tests pin that contract — both the path-resolution function and the
-// end-to-end pluginTransport loading path.
+// the bundled one. (copilot was a built-in until v0.9.x; it now ships
+// only as a user plugin at query_plugins/copilot/.) Override is silent
+// (no stderr, no diagnostics). These tests pin that contract — both
+// the path-resolution function and the end-to-end pluginTransport
+// loading path.
 describe("resolvePluginOnDiskWithKind (v0.9.0+ override)", () => {
   function userDir(id: string): string {
     return resolve(tempHome, ".claude", "plugins", "topgauge", "query_plugins", id);
@@ -421,8 +423,8 @@ describe("resolvePluginOnDiskWithKind (v0.9.0+ override)", () => {
       `path should resolve into the bundled plugin tree, got: ${r.path}`);
   });
 
-  it("returns kind=builtin for deepseek and copilot when no user override", () => {
-    for (const id of ["deepseek", "copilot"]) {
+  it("returns kind=builtin for the canonical 2 built-ins (minimax, deepseek) when no user override", () => {
+    for (const id of ["minimax", "deepseek"]) {
       const r = resolvePluginOnDiskWithKind(id);
       assert.equal(r.kind, "builtin");
       // Cross-platform path match: posix uses '/' between segments,
@@ -433,6 +435,20 @@ describe("resolvePluginOnDiskWithKind (v0.9.0+ override)", () => {
       assert.ok(re.test(r.path),
         `${id} should resolve to its bundled plugin file, got: ${r.path}`);
     }
+  });
+
+  it("returns kind=missing for copilot when no user plugin at query_plugins/copilot/", () => {
+    // v0.9.x: copilot is no longer bundled (moved to a user-only
+    // ship path). With BUILTIN_PLUGIN_IDS = {minimax, deepseek},
+    // a query_plugins/copilot/ lookup that misses falls through to
+    // the missing kind — the user must install the copilot plugin
+    // themselves (the README's "User plugins" section documents
+    // the install path).
+    const r = resolvePluginOnDiskWithKind("copilot");
+    assert.equal(r.kind, "missing");
+    const re = /[\\/]query_plugins[\\/]copilot[\\/]index\.js$/;
+    assert.ok(re.test(r.path),
+      `expected path under query_plugins/, got: ${r.path}`);
   });
 
   it("user-plugin wins over bundled built-in for the same id (minimax override)", () => {

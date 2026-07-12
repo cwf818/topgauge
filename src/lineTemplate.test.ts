@@ -2224,7 +2224,7 @@ describe("m_template — provider gate: instance-level filter (v0.9.0+)", () => 
       },
     });
     try {
-      for (const p of ["minimax", "deepseek", "copilot", null] as const) {
+      for (const p of ["minimax", "deepseek", null] as const) {
         const line = renderProviderLine(p, {
           mode: "used", nowMs: Date.now(),
           shortInterval: null, midInterval: null, longInterval: null,

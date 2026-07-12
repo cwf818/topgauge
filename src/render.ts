@@ -1184,7 +1184,7 @@ type RenderContext = {
   // a mode.
   providerType: "quota" | "balance" | "unknown";
   // v0.9.0+ — the active provider INSTANCE id (e.g. `"minimax"` /
-  // `"deepseek"` / `"copilot"`). Populated by renderProviderLine
+  // `"deepseek"`). Populated by renderProviderLine
   // from the `provider` arg; null when ANTHROPIC_BASE_URL didn't
   // match any configured entry. Distinct from `providerType`
   // (which is the category discriminator `quota` / `balance` /
@@ -5285,7 +5285,7 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
     named: {
       type: (raw) => (raw === "quota" || raw === "balance" ? raw : null),
       // v0.9.0+ — `provider:<id>` gates the fragment to ONE specific
-      // provider instance (e.g. `minimax` / `deepseek` / `copilot`).
+      // provider instance (e.g. `minimax` / `deepseek`).
       // Resolver accepts any non-empty string; the dispatcher does
       // strict-match against `ctx.currentProvider`. Absent → no gate
       // (fragment renders on every provider). Distinct from `type`
