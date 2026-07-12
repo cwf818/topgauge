@@ -326,6 +326,21 @@ const DEFAULT_CONFIG: {
     // "🎨" preserves the v0.9.x ship literal; user-overridable
     // independently of `labelPluginSystem`.
     labelPluginUserDefined: string;
+    // vX.X.X+ — glyph shown by `m_pluginSource` for the
+    // future "claude 官方" branch (data sourced from stdin).
+    // Default "🔖" — reserved as a type-level axis only; not
+    // yet wired into the renderer's dispatch table (per the
+    // user's "CC 分支暂不做实现" decision 2026-07-12). The
+    // label is exposed so a follow-up branch can read it
+    // without a type change, and so users can override the
+    // literal in advance if they want.
+    labelPluginCC: string;
+    // vX.X.X+ — glyph shown by `m_pluginSource` when the
+    // matched provider id has no plugin (neither user override
+    // nor built-in). Default "❗" makes the failure mode loud
+    // instead of silent — `peekPluginSource` no longer folds
+    // `kind="missing"` to null.
+    labelPluginMissing: string;
   };
   colors: typeof DEFAULT_COLORS;
   cacheHitColors: typeof DEFAULT_CACHE_HIT_COLORS;
@@ -449,8 +464,14 @@ const DEFAULT_CONFIG: {
     // The renderer drops the module entirely when ctx.pluginSource
     // is null (per the "Drop 整个 module" decision 2026-07-11), so
     // these defaults only surface on actual built-in / user hits.
+    // labelPluginCC + labelPluginMissing are net-new in this
+    // round (2026-07-12); "❗" makes the missing-plugin case
+    // loud (was previously silent-drop), "🔖" is reserved for
+    // a future CC branch (CC 分支暂不做实现).
     labelPluginSystem: "📌",
     labelPluginUserDefined: "🎨",
+    labelPluginCC: "🔖",
+    labelPluginMissing: "❗",
   },
   colors: DEFAULT_COLORS,
   cacheHitColors: DEFAULT_CACHE_HIT_COLORS,
@@ -769,13 +790,18 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
         "labelQuota",
         // vX.X.X+ — token cost module prefix.
         "labelTokenCost",
-        // vX.X.X+ — m_pluginSource glyph axis (system / user). The
-        // renderer reads these via `labelFor("pluginSystem")` /
-        // `labelFor("pluginUserDefined")` so users can replace
-        // the ship defaults (⚙ / 🎨) with any string via
-        // labels.labelPluginSystem / labels.labelPluginUserDefined.
+        // vX.X.X+ — m_pluginSource glyph axis (system / user / cc / missing).
+        // The renderer reads these via `labelFor("pluginSystem")` /
+        // `labelFor("pluginUserDefined")` /
+        // `labelFor("pluginCC")` (reserved, not yet dispatched) /
+        // `labelFor("pluginMissing")` so users can replace the
+        // ship defaults (📌 / 🎨 / 🔖 / ❗) with any string via
+        // labels.labelPluginSystem / .labelPluginUserDefined /
+        // .labelPluginCC / .labelPluginMissing.
         "labelPluginSystem",
         "labelPluginUserDefined",
+        "labelPluginCC",
+        "labelPluginMissing",
       ];
       for (const f of fields) {
         if (typeof lm[f] === "string") {

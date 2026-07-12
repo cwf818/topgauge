@@ -2205,10 +2205,14 @@ describe("formatBalanceLine — stale suffix integration", () => {
 // v0.9.x — m_pluginSource module: visual indicator of which side
 // of the user-vs-builtin fence the active provider's plugin was
 // loaded from. 📌 for built-in (shipped-with-the-plugin), 🎨 for
-// user override (query_plugins/<id>/), drop (no-op) when no cache
+// user override (query_plugins/<id>/), ❗ for missing (matched
+// provider id has no plugin at all), drop (no-op) when no cache
 // row exists or the source is unrecognizable. No default tint —
 // the symbol carries the meaning on its own (per the user's
-// "user |color| override only" decision 2026-07-11).
+// "user |color| override only" decision 2026-07-11). A 4th
+// branch 🔖 / "cc" is reserved for the future claude-官方 case
+// — the type axis + default glyph exist, but no dispatcher
+// arm reads it yet (CC 分支暂不做实现 2026-07-12).
 describe("m_pluginSource (v0.9.x)", () => {
   // The bar/window subtests above use `quotaLine(iv, template)`;
   // here we don't need interval data — the pluginSource glyph
@@ -2217,7 +2221,7 @@ describe("m_pluginSource (v0.9.x)", () => {
   const nowMs = Date.parse("2026-06-24T12:00:00Z");
 
   function lineFor(
-    pluginSource: "user" | "builtin" | null | undefined,
+    pluginSource: "user" | "builtin" | "missing" | null | undefined,
     template: string,
   ): string {
     __resetForTest({ statuslineTemplate: [template] });
@@ -2251,6 +2255,66 @@ describe("m_pluginSource (v0.9.x)", () => {
       `user should render 🎨, got: ${strip(line)}`);
     assert.ok(!line.includes("\x1b[38;5;"),
       `user glyph should NOT be color-tinted, got: ${line}`);
+  });
+
+  it("renders ❗ for missing (matched provider has no plugin)", () => {
+    // vX.X.X+ — the missing branch was previously silent-drop
+    // (peekPluginSource collapsed `"missing"` to null). Now it
+    // surfaces as ❗ so a misconfigured provider id
+    // (e.g. user set providers.copilot.* but never installed
+    // query_plugins/copilot/) is loud instead of silent. Glyph
+    // comes from labels.labelPluginMissing (default "❗").
+    const line = lineFor("missing", "m_pluginSource");
+    assert.ok(strip(line).includes("❗"),
+      `missing should render ❗, got: ${strip(line)}`);
+    assert.ok(!line.includes("\x1b[38;5;"),
+      `missing glyph should NOT be color-tinted, got: ${line}`);
+  });
+
+  it("❗ bare render equals just the glyph (no wrap)", () => {
+    // Mirror of the 📌 bare-render test: when m_pluginSource is
+    // the sole template token with pluginSource="missing", the
+    // stripped line is exactly "❗".
+    const line = lineFor("missing", "m_pluginSource");
+    assert.equal(strip(line), "❗",
+      `bare m_pluginSource missing should emit just ❗, got: '${line}'`);
+  });
+
+  it("labels.labelPluginMissing override renders the user's string for missing", () => {
+    // Symmetric of labelPluginSystem / labelPluginUserDefined:
+    // the missing axis is also overridable via config.labels.
+    __resetForTest({
+      statuslineTemplate: ["m_pluginSource"],
+      labels: { labelPluginMissing: "[!]" },
+    } as Partial<Config>);
+    const line = renderProviderLine("minimax", {
+      mode: "used",
+      nowMs,
+      shortInterval: null,
+      midInterval: null,
+      longInterval: null,
+      balance: null,
+      ageMs: 5 * 60_000,
+      stale: false,
+      version: "0.0.0",
+      tokens: null,
+      pluginSource: "missing",
+    });
+    assert.equal(strip(line), "[!]",
+      `labelPluginMissing override should render "[!]" verbatim, got: ${strip(line)}`);
+  });
+
+  it("built-in / user / missing glyphs are visually distinct", () => {
+    // Pin that all three glyphs are different characters —
+    // a typo at any axis would otherwise be easy to miss
+    // (e.g. ❗ vs ❕ vs ❌).
+    const builtin = lineFor("builtin", "m_pluginSource");
+    const user    = lineFor("user",    "m_pluginSource");
+    const missing = lineFor("missing", "m_pluginSource");
+    const bs = strip(builtin), us = strip(user), ms = strip(missing);
+    assert.notEqual(bs, us, `built-in and user should differ: ${bs} vs ${us}`);
+    assert.notEqual(bs, ms, `built-in and missing should differ: ${bs} vs ${ms}`);
+    assert.notEqual(us, ms, `user and missing should differ: ${us} vs ${ms}`);
   });
 
   it("drops to no-op when ctx.pluginSource is null", () => {

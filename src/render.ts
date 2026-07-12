@@ -177,7 +177,17 @@ type LabelAxis =
   | "quota"   // v0.9.0+ — quota module prefix ("quota(5h):123/500")
   | "cost"    // vX.X.X+ — token cost module prefix ("cost:$0.0123")
   | "pluginSystem"        // vX.X.X+ — m_pluginSource glyph when built-in (default "⚙")
-  | "pluginUserDefined";  // vX.X.X+ — m_pluginSource glyph when user override (default "🎨")
+  | "pluginUserDefined"   // vX.X.X+ — m_pluginSource glyph when user override (default "🎨")
+  | "pluginCC"            // vX.X.X+ — m_pluginSource glyph reserved for the
+                          // future "claude 官方" branch (data from stdin).
+                          // Default "🔖"; not yet wired into the renderer's
+                          // dispatch table (per the user's "CC 分支暂不做实现"
+                          // decision 2026-07-12) — the axis is here so the
+                          // label is overridable via labels.labelPluginCC
+                          // without a follow-up type change.
+  | "pluginMissing";      // vX.X.X+ — m_pluginSource glyph when the matched
+                          // provider id has no plugin (neither user override
+                          // nor built-in). Default "❗".
 function labelFor(axis: LabelAxis): string {
   const labels = cfg().labels;
   switch (axis) {
@@ -211,11 +221,15 @@ function labelFor(axis: LabelAxis): string {
     // config.ts:DEFAULT_CONFIG.labels.labelTokenCost). Read by
     // m_tokenCost / m_accTokenCost / m_sumTokenCost.
     case "cost": return labels.labelTokenCost;
-    // vX.X.X+ — m_pluginSource glyph axes. Defaults "⚙" / "🎨"
-    // (set in config.ts:DEFAULT_CONFIG.labels). Users override
-    // via labels.labelPluginSystem / labels.labelPluginUserDefined
-    // — anything string-shaped works (e.g. "B:", "🔧", "[built-in]").
+    // vX.X.X+ — m_pluginSource glyph axes. Defaults "📌" / "🎨" /
+    // "🔖" / "❗" (set in config.ts:DEFAULT_CONFIG.labels). Users
+    // override via labels.labelPluginSystem /
+    // labels.labelPluginUserDefined / labels.labelPluginCC /
+    // labels.labelPluginMissing — anything string-shaped works
+    // (e.g. "B:", "🔧", "[built-in]").
     case "pluginSystem":       return labels.labelPluginSystem;
+    case "pluginCC":           return labels.labelPluginCC;
+    case "pluginMissing":      return labels.labelPluginMissing;
     case "pluginUserDefined":  return labels.labelPluginUserDefined;
   }
 }
@@ -1246,7 +1260,7 @@ type RenderContext = {
   // Optional on the type so test fixtures and older callers (which
   // never knew about plugin sources) can build a ctx without it;
   // renderProviderLine normalizes missing → null at construction.
-  pluginSource?: "user" | "builtin" | null;
+  pluginSource?: "user" | "builtin" | "missing" | null;
 };
 
 // v0.4.x — modules may declare a `type` filter so they only render
@@ -2007,21 +2021,30 @@ m_quota: Object.assign(
   // parity rule.
   m_version: (c) => (c.version ? wrapPlainDefault("m_version", `v${c.version}`, undefined) : placeholderBare("m_version", c)),
   // v0.9.0+ — visual indicator of whether the active provider's
-  // plugin was loaded from the bundled built-in tree or from the
-  // user's query_plugins/ override dir. Glyph comes from the
-  // labels namespace (labels.labelPluginSystem /
-  // .labelPluginUserDefined) so users can override via config.json
-  // — defaults 📌 / 🎨 preserve the v0.9.x ship literals. No
-  // default tint — the symbol carries the meaning on its own, and
-  // the statusline has limited color budget. When the source is
-  // unknown (no provider matched, or cache row hasn't been written
-  // yet), the module returns null and the template drops it. Per
-  // the user's "Drop 整个 module" decision 2026-07-11 — we don't
-  // emit a "source:n/a" placeholder, so an unconfigured user with
-  // this token in their template sees no noise on the statusline.
+  // plugin was loaded from the bundled built-in tree, from the
+  // user's query_plugins/ override dir, or was missing entirely
+  // (matched provider id has no plugin — neither user override
+  // nor built-in). Glyph comes from the labels namespace
+  // (labels.labelPluginSystem / .labelPluginUserDefined /
+  // .labelPluginMissing) so users can override via config.json
+  // — defaults 📌 / 🎨 / ❗ preserve the v0.9.x ship literals
+  // (the ❗ default is new in this round; previously the missing
+  // case was silent-drop). No default tint — the symbol carries
+  // the meaning on its own, and the statusline has limited color
+  // budget. When the source is unknown (no provider matched, or
+  // cache row hasn't been written yet), the module returns null
+  // and the template drops it. Per the user's "Drop 整个 module"
+  // decision 2026-07-11 — we don't emit a "source:n/a"
+  // placeholder, so an unconfigured user with this token in
+  // their template sees no noise on the statusline.
+  // (A 4th branch, "cc" / 🔖, is reserved for the future
+  // claude-官方 case — the type axis + default glyph are wired,
+  // but the dispatch table doesn't yet read it per the user's
+  // "CC 分支暂不做实现" decision 2026-07-12.)
   m_pluginSource: (c) => {
     if (c.pluginSource === "builtin") return labelFor("pluginSystem");
     if (c.pluginSource === "user")    return labelFor("pluginUserDefined");
+    if (c.pluginSource === "missing") return labelFor("pluginMissing");
     return null;
   },
   // ----- v0.4.0+ token-usage modules -----
@@ -7297,12 +7320,18 @@ export function renderProviderLine(
     // back to local QUOTES.
     quoteBodies?: Map<string, string>;
     // v0.9.0+ — optional. Which side of the user-vs-builtin fence
-    // the active provider's plugin was loaded from. Populated by
+    // the active provider's plugin was loaded from, or `"missing"`
+    // when the matched provider id has no plugin (neither user
+    // override nor built-in). Populated by
     // `dispatch.ts:buildProviderLine` from the per-provider cache
     // row. Absent → null → m_pluginSource drops to no-op (per the
     // "Drop 整个 module" decision 2026-07-11 — we don't surface
-    // "source:n/a" for unconfigured users).
-    pluginSource?: "user" | "builtin" | null;
+    // "source:n/a" for unconfigured users). The `"missing"`
+    // value previously collapsed to null here too; it now
+    // surfaces as ❗ so a misconfigured provider id (e.g. user
+    // set providers.copilot but never installed the plugin)
+    // is loud instead of silent.
+    pluginSource?: "user" | "builtin" | "missing" | null;
   },
 ): string {
   // v0.4.0+ — synthesize the contextWindow Window from

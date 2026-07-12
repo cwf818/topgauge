@@ -340,6 +340,33 @@ dropped. Use the v0.8.22+ canonical names:
 `labelApiCalls` and `labelMemUsage` were already in this namespace
 before v0.8.22 and are still accepted (no rename).
 
+### `m_pluginSource` (v0.9.0+, expanded v0.9.x)
+
+Visual indicator of which side of the user-vs-builtin fence the
+active provider's plugin resolved from. Glyphs come from
+`labels.labelPluginSystem / .labelPluginUserDefined / .labelPluginMissing`
+(defaults `📌 / 🎨 / ❗`). A 4th axis `labelPluginCC` (default `🔖`)
+is reserved for a future "claude 官方" branch and is overridable
+now but not yet dispatched (CC 分支暂不做实现 2026-07-12).
+
+| `ctx.pluginSource` value | Glyph (default) | Meaning                                                                                            |
+| ------------------------ | --------------- | -------------------------------------------------------------------------------------------------- |
+| `"builtin"`              | `📌`             | Plugin loaded from the bundled `dist/plugins/<id>/` tree.                                          |
+| `"user"`                 | `🎨`             | Plugin loaded from a user override at `~/.claude/plugins/topgauge/query_plugins/<id>/`.             |
+| `"missing"`              | `❗`             | `matchProvider` returned an id but neither user nor built-in produced a file (loud, was silent-drop in v0.9.0). |
+| `null` / `undefined`     | (drop)          | No provider matched, or no cache row yet. The module returns null and the template emits nothing.   |
+
+Inline overrides are not supported here — the glyph is a single
+character and the per-axis labels config (`labels.labelPluginSystem`
+etc.) is the documented customization path. The module carries no
+default tint; the symbol carries the meaning on its own.
+
+The cache row key is `<provider>:pluginSource`, written by
+`index.ts:main` right after each successful `pluginTransportWithKind`
+call. The renderer reads it via `cache.peek` (TTL-ignoring) so a
+user adding/removing their override file reflects on the next tick
+without waiting for the data row to expire.
+
 ---
 
 ## 4. Per-module type filters

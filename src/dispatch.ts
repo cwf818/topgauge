@@ -46,14 +46,20 @@ const cfg = (): ReturnType<typeof configStore.get> => configStore.get();
 // the side might change without the data changing. Returns null
 // when no provider matched / no cache row exists yet.
 //
-// The `PluginResolution` type also carries `"missing"` (the
-// "neither user nor built-in produced a file" case), but the
-// renderer treats that the same as null — both render to no-op —
-// so we collapse it here at the ctx boundary.
-function peekPluginSource(provider: Provider | null): "user" | "builtin" | null {
+// `"missing"` (the "matched provider id has neither user override
+// nor built-in" case) is now passed through to the renderer so
+// `m_pluginSource` can render ❗ — previously this collapsed to
+// null here at the ctx boundary and the failure was silent (per
+// the older "Drop 整个 module" decision). The new behavior makes
+// misconfigured providers loud: a user with
+// `providers.copilot.<...>` but no query_plugins/copilot/ file
+// now sees ❗ in the statusline instead of nothing.
+function peekPluginSource(
+  provider: Provider | null,
+): "user" | "builtin" | "missing" | null {
   if (!provider) return null;
   const cached = cache.peek<PluginResolution>(`${provider}:pluginSource`);
-  if (cached === "user" || cached === "builtin") return cached;
+  if (cached === "user" || cached === "builtin" || cached === "missing") return cached;
   return null;
 }
 
@@ -144,9 +150,10 @@ function renderDataLine(
   tokens: TokenSnapshot | null,
   quoteBodies?: Map<string, string>,
   // "user" | "builtin" | null — same shape the ctx field accepts.
-  // "missing" is collapsed to null by the caller (peekPluginSource)
-  // since the renderer treats both as no-op.
-  pluginSource?: "user" | "builtin" | null,
+  // "missing" is now passed through (was collapsed to null by
+  // peekPluginSource in older rounds; the renderer now renders
+  // ❗ for it via labels.labelPluginMissing).
+  pluginSource?: "user" | "builtin" | "missing" | null,
 ): string | null {
   const entry = getProviderEntry(provider);
   const mode = resolveDisplayMode();
