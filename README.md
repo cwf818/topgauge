@@ -731,7 +731,7 @@ Pulls a registered fragment from `lineTemplates` into the rendered template. Use
 }
 ```
 
-### Built-in presets (v0.8.47+)
+### Built-in presets
 
 Top-level `statuslineTemplate` accepts a `string` (preset name) or a `string[]` (raw token list). String-form resolves against `DEFAULT_STATUSLINE_PRESETS` in `src/config.template.ts`; the body is cloned into your config so subsequent user mutations don't leak back.
 
@@ -743,8 +743,6 @@ Top-level `statuslineTemplate` accepts a `string` (preset name) or a `string[]` 
 | `abundant`  | 9     | `information` + `git_info_all` + address-mode `m_quote` on line 0; `tokens_tick` / per-scope `tokens_acc` (session/model/project) on lines 1–4; per-window `tokens_stat` (2h / 5h-align / 7d-align) + `m_statTtlStatus` on lines 5–7; provider-type dispatch + `m_quota|term:long|display:remaining|nulldrop:true` + `m_age` + `m_version` on line 8. Kitchen-sink; verbose. |
 
 Set `"statuslineTemplate": "standard"` (or `"abundant"`) in your `config.json`. To customize, copy the preset body from `src/config.template.ts:DEFAULT_STATUSLINE_PRESETS` into your `lineTemplates` and reference it via `m_template|<key>`.
-
-**Note:** the v0.4.0–v0.8.46 `_1line` / `_simple` / `_simple-alone` / `_standard` / `_standard-alone` / `_abundant` / `_complete` / `_balance_simple` / `_balance_simple-alone` preset family is REMOVED. Old configs that referenced these strings get a one-shot stderr warning and auto-migrate to a closest-matching preset body (typically the `quota` / `balance` fragment); user-defined `lineTemplates._*` entries that collide with a removed preset name still load but are no longer gated by the `_`-prefix collision check (any name is fine now).
 
 ### Shipped fragments (v0.8.47+)
 
