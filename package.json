@@ -14,7 +14,6 @@
     "test": "node --test --import tsx src/**/*.test.ts",
     "settings:install": "bash scripts/install.sh",
     "settings:install:project": "bash scripts/install.sh --project",
-    "settings:uninstall": "bash scripts/install.sh --uninstall",
     "settings:restore": "bash scripts/install.sh --restore",
     "settings:clean": "bash scripts/clean.sh",
     "settings:clean:dry": "bash scripts/clean.sh --dry-run",

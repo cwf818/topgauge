@@ -64,7 +64,7 @@ commands/
   clean-cache.md      # /topgauge:clean-cache slash command (Pattern B2)
 scripts/
   wrapper.sh          # bash wrapper: TOPGAUGE_UPSTREAM_CMD → TOPGAUGE_UPSTREAM → us
-  install.sh          # settings.json patcher (install/restore/dry-run; --uninstall is a thin shim)
+  install.sh          # settings.json patcher (install/restore/dry-run; uninstall is its own command in v0.9.x+)
   uninstall.sh        # self-contained uninstaller (used by :uninstall and dev:uninstall)
   clean.sh            # trim old .bak.<ts> files, keeping only the most recent per file
   lib/edit-settings.mjs # ESM helper used by install.sh
@@ -181,7 +181,9 @@ The install script is the **only** way the plugin writes to `settings.json`. The
    - no `statusLine` → just install our wrapper.
 4. Rewrites the file via `scripts/lib/edit-settings.mjs`, which preserves the original line ending (CRLF on Windows, LF elsewhere).
 
-`install.sh --uninstall` is a thin shim that exec's `scripts/uninstall.sh`. The uninstaller is the source of truth; it works even when the plugin cache is gone (priority order: stable `state/upstream-cmd.txt` → highest-version legacy `state/upstream-cmd.txt` → most recent pre-managed `settings.json.bak.<ts>`). It also removes `topgauge@topgauge` from `settings.json.enabledPlugins` and wipes `cache/`, `marketplaces/`, `plugins/topgauge/state/`, and the loader's JSON rows. v0.7.0 also strips the legacy `tokenplan-usage-hud@tokenplan-usage-hud` key and wipes the legacy `cache/`, `marketplaces/`, `plugins/tokenplan-usage-hud/state/` paths (one-release legacy dual-strip). Idempotent. See `scripts/uninstall.sh` for the full state machine.
+`scripts/uninstall.sh` is the uninstall entry point — invoked by `/topgauge:uninstall` (slash command) and `npm run dev:uninstall` (CLI). It works even when the plugin cache is gone (priority order: stable `state/upstream-cmd.txt` → highest-version legacy `state/upstream-cmd.txt` → most recent pre-managed `settings.json.bak.<ts>`). It also removes `topgauge@topgauge` from `settings.json.enabledPlugins` and wipes `cache/`, `marketplaces/`, `plugins/topgauge/state/`, and the loader's JSON rows. v0.7.0 also strips the legacy `tokenplan-usage-hud@tokenplan-usage-hud` key and wipes the legacy `cache/`, `marketplaces/`, `plugins/tokenplan-usage-hud/state/` paths (one-release legacy dual-strip). Idempotent. See `scripts/uninstall.sh` for the full state machine.
+
+v0.9.x: `install.sh --uninstall` was REMOVED. The thin shim that used to forward to `uninstall.sh` is gone — use `/topgauge:uninstall` (or call `scripts/uninstall.sh` directly). `install.sh --uninstall` now exits 2 with a hint message pointing at the dedicated command.
 
 `install.sh --restore` is a coarser recovery: it copies the most recent `settings.json.bak.<ts>` over the current `settings.json`, regardless of what changed since.
 

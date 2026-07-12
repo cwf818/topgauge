@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# install.sh — install / uninstall / restore the topgauge (ToPGauge)
-# wrapper into Claude Code's settings.json.
+# install.sh — install the topgauge (ToPGauge) wrapper into Claude
+# Code's settings.json. For uninstalling use the dedicated
+# /topgauge:uninstall slash command (which calls scripts/uninstall.sh
+# directly — the source of truth).
 #
 # Usage:
 #   install.sh                       # install at user-level (default)
 #   install.sh --project             # install at project-level (cwd)
 #   install.sh --restore [--project] # restore settings.json from .bak.<ts>
-#   install.sh --uninstall [--project] # remove wrapper, restore previous statusLine
 #   install.sh --dry-run [...]       # print actions, change nothing
 #
 # Behavior:
@@ -26,7 +27,6 @@ set -u
 
 PROJECT_LEVEL=0
 RESTORE=0
-UNINSTALL=0
 DRY_RUN=0
 INSTALL_MODE=""
 ORIGINAL_CMD=""
@@ -34,14 +34,19 @@ for arg in "$@"; do
   case "$arg" in
     --project) PROJECT_LEVEL=1 ;;
     --restore) RESTORE=1 ;;
-    --uninstall) UNINSTALL=1 ;;
     --dry-run) DRY_RUN=1 ;;
     --help|-h)
-      sed -n '2,17p' "$0"
+      sed -n '2,15p' "$0"
       exit 0
       ;;
     *)
       echo "install.sh: unknown argument: $arg" >&2
+      # v0.9.x — `--uninstall` was removed; point at the dedicated
+      # /topgauge:uninstall slash command instead of letting the
+      # generic "unknown argument" line cover it.
+      if [ "${arg:-}" = "--uninstall" ]; then
+        echo "install.sh: --uninstall was removed in v0.9.x; use the /topgauge:uninstall slash command (or scripts/uninstall.sh directly)." >&2
+      fi
       exit 2
       ;;
   esac
@@ -138,32 +143,13 @@ if ! command -v curl >/dev/null 2>&1; then
   echo "install.sh: WARNING: install curl from https://curl.se and ensure curl.exe is on PATH" >&2
 fi
 
-# --- Uninstall path: delegate to scripts/uninstall.sh ----------------------
-# Self-contained uninstaller is the source of truth; install.sh just
-# forwards for backwards compatibility. Strip the --uninstall flag
-# (and any --project the user passed, which uninstall.sh understands).
-# This branch must run BEFORE the project-level settings.json auto-create.
+# Ensure query_plugins/ exists so a provider-author can drop in a
+# plugin without re-running install.sh. Skipped on --dry-run so the
+# dry-run log doesn't claim success.
+# (v0.9.x: the --uninstall thin shim that used to live here was
+# removed; uninstall is now handled exclusively by /topgauge:uninstall.)
 if [ "$DRY_RUN" != 1 ]; then
-  # Idempotent: the drop-in dir exists from the moment the user
-  # installs the plugin so a provider-author can add
-  # query_plugins/<id>/index.js without re-running install.sh.
-  # Skipped on --dry-run so the dry-run log doesn't claim success.
   mkdir -p "$QUERY_PLUGINS_DIR"
-fi
-if [ "$UNINSTALL" = 1 ]; then
-  UNINSTALL_SH="${SCRIPT_DIR}/uninstall.sh"
-  if [ ! -f "$UNINSTALL_SH" ]; then
-    echo "install.sh: missing ${UNINSTALL_SH}" >&2
-    exit 1
-  fi
-  FORWARDED=""
-  for arg in "$@"; do
-    case "$arg" in
-      --uninstall) ;;  # consumed by install.sh
-      *) FORWARDED="$FORWARDED $arg" ;;
-    esac
-  done
-  exec bash "$UNINSTALL_SH" $FORWARDED
 fi
 
 # Resolve target settings file.

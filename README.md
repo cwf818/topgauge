@@ -71,7 +71,7 @@ Four slash commands ship with the plugin:
 
 | Command                                  | What it does                                                                                    |
 | ---------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `/topgauge:install`           | Wire the wrapper into `settings.json` (or `--uninstall` / `--restore`).                          |
+| `/topgauge:install`           | Wire the wrapper into `settings.json` (or `--restore`).                                            |
 | `/topgauge:uninstall`         | Restore `settings.json`, wipe cache + marketplace + loader rows.                                   |
 | `/topgauge:clean`             | Trim old `.bak.<ts>` files (keeps the most recent per file).                                      |
 | `/topgauge:clean-cache`       | Remove stale version dirs from the plugin cache, keeping only the newest.                          |
@@ -109,7 +109,7 @@ After uninstall, re-install with the four-step flow:
 /topgauge:install
 ```
 
-The legacy `/topgauge:install --uninstall` flag still works (it's a thin shim that calls the same uninstaller). Prefer the dedicated `:uninstall` slash command in new scripts.
+Uninstall via the dedicated `/topgauge:uninstall` slash command (or run `scripts/uninstall.sh` directly). The legacy `install.sh --uninstall` thin shim was removed in v0.9.x — it was a layer of indirection that pointed at the same uninstaller; the dedicated command is clearer.
 
 For dev iteration, `npm run dev:uninstall` (or `npm run dev:uninstall:dry`) does the same thing from the command line.
 
@@ -1541,7 +1541,7 @@ commands/
   clean-cache.md      # /topgauge:clean-cache slash command
 scripts/
   wrapper.sh          # bash wrapper: TOPGAUGE_UPSTREAM_CMD → TOPGAUGE_UPSTREAM → us
-  install.sh          # settings.json patcher (install + thin shim for --uninstall)
+  install.sh          # settings.json patcher (install only; uninstall went to :uninstall + uninstall.sh in v0.9.x)
   uninstall.sh        # self-contained uninstaller (used by :uninstall and dev:uninstall)
   clean.sh            # trim old .bak.<ts> files; --purge-runtime also wipes state/<projectHash>/{cache.json,diagnostics.jsonl,*.jsonl} + legacy top-level + token-samples
   clean-cache.sh      # prune old version dirs under cache/topgauge/, keep newest
