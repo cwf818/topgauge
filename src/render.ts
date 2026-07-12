@@ -1192,6 +1192,19 @@ type RenderContext = {
   // fragment to ONE specific provider (where `type:quota` matches
   // every quota-mode provider).
   currentProvider?: import("./types.ts").Provider;
+  // v0.9.0+ — current column cursor for `s_move|pos:<n>` column-
+  // advance. Initialized to 0 by renderTemplate at the start of
+  // each render; reset to 0 on every `\n` (newline in a chunk
+  // closes the line); bumped by the ANSI-stripped display width of
+  // every emitted chunk. Width is measured in UTF-16 code units
+  // (JavaScript `String.length`) — not east-asian display columns
+  // — but that's a deliberate simplification: statusline cells
+  // round to the JS-string length closely enough for `s_move` to
+  // act as a printable-cell column pad, and full wcwidth is a
+  // heavier dep than this single-param construct warrants. ANSI
+  // SGR sequences are stripped before counting so the cursor
+  // tracks visible cells, not raw byte length.
+  lineCursor?: number;
   // v0.6.0+ — mutable cross-recursion dedup ref for the m_age module.
   // Initialized to `{ value: false }` by renderProviderLine and
   // propagated by reference through any nested `m_template:`
@@ -3961,6 +3974,48 @@ const WRAP_PARAM = {
   },
 } as const;
 
+// v0.9.0+ — `s_move|pos:<n>|char:<c>` pads the current line with
+// `<c>` until the cursor reaches column `pos`. Default pos=0,
+// char=" ". When the cursor is already at or past `pos` the move
+// is a no-op + warn (per the user's "误操作" spec — the call is a
+// bug because moving left / holding steady in a column-advance
+// construct is meaningless). `pos` MUST be present — bare `s_move`
+// (no `pos:` pair) is rejected by the resolver as a badarg.
+//
+// Resolver shape:
+//   pos  → non-negative integer (0..999 cap keeps a runaway config
+//          from blowing up the statusline width; 999 cells is well
+//          past every terminal's nominal width).
+//   char → a single non-control printable character (validated by
+//          the dispatcher's ANSI-strip width helper — see
+//          renderTemplate's cursor tracking). Empty string is
+//          accepted as a sentinel for "move without emitting" (the
+//          dispatcher still updates the cursor so subsequent
+//          chunks line up); multi-char is rejected as badarg to
+//          keep the column math unambiguous.
+const MOVE_PARAM = {
+  named: {
+    pos: (raw: string): ResolvedValue | null => {
+      if (!/^[0-9]+$/.test(raw)) return null;
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < 0 || n > 999) return null;
+      return raw;
+    },
+    char: (raw: string): ResolvedValue | null => {
+      // Empty string = "move without emitting" sentinel (the
+      // cursor still advances). One printable non-newline char is
+      // the normal case. Anything else is badarg.
+      if (raw === "") return raw;
+      if (raw.length !== 1) return null;
+      const code = raw.charCodeAt(0);
+      if (code < 33 || code === 127 || code === 10 || code === 13) {
+        return null;
+      }
+      return raw;
+    },
+  },
+} as const;
+
 // Classify a separator body as "whitespace/control" (no padding
 // even under wrap=true) or "printable" (pad with 1 space on each
 // side). Pure: only inspects the body's own characters. Used by
@@ -4936,6 +4991,50 @@ function resolveSepBody(index: string | number): string | typeof INLINE_BADARG {
   return INLINE_BADARG;
 }
 
+// v0.9.0+ — ANSI SGR strip + display-width counter for `s_move`.
+// Strips ESC[…m (color/style) and ESC[…<letter> (cursor moves
+// handled as "no width" anyway — only SGR can leak into chunks
+// since renderers don't emit cursor moves). Width is JS string
+// length of the stripped result; deliberately NOT wcwidth (east-
+// asian wide chars count as 1, not 2). The trade-off is "good
+// enough for the column-pad use case without pulling in a wcwidth
+// dep" — the user's examples are all ASCII-padded, and the
+// statusline's primary consumer is plain-ASCII data.
+//
+// Used by renderTemplate's cursor tracking on every emitted
+// chunk (the cursor lives in a closure, not in ctx, so a nested
+// m_template's render never observes a half-updated value from
+// its outer).
+function visibleCellLength(s: string): number {
+  // Replace each SGR with empty; `\x1b` = ESC, `[`, then any
+  // number of params (digits + `;`) + a final letter.
+  let stripped = "";
+  let i = 0;
+  while (i < s.length) {
+    const code = s.charCodeAt(i);
+    if (code === 0x1b && i + 1 < s.length && s.charCodeAt(i + 1) === 0x5b) {
+      // Skip the CSI introducer and any params until the final
+      // letter byte (0x40..0x7E). This covers SGR (m), cursor
+      // moves (H/J/K), and any other CSI we might encounter — all
+      // are zero-width for the column cursor.
+      let j = i + 2;
+      while (j < s.length) {
+        const c = s.charCodeAt(j);
+        if (c >= 0x40 && c <= 0x7e) {
+          j++;
+          break;
+        }
+        j++;
+      }
+      i = j;
+      continue;
+    }
+    stripped += s[i];
+    i++;
+  }
+  return stripped.length;
+}
+
 const INLINE_SCHEMAS: Record<string, InlineSchema> = {
   s_: {
     // vX.X.X+ — the implicit param accepts ONLY a named alias
@@ -4959,6 +5058,20 @@ const INLINE_SCHEMAS: Record<string, InlineSchema> = {
       ...NULDROP_PARAM.named,
       ...REPEAT_PARAM.named,
       ...WRAP_PARAM.named,
+    },
+  },
+  // v0.9.0+ — column-pad separator. `s_move|pos:<n>|char:<c>`
+  // pads the current line with `<c>` until the visible-cell
+  // cursor reaches column `<n>`. Bare `s_move` (no `pos:`) is
+  // badarg per the user's "没带参数相当于无效" contract. The
+  // dispatcher tracks the visible-cell cursor in a closure
+  // (reset to 0 on every `\n`); the renderer reads it via the
+  // passed-in `lineCursor` ctx field. NO implicit value — pos
+  // and char are both named.
+  s_move: {
+    named: {
+      ...MOVE_PARAM.named,
+      ...COLOR_PARAM.named,
     },
   },
   m_label: {
@@ -5377,6 +5490,41 @@ function quoteLocalSeed(
 
 // Per-prefix renderer. Returns the chunk text (or null to drop).
 const INLINE_RENDERERS: Record<string, InlineRenderer> = {
+  // v0.9.0+ — column-pad renderer. Reads ctx.lineCursor (set by
+  // the dispatcher's per-chunk closure; see renderTemplate), and
+  // emits `repeat(char, pos - cursor)` to advance to `pos`.
+  //
+  // Cursor semantics:
+  //   cursor >= pos → "误操作" (per the user's spec): the move
+  //     would not advance (or would go backward) — warn + drop.
+  //     Empty `char:` is treated as "move without emitting" and
+  //     is also a no-op + warn when cursor >= pos (since the
+  //     cursor doesn't move, there's nothing to do).
+  //   cursor <  pos → emit (pos - cursor) chars; the dispatcher
+  //     then accumulates the rendered chunk's width and bumps
+  //     lineCursor to `pos`.
+  //
+  // Bare `s_move` (no `pos:` pair) is rejected upstream by the
+  // MOVE_PARAM resolver: pos has no default — the schema's named
+  // resolver returns null when `pos:` is absent, parseInlineArgs
+  // surfaces that as badarg, and the dispatcher's existing
+  // badarg path warns + drops the chunk.
+  s_move: (params, ctx) => {
+    const posRaw = params.pos as string | undefined;
+    if (posRaw === undefined) return INLINE_BADARG; // bare form
+    const pos = Number(posRaw);
+    const cursor = ctx.lineCursor ?? 0;
+    if (cursor >= pos) {
+      // "误操作" — moving left or holding steady is a no-op +
+      // warn. Per the user's spec this is treated like badarg.
+      return INLINE_BADARG;
+    }
+    const ch = (params.char as string | undefined) ?? " ";
+    const padLen = pos - cursor;
+    if (padLen === 0) return INLINE_BADARG; // belt-and-braces
+    const body = ch.repeat(padLen);
+    return wrapPlain(body, params.color as string | undefined);
+  },
   s_: (params, _ctx) => {
     // params.index is the output of resolveSepRef: a plain
     // number for the index form, or a "alias:<name>" string
@@ -6612,9 +6760,21 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
   // baseline via peekPrevTick. No depth counter needed.
   const lines: string[] = [];
   let current = "";
+  // v0.9.0+ — column cursor for `s_move|pos:<n>`. Tracked
+  // in-statement (closure) instead of mutating ctx so a render
+  // mid-flight (e.g. nested m_template) can't see a half-baked
+  // cursor value. Mutated on every chunk; reset to 0 on `\n`.
+  let lineCursor = 0;
   for (let i = 0; i < template.length; i++) {
     const tok = template[i];
     if (tok == null) continue;
+    // v0.9.0+ — sync the closure cursor into ctx so inline-args
+    // renderers (s_move) can read it. The renderer returns the
+    // padding chunk; the dispatcher's normal chunk-accumulate
+    // step bumps the closure cursor by that chunk's width, which
+    // for a correctly-aligned s_move is exactly `pos - old cursor`,
+    // landing the cursor on `pos` for the next chunk to consume.
+    ctx.lineCursor = lineCursor;
     let piece: string | null = null;
     // v0.3.3+ — inline-args tokens (s_<n>|…, m_label|…, m_modeLabel|…,
     // and every other m_<name>|…). Only fire when the token contains
@@ -6669,8 +6829,21 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         // WHOLE token as a literal, no parsing, no warning. KNOWN
         // aliases with bad args (e.g. `s_dot|repeat:9`) still fall
         // through to the badarg warn-and-drop path below.
+        //
+        // v0.9.0+ — s_move gets its own route: it isn't a NAMED
+        // separator (it has params, not a literal body), so it
+        // doesn't sit in NAMED_SEPARATORS, but it still wants the
+        // inline-args parse path. Detect "s_move|" specifically and
+        // dispatch through expandInlineToken with skipLen=7. Bare
+        // `s_move` (no `|`) hits the unknown-alias literal path
+        // below (which matches the user's "没带参数相当于无效"
+        // contract — without params there's nothing to dispatch,
+        // and emitting the bare token verbatim is the consistent
+        // "unknown s_* alias" behavior).
         const aliasPart = tok.slice(2, tok.indexOf("|"));
-        if (NAMED_SEPARATORS.has(aliasPart)) {
+        if (aliasPart === "move") {
+          inline = expandInlineToken(tok, "s_move", 7, ctx);
+        } else if (NAMED_SEPARATORS.has(aliasPart)) {
           inline = expandInlineToken(tok, "s_", 2, ctx);
         } else {
           sLiteralPiece = tok;
@@ -7016,6 +7189,18 @@ export function renderTemplate(template: readonly string[], ctx: RenderContext):
         // lines that arise from consecutive "\n\n" splits.
         if (current.length > 0) lines.push(current);
         current = seg;
+      }
+      // v0.9.0+ — update the visible-cell cursor on every segment.
+      // The cursor is what `s_move|pos:<n>` reads via
+      // ctx.lineCursor (which is initialized from the closure at
+      // the top of renderTemplate). ANSI SGR bytes are stripped
+      // before counting so color/style output doesn't inflate the
+      // column count. Each `\n` resets the cursor to 0 because
+      // the new line starts at column 0.
+      if (j < segments.length - 1) {
+        lineCursor = visibleCellLength(seg);
+      } else {
+        lineCursor += visibleCellLength(seg);
       }
     }
   }

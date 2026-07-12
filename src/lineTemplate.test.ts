@@ -2267,6 +2267,165 @@ describe("m_template — provider gate: instance-level filter (v0.9.0+)", () => 
     }
   });
 });
+
+// v0.9.0+ — `s_move|pos:<n>|char:<c>` column-advance separator.
+// Pads the current line with `<c>` until the visible-cell cursor
+// reaches column `<n>`. The cursor tracks ANSI-stripped chunk
+// width in a closure inside renderTemplate; `\n` resets it to 0.
+// Bare `s_move` (no `pos:`) is badarg per the user's "没带参数
+// 相当于无效" contract; `cursor >= pos` is also a no-op + warn
+// (the user's "误操作" spec).
+describe("s_move — column pad separator (v0.9.0+)", () => {
+  beforeEach(() => {
+    __resetForTest();
+  });
+  afterEach(() => __resetForTest());
+
+  it("pads the line to the requested column with the default char (space)", () => {
+    // `s_move|pos:40` after a 5-char label should emit 35 trailing
+    // spaces (so the next chunk's first cell is column 40).
+    __resetForTest({
+      statuslineTemplate: ["m_label|hello", "s_move|pos:40"],
+      lineTemplates: {},
+    });
+    try {
+      const line = renderProviderLine("minimax", {
+        mode: "used", nowMs: Date.now(),
+        shortInterval: null, midInterval: null, longInterval: null,
+        balance: null,
+        ageMs: null, stale: false, version: "",
+      });
+      const stripped = strip(line);
+      assert.equal(
+        stripped.length,
+        "hello".length + (40 - "hello".length),
+        `expected cursor at col 40 (length ${"hello".length + (40 - "hello".length)}), got: ${JSON.stringify(stripped)}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("honors `char:*` — pads with the user-specified character", () => {
+    // `s_move|pos:30|char:*` after a 12-char label should emit 18
+    // asterisks. Result length is 30 regardless of the padding
+    // character.
+    __resetForTest({
+      statuslineTemplate: [
+        "m_label|hello world",
+        "s_move|pos:30|char:*",
+      ],
+      lineTemplates: {},
+    });
+    try {
+      const line = renderProviderLine("minimax", {
+        mode: "used", nowMs: Date.now(),
+        shortInterval: null, midInterval: null, longInterval: null,
+        balance: null,
+        ageMs: null, stale: false, version: "",
+      });
+      const stripped = strip(line);
+      assert.equal(stripped.length, 30, `expected length 30, got: ${JSON.stringify(stripped)}`);
+      assert.ok(
+        stripped.endsWith("*".repeat(30 - "hello world".length)),
+        `expected padding to be ${"*".repeat(30 - "hello world".length)} asterisks, got: ${JSON.stringify(stripped)}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("drop+warn when cursor is already past the requested pos", () => {
+    // 30-char label, then s_move|pos:20 — the user's "误操作"
+    // contract: cursor is past pos, so the move is a no-op and
+    // the chunk drops (with a warn). Result is just the label.
+    __resetForTest({
+      statuslineTemplate: [
+        "m_label|abcdefghijklmnopqrstuvwxyz1234", // 30 chars
+        "s_move|pos:20",
+      ],
+      lineTemplates: {},
+    });
+    try {
+      const line = renderProviderLine("minimax", {
+        mode: "used", nowMs: Date.now(),
+        shortInterval: null, midInterval: null, longInterval: null,
+        balance: null,
+        ageMs: null, stale: false, version: "",
+      });
+      const stripped = strip(line);
+      assert.equal(
+        stripped.length,
+        30,
+        `expected cursor-already-past drop (length 30), got: ${JSON.stringify(stripped)}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("bare `s_move` (no `pos:`) is badarg → chunk drops", () => {
+    // Per the user's "没带参数相当于无效" contract. The resolver
+    // returns null when `pos:` is absent, the dispatcher surfaces
+    // badarg → warn + drop. The token still parses (it has `|`),
+    // so it's not the unknown-alias literal path; it's the badarg
+    // warn-and-drop path. Result is empty (only the literal label).
+    __resetForTest({
+      statuslineTemplate: ["m_label|hello", "s_move|"],
+      lineTemplates: {},
+    });
+    try {
+      const line = renderProviderLine("minimax", {
+        mode: "used", nowMs: Date.now(),
+        shortInterval: null, midInterval: null, longInterval: null,
+        balance: null,
+        ageMs: null, stale: false, version: "",
+      });
+      const stripped = strip(line);
+      assert.equal(stripped, "hello", `bare s_move must drop, got: ${JSON.stringify(stripped)}`);
+    } finally {
+      __resetForTest();
+    }
+  });
+
+  it("cursor resets on `\\n` so a new line starts at column 0", () => {
+    // A multiline template where the second line calls s_move —
+    // the cursor on line 2 must start from 0, not carry over
+    // from line 1's end. We call renderTemplate directly to get
+    // the string[] before renderProviderLine joins them.
+    __resetForTest({
+      statuslineTemplate: [
+        "m_label|first",
+        "s_newline",
+        "m_label|next",
+        "s_move|pos:20",
+      ],
+      lineTemplates: {},
+    });
+    try {
+      const lines = renderTemplate(
+        ["m_label|first", "s_newline", "m_label|next", "s_move|pos:20"],
+        {
+          mode: "used", nowMs: Date.now(),
+          shortInterval: null, midInterval: null, longInterval: null,
+          balance: null,
+          ageMs: null, stale: false, version: "",
+        } as any,
+      );
+      // Two lines emitted: "first" (5 chars) and "next" + 15 spaces
+      // (4 chars + 15 spaces = 20 chars).
+      assert.equal(lines.length, 2, `expected 2 lines, got: ${JSON.stringify(lines)}`);
+      const line2 = strip(lines[1] ?? "");
+      assert.equal(
+        line2.length,
+        20,
+        `line 2 must end at column 20 (4 + 15 + wrap-stripped), got: ${JSON.stringify(line2)}`,
+      );
+    } finally {
+      __resetForTest();
+    }
+  });
+});
 // Demonstrates the user's motivating use case: one shared
 // `token_acc` fragment + 2 callers passing different scopes → 2
 // distinct renders. The bare m_accTokenIn inside the fragment
