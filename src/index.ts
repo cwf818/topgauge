@@ -37,6 +37,7 @@ import {
   getProviderEntry,
   matchProvider,
 } from "./providers.ts";
+import { resolvePluginOnDiskWithKind } from "./api.ts";
 import { parseTokenSnapshot } from "./session-parse.ts";
 import * as diagnostics from "./diagnostics.ts";
 import { preFetchQuotes } from "./api.quote.ts";
@@ -103,7 +104,12 @@ async function readStdin(): Promise<string> {
 // empty env token was dropped in v0.6.0 to support per-provider
 // credential overrides (see the ProviderEntry.AUTHENTICATION_KEY docstring
 // in src/types.ts for the "always wins" rule).
-async function fetchProviderData(
+// v0.9.x — exported for unit tests so the cache-row invariant
+// (`<provider>:pluginSource` written independently of `data`
+// being null) can be pinned without spinning up the full
+// stdin → render pipeline. Not part of the public API surface;
+// treat as @internal.
+export async function fetchProviderData(
   provider: Provider,
   token: string,
 ): Promise<FetchResult<unknown>> {
@@ -161,14 +167,17 @@ async function fetchProviderData(
       token,
       AbortSignal.timeout(timeoutMs),
     );
+    // vX.X.X+ — always persist the pluginSource side, even when
+    // data is null. The previous `if (data)` gate suppressed the
+    // kind row on the missing-plugin path, so m_pluginSource
+    // dropped to no-op instead of rendering ❗ for a misconfigured
+    // provider id. Now the kind lives independently of the data
+    // row: a user whose provider resolves to kind="missing"
+    // (no query_plugins/<id>/ file + not a built-in) sees ❗
+    // regardless of whether the fetcher returned usable data.
+    cache.set(`${cacheKey}:pluginSource`, pluginSource, ttlMs);
     if (data) {
       cache.set(cacheKey, data, ttlMs);
-      // Persist the override side alongside the data row. Same TTL
-      // so the two rows age together. The renderer treats this as a
-      // hint — it does NOT short-circuit on TTL (cache.peek ignores
-      // expiry) so a user adding/removing an override file reflects
-      // on the next tick without waiting for the data row to expire.
-      cache.set(`${cacheKey}:pluginSource`, pluginSource, ttlMs);
       // ageMs=0 on a brand-new fetch — the renderer suppresses the
       // suffix on fresh ticks (stale=false gate).
       return { kind: "fresh", data, ageMs: 0 };
@@ -183,6 +192,22 @@ async function fetchProviderData(
     // Network / plugin error. Stale-on-error: keep showing the last good
     // value. The dynamic plugin loader records the underlying error; this
     // layer translates the throw to a FetchResult.
+    //
+    // vX.X.X+ — also persist the pluginSource side. The import-time
+    // 404 path (`query_plugins/<id>/index.js` does not exist for a
+    // non-builtin id like `kimi`) throws BEFORE
+    // fetchForProviderWithKind returns, so the `pluginSource: "missing"`
+    // row would otherwise never be written. Computing the kind eagerly
+    // via resolvePluginOnDiskWithKind + writing it here makes the
+    // missing-plugin failure mode loud: the next tick renders ❗
+    // instead of dropping silently.
+    try {
+      const { kind } = resolvePluginOnDiskWithKind(provider!);
+      cache.set(`${cacheKey}:pluginSource`, kind, ttlMs);
+    } catch {
+      // resolvePluginOnDiskWithKind asserts a safe id; ignore failures
+      // here so we don't shadow the original throw.
+    }
     const stale =
       entry.TYPE === "QUOTA" ? peekCache<Quota>() : peekCache<Balance>();
     if (stale) return { kind: "stale", data: stale.value, ageMs: stale.ageMs };
