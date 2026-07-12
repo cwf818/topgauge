@@ -8,12 +8,8 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { resolveEffectiveCurrencies } from "./config.ts";
 import * as diagnostics from "./diagnostics.ts";
-import type {
-  CurrenciesConfig,
-  ProviderEntry,
-} from "./types.ts";
+import type { ProviderEntry } from "./types.ts";
 import type {
   AccountCreditPlugin,
   Balance,
@@ -216,7 +212,6 @@ export async function fetchForProviderByIdWithKind(
   const context: PluginContext = {
     providerId: providerName,
     type: entry.TYPE,
-    currencies: resolveEffectiveCurrencies(providerName, entry),
     ...(signal ? { signal } : {}),
   };
   const { result: partial, kind } = await pluginTransportWithKind(
@@ -239,5 +234,3 @@ export async function fetchForProviderByIdWithKind(
 }
 
 
-// Kept for consumers that need to construct context in tests.
-export type { CurrenciesConfig };

@@ -1075,27 +1075,46 @@ function formatBalanceValue(v: number): string {
   return v.toFixed(2).replace(/\.?0+$/, "");
 }
 
-// Display prefix for one balance entry. vX.X.X+ — each
-// BalanceEntry carries the resolved `label` (populated by the
-// plugin or `ensureBalance`), and the renderer reads it
-// directly.
-// When the label is empty (the user omitted `label` from
-// currenciesConfig), the renderer falls back to the bare
-// currency code (e.g. "EUR10.50") — never blanks, so a new
-// provider currency never silently disappears.
-function formatBalanceChunk(currency: string, label: string, v: number): string {
-  const prefix = label !== "" ? label : currency;
-  return `${prefix}${formatBalanceValue(v)}`;
+// Display prefix for one balance entry. The `label` field was retired
+// from the BalanceEntry schema; `currencyLabel(code)` resolves the
+// display prefix from the currency code, with a hard-coded fallback
+// to the uppercased code (e.g. "EUR10.50") for unmapped codes —
+// never blanks, so a new provider currency never silently disappears.
+function formatBalanceChunk(currency: string, v: number): string {
+  return `${currencyLabel(currency)}${formatBalanceValue(v)}`;
+}
+
+// Currency-code → display-symbol lookup. Hard-coded default map covers
+// the currencies DeepSeek + the most common USD-denominated providers
+// expose; unmapped codes fall back to the uppercased code so a plugin
+// for a less common currency still renders something readable
+// (e.g. `currencyLabel("EUR") → "EUR"`).
+//
+// The host deliberately does NOT carry this map in config (per the
+// "全部通过插件进行独立解析" directive): a plugin that wants a custom
+// symbol for a non-default currency can emit a different currency
+// code, or surface its own m_label module. Renaming the mapped
+// symbols (e.g. user prefers `"$"` for CNY too) requires editing this
+// one helper.
+function currencyLabel(code: string): string {
+  switch (code) {
+    case "CNY":
+    case "RMB":
+      return "￥";
+    case "USD":
+      return "$";
+    default:
+      return code.toUpperCase();
+  }
 }
 
 type BalanceLike = {
   isAvailable: boolean;
-  // vX.X.X+ — entries always carry a `label` (populated by the
-  // plugin or by `ensureBalance`). Plugins that return a
-  // pre-built Balance object must ship the label field on each
-  // entry; the type marks it required so a missing label
-  // surfaces as a compile error rather than a silent blank.
-  entries: ReadonlyArray<{ currency: string; totalBalance: number; label: string }>;
+  // vX.X.X+ — entries are now `{ currency, totalBalance }` only; the
+  // display prefix is derived from `currency` via `currencyLabel`.
+  // Plugin authors emitting pre-built Balance objects must not ship
+  // a `label` field — the schema no longer carries it.
+  entries: ReadonlyArray<{ currency: string; totalBalance: number }>;
   minValue: number | null;
 };
 
@@ -1111,7 +1130,7 @@ function formatBalanceEntriesColored(b: BalanceLike, override?: string): string 
   if (!b.isAvailable || b.entries.length === 0 || b.minValue == null) {
     return "";
   }
-  const chunks = b.entries.map((e) => formatBalanceChunk(e.currency, e.label, e.totalBalance));
+  const chunks = b.entries.map((e) => formatBalanceChunk(e.currency, e.totalBalance));
   // Color follows the LOWEST entry — most urgent currency drives the hue.
   const color = override ?? colorForBalance(b.minValue);
   return `${color}${chunks.join(" · ")}${RESET}`;

@@ -16,8 +16,6 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type {
   CompareMethod,
-  CurrenciesConfig,
-  CurrencySlotConfig,
   ProviderEntry,
   ProviderType,
 } from "./types.ts";
@@ -26,7 +24,6 @@ import {
   DEFAULT_PROVIDERS,
   VALID_COMPARE_METHODS,
   VALID_PROVIDER_TYPES,
-  resolveEffectiveCurrenciesPure,
 } from "./config.providers.ts";
 
 import {
@@ -385,15 +382,6 @@ const DEFAULT_CONFIG: {
   // inline in the plugin — the host has no surface for it.
   // (legacy field retained in JSON for now would warn-and-drop;
   // see applyOverrides below)
-  // vX.X.X+ — top-level currencies config. Maps currency codes
-  // (CNY / USD / …) onto `{ label, totalBalance }` slot configs.
-  // Layer 2 of the 4-layer merge in resolveEffectiveCurrencies
-  // (see src/config.ts). Per-provider `currencies` blocks (layer
-  // 3) shallow-replace on top of these. The top-level defaults
-  // start empty — built-in per-provider defaults (layer 1, e.g.
-  // deepseek's CNY → balance_infos.0.total_balance) are layered
-  // in at fetch time, gated on the active provider id.
-  currencies: CurrenciesConfig;
   // v0.8.21+ — `m_quote|address|…` fetcher passes `--insecure` /
   // `-k` to curl so self-signed / expired / untrusted-CA HTTPS
   // endpoints work without patching the system CA bundle. Always
@@ -485,15 +473,6 @@ const DEFAULT_CONFIG: {
   tokenPrices: {},
   version: "",
   providers: DEFAULT_PROVIDERS,
-  // vX.X.X+ — top-level currencies config. Maps currency codes
-  // (CNY / USD / …) onto `{ label, totalBalance }` slot configs.
-  // Layer 2 of the 4-layer merge in resolveEffectiveCurrencies
-  // (below). Per-provider `currencies` blocks (layer 3) shallow-
-  // replace on top of these. Top-level defaults start empty —
-  // built-in per-provider defaults (layer 1, e.g. deepseek's
-  // CNY → balance_infos.0.total_balance) are layered in at fetch
-  // time, gated on the active provider id.
-  currencies: {} as CurrenciesConfig,
   quoteInsecureTls: false,
 };
 
@@ -845,28 +824,6 @@ function applyOverrides(base: Config, raw: Record<string, unknown>): Config {
   // doesn't expose a path-expression surface anymore. Custom
   // plugins that need it inline a tiny local walker (see
   // src/plugins/deepseek/index.js:readPath for the shape).
-
-  // vX.X.X+ — `currencies` top-level block. Maps currency codes
-  // (CNY / USD / …) onto `{ label, totalBalance }` slots. Layer 2
-  // of the 4-layer merge in resolveEffectiveCurrencies. Per-key
-  // validation reuses `validateCurrencySlot` (defined below) — same
-  // shape rules as the per-provider `currencies` validator.
-  // Built-in per-provider defaults (deepseek's CNY → balance_infos
-  // .0.total_balance) are applied at FETCH TIME in
-  // resolveEffectiveCurrencies, NOT here — top-level defaults start
-  // empty so the global layer is just a placeholder today. See the
-  // 3-layer merge block above GLOBAL_DEFAULT_INTERVALS for the
-  // parallel intervalsConfig contract (note: v0.9.x dropped the
-  // built-in interval defaults that used to live in the 4-layer
-  // version).
-  if ("currencies" in raw) {
-    const curRaw = raw.currencies;
-    if (!curRaw || typeof curRaw !== "object" || Array.isArray(curRaw)) {
-      warn("currencies must be an object; using default");
-    } else {
-      out.currencies = validateCurrenciesBlock("top-level currencies", curRaw);
-    }
-  }
 
   // colors — per-field validation, partial acceptance
   if ("colors" in raw) {
@@ -1423,80 +1380,6 @@ function mergeConfig(raw: Record<string, unknown>): Config {
   return out;
 }
 
-// v0.9.0+ — validate one IntervalSlotConfig. Used by both the
-// top-level `intervals` validator (applyOverrides above) and the
-// per-provider `intervals` validator (validateProviderEntry
-// below). Returns the merged-and-validated slot config (deep-
-// Provider-specific defaults and (currencies-only) resolution live in
-// config.providers.ts. These wrappers preserve the public config.ts API
-// while reading the live singleton snapshot.
-export function resolveEffectiveCurrencies(
-  activeProviderId: string,
-  entry: ProviderEntry | null,
-): CurrenciesConfig {
-  return resolveEffectiveCurrenciesPure(activeProviderId, entry, _current.currencies);
-}
-
-// Validate one CurrencySlotConfig (vX.X.X+). `label` must be a
-// string, `totalBalance` must be a string (path expression —
-// runtime resolution happens in the plugin's local walker).
-// Bad fields drop with a stderr warn; the rest of the slot
-// survives. The caller decides whether to proceed with a
-// partially-validated slot. There's no `base` argument —
-// CurrencySlotConfig has only 2 fields, so per-key shallow
-// assign at the resolver level is the same as "fresh slot per
-// layer".
-function validateCurrencySlot(
-  key: string,
-  raw: unknown,
-): CurrencySlotConfig | null {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    warn(`currencies.${key} must be an object; dropping the entry`);
-    return null;
-  }
-  const sm = raw as Record<string, unknown>;
-  const next: CurrencySlotConfig = {};
-  if ("label" in sm) {
-    if (typeof sm.label === "string") {
-      next.label = sm.label;
-    } else {
-      warn(`currencies.${key}.label must be a string; dropping the field`);
-    }
-  }
-  if ("totalBalance" in sm) {
-    if (typeof sm.totalBalance === "string") {
-      next.totalBalance = sm.totalBalance;
-    } else {
-      warn(`currencies.${key}.totalBalance must be a string (path expression); dropping the field`);
-    }
-  }
-  return next;
-}
-
-// Validate one CurrenciesConfig block (top-level or per-provider).
-// Returns the validated map; malformed entries drop with a stderr
-// warn. Used by both the top-level `currencies` validator
-// (applyOverrides below) and the per-provider `currencies`
-// validator (validateProviderEntry below).
-function validateCurrenciesBlock(
-  blockKind: "top-level currencies" | "provider currencies",
-  raw: unknown,
-): CurrenciesConfig {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    warn(`${blockKind} must be an object; dropping the block`);
-    return {};
-  }
-  const out: CurrenciesConfig = {};
-  const rm = raw as Record<string, unknown>;
-  for (const [k, v] of Object.entries(rm)) {
-    const validated = validateCurrencySlot(k, v);
-    if (validated !== null) {
-      out[k] = validated;
-    }
-  }
-  return out;
-}
-
 // Validate one ProviderEntry. Returns the validated entry or null if
 // the entry is fatally malformed. The caller (`mergeConfig`) is
 // responsible for filling missing fields from the default entry
@@ -1573,34 +1456,15 @@ function validateProviderEntry(_name: string, v: unknown): ProviderEntry | null 
   // level — the field isn't part of ProviderEntry, so the JSON
   // loader drops it via the validateProviderEntry shallow
   // assign. No warn, no migration path.)
-  // vX.X.X+ — forward the user-supplied `currencies` block. Layer 3
-  // of the 4-layer merge in resolveEffectiveCurrencies. Built-in
-  // per-provider defaults (deepseek's CNY → balance_infos.0.total
-  // _balance) are NOT layered in here — they fire at FETCH TIME in
-  // resolveEffectiveCurrencies, gated on the active provider id.
-  // So a kimi active provider never inherits deepseek-style
-  // defaults even if the user's providers.deepseek entry still
-  // exists with the URL pointing at api.deepseek.com.
   //
-  // Per-key validation reuses `validateCurrenciesBlock` (defined
-  // above) — same shape rules as the top-level `currencies`
-  // validator. Lenient: bad fields drop with a stderr warn; the
-  // entry itself stays loaded.
-  let validatedCurrencies: CurrenciesConfig = {};
-  if ("currencies" in e && e.currencies !== undefined) {
-    validatedCurrencies = validateCurrenciesBlock(
-      "provider currencies",
-      e.currencies,
-    );
-  }
+  // Same treatment for `providers.<id>.currencies` — plugins
+  // parse their own BALANCE responses directly. The legacy
+  // host-side merge layer is gone.
   return {
     TYPE: t as ProviderType,
     BASE_URL_COMPARED_TO: base,
     COMPARE_METHOD: cm as CompareMethod,
     ...(validatedConfig ? { config: validatedConfig } : {}),
-    ...(validatedCurrencies && Object.keys(validatedCurrencies).length > 0
-      ? { currencies: validatedCurrencies }
-      : {}),
     ...(validatedAuthenticationKey ? { AUTHENTICATION_KEY: validatedAuthenticationKey } : {}),
   };
 }

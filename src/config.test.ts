@@ -8,7 +8,6 @@ import {
   __testing,
   configStore,
   loadConfig,
-  resolveEffectiveCurrencies,
 } from "./config.ts";
 
 let dir: string;
@@ -45,23 +44,6 @@ describe("provider defaults", () => {
     await loadConfig();
     assert.equal(configStore.get().providers.custom.AUTHENTICATION_KEY, "configured");
     assert.equal("BEARER_KEY" in (configStore.get().providers.custom as object), false);
-  });
-});
-
-describe("provider mapping resolvers", () => {
-  // v0.9.x — the entire host-side `intervals` resolver layer
-  // (top-level + per-provider + path-expression grammar) was
-  // REMOVED. Plugin authors do their own parsing in
-  // `fillQuota`/`fillBalance` and ship canonical Quota/Balance
-  // objects directly. There's no `resolveEffectiveIntervals`
-  // anymore, and `ProviderEntry.intervals` doesn't exist as a
-  // field. The only host-side mapping still alive is the
-  // `currencies` block — DeepSeek's CNY default lives there.
-
-  it("keeps the DeepSeek CNY currency mapping", () => {
-    const entry = configStore.get().providers.deepseek;
-    const currencies = resolveEffectiveCurrencies("deepseek", entry);
-    assert.equal(currencies.CNY?.totalBalance, "balance_infos.0.total_balance");
   });
 });
 

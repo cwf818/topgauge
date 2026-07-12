@@ -6,7 +6,7 @@
 // canonical normalisers (`ensureQuota` / `ensureBalance` /
 // `ensureInterval`) here so the plugin author never has to know
 // about the canonical Quota / Balance types — only their fill
-// contract + the ctx argument (signal / currencies).
+// contract + the ctx argument (signal).
 //
 // v0.9.x — the path-expression projection layer
 // (`parseQuota` / `parseBalance` / `path-expr.ts`) was REMOVED.

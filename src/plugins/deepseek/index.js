@@ -2,10 +2,11 @@
 // user-written plugin at ~/.claude/plugins/topgauge/query_plugins/<id>/.
 //
 // ABI: default export is { fetchAccountCredit(authenticationKey, ctx) },
-// where `ctx` exposes { signal, currencies }. The returned object is
-// a Partial<Balance> (host will run `ensureBalance` on it to produce
-// the canonical Balance shape). The plugin author never has to know
-// about the canonical Quota / Balance types.
+// where `ctx` exposes { signal }. The returned object is a
+// Partial<Balance> (host will run `ensureBalance` on it to produce the
+// canonical Balance shape). The plugin author never has to know about
+// the canonical Quota / Balance types — only their fill contract + the
+// ctx argument (signal).
 
 const ENDPOINT = "https://api.deepseek.com/user/balance";
 
@@ -21,22 +22,15 @@ function asNumber(value) {
   return null;
 }
 
-// Minimal dotted-path walker (single- or two-segment shapes DeepSeek
-// uses for the CNY default). Keeps the plugin dependency-free.
-function readPath(root, path) {
-  const parts = path.split(".");
-  let cur = root;
-  for (const p of parts) {
-    if (cur == null || typeof cur !== "object") return undefined;
-    cur = cur[p];
-  }
-  return cur;
-}
-
-// Walk `currencies` map → BalanceEntry[] (one per declared currency).
-// Slots whose `totalBalance` path resolves to null are dropped
-// (matches the v0.x parseBalance behaviour).
-function fillBalance(raw, currencies) {
+// Project the raw DeepSeek balance response into a Partial<Balance>.
+// DeepSeek returns `{ is_available, balance_infos: [{ currency, total_balance, ... }] }`
+// — each balance_info element has the currency code already, so we just
+// coerce total_balance → number and build the canonical entries.
+// Entries whose totalBalance fails to coerce are dropped (matches the
+// v0.x parseBalance behaviour). An empty entries[] + isAvailable=true
+// flows through ensureBalance as the "no data" path; an
+// isAvailable=false empty entries flows as the "account frozen" path.
+function fillBalance(raw) {
   if (!isRecord(raw)) return null;
 
   const availRaw = raw.is_available;
@@ -48,11 +42,16 @@ function fillBalance(raw, currencies) {
   }
 
   const entries = [];
-  for (const [key, slot] of Object.entries(currencies ?? {})) {
-    if (!slot || !slot.totalBalance) continue;
-    const totalBalance = asNumber(readPath(raw, slot.totalBalance));
-    if (totalBalance == null) continue;
-    entries.push({ currency: key, totalBalance, label: slot.label ?? key });
+  const infos = raw.balance_infos;
+  if (Array.isArray(infos)) {
+    for (const info of infos) {
+      if (!isRecord(info)) continue;
+      const currency = info.currency;
+      if (typeof currency !== "string" || currency === "") continue;
+      const totalBalance = asNumber(info.total_balance);
+      if (totalBalance == null) continue;
+      entries.push({ currency, totalBalance });
+    }
   }
 
   return { isAvailable, entries };
@@ -70,6 +69,6 @@ export default {
     });
     if (!response.ok) throw new Error(`DeepSeek balance HTTP ${response.status}`);
     const raw = JSON.parse(await response.text());
-    return fillBalance(raw, ctx?.currencies);
+    return fillBalance(raw);
   },
 };

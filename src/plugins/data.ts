@@ -1,5 +1,3 @@
-import type { CurrenciesConfig } from "../types.js";
-
 export type Interval = {
   windowId: string;
   label: string;
@@ -22,7 +20,6 @@ export type Quota = {
 export type BalanceEntry = {
   currency: string;
   totalBalance: number;
-  label: string;
 };
 
 export type Balance = {
@@ -34,7 +31,6 @@ export type Balance = {
 export type PluginContext = {
   providerId: string;
   type: "QUOTA" | "BALANCE";
-  currencies: CurrenciesConfig;
   signal?: AbortSignal;
 };
 
@@ -43,7 +39,7 @@ export type PluginContext = {
 // Partial<Balance>, or any opaque object the plugin wants). The
 // host then runs ensureQuota / ensureBalance on the result. Plugins
 // never see the canonical Quota / Balance types — only their fill
-// contract + the ctx argument (signal / currencies).
+// contract + the ctx argument (signal).
 export type AccountCreditPlugin = {
   fetchAccountCredit: (
     authenticationKey: string,

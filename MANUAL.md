@@ -84,13 +84,6 @@ Every key honored by the loader, with its type, default, and validator. Source-o
     "balanceBands": [5, 10, 20, 50]
   },
 
-  // BALANCE provider per-currency rendering.
-  "currency": {
-    "prefixes": { "USD": "$", "CNY": "￥", "RMB": "￥" },
-    "fallback": "￥",  // prefix for unknown currency codes
-    "default":  "CNY"  // assumed currency when API omits one
-  },
-
   // Stale-on-error annotation. Appended directly after the template
   // output; place a custom separator explicitly in the lineTemplate
   // (e.g. add an `s_space` token after `m_windowQuota|term:short`).
@@ -228,7 +221,6 @@ The `providers` block is a `Record<string, ProviderEntry>`. Each entry declares 
 | `BASE_URL_COMPARED_TO` | yes      | URL pattern to match `ANTHROPIC_BASE_URL` against. Non-empty string. |
 | `COMPARE_METHOD`       | no       | `"EXACT"` (default) · `"INCLUDE"` (substring) · `"STARTWITH"` (prefix with suffix-attack guard). |
 | `AUTHENTICATION_KEY`   | no       | Alternative credential that overrides `process.env.ANTHROPIC_AUTH_TOKEN` for this provider. Keeps plugin source credential-free. Plugin receives it as the first arg to `fetchAccountCredit` and forwards on the upstream `Authorization` header. When unset, the env token takes over. Bad values (non-string, empty string) drop just the field; the entry still loads and the fetcher falls back to the env token. |
-| `currencies`           | no       | Per-currency slot map used by `BALANCE` providers. Maps currency codes onto `{ label, totalBalance }`. Overrides the top-level `currencies` block for the active provider. |
 | `config`               | no       | Per-provider override of any top-level config key EXCEPT `providers` (no recursion). Nested `providers` keys are forbidden. |
 
 ### `COMPARE_METHOD` modes
@@ -262,14 +254,6 @@ A user entry inherits missing fields from the built-in default for the same id. 
 
 The cache key for a provider's response is its name (two Quota providers get separate cache slots). The matcher's iteration order is insertion order of the `providers` object — the first matching entry wins.
 
-### Currency merge precedence (BALANCE providers)
-
-Three-layer merge for the effective `currencies` map the plugin sees via `ctx.currencies`:
-
-1. Built-in per-provider defaults (e.g. `deepseek` ships `CNY → balance_infos.0.total_balance`).
-2. Top-level `currencies` block.
-3. Per-provider `currencies` block — overrides the merged result.
-
 ---
 
 ## 4. Plugin output contract
@@ -299,7 +283,9 @@ type Quota = {
 type BalanceEntry = {
   currency:     string,        // ISO 4217 ("USD", "CNY") or free-form
   totalBalance: number,
-  label:        string,        // short prefix shown in the line
+  // Display prefix is derived from `currency` via the renderer's
+  // `currencyLabel(code)` helper (CNY/RMB → ￥, USD → $, others → bare
+  // uppercase code). Plugins no longer carry a label per entry.
 };
 
 type Balance = {
@@ -340,7 +326,6 @@ export type AccountCreditPlugin = {
 export type PluginContext = {
   providerId: string,                              // e.g. "kimi"
   type:        "QUOTA" | "BALANCE",                // mirrors the entry's TYPE
-  currencies:  CurrenciesConfig,                   // 3-layer-merged effective currencies (BALANCE providers)
   signal?:     AbortSignal,                        // per-tick timeout — MUST forward on fetch
 };
 ```

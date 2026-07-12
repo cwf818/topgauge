@@ -17,44 +17,6 @@ export type ProviderType = "QUOTA" | "BALANCE";
 
 export type CompareMethod = "EXACT" | "INCLUDE" | "STARTWITH";
 
-// vX.X.X+ — currencies namespace. Mirrors the (removed) `intervals` shape but
-// keyed on a free-form currency code (CNY / USD / …) instead of a
-// fixed enum. Each entry declares:
-//
-//   label        — display prefix rendered before the number. Falls
-//                  back to the currency-code key when omitted. The
-//                  legacy `cfg().currency.prefixes[code]` lookup is
-//                  NO LONGER consulted by the renderer for entries
-//                  resolved through this block — `label` is the
-//                  single source of truth.
-//   totalBalance — path expression; numeric value. Resolved against
-//                  the provider response via `resolveSlot(..., "number")`.
-//                  Matches the legacy `balance_infos.0.total_balance`
-//                  shape (DeepSeek default) out of the box.
-//
-// The block replaces the v0.5.0–v0.8.x hardcoded `entries` field on
-// the `Balance` parser output. Providers that don't ship the new
-// shape can still emit `entries` directly via the plugin transport
-// — `looksLikeBalance` (in src/api.ts) treats the legacy shape as
-// valid when `intervalsConfig`/`currenciesConfig` is absent, and
-// skips path resolution.
-export type CurrencySlotConfig = {
-  label?: string;
-  totalBalance?: string;
-};
-
-// CurrenciesConfig is keyed by uppercase currency code (CNY, USD,
-// …). The renderer's `m_balance` walks the keys in declaration
-// order and emits one "label + totalBalance" chunk per key. Free-
-// form keys are allowed so non-ISO providers can ship their own
-// codes — the resolver doesn't normalize / dedupe.
-export type CurrenciesConfig = Record<string, CurrencySlotConfig>;
-
-// vX.X.X+ — entry-level currencies block (layer 3 of the 4-layer
-// merge in resolveEffectiveCurrencies). Same shape as the top-level
-// `currencies` block.
-export type ProviderCurrenciesConfig = CurrenciesConfig;
-
 // ----- v0.4.0+ token-usage module ---------------------------------------
 //
 // One row appended per statusline tick. Source = stdin (per probe schema
@@ -295,8 +257,7 @@ export type AccSnapshot = {
 // user plugins own their own parsing via `fillQuota`/`fillBalance`
 // (they return canonical Quota/Balance objects directly), so
 // there's no host-side path-walker left to configure. Plugins
-// never see `ctx.intervals` — the `PluginContext` only carries
-// `{ providerId, type, currencies, signal? }` now.
+// only see `{ providerId, type, signal? }`.
 export type ProviderEntry = {
   TYPE: ProviderType;
   BASE_URL_COMPARED_TO: string;
@@ -307,18 +268,6 @@ export type ProviderEntry = {
   // forwarded to the existing per-field validators (same warn
   // behavior as the top-level config).
   config?: Record<string, unknown>;
-  // vX.X.X+ — per-provider currencies block. Mirrors the
-  // top-level `currencies` config: maps currency codes
-  // (CNY / USD / …) onto `{ label, totalBalance }` slot configs.
-  // Resolved against the BALANCE provider's raw response at fetch
-  // time by `resolveEffectiveCurrencies(id, entry)` in src/config.ts;
-  // the built-in parser (`parseBalance` in src/plugins/parsers.ts) walks the resolved map
-  // and pulls each entry's `totalBalance` value via the configured
-  // path expression. Used by DeepSeek out of the box (CNY default),
-  // and by any BALANCE provider that wants a data-driven currency
-  // map. Layer 3 of the 4-layer merge — overrides the top-level
-  // `currencies` block entirely for the active provider.
-  currencies?: ProviderCurrenciesConfig;
   // Provider-specific credential. It takes precedence over
   // process.env.ANTHROPIC_AUTH_TOKEN and is passed to the plugin's
   // fetchAccountCredit method.

@@ -1,9 +1,4 @@
-import type {
-  CompareMethod,
-  CurrenciesConfig,
-  ProviderEntry,
-  ProviderType,
-} from "./types.ts";
+import type { CompareMethod, ProviderEntry, ProviderType } from "./types.ts";
 
 export const DEFAULT_PROVIDERS: Record<string, ProviderEntry> = {
   minimax: {
@@ -30,24 +25,3 @@ export const VALID_COMPARE_METHODS: ReadonlySet<CompareMethod> = new Set([
   "INCLUDE",
   "STARTWITH",
 ]);
-
-const BUILTIN_PROVIDER_CURRENCIES: Record<string, CurrenciesConfig> = {
-  deepseek: {
-    CNY: { label: "￥", totalBalance: "balance_infos.0.total_balance" },
-  },
-  minimax: {},
-};
-
-export function resolveEffectiveCurrenciesPure(
-  activeProviderId: string,
-  entry: ProviderEntry | null,
-  top: CurrenciesConfig,
-): CurrenciesConfig {
-  const out: CurrenciesConfig = {};
-  for (const [key, value] of Object.entries(BUILTIN_PROVIDER_CURRENCIES[activeProviderId] ?? {})) {
-    out[key] = { ...value };
-  }
-  for (const [key, value] of Object.entries(top ?? {})) out[key] = { ...value };
-  for (const [key, value] of Object.entries(entry?.currencies ?? {})) out[key] = { ...value };
-  return out;
-}

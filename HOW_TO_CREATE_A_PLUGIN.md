@@ -95,7 +95,6 @@ export default {
     ctx: {
       providerId: string,             // your registered id, e.g. "kimi"
       type: "QUOTA" | "BALANCE",      // mirrors your config block's TYPE
-      currencies: CurrenciesConfig,   // the effective currencies config (BALANCE providers)
       signal?: AbortSignal,           // host's per-tick timeout — MUST forward on fetch
     },
   ) => unknown | Promise<unknown>     // Partial<Quota> | Partial<Balance> | null | throws
@@ -172,7 +171,7 @@ export default {
 
 ### 4b. Account-balance provider → `type: "BALANCE"`
 
-Returned shape is a `Partial<Balance>`. One `entries` array of currencies.
+Returned shape is a `Partial<Balance>`. One `entries` array of `{ currency, totalBalance }`.
 
 ```js
 // Reference: built-in src/plugins/deepseek/index.js
@@ -191,8 +190,7 @@ export default {
       isAvailable: raw.available ?? true,
       entries: (raw.balance_infos ?? []).map((b) => ({
         currency: b.currency,
-        totalBalance: Number(b.balance),
-        label: b.currency,
+        totalBalance: Number(b.total_balance ?? b.balance),
       })),
       minValue: raw.min_value ?? null,
     };
@@ -272,7 +270,9 @@ Rules (enforced by `ensureQuota` in `src/plugins/parsers.ts`):
 type BalanceEntry = {
   currency:    string;        // ISO 4217 ("USD", "CNY"), or free-form
   totalBalance: number;       // balance value in `currency`
-  label:        string;       // short prefix shown in the line (e.g. "$", "￥")
+  // Display prefix is derived from `currency` via the renderer's
+  // `currencyLabel(code)` helper (CNY/RMB → ￥, USD → $, others → bare
+  // uppercase code). Plugins no longer carry a label per entry.
 };
 
 type Balance = {

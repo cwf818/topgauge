@@ -34,7 +34,7 @@ const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 // would need to update this file in lockstep.
 const BALANCE = {
   isAvailable: true,
-  entries: [{ currency: "USD", totalBalance: 25, label: "$" }],
+  entries: [{ currency: "USD", totalBalance: 25 }],
   minValue: 25,
 };
 
