@@ -930,6 +930,32 @@ export function formatRemainingMs(remainingMs: number): string {
   return nonzero.slice(0, maxUnitCount).map(([v, u]) => `${v}${u}`).join("");
 }
 
+// v0.9.x — Fixed-second TTL formatter for m_cacheTtlStatus /
+// m_statTtlStatus. UNLIKE formatRemainingMs, this ignores
+// `timeFormat.minUnit` (and global minUnit): the user explicitly
+// asked for a fixed-second suffix on the TTL gauge regardless of
+// what timeFormat the rest of the statusline uses. Same shape as
+// formatRemainingMs's edge cases so the two paths read alike:
+//
+//   remainingMs = 23_500  → "23s"
+//   remainingMs =  1_000  → "1s"
+//   remainingMs =   500   → "<1s"   (sub-second floor; about-to-expire)
+//   remainingMs = 60_000  → "60s"
+//   remainingMs <= 0      → "0s"    (past-due; mirrors "0<minUnit>")
+//   remainingMs = NaN     → ""
+//
+// `Math.floor(remainingMs / 1000)` truncates so a 23.5s TTL shows
+// as "23s" — the bar gauge already encodes the fractional state,
+// the suffix reports the full seconds the user can reliably rely
+// on (the conservative floor — never overstate remaining TTL).
+export function formatTtlSeconds(remainingMs: number): string {
+  if (!Number.isFinite(remainingMs)) return "";
+  if (remainingMs <= 0) return "0s";
+  const secs = Math.floor(remainingMs / 1000);
+  if (secs < 1) return "<1s";
+  return `${secs}s`;
+}
+
 // Pick a reset-countdown glyph from the configured array by how full the
 // window still is. Index = floor(remainingMs / resetDurationMs * length),
 // so the array reads left-to-right as "fresh → about to reset":
@@ -3063,24 +3089,41 @@ m_quota: Object.assign(
   // rule preserves the natural 0-value render path).
   m_windowContext: (c) =>
     c.contextWindow ? formatOneChunk(c.contextWindow, c.mode, cfg().bar.width, c.stale) : placeholderBare("m_windowContext", c),
-  // v0.8.16 — TTL gauge modules. Each picks the freshest entry
+  // v0.8.16 — TTL gauge modules. Each picks a TTL-aware entry
   // from its respective cache (response cache for m_cacheTtlStatus,
   // stat cache for m_statTtlStatus), computes remainingFraction =
   // (ttlMs - ageMs) / ttlMs, and emits one of TTL_BAR_CHARS picked
   // by the fraction. Color is computed by ttlStatusColor (5-band
-  // palette). Missing / no-ttlMs entries fall through to the
-  // placeholder (single ▆ in STALE_COLOR).
+  // palette). v0.9.x — also append a fixed-second TTL suffix
+  // ("▆ 23s") via formatTtlSeconds, which intentionally bypasses
+  // `timeFormat.minUnit` so the TTL gauge stays second-granular
+  // regardless of the global timeFormat. Missing / no-ttlMs
+  // entries fall through to the placeholder (single ▆ in
+  // STALE_COLOR) with no numeric suffix.
+  //
+  // v0.9.x — m_cacheTtlStatus reads the ACTIVE provider's cache row
+  // (keyed by ctx.currentProvider), NOT the cross-provider freshest.
+  // Each provider requests its quota/balance independently on its
+  // own clock; reading the freshest across providers leaks the
+  // freshness of one provider into another (e.g. a DeepSeek balance
+  // update hiding a stale MiniMax quota). The stat cache, by
+  // contrast, is process-shared and updated as a whole, so its
+  // "freshest" helper is still the right pick for m_statTtlStatus.
   m_cacheTtlStatus: (c) => {
-    const entry = cache.peekFreshestWithTtl();
+    const key = c.currentProvider;
+    if (key == null) return placeholderBare("m_cacheTtlStatus", c);
+    const entry = cache.peekWithTtl(key);
     if (!entry || entry.ttlMs <= 0) return placeholderBare("m_cacheTtlStatus", c);
     const remaining = (entry.ttlMs - entry.ageMs) / entry.ttlMs;
-    return `${ttlStatusColor(remaining)}${ttlStatusChar(remaining)}${RESET}`;
+    const suffix = formatTtlSeconds(entry.ttlMs - entry.ageMs);
+    return `${ttlStatusColor(remaining)}${ttlStatusChar(remaining)}${RESET} ${suffix}`;
   },
   m_statTtlStatus: (c) => {
     const entry = statusStore.peekFreshestStatAgeMs();
     if (!entry || entry.ttlMs <= 0) return placeholderBare("m_statTtlStatus", c);
     const remaining = (entry.ttlMs - entry.ageMs) / entry.ttlMs;
-    return `${ttlStatusColor(remaining)}${ttlStatusChar(remaining)}${RESET}`;
+    const suffix = formatTtlSeconds(entry.ttlMs - entry.ageMs);
+    return `${ttlStatusColor(remaining)}${ttlStatusChar(remaining)}${RESET} ${suffix}`;
   },
   // v0.8.17+ — system RAM usage. Darwin reads vm_stat; other
   // platforms fall back to os.totalmem() - os.freemem(). Format
@@ -6574,14 +6617,21 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
   // v0.8.16 — TTL gauge inline-args renderer. Mirror of the bare
   // MODULES entry but with the user's |color|<c> override applied
   // before the scale color (override always wins; matches the
-  // wrapPlainDefault contract for every other module).
+  // wrapPlainDefault contract for every other module). v0.9.x —
+  // also append the fixed-second TTL suffix via formatTtlSeconds
+  // (see MODULES entry for the rationale), AND route through the
+  // ACTIVE provider's cache row (see MODULES entry for the
+  // per-provider rationale).
   m_cacheTtlStatus: (params, ctx) => {
-    const entry = cache.peekFreshestWithTtl();
+    const key = ctx.currentProvider;
+    if (key == null) return placeholderWithColor("m_cacheTtlStatus", params, ctx);
+    const entry = cache.peekWithTtl(key);
     if (!entry || entry.ttlMs <= 0) return placeholderWithColor("m_cacheTtlStatus", params, ctx);
     const remaining = (entry.ttlMs - entry.ageMs) / entry.ttlMs;
     const userColor = params.color as string | undefined;
     const color = userColor ?? ttlStatusColor(remaining);
-    return `${color}${ttlStatusChar(remaining)}${RESET}`;
+    const suffix = formatTtlSeconds(entry.ttlMs - entry.ageMs);
+    return `${color}${ttlStatusChar(remaining)}${RESET} ${suffix}`;
   },
   m_statTtlStatus: (params, ctx) => {
     const entry = statusStore.peekFreshestStatAgeMs();
@@ -6589,7 +6639,8 @@ const INLINE_RENDERERS: Record<string, InlineRenderer> = {
     const remaining = (entry.ttlMs - entry.ageMs) / entry.ttlMs;
     const userColor = params.color as string | undefined;
     const color = userColor ?? ttlStatusColor(remaining);
-    return `${color}${ttlStatusChar(remaining)}${RESET}`;
+    const suffix = formatTtlSeconds(entry.ttlMs - entry.ageMs);
+    return `${color}${ttlStatusChar(remaining)}${RESET} ${suffix}`;
   },
   // v0.8.17+ — system RAM usage inline form. Mirror of the bare
   // MODULES entry but with the user's |color|<c> override applied

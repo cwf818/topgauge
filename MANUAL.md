@@ -425,8 +425,8 @@ Every module the renderer recognizes. **Type filter** tells you which provider T
 | `m_memUsage` | System RAM usage, `Mem:15.9G/63.7G`. | `os.totalmem()` / `os.freemem()` | agnostic | `color`, `nulldrop`, `valueOnly` |
 | `m_windowMemUsage` | System RAM used bar + 5-band-colored percentage, e.g. `▓▓▓▓▓░░░ 62%`. | `os.totalmem()` / `os.freemem()` | agnostic | `color`, `display`, `nulldrop` |
 | `m_windowContext` | Context-window used bar + 5-band-colored percentage, e.g. `▓▓▓▓▓░░░ 82%`. | `tokens.contextWindow.contextUsedPercent` | agnostic | `color`, `display`, `nulldrop` |
-| `m_cacheTtlStatus` | One TTL-gauge glyph showing freshness of the response cache. | `cache.peekFreshestWithTtl()` | agnostic | `color`, `nulldrop` |
-| `m_statTtlStatus` | One TTL-gauge glyph showing freshness of the cross-project stat cache. | `statusStore.peekFreshestStatAgeMs()` | agnostic | `color`, `nulldrop` |
+| `m_cacheTtlStatus` | TTL-gauge glyph + fixed-second remaining suffix, e.g. `▆ 23s`. Reads the ACTIVE provider's cache row (keyed by `currentProvider`), not the cross-provider freshest — each provider is requested on its own clock. Bypasses `timeFormat.minUnit` so the suffix is always seconds. | `cache.peekWithTtl(currentProvider)` | agnostic | `color`, `nulldrop` |
+| `m_statTtlStatus` | TTL-gauge glyph + fixed-second remaining suffix, e.g. `▆ 23s`. Bypasses `timeFormat.minUnit` so the suffix is always seconds. | `statusStore.peekFreshestStatAgeMs()` | agnostic | `color`, `nulldrop` |
 | `m_label\|<text>` | Literal `<text>`. | inline | agnostic | `color`, `nulldrop` |
 | `m_template\|<key>[\|type:quota\|balance\|provider:<id>]` | Inserts `lineTemplates.<key>` in place. | inline key | filtered by `type` / `provider` | `type`, `provider`, plus passthrough (§10) |
 

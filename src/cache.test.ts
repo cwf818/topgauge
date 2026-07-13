@@ -103,13 +103,18 @@ describe("peekWithAge", () => {
   });
 });
 
-// ----- v0.8.16 — TTL-aware peeks for m_cacheTtlStatus -----
+// ----- v0.8.16 — TTL-aware peek for m_cacheTtlStatus -----
 //
-// peekWithTtl / peekFreshestWithTtl return {ageMs, ttlMs} and are
+// peekWithTtl returns {ageMs, ttlMs} keyed on the caller's key.
 // TTL-IGNORING (the renderer needs to render the gauge even when
 // the entry is past TTL — that's the "will refresh next tick" case).
-// They expose the entry's stored ttlMs so the renderer can compute
+// It exposes the entry's stored ttlMs so the renderer can compute
 // remainingFraction = (ttlMs - ageMs) / ttlMs.
+//
+// v0.9.x — keyed against the active provider's cache row (NOT the
+// cross-provider freshest — that leaked one provider's freshness
+// into another's display). The per-provider key is what callers
+// pass in.
 
 describe("peekWithTtl", () => {
   it("returns null on miss", () => {
@@ -154,39 +159,45 @@ describe("peekWithTtl", () => {
   });
 });
 
-describe("peekFreshestWithTtl", () => {
-  it("returns null on empty store", () => {
-    clear();
-    assert.equal((cache as any).peekFreshestWithTtl(), null);
+describe("peekWithTtl — active-provider scoping (v0.9.x)", () => {
+  it("returns null when the active-provider key has no entry, even if other keys exist", () => {
+    // The "no provider matched" / "freshly-installed user plugin" case:
+    // only DeepSeek has a cache row; the active provider (MiniMax)
+    // has no row yet. peekWithTtl must not fall through to any other
+    // row — the renderer would then show DeepSeek's freshness
+    // while reporting MiniMax's quota on the line above.
+    clear("deepseek");
+    clear("minimax");
+    set("deepseek", { x: 1 }, 60_000);
+    (cache as any).store.set("deepseek", {
+      at: Date.now() - 1_000, // very fresh
+      value: { x: 1 },
+      ttlMs: 60_000,
+    });
+    assert.equal((cache as any).peekWithTtl("minimax"), null);
   });
 
-  it("returns the freshest entry's { ageMs, ttlMs } when multiple keys exist", () => {
-    clear("fresh-a");
-    clear("fresh-b");
-    clear("fresh-c");
-    // Write three entries with descending freshness.
-    (cache as any).store.set("fresh-a", {
-      at: Date.now() - 30_000,
-      value: "older",
-      ttlMs: 60_000,
-    });
-    (cache as any).store.set("fresh-b", {
+  it("returns the active-provider row's { ageMs, ttlMs } independent of other rows", () => {
+    // Two providers, MiniMax is much older than DeepSeek. The MiniMax
+    // key should report its own age (~45s), NOT DeepSeek's (~5s).
+    clear("deepseek");
+    clear("minimax");
+    (cache as any).store.set("deepseek", {
       at: Date.now() - 5_000,
-      value: "newest",
+      value: { x: 1 },
       ttlMs: 60_000,
     });
-    (cache as any).store.set("fresh-c", {
-      at: Date.now() - 15_000,
-      value: "middle",
+    (cache as any).store.set("minimax", {
+      at: Date.now() - 45_000,
+      value: { x: 2 },
       ttlMs: 60_000,
     });
-    const r = (cache as any).peekFreshestWithTtl();
+    const r = (cache as any).peekWithTtl("minimax");
     assert.ok(r);
     assert.equal(r!.ttlMs, 60_000);
-    // fresh-b has the smallest ageMs (~5s); tolerate ±1s drift.
     assert.ok(
-      r!.ageMs >= 4_000 && r!.ageMs < 7_000,
-      `expected ageMs≈5000, got ${r!.ageMs}`,
+      r!.ageMs >= 44_000 && r!.ageMs < 47_000,
+      `expected MiniMax ageMs≈45000, got ${r!.ageMs}`,
     );
   });
 });

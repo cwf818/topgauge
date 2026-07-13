@@ -54,6 +54,7 @@ import { join, dirname } from "node:path";
 import { execFileSync } from "node:child_process";
 import { __resetGitInfoCacheForTest } from "./git-info.ts";
 import type { TokenSnapshot } from "./types.ts";
+import { formatTtlSeconds } from "./render.ts";
 import type { Interval } from "./render.ts";
 import * as diagnostics from "./diagnostics.ts";
 
@@ -6164,6 +6165,38 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
   });
 });
 
+// ----- v0.9.x — formatTtlSeconds helper -----
+//
+// Fixed-second TTL suffix used by m_cacheTtlStatus / m_statTtlStatus.
+// Bypasses `timeFormat.minUnit` so the gauge always reports seconds
+// regardless of the rest of the statusline's time format.
+describe("formatTtlSeconds", () => {
+  it("whole seconds: 23_500ms → '23s' (floor — never overstate remaining TTL)", () => {
+    assert.equal(formatTtlSeconds(23_500), "23s");
+  });
+  it("boundary: exactly 1000ms → '1s' (Math.ceil(1) = 1, not <1s)", () => {
+    assert.equal(formatTtlSeconds(1_000), "1s");
+  });
+  it("sub-second: 500ms → '<1s'", () => {
+    assert.equal(formatTtlSeconds(500), "<1s");
+  });
+  it("exactly 0ms → '0s' (past-due; mirrors formatRemainingMs's '0<minUnit>')", () => {
+    assert.equal(formatTtlSeconds(0), "0s");
+  });
+  it("negative ms → '0s' (clamped to past-due)", () => {
+    assert.equal(formatTtlSeconds(-30_000), "0s");
+  });
+  it("large value: 5 minutes → '300s' (does NOT roll up to minutes)", () => {
+    // This is the whole point: timeFormat.minUnit does not leak
+    // into the TTL gauge. A 5-minute remaining TTL still shows
+    // "300s", not "5m".
+    assert.equal(formatTtlSeconds(300_000), "300s");
+  });
+  it("NaN → ''", () => {
+    assert.equal(formatTtlSeconds(NaN), "");
+  });
+});
+
 // ----- v0.8.16 — m_cacheTtlStatus + m_statTtlStatus -----
 //
 // Both modules display the TTL of their respective backing cache
@@ -6172,23 +6205,38 @@ describe("renderTemplate — v0.8.x cwf-tickStatus-v2 (tickStatus acc-only + pre
 // red (min TTL) by a 5-band scale. Missing entry / no-ttlMs → gray
 // ▆ placeholder wrapped in STALE_COLOR.
 
-describe("render — m_cacheTtlStatus", () => {
-  it("no entry → STALE_COLOR-wrapped '▆' placeholder", () => {
+describe("render — m_cacheTtlStatus (v0.9.x +fixed-second suffix, +active-provider scoping)", () => {
+  // v0.9.x — m_cacheTtlStatus reads the ACTIVE provider's cache row
+  // (keyed by ctx.currentProvider). Every test in this block scopes
+  // ctx.currentProvider to "minimax" to mirror what index.ts does
+  // for the matched provider.
+  const ctxWithProvider = () => ({
+    ...ctxFor(fakeSnapshot()),
+    currentProvider: "minimax" as const,
+  });
+
+  it("no entry for active provider → STALE_COLOR-wrapped '▆' placeholder", () => {
+    // Active provider (minimax) has no cache row — placeholder.
+    // Other providers' rows, if any, MUST NOT leak in.
     resetCacheForTest();
-    const out = renderTemplate(["m_cacheTtlStatus"], ctxFor(fakeSnapshot())).join("");
+    const out = renderTemplate(["m_cacheTtlStatus"], ctxWithProvider()).join("");
     assert.equal(strip(out), "▆");
     assert.ok(out.includes(STALE), `expected STALE SGR, got: ${JSON.stringify(out)}`);
   });
 
-  it("fresh entry (age=0 of 60s ttl) → '█' in brightGreen", () => {
+  it("fresh entry (age≈0 of 60s ttl) → '█ <≈60>s' in brightGreen", () => {
     resetCacheForTest();
     cacheMod.set("minimax", { x: 1 }, 60_000);
-    const out = renderTemplate(["m_cacheTtlStatus"], ctxFor(fakeSnapshot())).join("");
-    assert.equal(strip(out), "█");
+    const out = renderTemplate(["m_cacheTtlStatus"], ctxWithProvider()).join("");
+    // Test-runner delay between cache.set and render means ageMs
+    // is a few ms by the time render runs — floor gives 59s/60s
+    // depending on tick. Match a small range so timing jitter
+    // doesn't flake the assertion.
+    assert.match(strip(out), /^█ (59|60)s$/);
     assert.ok(out.includes(GREEN), `expected brightGreen SGR, got: ${JSON.stringify(out)}`);
   });
 
-  it("half-aged entry (age=30s of 60s) → middle char '▄' in yellow", () => {
+  it("half-aged entry (age=30s of 60s) → '▄ 30s' in yellow", () => {
     resetCacheForTest();
     cacheMod.set("minimax", { x: 1 }, 60_000);
     // Backdate `at` so ageMs reads as 30s on render (no Date.now
@@ -6199,12 +6247,12 @@ describe("render — m_cacheTtlStatus", () => {
       value: { x: 1 },
       ttlMs: 60_000,
     });
-    const out = renderTemplate(["m_cacheTtlStatus"], ctxFor(fakeSnapshot())).join("");
-    assert.equal(strip(out), "▄");
+    const out = renderTemplate(["m_cacheTtlStatus"], ctxWithProvider()).join("");
+    assert.equal(strip(out), "▄ 30s");
     assert.ok(out.includes(YELLOW), `expected yellow SGR, got: ${JSON.stringify(out)}`);
   });
 
-  it("expired entry (age=90s of 60s) → '▁' in red", () => {
+  it("expired entry (age=90s of 60s) → '▁ 0s' in red", () => {
     resetCacheForTest();
     cacheMod.set("minimax", { x: 1 }, 60_000);
     // Backdate to age=90s (> ttlMs=60s) so the entry is past TTL.
@@ -6215,9 +6263,46 @@ describe("render — m_cacheTtlStatus", () => {
       value: { x: 1 },
       ttlMs: 60_000,
     });
-    const out = renderTemplate(["m_cacheTtlStatus"], ctxFor(fakeSnapshot())).join("");
-    assert.equal(strip(out), "▁");
+    const out = renderTemplate(["m_cacheTtlStatus"], ctxWithProvider()).join("");
+    assert.equal(strip(out), "▁ 0s");
     assert.ok(out.includes(RED), `expected red SGR, got: ${JSON.stringify(out)}`);
+  });
+
+  it("active-provider scoping: only minimax row read even if deepseek is freshest", () => {
+    // MiniMax is the active provider but its row is 45s old; DeepSeek
+    // has a 5s-old row. The render must read MiniMax (older, yellow),
+    // NOT DeepSeek (freshest, green) — otherwise the freshness gauge
+    // would lie about which provider's data the line above is using.
+    resetCacheForTest();
+    (cacheMod as any).store.set("deepseek", {
+      at: Date.now() - 5_000,
+      value: { x: 99 },
+      ttlMs: 60_000,
+    });
+    (cacheMod as any).store.set("minimax", {
+      at: Date.now() - 45_000,
+      value: { x: 1 },
+      ttlMs: 60_000,
+    });
+    const out = renderTemplate(["m_cacheTtlStatus"], ctxWithProvider()).join("");
+    // KEY ASSERTION is the SUFFIX: 14s or 15s reflects MiniMax's
+    // ~45s-old row. If the renderer had pulled DeepSeek's fresh
+    // row (age≈5s), the suffix would be ~55s, NOT 14/15s. The exact
+    // bar char (▂ vs ▃ vs ▄ vs ▅) and color (yellow vs orange) drift
+    // across test runs as ageMs jitters ±1ms, so don't pin them.
+    // Forbid any character that would only appear if DeepSeek had
+    // been picked (its fraction ≈ 0.92 → idx 0 = "█" and color =
+    // brightGreen; the renderer would print "█ 55s" / "█ 56s").
+    const stripped = strip(out);
+    assert.match(
+      stripped,
+      / 1[45]s$/,
+      `expected MiniMax's ~15s suffix (NOT DeepSeek's fresh ~55s), got: ${JSON.stringify(stripped)}`,
+    );
+    assert.ok(
+      !stripped.startsWith("█"),
+      `expected non-fresh bar (DeepSeek would produce █); got: ${JSON.stringify(stripped)}`,
+    );
   });
 
   it("inline m_cacheTtlStatus|color|orange overrides scale", () => {
@@ -6225,9 +6310,12 @@ describe("render — m_cacheTtlStatus", () => {
     cacheMod.set("minimax", { x: 1 }, 60_000);
     const out = renderTemplate(
       ["m_cacheTtlStatus|color:orange"],
-      ctxFor(fakeSnapshot()),
+      ctxWithProvider(),
     ).join("");
-    assert.equal(strip(out), "█");
+    // Same tolerance as the fresh-path test: cache.set stamps
+    // `at = Date.now()`, render runs a few ms later, so floor may
+    // give 59s or 60s.
+    assert.match(strip(out), /^█ (59|60)s$/);
     assert.ok(out.includes(ORANGE), `expected orange SGR, got: ${JSON.stringify(out)}`);
   });
 
@@ -6235,7 +6323,7 @@ describe("render — m_cacheTtlStatus", () => {
     resetCacheForTest();
     const out = renderTemplate(
       ["m_cacheTtlStatus|nulldrop:true"],
-      ctxFor(fakeSnapshot()),
+      ctxWithProvider(),
     );
     // nulldrop:true + null data → renderer returns null → the
     // separator-adjacent-skip logic drops the chunk entirely so
@@ -6244,7 +6332,7 @@ describe("render — m_cacheTtlStatus", () => {
   });
 });
 
-describe("render — m_statTtlStatus", () => {
+describe("render — m_statTtlStatus (v0.9.x +fixed-second suffix)", () => {
   it("no entry → STALE_COLOR-wrapped '▆' placeholder", () => {
     __resetStatCacheForTest();
     const out = renderTemplate(["m_statTtlStatus"], ctxFor(fakeSnapshot())).join("");
@@ -6252,11 +6340,12 @@ describe("render — m_statTtlStatus", () => {
     assert.ok(out.includes(STALE), `expected STALE SGR, got: ${JSON.stringify(out)}`);
   });
 
-  it("fresh entry (age=0 of 300s ttl) → '█' in brightGreen", () => {
+  it("fresh entry (age≈0 of 300s ttl) → '█ <≈300>s' in brightGreen", () => {
     __resetStatCacheForTest();
     setStatCacheForTest("stat:all:5h:true", { sumIn: 1, rows: 1, sumOut: 0, sumCached: 0, sumTotalIn: 1, sumApiMs: 0, calls: 1, lastAt: Date.now(), generatedAt: Date.now() }, 300_000);
     const out = renderTemplate(["m_statTtlStatus"], ctxFor(fakeSnapshot())).join("");
-    assert.equal(strip(out), "█");
+    // Same test-runner-delay tolerance as m_cacheTtlStatus fresh path.
+    assert.match(strip(out), /^█ (299|300)s$/);
     assert.ok(out.includes(GREEN), `expected brightGreen SGR, got: ${JSON.stringify(out)}`);
   });
 
@@ -6272,11 +6361,11 @@ describe("render — m_statTtlStatus", () => {
     // the entry alone produces the expected ageMs).
     setStatCacheAtForTest("stat:all:5h:true", Date.now() - 150_000);
     const out = renderTemplate(["m_statTtlStatus"], ctxFor(fakeSnapshot())).join("");
-    assert.equal(strip(out), "▄");
+    assert.equal(strip(out), "▄ 150s");
     assert.ok(out.includes(YELLOW), `expected yellow SGR, got: ${JSON.stringify(out)}`);
   });
 
-  it("expired entry (age=400s of 300s) → '▁' in red", () => {
+  it("expired entry (age=400s of 300s) → '▁ 0s' in red", () => {
     __resetStatCacheForTest();
     setStatCacheForTest(
       "stat:all:5h:true",
@@ -6285,7 +6374,7 @@ describe("render — m_statTtlStatus", () => {
     );
     setStatCacheAtForTest("stat:all:5h:true", Date.now() - 400_000);
     const out = renderTemplate(["m_statTtlStatus"], ctxFor(fakeSnapshot())).join("");
-    assert.equal(strip(out), "▁");
+    assert.equal(strip(out), "▁ 0s");
     assert.ok(out.includes(RED), `expected red SGR, got: ${JSON.stringify(out)}`);
   });
 
@@ -6296,7 +6385,8 @@ describe("render — m_statTtlStatus", () => {
       ["m_statTtlStatus|color:orange"],
       ctxFor(fakeSnapshot()),
     ).join("");
-    assert.equal(strip(out), "█");
+    // Same tolerance as the fresh-path test.
+    assert.match(strip(out), /^█ (299|300)s$/);
     assert.ok(out.includes(ORANGE), `expected orange SGR, got: ${JSON.stringify(out)}`);
   });
 
